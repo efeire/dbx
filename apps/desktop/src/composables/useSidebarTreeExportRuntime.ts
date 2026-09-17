@@ -1,4 +1,5 @@
-import { createApp, type ShallowRef } from "vue";
+import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
+import { watch, createApp, type ShallowRef } from "vue";
 import { useI18n } from "vue-i18n";
 import i18n from "@/i18n";
 import { useExportTracker, type ExportTask } from "@/composables/useExportTracker";
@@ -18,7 +19,18 @@ import { fetchTableDataForExport } from "@/lib/table/tableDataExport";
 import { forceCsvTextForTemporalColumns } from "@/lib/dataGrid/columnFormatter";
 import XlsxHeaderDialog from "@/components/export/XlsxHeaderDialog.vue";
 import { buildXlsxHeaderOverrides, hasXlsxHeaderComments, type XlsxExportOptions, type XlsxHeaderMode } from "@/lib/export/xlsxHeader";
-import { isLoadingStructurePreview, showStructureDocCopyDialog, showStructurePreviewDialog, structureDocCopyText, structureDocCopyTitle, structurePreviewDefaultFileName, structurePreviewError, structurePreviewSql, structurePreviewTitle } from "@/components/sidebar/sidebarTreeDialogState";
+import {
+  isLoadingStructurePreview,
+  showStructureDocCopyDialog,
+  showStructurePreviewDialog,
+  structureDocCopyText,
+  structureDocCopyTitle,
+  structurePreviewDefaultFileName,
+  structurePreviewError,
+  structurePreviewSql,
+  structurePreviewTitle,
+  structurePreviewHasOceanBase,
+} from "@/components/sidebar/sidebarTreeDialogState";
 import type { CsvQuoteMode } from "@/lib/export/csvQuoteMode";
 
 type StructureCopyFormat = "tsv" | "markdown";
@@ -126,23 +138,37 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
     return sidebarTableDataExportTargets(activeNode.value, connectionStore.treeNodes, options.acceptedSelectionIds() ?? connectionStore.selectedTreeNodeIds);
   }
 
+  let structureSource: Array<{ ddl: string; databaseType: ReturnType<typeof effectiveDatabaseTypeForConnection> }> = [];
+  function renderStructurePreview() {
+    structurePreviewSql.value = joinExportedDdls(structureSource.map(({ ddl, databaseType }) => applyDdlStoragePreference(ddl, databaseType, settingsStore.editorSettings.excludeDdlStorage)));
+  }
+  watch(
+    () => settingsStore.editorSettings.excludeDdlStorage,
+    () => {
+      if (showStructurePreviewDialog.value && structureSource.length) renderStructurePreview();
+    },
+  );
+
   async function exportStructure() {
     const targets = structureExportTargets();
     if (!targets.length) return;
     isLoadingStructurePreview.value = true;
     structurePreviewError.value = "";
     structurePreviewSql.value = "";
+    structurePreviewHasOceanBase.value = false;
+    structureSource = [];
     structurePreviewTitle.value = targets.length === 1 ? t("contextMenu.exportStructurePreviewTitle", { name: targets[0]!.label }) : t("contextMenu.exportStructurePreviewTitleMultiple", { count: targets.length });
     structurePreviewDefaultFileName.value = targets.length === 1 ? `${targets[0]!.label}.sql` : "structures.sql";
     showStructurePreviewDialog.value = true;
     try {
-      const parts: string[] = [];
       for (const target of targets) {
         await connectionStore.ensureConnected(target.connectionId);
         const ddl = await api.getTableDdl(target.connectionId, target.database, target.schema || target.database, target.label, tableDdlObjectTypeForNode(target.type), target.catalog, true);
-        parts.push(ddl.trim());
+        const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(target.connectionId));
+        structureSource.push({ ddl, databaseType });
+        if (databaseType === "oceanbase-oracle") structurePreviewHasOceanBase.value = true;
       }
-      structurePreviewSql.value = joinExportedDdls(parts);
+      renderStructurePreview();
     } catch (error: any) {
       structurePreviewError.value = error?.message || String(error);
       console.error("Export structure failed:", error);

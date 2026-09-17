@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { shallowRef } from "vue";
+import { shallowRef, reactive, nextTick, effectScope } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnInfo, TreeNode } from "@/types/database";
 
@@ -85,6 +85,29 @@ function exportSettings() {
 }
 
 describe("useSidebarTreeExportRuntime", () => {
+  it("toggles OceanBase structure exports from the original DDL without querying again", async () => {
+    const scope = effectScope();
+    const ddl = 'CREATE TABLE "T" ("ID" NUMBER) REPLICA_NUM=1 PCTFREE=0 PARTITION BY HASH("ID") PARTITIONS 2';
+    apiMock.getTableDdl.mockResolvedValue(ddl);
+    const node = { id: "ob-table", type: "table", label: "T", connectionId: "ob", database: "SYS", schema: "APP" } as TreeNode;
+    const settingsStore = reactive({ editorSettings: { excludeDdlStorage: true } });
+    const connectionStore = { ensureConnected: vi.fn(), getConfig: () => ({ db_type: "oceanbase-oracle" }), treeNodes: [node], selectedTreeNodeIds: [] };
+    const runtime = scope.run(() => useSidebarTreeExportRuntime({ activeNode: shallowRef(node), connectionStore: connectionStore as never, settingsStore: settingsStore as never, acceptedSelectionIds: () => null }))!;
+    try {
+      await runtime.exportStructure();
+      expect(structurePreviewSql.value).not.toContain("REPLICA_NUM");
+      expect(structurePreviewSql.value).toContain('PARTITION BY HASH("ID") PARTITIONS 2');
+      settingsStore.editorSettings.excludeDdlStorage = false;
+      await nextTick();
+      expect(structurePreviewSql.value).toBe(ddl + ";\n");
+      settingsStore.editorSettings.excludeDdlStorage = true;
+      await nextTick();
+      expect(structurePreviewSql.value).not.toContain("PCTFREE");
+      expect(apiMock.getTableDdl).toHaveBeenCalledOnce();
+    } finally {
+      scope.stop();
+    }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     addExportTaskMock.mockImplementation((tableName: string, format: string, filePath: string) => ({
@@ -201,13 +224,14 @@ describe("useSidebarTreeExportRuntime", () => {
     const activeNode = shallowRef(first);
     const connectionStore = {
       ensureConnected: vi.fn(),
+      getConfig: vi.fn(() => ({ db_type: "postgres" })),
       treeNodes: [group],
       selectedTreeNodeIds: [second.id, first.id],
     };
     const runtime = useSidebarTreeExportRuntime({
       activeNode,
       connectionStore: connectionStore as never,
-      settingsStore: {} as never,
+      settingsStore: exportSettings() as never,
       acceptedSelectionIds: () => null,
     });
 
