@@ -1,5 +1,5 @@
 import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
-import { watch, createApp, type ShallowRef } from "vue";
+import { watch, createApp, getCurrentScope, onScopeDispose, type ShallowRef } from "vue";
 import { useI18n } from "vue-i18n";
 import i18n from "@/i18n";
 import { useExportTracker, type ExportTask } from "@/composables/useExportTracker";
@@ -139,6 +139,20 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
   }
 
   let structureSource: Array<{ ddl: string; databaseType: ReturnType<typeof effectiveDatabaseTypeForConnection> }> = [];
+  let structureRequestId = 0;
+  function invalidateStructureRequest() {
+    structureRequestId++;
+    structureSource = [];
+    isLoadingStructurePreview.value = false;
+  }
+  watch(
+    showStructurePreviewDialog,
+    (visible) => {
+      if (!visible) invalidateStructureRequest();
+    },
+    { flush: "sync" },
+  );
+  if (getCurrentScope()) onScopeDispose(invalidateStructureRequest);
   function renderStructurePreview() {
     structurePreviewSql.value = joinExportedDdls(structureSource.map(({ ddl, databaseType }) => applyDdlStoragePreference(ddl, databaseType, settingsStore.editorSettings.excludeDdlStorage)));
   }
@@ -152,6 +166,8 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
   async function exportStructure() {
     const targets = structureExportTargets();
     if (!targets.length) return;
+    const requestId = ++structureRequestId;
+    const requestSource: typeof structureSource = [];
     isLoadingStructurePreview.value = true;
     structurePreviewError.value = "";
     structurePreviewSql.value = "";
@@ -163,17 +179,21 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
     try {
       for (const target of targets) {
         await connectionStore.ensureConnected(target.connectionId);
+        if (requestId !== structureRequestId) return;
         const ddl = await api.getTableDdl(target.connectionId, target.database, target.schema || target.database, target.label, tableDdlObjectTypeForNode(target.type), target.catalog, true);
+        if (requestId !== structureRequestId) return;
         const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(target.connectionId));
-        structureSource.push({ ddl, databaseType });
-        if (databaseType === "oceanbase-oracle") structurePreviewHasOceanBase.value = true;
+        requestSource.push({ ddl, databaseType });
       }
+      structureSource = requestSource;
+      structurePreviewHasOceanBase.value = requestSource.some(({ databaseType }) => databaseType === "oceanbase-oracle");
       renderStructurePreview();
     } catch (error: any) {
+      if (requestId !== structureRequestId) return;
       structurePreviewError.value = error?.message || String(error);
       console.error("Export structure failed:", error);
     } finally {
-      isLoadingStructurePreview.value = false;
+      if (requestId === structureRequestId) isLoadingStructurePreview.value = false;
     }
   }
 

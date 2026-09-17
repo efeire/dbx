@@ -5,6 +5,7 @@ import type { ColumnInfo, TreeNode } from "@/types/database";
 
 const source = readFileSync(new URL("../useSidebarTreeExportRuntime.ts", import.meta.url), "utf8");
 const toastMock = vi.hoisted(() => vi.fn());
+const copyToClipboardMock = vi.hoisted(() => vi.fn());
 const addExportTaskMock = vi.hoisted(() => vi.fn());
 const updateTableExportTaskMock = vi.hoisted(() => vi.fn());
 const apiMock = vi.hoisted(() => ({
@@ -20,6 +21,7 @@ const apiMock = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/backend/api", () => apiMock);
+vi.mock("@/lib/common/clipboard", () => ({ copyToClipboard: copyToClipboardMock }));
 vi.mock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: toastMock }) }));
 vi.mock("@/composables/useExportTracker", () => ({ useExportTracker: () => ({ addTask: addExportTaskMock, updateTableExportTask: updateTableExportTaskMock }) }));
@@ -36,7 +38,7 @@ vi.mock("vue-i18n", () => ({
 
 import { useSidebarTreeExportRuntime } from "@/composables/useSidebarTreeExportRuntime";
 import { DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS } from "@/lib/dataGrid/dataGridCopyExtractor";
-import { showStructurePreviewDialog, structurePreviewSql, structurePreviewTitle } from "@/components/sidebar/sidebarTreeDialogState";
+import { isLoadingStructurePreview, showStructurePreviewDialog, structurePreviewDefaultFileName, structurePreviewError, structurePreviewSql, structurePreviewTitle } from "@/components/sidebar/sidebarTreeDialogState";
 
 function functionBody(name: string): string {
   const signature = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\([^)]*\\)\\s*(?::\\s*[^\\{]+)?\\{`, "m").exec(source);
@@ -84,6 +86,17 @@ function exportSettings() {
   };
 }
 
+function structureRuntimeFixture(databaseType: "mysql" | "oceanbase-oracle" = "mysql") {
+  const scope = effectScope();
+  const firstNode = { id: "first-table", type: "table", label: "A", connectionId: "conn-1", database: "db", schema: "app" } as TreeNode;
+  const secondNode = { ...firstNode, id: "second-table", label: "B" } as TreeNode;
+  const activeNode = shallowRef(firstNode);
+  const settingsStore = reactive({ editorSettings: { excludeDdlStorage: true } });
+  const connectionStore = { ensureConnected: vi.fn(), getConfig: () => ({ db_type: databaseType }), treeNodes: [firstNode, secondNode], selectedTreeNodeIds: [] };
+  const runtime = scope.run(() => useSidebarTreeExportRuntime({ activeNode, connectionStore: connectionStore as never, settingsStore: settingsStore as never, acceptedSelectionIds: () => null }))!;
+  return { scope, activeNode, secondNode, settingsStore, runtime };
+}
+
 describe("useSidebarTreeExportRuntime", () => {
   it("toggles OceanBase structure exports from the original DDL without querying again", async () => {
     const scope = effectScope();
@@ -110,6 +123,7 @@ describe("useSidebarTreeExportRuntime", () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    apiMock.getTableDdl.mockReset();
     addExportTaskMock.mockImplementation((tableName: string, format: string, filePath: string) => ({
       exportId: "export-1",
       tableName,
@@ -123,6 +137,101 @@ describe("useSidebarTreeExportRuntime", () => {
     showStructurePreviewDialog.value = false;
     structurePreviewSql.value = "";
     structurePreviewTitle.value = "";
+  });
+
+  it.each(["older-first", "newer-first"])("isolates overlapping structure requests completed %s", async (order) => {
+    const { scope, activeNode, secondNode, runtime } = structureRuntimeFixture();
+    const firstDdl = deferred<string>();
+    const secondDdl = deferred<string>();
+    apiMock.getTableDdl.mockReturnValueOnce(firstDdl.promise).mockReturnValueOnce(secondDdl.promise);
+    const firstRequest = runtime.exportStructure();
+    await vi.waitFor(() => expect(apiMock.getTableDdl).toHaveBeenCalledTimes(1));
+    activeNode.value = secondNode;
+    const secondRequest = runtime.exportStructure();
+    await vi.waitFor(() => expect(apiMock.getTableDdl).toHaveBeenCalledTimes(2));
+    try {
+      if (order === "older-first") {
+        firstDdl.resolve("CREATE TABLE A(id INT)");
+        await firstRequest;
+        expect(isLoadingStructurePreview.value).toBe(true);
+        expect(structurePreviewSql.value).toBe("");
+        secondDdl.resolve("CREATE TABLE B(id INT)");
+        await secondRequest;
+      } else {
+        secondDdl.resolve("CREATE TABLE B(id INT)");
+        await secondRequest;
+        firstDdl.resolve("CREATE TABLE A(id INT)");
+        await firstRequest;
+      }
+      expect(structurePreviewSql.value).toBe("CREATE TABLE B(id INT);\n");
+      expect(structurePreviewDefaultFileName.value).toBe("B.sql");
+      expect(isLoadingStructurePreview.value).toBe(false);
+      await runtime.copyStructurePreview();
+      expect(copyToClipboardMock).toHaveBeenLastCalledWith("CREATE TABLE B(id INT);\n");
+    } finally {
+      firstDdl.resolve("CREATE TABLE A(id INT)");
+      secondDdl.resolve("CREATE TABLE B(id INT)");
+      await Promise.all([firstRequest, secondRequest]);
+      scope.stop();
+    }
+  });
+
+  it.each(["close", "dispose"])("ignores pending structure responses after %s", async (action) => {
+    const { scope, runtime } = structureRuntimeFixture();
+    const pendingDdl = deferred<string>();
+    apiMock.getTableDdl.mockReturnValueOnce(pendingDdl.promise);
+    const pendingRequest = runtime.exportStructure();
+    await vi.waitFor(() => expect(apiMock.getTableDdl).toHaveBeenCalledOnce());
+    if (action === "close") showStructurePreviewDialog.value = false;
+    else scope.stop();
+    pendingDdl.resolve("CREATE TABLE A(id INT)");
+    try {
+      await pendingRequest;
+      expect(structurePreviewSql.value).toBe("");
+      expect(isLoadingStructurePreview.value).toBe(false);
+    } finally {
+      scope.stop();
+    }
+  });
+
+  it("ignores an older failure after another structure request succeeds", async () => {
+    const { scope, activeNode, secondNode, runtime } = structureRuntimeFixture();
+    const firstDdl = deferred<string>();
+    apiMock.getTableDdl.mockReturnValueOnce(firstDdl.promise).mockResolvedValueOnce("CREATE TABLE B(id INT)");
+    const firstRequest = runtime.exportStructure();
+    await vi.waitFor(() => expect(apiMock.getTableDdl).toHaveBeenCalledOnce());
+    activeNode.value = secondNode;
+    await runtime.exportStructure();
+    firstDdl.reject(new Error("old request failed"));
+    try {
+      await firstRequest;
+      expect(structurePreviewSql.value).toBe("CREATE TABLE B(id INT);\n");
+      expect(structurePreviewError.value).toBe("");
+      expect(isLoadingStructurePreview.value).toBe(false);
+    } finally {
+      scope.stop();
+    }
+  });
+
+  it("uses the latest storage preference when a structure request completes", async () => {
+    const { scope, settingsStore, runtime } = structureRuntimeFixture("oceanbase-oracle");
+    const pendingDdl = deferred<string>();
+    const ddl = "CREATE TABLE A(id INT) PCTFREE=0";
+    apiMock.getTableDdl.mockReturnValueOnce(pendingDdl.promise);
+    const pendingRequest = runtime.exportStructure();
+    await vi.waitFor(() => expect(apiMock.getTableDdl).toHaveBeenCalledOnce());
+    settingsStore.editorSettings.excludeDdlStorage = false;
+    pendingDdl.resolve(ddl);
+    try {
+      await pendingRequest;
+      expect(structurePreviewSql.value).toBe(ddl + ";\n");
+      settingsStore.editorSettings.excludeDdlStorage = true;
+      await nextTick();
+      expect(structurePreviewSql.value).not.toContain("PCTFREE");
+      expect(apiMock.getTableDdl).toHaveBeenCalledOnce();
+    } finally {
+      scope.stop();
+    }
   });
 
   it("translates direct executeQuery errors for sidebar JSON export", async () => {
