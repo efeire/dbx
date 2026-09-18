@@ -120,6 +120,7 @@ import {
   matchSqlObject,
   matchTable,
   mergeSqlObjectNavigationType,
+  normalizeOracleNavigationTarget,
   resolveSqlObjectNavigationIdentity,
   splitQualifiedIdentifier,
   sqlObjectHoverDetail,
@@ -201,7 +202,16 @@ import { analyzeIntentionActions, prepareExpandWildcardContext, buildExpandWildc
 import { loadObjectDdl } from "@/lib/metadata/objectDdlCache";
 import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
 import { loadObjectMetadataFacet } from "@/lib/metadata/objectMetadataCache";
-import { queryContextObjectActions, queryContextObjectRoute, queryTableCandidateAtSqlPosition, queryTableNavigationTargetAtSqlPosition, resolveQueryContextCandidateDatabase, resolveQueryContextObjectTarget, type QueryContextObjectAction } from "@/lib/sql/queryCursorTableTarget";
+import {
+  extractQualifiedIdentifierPartsAt,
+  queryContextObjectActions,
+  queryContextObjectRoute,
+  queryTableCandidateAtSqlPosition,
+  queryTableNavigationTargetAtSqlPosition,
+  resolveQueryContextCandidateDatabase,
+  resolveQueryContextObjectTarget,
+  type QueryContextObjectAction,
+} from "@/lib/sql/queryCursorTableTarget";
 import * as api from "@/lib/backend/api";
 import { oracleDatabaseLinkCompletionContext, oracleDatabaseLinkCompletionItems } from "@/lib/sql/oracleDatabaseLinkCompletion";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
@@ -3368,6 +3378,7 @@ async function resolveSqlHoverTooltip(currentView: EditorViewType, pos: number) 
 
   const identifier = range.text;
   const parts = splitQualifiedIdentifier(identifier);
+  const quotedParts = extractQualifiedIdentifierPartsAt(sql, pos);
   const name = parts[parts.length - 1] ?? identifier;
   const qualifier = parts.length > 1 ? parts[parts.length - 2] : undefined;
   let semanticModel: ReturnType<typeof buildSqlSemanticModel> | null = null;
@@ -3381,8 +3392,12 @@ async function resolveSqlHoverTooltip(currentView: EditorViewType, pos: number) 
   }
   const semanticTarget = semanticModel ? resolveSqlSemanticNavigationTarget(semanticModel, parts) : null;
   const semanticQualifierIsRowSource = !!qualifier && !!semanticTarget && (semanticTarget.alias?.toLowerCase() === qualifier.toLowerCase() || semanticTarget.source.name.toLowerCase() === qualifier.toLowerCase());
-  const tableLookupName = semanticTarget && !semanticQualifierIsRowSource ? semanticTarget.name : name;
-  const qualifiedTableLookup = semanticTarget?.schema ? `${semanticTarget.schema}.${semanticTarget.name}` : identifier;
+  // OB identifiers can differ only by quoted case. A case-insensitive semantic
+  // match must not replace the clicked table's identity with another row source.
+  const useSemanticTable = semanticTarget && !semanticQualifierIsRowSource && (props.databaseType !== "oceanbase-oracle" || (parts.length === 1 && semanticTarget.alias?.toLowerCase() === name.toLowerCase()));
+  const semanticReference = useSemanticTable ? referencedTableLikeFromSemanticSource(semanticTarget.source) : undefined;
+  const tableLookupName = useSemanticTable ? semanticTarget.name : name;
+  const qualifiedTableLookup = (props.databaseType !== "oceanbase-oracle" || useSemanticTable) && semanticTarget?.schema ? `${semanticTarget.schema}.${semanticTarget.name}` : identifier;
 
   // CTE-derived columns: trace to the physical column and show its type/source/comment before
   // the generic table/column fallback (which cannot see inside a CTE body).
@@ -3405,8 +3420,11 @@ async function resolveSqlHoverTooltip(currentView: EditorViewType, pos: number) 
     tableName: tableLookupName,
     // Alias.column must not be treated as schema.table; keep the bare column/table token.
     identifierParts: semanticQualifierIsRowSource ? [tableLookupName] : parts,
-    semanticDatabase: semanticQualifierIsRowSource ? undefined : semanticTarget?.database,
-    semanticSchema: semanticQualifierIsRowSource ? undefined : semanticTarget?.schema,
+    identifierPartsQuoted: semanticQualifierIsRowSource ? [quotedParts[quotedParts.length - 1]?.quoted ?? false] : quotedParts.map((part) => part.quoted),
+    tableNameQuoted: semanticReference?.nameQuoted,
+    semanticDatabase: useSemanticTable ? semanticTarget.database : undefined,
+    semanticSchema: useSemanticTable ? semanticTarget.schema : undefined,
+    semanticSchemaQuoted: semanticReference?.schemaQuoted,
     mode: settingsStore.editorSettings.tableHoverLookupMode,
   });
 
@@ -3426,19 +3444,20 @@ async function resolveSqlHoverTooltip(currentView: EditorViewType, pos: number) 
   const matchHoverTable = (tables: typeof cachedTables) =>
     matchHoverTableCandidates(tables, {
       lookups: [qualifiedTableLookup, identifier],
-      tableName: tableLookupName,
+      tableName: lookup.tableName,
       preferredSchema,
+      lookupTarget: lookup,
     });
 
   try {
     const searchLocal = (schema?: string) => {
       const scopeForFilter: HoverTableScope = { ...hoverScope, schema };
-      const localTables = connectionStore.lookupLocalCompletionTables(props.connectionId!, hoverScope.database, tableLookupName, MAX_COMPLETION_TABLES, schema, hoverScope.catalog);
+      const localTables = connectionStore.lookupLocalCompletionTables(props.connectionId!, hoverScope.database, lookup.tableName, MAX_COMPLETION_TABLES, schema, hoverScope.catalog);
       const localHoverTables = schema ? scopeHoverTables(localTables, scopeForFilter) : scopeHoverTables(localTables, { ...hoverScope, schema: undefined });
       return localHoverTables;
     };
     const searchRemote = async (schema: string | undefined, globalSearch: boolean) => {
-      const loadedTables = await connectionStore.listCompletionTables(props.connectionId!, hoverScope.database, tableLookupName, MAX_COMPLETION_TABLES, schema, globalSearch, preferredSchema, hoverScope.catalog);
+      const loadedTables = await connectionStore.listCompletionTables(props.connectionId!, hoverScope.database, lookup.tableName, MAX_COMPLETION_TABLES, schema, globalSearch, preferredSchema, hoverScope.catalog);
       return schema ? scopeHoverTables(loadedTables, { ...hoverScope, schema }) : loadedTables;
     };
 
@@ -5680,10 +5699,16 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
 }
 
 function mergeCompletionTables(existing: SqlCompletionTable[], incoming: SqlCompletionTable[]): SqlCompletionTable[] {
+  const keyFor = (table: SqlCompletionTable) => {
+    const parts = [table.catalog ?? "", table.database ?? "", table.schema ?? "", table.name];
+    // Dictionary names are exact: EMP and "emp" can coexist, and quoted
+    // names containing dots must not collide with schema/name separators.
+    return props.databaseType === "oceanbase-oracle" ? JSON.stringify(parts) : parts.join(".").toLowerCase();
+  };
   const merged = [...existing];
-  const indexes = new Map(existing.map((table, index) => [`${table.catalog ?? ""}.${table.database ?? ""}.${table.schema ?? ""}.${table.name}`.toLowerCase(), index]));
+  const indexes = new Map(existing.map((table, index) => [keyFor(table), index]));
   for (const table of incoming) {
-    const key = `${table.catalog ?? ""}.${table.database ?? ""}.${table.schema ?? ""}.${table.name}`.toLowerCase();
+    const key = keyFor(table);
     const index = indexes.get(key);
     if (index == null) {
       indexes.set(key, merged.length);
@@ -7126,7 +7151,6 @@ onMounted(async () => {
               if (!identity) return;
 
               const identifierParts = identity.parts.map((part) => part.value);
-              const tableLookupFilter = identity.name;
               const objectNameFilter = identity.name;
               // 3-part schema.package.member; 2-part stays ambiguous until metadata resolves it.
               const objectParentHint = identity.parts.length >= 3 ? identity.qualifier : undefined;
@@ -7138,16 +7162,19 @@ onMounted(async () => {
                 schema: props.schema,
                 catalog: props.catalog,
                 databaseType: props.databaseType,
-                tableName: tableLookupFilter,
+                tableName: identity.name,
                 identifierParts,
+                identifierPartsQuoted: identity.parts.map((part) => part.quoted),
                 mode: settingsStore.editorSettings.tableHoverLookupMode,
               });
               const tableLookupSchema = tableLookup.preferGlobalFirst ? undefined : (tableLookup.schema ?? props.schema);
+              const tableLookupFilter = tableLookup.tableName;
               const matchNavigationTable = (tables: typeof cachedTables) =>
                 matchHoverTableCandidates(tables, {
                   lookups: [identifier],
                   tableName: tableLookupFilter,
                   preferredSchema: props.schema,
+                  lookupTarget: tableLookup,
                 });
               const relationNavigationTarget = (target: SqlObjectNavigationTarget) =>
                 queryTableNavigationTargetAtSqlPosition(
@@ -7314,7 +7341,7 @@ onMounted(async () => {
               let referencedTables: Array<SqlCompletionReferencedTable & Pick<SqlCompletionTable, "type">> = context.referencedTables;
               // Enrich referenced tables with schema from cachedTables
               referencedTables = referencedTables.map((rt) => {
-                if (usesOracleSessionCompletionColumns(rt.schema)) return rt;
+                if (props.databaseType === "oceanbase-oracle" || usesOracleSessionCompletionColumns(rt.schema)) return rt;
                 const cached = cachedTables.find((ct) => ct.name.toLowerCase() === rt.name.toLowerCase() && (!rt.schema || !ct.schema || ct.schema.toLowerCase() === rt.schema.toLowerCase()));
                 if (!cached) return rt;
                 return {
@@ -7327,7 +7354,16 @@ onMounted(async () => {
               // Check if identifier has a qualifier (e.g., c.card_name or schema.table)
               const qualifier = identifierParts.length >= 2 ? identifierParts[identifierParts.length - 2] : null;
 
-              const matchedRef = matchTable(identifier, referencedTables);
+              const matchedRef =
+                props.databaseType === "oceanbase-oracle"
+                  ? matchHoverTableCandidates(
+                      referencedTables.map((reference) => {
+                        const target = normalizeOracleNavigationTarget(reference);
+                        return { ...target, schema: target.schema ?? props.schema };
+                      }),
+                      { tableName: tableLookupFilter, preferredSchema: props.schema, lookupTarget: tableLookup },
+                    )
+                  : matchTable(identifier, referencedTables);
               if (matchedRef) {
                 emit("clickTable", relationNavigationTarget(matchedRef));
                 return;

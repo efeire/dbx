@@ -7225,6 +7225,10 @@ export const useConnectionStore = defineStore("connection", () => {
     return `${connectionId}:${database}:${catalog?.toLowerCase() ?? ""}:${schema?.toLowerCase() ?? ""}`;
   }
 
+  function completionTableNamesAreCaseSensitive(connectionId: string): boolean {
+    return getConfig(connectionId)?.db_type === "oceanbase-oracle";
+  }
+
   function completionColumnsKey(connectionId: string, database: string, table: string, schema?: string, catalog?: string, context?: { tableQuoted?: boolean; schemaQuoted?: boolean }): string {
     const databaseType = getConfig(connectionId)?.db_type;
     if (databaseType === "oracle" || databaseType === "oceanbase-oracle") {
@@ -7735,7 +7739,7 @@ export const useConnectionStore = defineStore("connection", () => {
     for (const [key, group] of groups) {
       const previous = completionTableIndex.get(key)?.tables ?? [];
       touchCompletionIndex(completionTableIndex, key, {
-        tables: dedupeCompletionTables([...previous, ...group]),
+        tables: dedupeCompletionTables([...previous, ...group], completionTableNamesAreCaseSensitive(connectionId)),
       });
     }
   }
@@ -7795,7 +7799,7 @@ export const useConnectionStore = defineStore("connection", () => {
       .map((table) => ({ table, score: tableMatchScore(table, filter, schema) }))
       .filter((entry) => entry.score >= 0)
       .sort((a, b) => b.score - a.score || a.table.name.localeCompare(b.table.name));
-    return dedupeCompletionTables(ranked.map((entry) => entry.table)).slice(0, limit ?? 200);
+    return dedupeCompletionTables(ranked.map((entry) => entry.table), completionTableNamesAreCaseSensitive(connectionId)).slice(0, limit ?? 200);
   }
 
   function lookupLocalCompletionObjects(connectionId: string, database: string, filter = "", limit?: number, schema?: string): SqlCompletionObject[] {
@@ -8114,7 +8118,7 @@ export const useConnectionStore = defineStore("connection", () => {
     if (cachedTables) {
       const localTables = lookupLocalCompletionTables(connectionId, database, trimmedFilter, limit, schema, catalog);
       if (localTables.length === 0) return cachedTables;
-      const mergedTables = dedupeCompletionTables([...localTables, ...cachedTables]);
+      const mergedTables = dedupeCompletionTables([...localTables, ...cachedTables], completionTableNamesAreCaseSensitive(connectionId));
       completionTablesCache.value[cacheKey] = limit ? mergedTables.slice(0, limit) : mergedTables;
       indexCompletionTables(connectionId, database, schema, completionTablesCache.value[cacheKey], catalog);
       return completionTablesCache.value[cacheKey];
@@ -8144,7 +8148,7 @@ export const useConnectionStore = defineStore("connection", () => {
             if (assistantCompleted && schema && options.verifySchemaMetadata) {
               try {
                 const tables = await listCompletionTableMetadata(connectionId, database, schema, trimmedFilter, limit, catalog);
-                results = dedupeCompletionTables([...tableInfosToCompletionTables(tables, schema, catalog), ...results]);
+                results = dedupeCompletionTables([...tableInfosToCompletionTables(tables, schema, catalog), ...results], completionTableNamesAreCaseSensitive(connectionId));
               } catch {
                 // The completion index still provides a best-effort result when
                 // authoritative metadata is temporarily unavailable.
@@ -8168,7 +8172,7 @@ export const useConnectionStore = defineStore("connection", () => {
                 results = lookupLocalCompletionTables(connectionId, database, relaxedFilter, expandedCompletionLimit(limit), undefined, catalog);
               }
             }
-            const limitedTables = limit ? dedupeCompletionTables(results).slice(0, limit) : results;
+            const limitedTables = limit ? dedupeCompletionTables(results, completionTableNamesAreCaseSensitive(connectionId)).slice(0, limit) : results;
             if (requestRevision !== completionCacheRevision(connectionId, database)) return listCompletionTables(connectionId, database, filter, limit, schema, globalSearch, currentSchema, catalog, options);
             completionTablesCache.value[cacheKey] = limitedTables;
             indexCompletionTables(connectionId, database, undefined, limitedTables, catalog);
@@ -8216,11 +8220,12 @@ export const useConnectionStore = defineStore("connection", () => {
     return Math.min(Math.max(limit * 3, limit), 1000);
   }
 
-  function dedupeCompletionTables(tables: SqlCompletionTable[]): SqlCompletionTable[] {
+  function dedupeCompletionTables(tables: SqlCompletionTable[], caseSensitive = false): SqlCompletionTable[] {
     const indexByKey = new Map<string, number>();
     const deduped: SqlCompletionTable[] = [];
     for (const table of tables) {
-      const key = `${table.catalog ?? ""}.${table.schema ?? ""}.${table.name}`.toLowerCase();
+      const identity = [table.catalog ?? "", table.schema ?? "", table.name];
+      const key = caseSensitive ? JSON.stringify(identity) : identity.join(".").toLowerCase();
       const existingIndex = indexByKey.get(key);
       if (existingIndex != null) {
         const existing = deduped[existingIndex];

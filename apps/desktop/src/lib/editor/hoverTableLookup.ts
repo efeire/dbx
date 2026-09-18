@@ -1,5 +1,5 @@
 import { isSchemaAware, isSingleDatabase } from "@/lib/database/databaseFeatureSupport";
-import { matchTable, splitQualifiedIdentifier } from "@/lib/sql/sqlNavigation";
+import { matchTable, normalizeOracleNavigationIdentityName, splitQualifiedIdentifier } from "@/lib/sql/sqlNavigation";
 import type { DatabaseType } from "@/types/database";
 
 export const TABLE_HOVER_LOOKUP_MODES = ["current", "fallback", "always"] as const;
@@ -18,8 +18,13 @@ export interface ResolveHoverTableLookupTargetInput {
   tableName: string;
   /** Identifier segments from the hovered/clicked token (e.g. `["other", "users"]`). */
   identifierParts: string[];
+  /** Quote flags from SQL parsing, before identifier delimiters are removed. */
+  identifierPartsQuoted?: boolean[];
+  /** Semantic table identity may differ from the hovered alias. */
+  tableNameQuoted?: boolean;
   semanticDatabase?: string;
   semanticSchema?: string;
+  semanticSchemaQuoted?: boolean;
   mode: TableHoverLookupMode;
 }
 
@@ -34,6 +39,8 @@ export interface HoverTableLookupTarget {
   allowGlobalFallback: boolean;
   /** Unqualified + always mode: search across schemas first. */
   preferGlobalFirst: boolean;
+  /** SQL names have been folded; compare canonical dictionary names exactly. */
+  caseSensitive?: boolean;
 }
 
 /**
@@ -48,7 +55,10 @@ export interface HoverTableLookupTarget {
  * "Global" here means same-database cross-schema, not cross-database.
  */
 export function resolveHoverTableLookupTarget(input: ResolveHoverTableLookupTargetInput): HoverTableLookupTarget {
-  const tableName = input.tableName;
+  // Only SQL-derived names are normalized here. Toolbar/current-schema and
+  // dictionary names are already canonical and may belong to quoted objects.
+  const caseSensitive = input.databaseType === "oceanbase-oracle";
+  const tableName = caseSensitive ? normalizeOracleNavigationIdentityName(input.tableName, input.tableNameQuoted ?? input.identifierPartsQuoted?.[input.identifierParts.length - 1]) : input.tableName;
   let database = input.semanticDatabase ?? input.database;
   let schema = input.semanticSchema;
   let schemaFromQualifier = !!input.semanticSchema;
@@ -72,6 +82,9 @@ export function resolveHoverTableLookupTarget(input: ResolveHoverTableLookupTarg
 
   if (!schemaFromQualifier) {
     schema = input.schema;
+  } else if (caseSensitive && schema != null) {
+    const quoted = input.semanticSchema ? input.semanticSchemaQuoted : input.identifierPartsQuoted?.[input.identifierParts.length - 2];
+    schema = normalizeOracleNavigationIdentityName(schema, quoted);
   }
 
   const unqualified = !schemaFromQualifier;
@@ -86,6 +99,7 @@ export function resolveHoverTableLookupTarget(input: ResolveHoverTableLookupTarg
     schemaFromQualifier,
     allowGlobalFallback,
     preferGlobalFirst,
+    ...(caseSensitive ? { caseSensitive: true } : {}),
   };
 }
 
@@ -106,6 +120,8 @@ export interface MatchHoverTableCandidatesOptions {
   lookups?: string[];
   tableName: string;
   preferredSchema?: string;
+  /** Reuse the exact identity and scope used for the metadata request. */
+  lookupTarget?: HoverTableLookupTarget;
 }
 
 /**
@@ -115,6 +131,16 @@ export interface MatchHoverTableCandidatesOptions {
  * {@link pickHoverTableMatch} so the toolbar schema wins over arbitrary order.
  */
 export function matchHoverTableCandidates<T extends { name: string; schema?: string; database?: string }>(tables: readonly T[], options: MatchHoverTableCandidatesOptions): T | null {
+  const target = options.lookupTarget;
+  if (target?.caseSensitive) {
+    const matches = tables.filter((table) => table.name === target.tableName && (!table.database || table.database === target.database));
+    if (target.schemaFromQualifier || (!target.allowGlobalFallback && target.schema)) {
+      return matches.find((table) => table.schema === target.schema) ?? null;
+    }
+    const preferredSchema = options.preferredSchema ?? target.schema;
+    return matches.find((table) => table.schema === preferredSchema) ?? matches[0] ?? null;
+  }
+
   const seen = new Set<string>();
   for (const lookup of options.lookups ?? []) {
     const trimmed = lookup.trim();

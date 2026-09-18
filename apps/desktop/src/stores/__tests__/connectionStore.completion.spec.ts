@@ -512,6 +512,35 @@ describe("connectionStore completion assistant", () => {
     expect(store.lookupLocalCompletionTables("oracle-1", "ORCL", "", 20, "scott")).toEqual(tables);
   });
 
+  it("keeps quoted and unquoted OceanBase Oracle tables distinct in the completion index", async () => {
+    const completionAssistantSearch = vi.fn().mockResolvedValue({
+      candidates: [
+        { name: "EMP", kind: "table", schema: "APP", data_type: "TABLE" },
+        { name: "emp", kind: "table", schema: "APP", data_type: "TABLE" },
+      ],
+      incomplete: false,
+      fallback_used: false,
+    });
+
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+    vi.doMock("@/lib/backend/api", () => ({
+      checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
+      completionAssistantSearch,
+      listTables: vi.fn().mockResolvedValue([]),
+    }));
+
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    store.connections = [oceanBaseOracleConnection()];
+    store.connectedIds.add("oceanbase-oracle-1");
+
+    const tables = await store.listCompletionTables("oceanbase-oracle-1", "OBORCL", "emp", 20, "APP");
+    const indexed = store.lookupLocalCompletionTables("oceanbase-oracle-1", "OBORCL", "emp", 20, "APP");
+
+    expect(tables.map((table) => table.name).sort()).toEqual(["EMP", "emp"]);
+    expect(indexed.map((table) => table.name).sort()).toEqual(["EMP", "emp"]);
+  });
+
   it("reconciles a non-empty filtered cache with a table added to the sidebar tree", async () => {
     const completionAssistantSearch = vi.fn().mockResolvedValue({
       candidates: [{ name: "REPORT_0001", kind: "table", schema: "APP" }],

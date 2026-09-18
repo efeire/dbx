@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { matchHoverTableCandidates, normalizeTableHoverLookupMode, pickHoverTableMatch, resolveHoverTableLookupTarget } from "@/lib/editor/hoverTableLookup";
+import { extractQualifiedIdentifierPartsAt, queryTableNavigationTargetAtSqlPosition } from "@/lib/sql/queryCursorTableTarget";
 
 describe("normalizeTableHoverLookupMode", () => {
   it("defaults to fallback", () => {
@@ -257,5 +258,93 @@ describe("resolveHoverTableLookupTarget cache-scope modes", () => {
       expect(target.preferGlobalFirst).toBe(false);
       expect(target.schema).toBe("other");
     }
+  });
+});
+
+// Exercise SQL parsing, discovery scope and dictionary matching together: metadata
+// APIs receive canonical names, not SQL text with its quote information erased.
+describe("OceanBase Oracle hover and table navigation", () => {
+  function lookup(sql: string, schema?: string, mode: "current" | "fallback" | "always" = "current") {
+    const parts = extractQualifiedIdentifierPartsAt(sql, sql.length - 1);
+    return resolveHoverTableLookupTarget({
+      database: "oracletest",
+      databaseType: "oceanbase-oracle",
+      schema,
+      tableName: parts[parts.length - 1]!.value,
+      identifierParts: parts.map((part) => part.value),
+      identifierPartsQuoted: parts.map((part) => part.quoted),
+      mode,
+    });
+  }
+
+  it.each([
+    ["select * from hr.emp", "HR", "EMP"],
+    ["select * from HR.EMP", "HR", "EMP"],
+    ['select * from "Hr".emp', "Hr", "EMP"],
+    ['select * from hr."Emp"', "HR", "Emp"],
+    ['select * from "hr"."emp"', "hr", "emp"],
+    ['select * from "Hr.Dot"."Emp.Dot"', "Hr.Dot", "Emp.Dot"],
+    ['select * from "H""r"."E""mp"', 'H"r', 'E"mp'],
+  ])("resolves %s without losing identifier quotes", (sql, schema, tableName) => {
+    const target = lookup(sql, "OTHER");
+    expect(target).toMatchObject({ schema, tableName, schemaFromQualifier: true, allowGlobalFallback: false });
+    const tables = [
+      { name: "eMp", schema: "hR", type: "table" as const },
+      { name: tableName, schema, type: "table" as const },
+    ];
+    const matched = matchHoverTableCandidates(tables, { tableName: target.tableName, lookupTarget: target });
+    expect(matched).toBe(tables[1]);
+    expect(queryTableNavigationTargetAtSqlPosition({ connectionId: "ob", database: "oracletest", databaseType: "oceanbase-oracle", sql, position: sql.length - 1 }, matched!)).toMatchObject({ name: tableName, schema });
+  });
+
+  it.each([undefined, "", "MixedSchema"])("preserves the selected/current schema %s", (schema) => {
+    expect(lookup("select * from emp", schema)).toMatchObject({ schema, tableName: "EMP", schemaFromQualifier: false });
+    expect(lookup('select * from "emp"', schema)).toMatchObject({ schema, tableName: "emp" });
+  });
+
+  it("normalizes semantic source names using their own quote flags, not alias spelling", () => {
+    expect(
+      resolveHoverTableLookupTarget({
+        database: "oracletest",
+        databaseType: "oceanbase-oracle",
+        tableName: "Emp",
+        tableNameQuoted: true,
+        identifierParts: ["e"],
+        semanticSchema: "Hr",
+        semanticSchemaQuoted: true,
+        mode: "current",
+      }),
+    ).toMatchObject({ tableName: "Emp", schema: "Hr" });
+    expect(
+      resolveHoverTableLookupTarget({
+        database: "oracletest",
+        databaseType: "oceanbase-oracle",
+        tableName: "emp",
+        identifierParts: ["e"],
+        semanticSchema: "hr",
+        mode: "current",
+      }),
+    ).toMatchObject({ tableName: "EMP", schema: "HR" });
+  });
+
+  it("does not resolve a case-colliding quoted table or a different explicit schema", () => {
+    for (const sql of ["select * from hr.emp", 'select * from "Hr"."Emp"']) {
+      const target = lookup(sql);
+      expect(matchHoverTableCandidates([{ name: "emp", schema: "hr" }], { tableName: target.tableName, lookupTarget: target })).toBeNull();
+      expect(matchHoverTableCandidates([{ name: target.tableName, schema: "OTHER" }], { tableName: target.tableName, lookupTarget: target })).toBeNull();
+    }
+  });
+
+  it("keeps schema preference and explicit global-fallback policy with exact names", () => {
+    const tables = [
+      { name: "EMP", schema: "OTHER" },
+      { name: "emp", schema: "HR" },
+      { name: "EMP", schema: "HR" },
+    ];
+    const current = lookup("select * from emp", "HR");
+    expect(matchHoverTableCandidates(tables, { tableName: "EMP", lookupTarget: current })).toBe(tables[2]);
+    expect(matchHoverTableCandidates(tables.slice(0, 2), { tableName: "EMP", lookupTarget: current })).toBeNull();
+    const fallback = lookup("select * from emp", "HR", "fallback");
+    expect(matchHoverTableCandidates(tables.slice(0, 2), { tableName: "EMP", lookupTarget: fallback })).toBe(tables[0]);
   });
 });
