@@ -756,7 +756,7 @@ watch(
       <DialogHeader class="shrink-0 border-b px-5 py-3">
         <DialogTitle class="flex items-center gap-2">
           <Layers class="h-5 w-5 text-primary" />
-          {{ executionStarted ? t("multiDbExecute.progress") : t("multiDbExecute.title") }}
+          {{ executionStarted ? t("multiDbExecute.progress", { completed: progressCompleted, total: batch?.items.length ?? 0 }) : t("multiDbExecute.title") }}
         </DialogTitle>
       </DialogHeader>
 
