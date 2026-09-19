@@ -2809,6 +2809,7 @@ function onOpenObjectSource(table: SqlObjectNavigationTarget, initialEditing: bo
         title: `Source - ${sourceName}`,
         schema: sourceSchema || target.database,
         catalog: target.catalog,
+        initialEditing,
         request: { name: sourceName, objectType, signature: navigation.signature },
       });
       return;
