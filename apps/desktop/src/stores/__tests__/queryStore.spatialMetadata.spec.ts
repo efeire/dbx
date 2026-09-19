@@ -14,6 +14,13 @@ function make(rows: number, spatial?: QueryResult["spatial_columns"]): QueryResu
 }
 
 describe("appendQueryResultSegment spatial merge", () => {
+  it("sums client request wait across loaded pages", () => {
+    const previous = { ...make(1), client_request_wait_ms: 45 };
+    const segment = { ...make(1), client_request_wait_ms: 30 };
+    const merged = appendQueryResultSegment(previous, segment, 100);
+    expect(merged.client_request_wait_ms).toBe(75);
+    expect(merged.rows).toHaveLength(2);
+  });
   it("keeps the first non-null SRID per column across pages", () => {
     const previous = make(2, [{ column_index: 0, srid: 4326 }]);
     const segment = make(2, [{ column_index: 0, srid: 3857 }]);
