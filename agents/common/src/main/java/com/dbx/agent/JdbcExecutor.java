@@ -37,6 +37,11 @@ public final class JdbcExecutor {
         return AgentExecutionContext.jdbcExecutor();
     }
 
+    public static int statementMaxRows(int maxRows) {
+        int effectiveMaxRows = Math.max(maxRows, 1);
+        return effectiveMaxRows == Integer.MAX_VALUE ? Integer.MAX_VALUE : effectiveMaxRows + 1;
+    }
+
     public QueryResult execute(Connection conn, String sql, String schema, Function<String, String> setSchemaSql) {
         return execute(conn, sql, schema, setSchemaSql, DEFAULT_MAX_ROWS, null, this::defaultResultValue);
     }
@@ -141,7 +146,7 @@ public final class JdbcExecutor {
                 activeStatements.add(stmt);
                 try {
                 int effectiveMaxRows = Math.max(maxRows, 1);
-                stmt.setMaxRows(effectiveMaxRows + 1);
+                stmt.setMaxRows(statementMaxRows(maxRows));
                 applyQueryTimeout(stmt, timeoutSecs);
                 if (fetchSize != null && fetchSize > 0) {
                     stmt.setFetchSize(fetchSize);

@@ -150,10 +150,17 @@ describe("drawCanvasDataGrid with frozen columns", () => {
     const canvas = createMockCanvas();
     const options = createBaseOptions({ canvas, rowCount: 0, rowAt: () => undefined });
     const fillRect = vi.fn();
-    vi.spyOn(canvas, "getContext").mockReturnValueOnce(null).mockReturnValueOnce(new Proxy({}, {
-      get: (_target, key) => key === "fillRect" ? fillRect : key === "measureText" ? () => ({ width: 0 }) : () => {},
-      set: () => true,
-    }) as unknown as CanvasRenderingContext2D);
+    vi.spyOn(canvas, "getContext")
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(
+        new Proxy(
+          {},
+          {
+            get: (_target, key) => (key === "fillRect" ? fillRect : key === "measureText" ? () => ({ width: 0 }) : () => {}),
+            set: () => true,
+          },
+        ) as unknown as CanvasRenderingContext2D,
+      );
 
     expect(drawCanvasDataGrid(options)).toBe(false);
     expect(fillRect).not.toHaveBeenCalled();

@@ -85,7 +85,9 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         auditEligibleCursorId = null;
         QueryResult result = super.executeQuery(sql, schema, options);
         if (!result.getTruncated() && !result.getColumns().isEmpty()) {
-            result.setServer_execute_time_us(availableServerExecuteTimeUs(result.getRows().size()));
+            result.setServer_execute_time_us(availableServerExecuteTimeUs(
+                result.getRows().size(), JdbcExecutor.statementMaxRows(options.getMaxRows())
+            ));
         }
         return result;
     }
@@ -122,23 +124,27 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         // JdbcExecutor closes the ResultSet and Statement before returning a terminal
         // page. Never issue audit SQL while Connector/J still owns an open cursor.
         if (!result.getHas_more() && !result.getTruncated() && !result.getColumns().isEmpty()) {
-            result.setServer_execute_time_us(availableServerExecuteTimeUs(result.getCursor_rows_read()));
+            result.setServer_execute_time_us(availableServerExecuteTimeUs(result.getCursor_rows_read(), 0));
         }
         return result;
     }
 
-    private Long availableServerExecuteTimeUs(long expectedRows) {
+    private Long availableServerExecuteTimeUs(long expectedRows, int statementMaxRows) {
         try {
-            return serverExecuteTimeUs(requireConnected(), expectedRows);
+            return serverExecuteTimeUs(requireConnected(), expectedRows, statementMaxRows);
         } catch (RuntimeException ignored) {
             return null;
         }
     }
 
-    static Long serverExecuteTimeUs(Connection connection, long expectedRows) {
+    static Long serverExecuteTimeUs(Connection connection, long expectedRows, int statementMaxRows) {
         try {
             String traceId;
             try (Statement statement = connection.createStatement()) {
+                // Connector/J resets the session's SQL_SELECT_LIMIT in execute prolog
+                // when this differs from the previous statement. That SET would
+                // replace the query's LAST_TRACE_ID before we can read it.
+                statement.setMaxRows(statementMaxRows);
                 statement.setQueryTimeout(1);
                 try (ResultSet traces = statement.executeQuery("SELECT LAST_TRACE_ID() FROM DUAL")) {
                     traceId = traces.next() ? traces.getString(1) : null;
@@ -146,6 +152,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             }
             if (traceId == null || traceId.isBlank()) return null;
             try (PreparedStatement statement = connection.prepareStatement(SQL_AUDIT_BY_TRACE)) {
+                statement.setMaxRows(statementMaxRows);
                 statement.setQueryTimeout(1);
                 statement.setString(1, traceId);
                 try (ResultSet audit = statement.executeQuery()) {

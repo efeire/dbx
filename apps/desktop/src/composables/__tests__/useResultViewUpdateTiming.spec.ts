@@ -19,16 +19,24 @@ describe("useResultViewUpdateTiming", () => {
     const result = ref({ id: 1 });
     const host = document.createElement("div");
     document.body.append(host);
-    const app = createApp(defineComponent({
-      setup() {
-        const { elapsedMs } = useResultViewUpdateTiming(() => result.value, () => true, () => "dom");
-        onMounted(() => { clock = 119; });
-        onUpdated(() => {
-          if (result.value.id === 2 && clock === 130) clock = 147;
-        });
-        return () => h("div", [h("span", String(result.value.id)), h("output", elapsedMs.value ?? "pending")]);
-      },
-    }));
+    const app = createApp(
+      defineComponent({
+        setup() {
+          const { elapsedMs } = useResultViewUpdateTiming(
+            () => result.value,
+            () => true,
+            () => "dom",
+          );
+          onMounted(() => {
+            clock = 119;
+          });
+          onUpdated(() => {
+            if (result.value.id === 2 && clock === 130) clock = 147;
+          });
+          return () => h("div", [h("span", String(result.value.id)), h("output", elapsedMs.value ?? "pending")]);
+        },
+      }),
+    );
     mounted.push(app);
     app.mount(host);
     await nextTick();
@@ -52,13 +60,19 @@ describe("useResultViewUpdateTiming", () => {
     let canvasDrawCompleted!: (drawnResult: { id: number }) => void;
     const host = document.createElement("div");
     document.body.append(host);
-    const app = createApp(defineComponent({
-      setup() {
-        const timing = useResultViewUpdateTiming(() => result.value, () => true, () => mode.value);
-        canvasDrawCompleted = timing.canvasDrawCompleted;
-        return () => h("output", timing.elapsedMs.value ?? "pending");
-      },
-    }));
+    const app = createApp(
+      defineComponent({
+        setup() {
+          const timing = useResultViewUpdateTiming(
+            () => result.value,
+            () => true,
+            () => mode.value,
+          );
+          canvasDrawCompleted = timing.canvasDrawCompleted;
+          return () => h("output", timing.elapsedMs.value ?? "pending");
+        },
+      }),
+    );
     mounted.push(app);
     app.mount(host);
     await nextTick();
@@ -89,12 +103,18 @@ describe("useResultViewUpdateTiming", () => {
     const enabled = ref(false);
     const host = document.createElement("div");
     document.body.append(host);
-    const app = createApp(defineComponent({
-      setup() {
-        const timing = useResultViewUpdateTiming(() => result.value, () => enabled.value, () => "canvas");
-        return () => h("output", timing.elapsedMs.value ?? "pending");
-      },
-    }));
+    const app = createApp(
+      defineComponent({
+        setup() {
+          const timing = useResultViewUpdateTiming(
+            () => result.value,
+            () => enabled.value,
+            () => "canvas",
+          );
+          return () => h("output", timing.elapsedMs.value ?? "pending");
+        },
+      }),
+    );
     mounted.push(app);
     app.mount(host);
     enabled.value = true;
@@ -111,12 +131,18 @@ describe("useResultViewUpdateTiming", () => {
     let timing!: ReturnType<typeof useResultViewUpdateTiming<{ id: number }>>;
     const host = document.createElement("div");
     document.body.append(host);
-    const app = createApp(defineComponent({
-      setup() {
-        timing = useResultViewUpdateTiming(() => result.value, () => true, () => mode.value);
-        return () => h("output", timing.elapsedMs.value ?? "pending");
-      },
-    }));
+    const app = createApp(
+      defineComponent({
+        setup() {
+          timing = useResultViewUpdateTiming(
+            () => result.value,
+            () => true,
+            () => mode.value,
+          );
+          return () => h("output", timing.elapsedMs.value ?? "pending");
+        },
+      }),
+    );
     mounted.push(app);
     app.mount(host);
     mode.value = "canvas";

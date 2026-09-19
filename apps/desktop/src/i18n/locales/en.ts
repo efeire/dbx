@@ -1888,7 +1888,8 @@ export default {
     agentExecuteTime: "Execution: {ms} ms",
     serverExecuteTime: "Database execution: {us} µs",
     serverExecuteTimeUnavailable: "Database execution: unavailable",
-    serverExecuteTimeHint: "OceanBase SQL Audit EXECUTE_TIME measures server plan execution. A JDBC cursor shows its completed statement sample; independent page queries show the sum only when every page is sampled. This overlaps with execution and wait timings. Unavailable while a cursor remains open or when audit data cannot be read or matched.",
+    serverExecuteTimeHint:
+      "OceanBase SQL Audit EXECUTE_TIME measures server plan execution. A JDBC cursor shows its completed statement sample; independent page queries show the sum only when every page is sampled. This overlaps with execution and wait timings. Unavailable while a cursor remains open or when audit data cannot be read or matched.",
     agentExecuteTimeHint: "Agent time from schema setup through JDBC execute. Excludes row fetching; not database server execution time.",
     clientRequestWait: "Wait: {ms} ms",
     clientRequestWaitHint: "Desktop time from query request dispatch until the full result payload arrives. Includes fetching, the optional server audit lookup, and transport; excludes SQL preparation and grid rendering. Summed across loaded pages.",

@@ -311,14 +311,8 @@ export function appendQueryResultSegment(previous: QueryResult, segment: QueryRe
     execution_time_ms: (previous.execution_time_ms ?? 0) + (segment.execution_time_ms ?? 0),
     // A JDBC cursor's terminal page audits the entire original statement.
     // Independent page SQLs need every page sampled before a total is shown.
-    server_execute_time_us: previous.session_id
-      ? segment.server_execute_time_us
-      : previous.server_execute_time_us !== undefined && segment.server_execute_time_us !== undefined
-        ? previous.server_execute_time_us + segment.server_execute_time_us
-        : undefined,
-    client_request_wait_ms: previous.client_request_wait_ms !== undefined && segment.client_request_wait_ms !== undefined
-      ? previous.client_request_wait_ms + segment.client_request_wait_ms
-      : undefined,
+    server_execute_time_us: previous.session_id ? segment.server_execute_time_us : previous.server_execute_time_us !== undefined && segment.server_execute_time_us !== undefined ? previous.server_execute_time_us + segment.server_execute_time_us : undefined,
+    client_request_wait_ms: previous.client_request_wait_ms !== undefined && segment.client_request_wait_ms !== undefined ? previous.client_request_wait_ms + segment.client_request_wait_ms : undefined,
     has_more: previous.rows.length + appendedRowCount >= maxRows ? false : segment.has_more,
   });
 }

@@ -139,13 +139,18 @@ class OceanBaseOracleAgentTest {
     void readsServerExecutionOnlyFromOneMatchingAuditRow() {
         List<String> statements = new ArrayList<>();
         List<String> parameters = new ArrayList<>();
-        Assertions.assertEquals(370L, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(1, 500, false, statements, parameters), 500));
+        List<Integer> maxRows = new ArrayList<>();
+        Assertions.assertEquals(370L, OceanBaseOracleAgent.serverExecuteTimeUs(
+            auditTimingConnection(1, 500, false, statements, parameters, maxRows), 500, 1001
+        ));
+        Assertions.assertEquals(List.of(1001, 1001), maxRows,
+            "trace and audit statements must preserve the target statement's session row limit");
         Assertions.assertEquals(List.of("trace-1"), parameters);
         Assertions.assertTrue(statements.get(1).contains("IS_INNER_SQL = 0 AND IS_EXECUTOR_RPC = 0"));
-        Assertions.assertEquals(null, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(0, 500, false, new ArrayList<>(), new ArrayList<>()), 500));
-        Assertions.assertEquals(null, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(2, 500, false, new ArrayList<>(), new ArrayList<>()), 500));
-        Assertions.assertEquals(null, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(1, 1, false, new ArrayList<>(), new ArrayList<>()), 500));
-        Assertions.assertEquals(null, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(1, 500, true, new ArrayList<>(), new ArrayList<>()), 500));
+        Assertions.assertEquals(null, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(0, 500, false, new ArrayList<>(), new ArrayList<>(), new ArrayList<>()), 500, 0));
+        Assertions.assertEquals(null, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(2, 500, false, new ArrayList<>(), new ArrayList<>(), new ArrayList<>()), 500, 0));
+        Assertions.assertEquals(null, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(1, 1, false, new ArrayList<>(), new ArrayList<>(), new ArrayList<>()), 500, 0));
+        Assertions.assertEquals(null, OceanBaseOracleAgent.serverExecuteTimeUs(auditTimingConnection(1, 500, true, new ArrayList<>(), new ArrayList<>(), new ArrayList<>()), 500, 0));
     }
 
 
@@ -1187,7 +1192,8 @@ class OceanBaseOracleAgentTest {
         });
     }
 
-    private static Connection auditTimingConnection(int auditRows, long returnedRows, boolean denied, List<String> sql, List<String> parameters) {
+    private static Connection auditTimingConnection(int auditRows, long returnedRows, boolean denied,
+                                                    List<String> sql, List<String> parameters, List<Integer> maxRows) {
         ResultSet trace = resultSet(new String[]{"TRACE_ID"}, new Object[][]{{"trace-1"}});
         int[] auditIndex = {-1};
         ResultSet audit = proxy(ResultSet.class, (method, args) -> {
@@ -1203,6 +1209,7 @@ class OceanBaseOracleAgentTest {
         });
         Statement traceStatement = proxy(Statement.class, (method, args) -> {
             if ("setQueryTimeout".equals(method.getName())) Assertions.assertEquals(1, args[0]);
+            if ("setMaxRows".equals(method.getName())) maxRows.add((Integer) args[0]);
             if ("executeQuery".equals(method.getName())) {
                 sql.add(String.valueOf(args[0]));
                 return trace;
@@ -1211,6 +1218,7 @@ class OceanBaseOracleAgentTest {
         });
         PreparedStatement auditStatement = proxy(PreparedStatement.class, (method, args) -> {
             if ("setQueryTimeout".equals(method.getName())) Assertions.assertEquals(1, args[0]);
+            if ("setMaxRows".equals(method.getName())) maxRows.add((Integer) args[0]);
             if ("setString".equals(method.getName())) parameters.add(String.valueOf(args[1]));
             if ("executeQuery".equals(method.getName())) {
                 if (denied) throw new SQLException("audit access denied", "42000", 1044);
