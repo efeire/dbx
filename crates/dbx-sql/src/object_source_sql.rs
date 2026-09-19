@@ -160,7 +160,9 @@ pub fn build_executable_object_source_statements(input: EditableObjectSourceSqlI
         )]);
     }
 
-    if is_oracle_like(input.database_type) && input.object_type == ObjectSourceKind::View {
+    if (is_oracle_like(input.database_type) || input.database_type == DatabaseType::OceanbaseOracle)
+        && input.object_type == ObjectSourceKind::View
+    {
         return Ok(vec![executable_oracle_view_ddl(input.schema.as_deref(), &input.name, source)]);
     }
 
@@ -1513,6 +1515,31 @@ mod tests {
             sql,
             "CREATE OR REPLACE VIEW \"DBX_TEST\".\"V_ACTIVE_USERS\" AS\nSELECT id, name FROM users WHERE active = 1;"
         );
+    }
+
+    #[test]
+    fn oceanbase_oracle_view_source_builds_executable_replace_ddl() {
+        for (source, expected) in [
+            (
+                "SELECT 2 AS N FROM DUAL",
+                "CREATE OR REPLACE VIEW \"SYS\".\"DBX_VIEW_SAVE_PROBE\" AS\nSELECT 2 AS N FROM DUAL;",
+            ),
+            (
+                "CREATE VIEW SYS.DBX_VIEW_SAVE_PROBE AS SELECT 3 AS N FROM DUAL",
+                "CREATE OR REPLACE VIEW SYS.DBX_VIEW_SAVE_PROBE AS SELECT 3 AS N FROM DUAL;",
+            ),
+        ] {
+            let input = EditableObjectSourceSqlInput {
+                database_type: DatabaseType::OceanbaseOracle,
+                object_type: ObjectSourceKind::View,
+                schema: Some("SYS".to_string()),
+                name: "DBX_VIEW_SAVE_PROBE".to_string(),
+                source: source.to_string(),
+            };
+
+            assert_eq!(build_editable_object_source(input.clone()), expected);
+            assert_eq!(build_executable_object_source_sql(input).unwrap(), expected);
+        }
     }
 
     #[test]
