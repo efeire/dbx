@@ -642,7 +642,16 @@ export function useSqlExecution(deps: {
         // Submit once on the dedicated session. No ordinary-connection fallback,
         // expired-session replay, or per-statement retry is allowed for this batch.
         const maxRows = agentProtocolQueryResultMaxRows(effectiveQueryResultMaxRows(settingsStore.editorSettings.queryResultMaxRowsEnabled, settingsStore.editorSettings.queryResultMaxRows));
-        const results = await api.executeInManualTransaction(manualSessionId, sql, executionTab.database, executionTab.schema, maxRows);
+        const databaseType = effectiveDatabaseTypeForConnection(connection);
+        const compatibility = databaseType === "opengauss" ? connectionStore.databaseCompatibilityMode(executionTab.connectionId, executionTab.database) : undefined;
+        const statements = splitSqlStatementRanges(sql, databaseType, sqlStatementParameterOptionsForCompatibility(databaseType, compatibility));
+        const results: NonNullable<QueryTab["results"]> = [];
+        for (const statement of statements.length ? statements : [{ sql }]) {
+          if (cancelRequested()) return await failedManualResult("cancelled");
+          const statementResults = await api.executeInManualTransaction(manualSessionId, statement.sql, executionTab.database, executionTab.schema, maxRows);
+          results.push(...statementResults);
+          if (statementResults.some(isQueryExecutionErrorResult)) break;
+        }
         worker.results = results;
         worker.activeResultIndex = 0;
         worker.result = results[0];

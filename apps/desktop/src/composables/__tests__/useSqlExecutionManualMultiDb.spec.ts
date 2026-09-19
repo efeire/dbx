@@ -162,4 +162,29 @@ describe("manual multi-database submission", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(history).not.toHaveBeenCalled();
   });
+
+  it("stops later statements in the same target after cancellation", async () => {
+    const { execution, input } = setup();
+    let cancelled = false;
+    vi.mocked(api.executeInManualTransaction).mockImplementationOnce(async () => {
+      cancelled = true;
+      return [{ columns: [], rows: [], affected_rows: 1, execution_time_ms: 1 }];
+    });
+    const result = await execution.executeTargetSql({ ...input, sql: "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2);", isCancellationRequested: () => cancelled });
+    expect(result.status).toBe("cancelled");
+    expect(api.executeInManualTransaction).toHaveBeenCalledExactlyOnceWith("session", "INSERT INTO t VALUES (1)", "target_db", "target_schema", 100000);
+    expect(api.rollbackManualTransaction).toHaveBeenCalledExactlyOnceWith("session");
+  });
+
+  it("keeps an Oracle procedural block intact while submitting subsequent statements on the same session", async () => {
+    const { execution, input } = setup();
+    const block = "BEGIN INSERT INTO t VALUES (1); INSERT INTO t VALUES (2); END;";
+    const result = await execution.executeTargetSql({ ...input, sql: `${block}\nINSERT INTO t VALUES (3);` });
+    expect(result.status).toBe("pending_commit");
+    expect(api.executeInManualTransaction.mock.calls.map((call) => [call[0], call[1]])).toEqual([
+      ["session", block],
+      ["session", "INSERT INTO t VALUES (3)"],
+    ]);
+    await result.transaction!.finish("rollback");
+  });
 });
