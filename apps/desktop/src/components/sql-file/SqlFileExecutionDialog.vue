@@ -1068,7 +1068,7 @@ watch(
           <Button v-else variant="outline" size="sm" @click="handleOpenChange(false)">
             {{ t("sqlFile.runInBackground") }}
           </Button>
-          <Button variant="destructive" size="sm" :disabled="cancelling" @click="cancelExecution">
+          <Button variant="destructive" size="sm" class="w-32" :disabled="cancelling" @click="cancelExecution">
             <Loader2 v-if="cancelling" class="w-3.5 h-3.5 mr-1.5 animate-spin" />
             <X v-else class="w-3.5 h-3.5 mr-1.5" />
             {{ cancelling ? t("sqlFile.cancelling") : t("sqlFile.cancel") }}
@@ -1076,9 +1076,9 @@ watch(
         </template>
         <template v-else-if="txnSessionId">
           <p class="mr-auto text-xs text-muted-foreground">{{ t("sqlFile.pendingTransaction") }}</p>
-          <!-- Keep rollback in the former cancel position when execution finishes. -->
+          <!-- Preserve the whole cancel hit area when execution finishes. -->
           <Button size="sm" :disabled="resolvingTransaction || terminalStatus !== 'done'" @click="finishTransaction(true)">{{ t("toolbar.commit") }}</Button>
-          <Button variant="outline" size="sm" :disabled="resolvingTransaction" @click="finishTransaction(false)">{{ t("toolbar.rollback") }}</Button>
+          <Button variant="outline" size="sm" class="w-32" :disabled="resolvingTransaction" @click="finishTransaction(false)">{{ t("toolbar.rollback") }}</Button>
         </template>
         <template v-else>
           <Button variant="outline" size="sm" @click="handleOpenChange(false)">
