@@ -137,10 +137,10 @@ function findButton(label: string): HTMLButtonElement {
   return button!;
 }
 
-async function mountReadyDialog() {
+async function mountReadyDialog(onOpenChange = vi.fn()) {
   root = document.createElement("div");
   document.body.append(root);
-  app = createApp(SqlFileExecutionDialog, { open: true });
+  app = createApp(SqlFileExecutionDialog, { open: true, "onUpdate:open": onOpenChange });
   app.mount(root);
 
   await vi.waitFor(() => expect(mocks.fetchSqlFileTargetOptions).toHaveBeenCalled());
@@ -241,6 +241,44 @@ afterEach(() => {
 });
 
 describe("SqlFileExecutionDialog retries", () => {
+  it("allows an ordinary execution to continue in the background and close after completion", async () => {
+    const onOpenChange = vi.fn();
+    await mountReadyDialog(onOpenChange);
+    const gate = deferred();
+    mocks.executeSqlFiles.mockImplementationOnce(() => gate.promise);
+    findButton("sqlFile.execute").click();
+    await vi.waitFor(() => expect(mocks.executeSqlFiles).toHaveBeenCalledOnce());
+    findButton("sqlFile.runInBackground").click();
+    await nextTick();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(mocks.cancelSqlFileExecution).not.toHaveBeenCalled();
+    mocks.progressHandler?.(progress("run-1", "done"));
+    gate.resolve();
+    await vi.waitFor(() => expect(findButton("sqlFile.execute").disabled).toBe(false));
+    onOpenChange.mockClear();
+    findButton("common.close").click();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("cancels the active ordinary run and allows a fresh retry", async () => {
+    await mountReadyDialog();
+    const gate = deferred();
+    mocks.executeSqlFiles.mockImplementationOnce(() => gate.promise);
+    findButton("sqlFile.execute").click();
+    await vi.waitFor(() => expect(mocks.executeSqlFiles).toHaveBeenCalledOnce());
+    findButton("sqlFile.cancel").click();
+    await vi.waitFor(() => expect(mocks.cancelSqlFileExecution).toHaveBeenCalledWith("run-1"));
+    mocks.progressHandler?.(progress("run-1", "cancelled"));
+    gate.resolve();
+    await vi.waitFor(() => expect(root!.textContent).toContain("sqlFile.status.cancelled"));
+    await vi.waitFor(() => expect(findButton("sqlFile.execute").disabled).toBe(false));
+    mocks.executeSqlFiles.mockImplementationOnce(async (request) => mocks.progressHandler?.(progress(request.executionId, "done")));
+    findButton("sqlFile.execute").click();
+    await vi.waitFor(() => expect(mocks.executeSqlFiles).toHaveBeenCalledTimes(2));
+    expect(mocks.executeSqlFiles.mock.calls[1]![0].executionId).toBe("run-2");
+    await vi.waitFor(() => expect(root!.textContent).toContain("sqlFile.status.done"));
+  });
+
   async function enableManualTransaction() {
     await mountReadyDialog();
     const label = Array.from(root!.querySelectorAll("label")).find((item) => item.textContent?.includes("toolbar.manualTransaction"));
