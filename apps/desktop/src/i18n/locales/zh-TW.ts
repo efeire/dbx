@@ -321,6 +321,7 @@ export default withEnglishFallback({
     changePasswordDescription: "輸入目前密碼並設定新密碼",
   },
   toolbar: {
+    commitOutcomeUnknown: "提交結果未知，交易工作階段已不存在。請核對資料後再決定是否重新執行 SQL。",
     moreActions: "更多操作",
     newConnection: "建立連線",
     newQuery: "建立查詢",

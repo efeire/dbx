@@ -572,14 +572,17 @@ export function useSqlExecution(deps: {
     };
     let manualSessionId: string | undefined;
     let retainedWorker = false;
+    let commitUncertain = false;
     let recordedRunId: string | undefined;
     let recordCommittedOutcome: (() => Promise<void>) | undefined;
     const rollbackManualSession = async (sessionId: string) => {
       try {
         await api.rollbackManualTransaction(sessionId);
+        return true;
       } catch (error) {
         // Core already removes sessions on statement errors and idle expiry.
         if (!/transaction session not found/i.test(String(error))) throw error;
+        return false;
       }
     };
     const transaction: MultiDbManualTransaction = {
@@ -587,15 +590,26 @@ export function useSqlExecution(deps: {
       async finish(action) {
         if (!manualSessionId) return;
         if (action === "commit" && !transaction.canCommit) throw new Error(t("multiDbExecute.manualCommitUnavailable"));
+        let warning: string | undefined;
         if (action === "commit") {
           transaction.canCommit = false;
-          await api.commitManualTransaction(manualSessionId);
-        } else await rollbackManualSession(manualSessionId);
+          try {
+            await api.commitManualTransaction(manualSessionId);
+          } catch (error) {
+            commitUncertain = true;
+            throw error;
+          }
+        } else if (!(await rollbackManualSession(manualSessionId)) && commitUncertain) {
+          warning = t("toolbar.commitOutcomeUnknown");
+        }
         // A later history/metadata/worker cleanup failure must never retry a commit.
         manualSessionId = undefined;
         transaction.canCommit = false;
         const run = queryStore.tabs.find((candidate) => candidate.id === tab.id)?.resultRuns?.find((candidate) => candidate.id === recordedRunId);
-        if (run?.multiDbExecution) run.multiDbExecution.status = action === "commit" ? "success" : "rolled_back";
+        if (run?.multiDbExecution) {
+          run.multiDbExecution.status = warning ? "failed" : action === "commit" ? "success" : "rolled_back";
+          run.multiDbExecution.errorMessage = warning;
+        }
         try {
           if (action === "commit") await recordCommittedOutcome?.();
         } catch (error) {
@@ -603,6 +617,7 @@ export function useSqlExecution(deps: {
         } finally {
           if (workerId) await queryStore.removeMultiDbExecutionWorker(workerId, input.scopeId).catch((error) => toast(String(error), 5000));
         }
+        return warning;
       },
     };
     const failedManualResult = async (status: "failed" | "cancelled", errorMessage?: string): Promise<MultiDbTargetExecutionResult> => {

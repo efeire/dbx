@@ -318,6 +318,7 @@ export default withEnglishFallback({
     changePasswordDescription: "Digite sua senha atual e escolha uma nova",
   },
   toolbar: {
+    commitOutcomeUnknown: "O resultado do commit é desconhecido e a sessão não existe mais. Verifique os dados antes de executar o SQL novamente.",
     moreActions: "Mais ações",
     newConnection: "Nova Conexão",
     newQuery: "Nova Consulta",

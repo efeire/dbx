@@ -7,6 +7,7 @@ import DataCompareDialog from "@/components/diff/DataCompareDialog.vue";
 import type { DataCompareSession } from "@/composables/useDataCompareSession";
 
 const mocks = vi.hoisted(() => ({
+  toast: vi.fn(),
   ensureConnected: vi.fn().mockResolvedValue(undefined),
   listDatabases: vi.fn().mockResolvedValue([]),
   listSchemas: vi.fn().mockResolvedValue(["DBX_TEST", "REPORTING", "SYS"]),
@@ -19,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   commitManualTransaction: vi.fn().mockResolvedValue({}),
   rollbackManualTransaction: vi.fn().mockResolvedValue({}),
 }));
+
+vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 
 const sessionMocks = vi.hoisted(() => ({
   session: null as DataCompareSession | null,
@@ -267,6 +270,23 @@ describe("DataCompareDialog manual transactions", () => {
     finish([]);
     await vi.waitFor(() => expect(mocks.rollbackManualTransaction).toHaveBeenCalledWith("compare-txn"));
     expect(mocks.executeInManualTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates the sync plan after an unknown commit result without claiming success", async () => {
+    const session = completedSession();
+    mocks.commitManualTransaction.mockRejectedValueOnce(new Error("response lost"));
+    await mountManualSession(session);
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain(i18n.global.t("dataCompare.pendingTransaction")));
+    buttonFor("toolbar.commit").click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("response lost", 5000));
+    expect(buttonFor("toolbar.commit").disabled).toBe(true);
+    mocks.rollbackManualTransaction.mockRejectedValueOnce(new Error("Transaction session not found"));
+    buttonFor("toolbar.rollback").click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.global.t("toolbar.commitOutcomeUnknown"), 5000));
+    expect(session.syncPlan.syncStatements).toEqual([]);
+    expect(session.batchResults).toEqual([]);
+    expect(mocks.toast).not.toHaveBeenCalledWith(i18n.global.t("dataCompare.syncSuccess"), 2000);
   });
 
   it("disables commit when rollback after an execution error fails", async () => {

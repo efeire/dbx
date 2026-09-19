@@ -79,8 +79,13 @@ export function useMultiDbExecution(adapter: MultiDbExecutionAdapter, options: M
     });
     settlements.add(pending);
     try {
-      await item.transaction.finish(action);
+      const warning = await item.transaction.finish(action);
       item.transaction = undefined;
+      if (warning) {
+        item.status = "failed";
+        item.errorMessage = warning;
+        return false;
+      }
       item.status = action === "commit" ? "success" : "rolled_back";
       item.errorMessage = undefined;
       return true;

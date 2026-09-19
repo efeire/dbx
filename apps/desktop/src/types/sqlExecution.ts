@@ -24,7 +24,8 @@ export type MultiDbExecutionItemStatus = "pending" | "running" | "pending_commit
 /** An individual target owns its session until it is explicitly settled. */
 export interface MultiDbManualTransaction {
   canCommit: boolean;
-  finish: (action: "commit" | "rollback") => Promise<void>;
+  /** Returns a warning if the session ended but its commit outcome is unknown. */
+  finish: (action: "commit" | "rollback") => Promise<string | void>;
 }
 
 export interface MultiDbResultRunExecution {

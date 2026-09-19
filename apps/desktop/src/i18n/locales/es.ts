@@ -318,6 +318,7 @@ export default withEnglishFallback({
     changePasswordDescription: "Ingresa tu contraseña actual y elige una nueva",
   },
   toolbar: {
+    commitOutcomeUnknown: "El resultado del commit es desconocido y la sesión ya no existe. Compruebe los datos antes de volver a ejecutar el SQL.",
     moreActions: "Más acciones",
     newConnection: "Nueva conexión",
     newQuery: "Nueva consulta",
@@ -369,7 +370,8 @@ export default withEnglishFallback({
   },
   multiDbExecute: {
     manualTransaction: "Transacción manual",
-    manualWarning: "Cada destino usa una transacción independiente y se confirma o revierte por separado. Las confirmaciones entre bases de datos no son atómicas. DDL y los comandos explícitos pueden confirmar por su cuenta. Al cancelar, se espera a que termine la sentencia activa antes de revertir.",
+    manualWarning:
+      "Cada destino usa una transacción independiente y se confirma o revierte por separado. Las confirmaciones entre bases de datos no son atómicas. DDL y los comandos explícitos pueden confirmar por su cuenta. Al cancelar, se espera a que termine la sentencia activa antes de revertir.",
     pendingCommit: "Pendiente de confirmación",
     rolledBack: "Revertido",
     commit: "Confirmar",

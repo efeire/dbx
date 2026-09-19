@@ -109,6 +109,16 @@ describe("useMultiDbExecution", () => {
     expect(batch!.items[0].errorMessage).toBe("rollback unavailable");
   });
 
+  it("reports an unknown commit outcome instead of marking it rolled back", async () => {
+    const finish = vi.fn().mockResolvedValue("Verify data: commit result unknown");
+    const executor = useMultiDbExecution({ executeTarget: async () => ({ status: "pending_commit", transaction: { canCommit: false, finish } }) }, { sourceTabId: "source" });
+    const batch = await executor.start("UPDATE t SET n = 1", [targets[0]], { manualTransaction: true });
+    expect(await executor.finishTransaction(batch!.items[0].id, "rollback")).toBe(false);
+    expect(batch!.items[0].status).toBe("failed");
+    expect(batch!.items[0].errorMessage).toBe("Verify data: commit result unknown");
+    expect(executor.hasTransactions.value).toBe(false);
+  });
+
   it("executes serially and continues after a target failure", async () => {
     const executionOrder: string[] = [];
     const executor = useMultiDbExecution(

@@ -58,7 +58,7 @@ const selectedEntry = ref<HistoryEntry | null>(null);
 const isRollingBack = ref(false);
 const manualRollback = ref(false);
 const resolvingTransaction = ref(false);
-const pendingRollback = ref<{ sessionId: string; entry: HistoryEntry; affectedRows: number; executionTime: number; ready: boolean }>();
+const pendingRollback = ref<{ sessionId: string; entry: HistoryEntry; affectedRows: number; executionTime: number; ready: boolean; commitUncertain?: boolean }>();
 const rollbackLocked = computed(() => isRollingBack.value || !!pendingRollback.value || resolvingTransaction.value);
 let disposed = false;
 const canUseManualRollback = computed(() => supportsTransaction(connectionStore.getConfig(selectedEntry.value?.connection_id ?? "")?.db_type));
@@ -437,8 +437,15 @@ async function finishRollbackTransaction(commit: boolean): Promise<boolean> {
         committed = true;
       } else await api.rollbackManualTransaction(pending.sessionId);
     } catch (error) {
-      if (!isManualTransactionSessionExpired(error) && formatError(error) !== "Transaction session not found") throw error;
-      if (commit) toast(t("history.transactionEnded"), 5000);
+      if (!isManualTransactionSessionExpired(error) && formatError(error) !== "Transaction session not found") {
+        if (commit) {
+          pending.commitUncertain = true;
+          pending.ready = false;
+        }
+        throw error;
+      }
+      if (pending.commitUncertain) toast(t("toolbar.commitOutcomeUnknown"), 5000);
+      else if (commit) toast(t("history.transactionEnded"), 5000);
     }
     pendingRollback.value = undefined;
     if (committed) {

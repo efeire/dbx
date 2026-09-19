@@ -413,6 +413,7 @@ describe("SqlFileExecutionDialog retries", () => {
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("connection lost", 5000));
     expect(findButton("sqlFile.browse").disabled).toBe(true);
     expect(findButton("toolbar.rollback").disabled).toBe(false);
+    expect(findButton("toolbar.commit").disabled).toBe(true);
     findButton("toolbar.rollback").click();
     await vi.waitFor(() => expect(mocks.rollbackManualTransaction).toHaveBeenCalledWith("txn-1"));
   });
@@ -426,6 +427,21 @@ describe("SqlFileExecutionDialog retries", () => {
     await vi.waitFor(() => expect(findButton("sqlFile.execute").disabled).toBe(false));
     expect(mocks.toast).toHaveBeenCalledWith("sqlFile.transactionEnded", 5000);
     expect(mocks.updateSqlFileTask).toHaveBeenLastCalledWith("run-1", expect.objectContaining({ status: "cancelled" }));
+  });
+
+  it("reports an unknown commit outcome when the response was lost and rollback finds no session", async () => {
+    await enableManualTransaction();
+    await completeFirstExecution();
+    await vi.waitFor(() => expect(findButton("toolbar.commit").disabled).toBe(false));
+    mocks.commitManualTransaction.mockRejectedValueOnce(new Error("response lost"));
+    findButton("toolbar.commit").click();
+    await vi.waitFor(() => expect(findButton("toolbar.commit").disabled).toBe(true));
+    await vi.waitFor(() => expect(findButton("toolbar.rollback").disabled).toBe(false));
+    mocks.rollbackManualTransaction.mockRejectedValueOnce(new Error("Transaction session not found"));
+    findButton("toolbar.rollback").click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("toolbar.commitOutcomeUnknown", 5000));
+    expect(mocks.updateSqlFileTask).toHaveBeenLastCalledWith("run-1", expect.objectContaining({ status: "error" }));
+    expect(mocks.commitManualTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("shows byte-based progress while SQL executes and only completes on a terminal event", async () => {

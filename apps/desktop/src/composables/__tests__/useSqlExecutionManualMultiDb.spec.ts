@@ -151,4 +151,15 @@ describe("manual multi-database submission", () => {
     expect(api.commitManualTransaction).toHaveBeenCalledTimes(1);
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
+
+  it("does not claim rollback after a lost commit response and a missing session", async () => {
+    const { execution, input, cleanup, history } = setup();
+    const result = await execution.executeTargetSql(input);
+    vi.mocked(api.commitManualTransaction).mockRejectedValueOnce(new Error("response lost"));
+    await expect(result.transaction!.finish("commit")).rejects.toThrow("response lost");
+    vi.mocked(api.rollbackManualTransaction).mockRejectedValueOnce(new Error("Transaction session not found"));
+    expect(await result.transaction!.finish("rollback")).toBe("toolbar.commitOutcomeUnknown");
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(history).not.toHaveBeenCalled();
+  });
 });

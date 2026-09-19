@@ -187,6 +187,7 @@ export default withEnglishFallback({
     changePasswordDescription: "Mevcut parolanızı girin ve yeni bir parola seçin",
   },
   toolbar: {
+    commitOutcomeUnknown: "Onaylama sonucu bilinmiyor ve oturum artık mevcut değil. SQL'i yeniden çalıştırmadan önce verileri doğrulayın.",
     moreActions: "Diğer İşlemler",
     newConnection: "Yeni Bağlantı",
     newQuery: "Yeni Sorgu",

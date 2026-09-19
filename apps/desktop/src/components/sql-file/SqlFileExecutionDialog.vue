@@ -118,6 +118,7 @@ const continueOnError = ref(false);
 const skipRelationalConstraints = ref(false);
 const manualTransaction = ref(false);
 const txnSessionId = ref<string>();
+const commitUncertain = ref(false);
 const resolvingTransaction = ref(false);
 let disposed = false;
 
@@ -192,22 +193,28 @@ const executionLocked = computed(() => running.value || resolvingTransaction.val
 
 async function finishTransaction(commit: boolean) {
   const sessionId = txnSessionId.value;
-  if (!sessionId || resolvingTransaction.value || (commit && terminalStatus.value !== "done")) return false;
+  if (!sessionId || resolvingTransaction.value || (commit && (terminalStatus.value !== "done" || commitUncertain.value))) return false;
   resolvingTransaction.value = true;
   try {
     let committed = false;
+    let outcomeUnknown = false;
     try {
       if (commit) {
         await commitManualTransaction(sessionId);
         committed = true;
       } else await rollbackManualTransaction(sessionId);
     } catch (error) {
-      if (!isManualTransactionSessionExpired(error) && formatError(error) !== "Transaction session not found") throw error;
-      if (commit) toast(t("sqlFile.transactionEnded"), 5000);
+      if (!isManualTransactionSessionExpired(error) && formatError(error) !== "Transaction session not found") {
+        if (commit) commitUncertain.value = true;
+        throw error;
+      }
+      outcomeUnknown = commitUncertain.value;
+      if (outcomeUnknown) toast(t("toolbar.commitOutcomeUnknown"), 5000);
+      else if (commit) toast(t("sqlFile.transactionEnded"), 5000);
     }
     txnSessionId.value = undefined;
     if (terminalStatus.value === "done") {
-      terminalStatus.value = committed ? "done" : "cancelled";
+      terminalStatus.value = outcomeUnknown ? "error" : committed ? "done" : "cancelled";
       if (progress.value) updateSqlFileTask(executionId.value, { ...progress.value, status: terminalStatus.value });
     }
     await refreshTargetAfterImport();
@@ -361,6 +368,7 @@ function formatElapsed(ms: number) {
 }
 
 function statusLabel(status: SqlFileStatus | "idle") {
+  if (status === "error" && commitUncertain.value) return t("toolbar.commitOutcomeUnknown");
   if (status === "done" && txnSessionId.value) return t("sqlFile.pendingTransaction");
   return t(`sqlFile.status.${status}`);
 }
@@ -586,6 +594,7 @@ async function startExecution() {
     if (manualTransaction.value) {
       const sessionId = await beginManualTransaction(connectionId.value, database.value.trim());
       txnSessionId.value = sessionId;
+      commitUncertain.value = false;
       if (disposed || cancelRequested.value) {
         terminalStatus.value = "cancelled";
         return;
@@ -1077,7 +1086,7 @@ watch(
         <template v-else-if="txnSessionId">
           <p class="mr-auto text-xs text-muted-foreground">{{ t("sqlFile.pendingTransaction") }}</p>
           <!-- Preserve the whole cancel hit area when execution finishes. -->
-          <Button size="sm" :disabled="resolvingTransaction || terminalStatus !== 'done'" @click="finishTransaction(true)">{{ t("toolbar.commit") }}</Button>
+          <Button size="sm" :disabled="resolvingTransaction || commitUncertain || terminalStatus !== 'done'" @click="finishTransaction(true)">{{ t("toolbar.commit") }}</Button>
           <Button variant="outline" size="sm" class="w-32" :disabled="resolvingTransaction" @click="finishTransaction(false)">{{ t("toolbar.rollback") }}</Button>
         </template>
         <template v-else>

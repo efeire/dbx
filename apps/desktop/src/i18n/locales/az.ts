@@ -185,6 +185,7 @@ export default withEnglishFallback({
     changePasswordDescription: "Cari parolunuzu daxil edin və yeni parol seçin",
   },
   toolbar: {
+    commitOutcomeUnknown: "Təsdiqləmə nəticəsi məlum deyil və sessiya artıq mövcud deyil. SQL-i yenidən icra etməzdən əvvəl məlumatları yoxlayın.",
     moreActions: "Digər əməliyyatlar",
     newConnection: "Yeni əlaqə",
     newQuery: "Yeni sorğu",

@@ -159,7 +159,21 @@ describe("QueryHistory manual rollback SQL", () => {
     button("toolbar.commit").click();
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("commit unavailable", 5000));
     expect(button("history.discardRollback").disabled).toBe(false);
+    expect(button("toolbar.commit").disabled).toBe(true);
     expect(mocks.add).not.toHaveBeenCalled();
+  });
+
+  it("does not claim successful compensation after an unknown commit outcome", async () => {
+    mocks.commitManualTransaction.mockRejectedValueOnce(new Error("response lost"));
+    await openRollback();
+    await vi.waitFor(() => expect(button("toolbar.commit").disabled).toBe(false));
+    button("toolbar.commit").click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("response lost", 5000));
+    mocks.rollbackManualTransaction.mockRejectedValueOnce(new Error("Transaction session not found"));
+    button("history.discardRollback").click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("toolbar.commitOutcomeUnknown", 5000));
+    expect(mocks.add).not.toHaveBeenCalled();
+    expect(mocks.commitManualTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("cleans up a session returned after unmount without executing compensation", async () => {

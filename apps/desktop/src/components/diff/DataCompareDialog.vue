@@ -79,6 +79,7 @@ const compareProgressTable = ref("");
 const executing = ref(false);
 const manualTransaction = ref(false);
 const txnSessionId = ref<string>();
+let commitUncertain = false;
 const resolvingTransaction = ref(false);
 const transactionFailed = ref(false);
 let executionInterrupted = false;
@@ -783,7 +784,10 @@ async function executeSql() {
         executedCount.value = 0;
         await store.ensureConnected(connectionId);
         if (useTransaction && (componentUnmounted || executionInterrupted)) return undefined;
-        if (useTransaction) txnSessionId.value = await api.beginManualTransaction(connectionId, database, schema);
+        if (useTransaction) {
+          txnSessionId.value = await api.beginManualTransaction(connectionId, database, schema);
+          commitUncertain = false;
+        }
         for (let index = 0; index < statements.length; index += SYNC_EXECUTE_BATCH_SIZE) {
           if (useTransaction && (componentUnmounted || executionInterrupted)) return undefined;
           const batch = statements.slice(index, index + SYNC_EXECUTE_BATCH_SIZE);
@@ -829,17 +833,26 @@ async function finishTransaction(commit: boolean): Promise<boolean> {
   resolvingTransaction.value = true;
   try {
     let committed = false;
+    let outcomeUnknown = false;
     try {
       if (commit) {
         await api.commitManualTransaction(sessionId);
         committed = true;
       } else await api.rollbackManualTransaction(sessionId);
     } catch (error) {
-      if (!isManualTransactionSessionExpired(error) && formatError(error) !== "Transaction session not found") throw error;
-      if (commit) toast(t("dataCompare.transactionEnded"), 5000);
+      if (!isManualTransactionSessionExpired(error) && formatError(error) !== "Transaction session not found") {
+        if (commit) {
+          commitUncertain = true;
+          transactionFailed.value = true;
+        }
+        throw error;
+      }
+      outcomeUnknown = commitUncertain;
+      if (outcomeUnknown) toast(t("toolbar.commitOutcomeUnknown"), 5000);
+      else if (commit) toast(t("dataCompare.transactionEnded"), 5000);
     }
     txnSessionId.value = undefined;
-    if (committed) {
+    if (committed || outcomeUnknown) {
       const session = getDataCompareSession(activeSessionId.value);
       if (session) {
         session.batchResults = [];
@@ -847,7 +860,7 @@ async function finishTransaction(commit: boolean): Promise<boolean> {
         session.version++;
       }
       clearResult();
-      toast(t("dataCompare.syncSuccess"), 2000);
+      if (committed) toast(t("dataCompare.syncSuccess"), 2000);
     }
     return true;
   } catch (error) {
