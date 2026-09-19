@@ -1800,9 +1800,17 @@ describe("queryStore hidden primary key editing", () => {
       useAgentResultSession: false,
       paginationRowNumberColumn: options.pagination.offset > 0 ? "__dbx_row_num" : undefined,
     }));
-    executeMulti
-      .mockResolvedValueOnce([{ columns: ["N"], rows: [[1], [2]], affected_rows: 0, execution_time_ms: 1 }])
-      .mockResolvedValueOnce([{ columns: ["N", "__dbx_row_num"], rows: [[3, 3], [4, 4]], affected_rows: 0, execution_time_ms: 1 }]);
+    executeMulti.mockResolvedValueOnce([{ columns: ["N"], rows: [[1], [2]], affected_rows: 0, execution_time_ms: 1 }]).mockResolvedValueOnce([
+      {
+        columns: ["N", "__dbx_row_num"],
+        rows: [
+          [3, 3],
+          [4, 4],
+        ],
+        affected_rows: 0,
+        execution_time_ms: 1,
+      },
+    ]);
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();
     const tabId = store.createTab("ob-1", "app", "Query");
@@ -1827,7 +1835,17 @@ describe("queryStore hidden primary key editing", () => {
     }));
     executeMulti
       .mockResolvedValueOnce([{ columns: ["N"], rows: [[1], [2]], affected_rows: 0, execution_time_ms: 1 }])
-      .mockResolvedValueOnce([{ columns: ["N", "__dbx_row_num"], rows: [[3, 3], [4, 4]], affected_rows: 0, execution_time_ms: 1 }])
+      .mockResolvedValueOnce([
+        {
+          columns: ["N", "__dbx_row_num"],
+          rows: [
+            [3, 3],
+            [4, 4],
+          ],
+          affected_rows: 0,
+          execution_time_ms: 1,
+        },
+      ])
       .mockResolvedValueOnce([{ columns: ["N", "__dbx_row_num"], rows: [], affected_rows: 0, execution_time_ms: 1 }]);
     const exported = await store.fetchTabResultForExport(tabId);
     expect(exported?.columns).toEqual(["N"]);
