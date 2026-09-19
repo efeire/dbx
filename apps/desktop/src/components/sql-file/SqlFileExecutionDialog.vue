@@ -1076,8 +1076,9 @@ watch(
         </template>
         <template v-else-if="txnSessionId">
           <p class="mr-auto text-xs text-muted-foreground">{{ t("sqlFile.pendingTransaction") }}</p>
-          <Button variant="outline" size="sm" :disabled="resolvingTransaction" @click="finishTransaction(false)">{{ t("toolbar.rollback") }}</Button>
+          <!-- Keep rollback in the former cancel position when execution finishes. -->
           <Button size="sm" :disabled="resolvingTransaction || terminalStatus !== 'done'" @click="finishTransaction(true)">{{ t("toolbar.commit") }}</Button>
+          <Button variant="outline" size="sm" :disabled="resolvingTransaction" @click="finishTransaction(false)">{{ t("toolbar.rollback") }}</Button>
         </template>
         <template v-else>
           <Button variant="outline" size="sm" @click="handleOpenChange(false)">

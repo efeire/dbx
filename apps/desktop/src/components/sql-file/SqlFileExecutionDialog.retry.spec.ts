@@ -308,6 +308,7 @@ describe("SqlFileExecutionDialog retries", () => {
     await enableManualTransaction();
     await completeFirstExecution();
     await vi.waitFor(() => expect(findButton("toolbar.rollback").disabled).toBe(false));
+    expect(Array.from(root!.querySelectorAll("button")).at(-1)).toBe(findButton("toolbar.rollback"));
     findButton("toolbar.rollback").click();
     await vi.waitFor(() => expect(findButton("sqlFile.execute").disabled).toBe(false));
     expect(mocks.rollbackManualTransaction).toHaveBeenCalledExactlyOnceWith("txn-1");
