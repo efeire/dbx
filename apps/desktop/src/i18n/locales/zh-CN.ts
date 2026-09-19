@@ -5804,6 +5804,11 @@ export default withEnglishFallback({
     deleteTableConfirm: "确定删除 HBase 表 {table} 吗？其中所有行都会被永久删除。",
   },
   history: {
+    pendingRollback: "回滚 SQL 等待提交，可提交或撤销本次修改。",
+    discardRollback: "撤销本次回滚",
+    manualRollbackHint: "回滚 SQL 等待手动提交，DDL 仍可能隐式提交。",
+    transactionEnded: "事务已结束或已回滚，未记录回滚成功。",
+    rollbackBeforeClose: "撤销尚未提交的回滚修改并关闭历史记录？",
     title: "历史",
     search: "搜索历史...",
     conversationSearch: "搜索历史会话...",

@@ -4851,6 +4851,11 @@ export default withEnglishFallback({
     deleteTableConfirm: "確定要刪除 HBase 資料表 {table} 嗎？其中所有資料列都會永久刪除。",
   },
   history: {
+    pendingRollback: "回滾 SQL 等待提交，可提交或撤銷本次修改。",
+    discardRollback: "撤銷本次回滾",
+    manualRollbackHint: "回滾 SQL 等待手動提交，DDL 仍可能隱式提交。",
+    transactionEnded: "交易已結束或已回滾，未記錄回滾成功。",
+    rollbackBeforeClose: "撤銷尚未提交的回滾修改並關閉歷史記錄？",
     title: "歷史",
     search: "搜尋歷史……",
     conversationSearch: "搜尋歷史會話……",

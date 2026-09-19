@@ -5164,6 +5164,11 @@ export default withEnglishFallback({
     deleteTableConfirm: "HBase 테이블 {table}을(를) 삭제하시겠습니까? 모든 행이 영구적으로 제거됩니다.",
   },
   history: {
+    pendingRollback: "롤백 SQL이 대기 중입니다. 커밋하거나 이번 변경 사항을 취소하세요.",
+    discardRollback: "이번 롤백 변경 취소",
+    manualRollbackHint: "롤백 SQL은 커밋을 기다립니다. DDL은 암시적으로 커밋될 수 있습니다.",
+    transactionEnded: "트랜잭션이 종료되었거나 롤백되었습니다. 롤백 성공은 기록되지 않았습니다.",
+    rollbackBeforeClose: "커밋되지 않은 롤백 변경 사항을 취소하고 기록을 닫을까요?",
     title: "기록",
     search: "기록 검색...",
     conversationSearch: "대화 검색...",

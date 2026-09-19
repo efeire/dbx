@@ -5556,6 +5556,11 @@ export default withEnglishFallback({
     deleteTableConfirm: "HBase テーブル {table} を削除しますか？すべての行が完全に削除されます。",
   },
   history: {
+    pendingRollback: "ロールバック SQL は保留中です。コミットするか今回の変更を破棄してください。",
+    discardRollback: "今回のロールバックを破棄",
+    manualRollbackHint: "ロールバック SQL はコミットを待ちます。DDL は暗黙的にコミットされる場合があります。",
+    transactionEnded: "トランザクションは終了またはロールバックされました。ロールバック成功は記録されていません。",
+    rollbackBeforeClose: "未コミットのロールバック変更を破棄して履歴を閉じますか？",
     title: "履歴",
     search: "履歴を検索...",
     conversationSearch: "会話を検索...",

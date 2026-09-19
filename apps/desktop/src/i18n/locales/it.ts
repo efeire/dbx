@@ -5527,6 +5527,11 @@ export default withEnglishFallback({
     deleteTableConfirm: "Eliminare la tabella HBase {table}? Tutte le righe verranno eliminate definitivamente.",
   },
   history: {
+    pendingRollback: "L’SQL di ripristino è in attesa. Conferma o scarta queste modifiche.",
+    discardRollback: "Scarta modifiche di ripristino",
+    manualRollbackHint: "L’SQL di ripristino attende conferma. DDL può confermare implicitamente.",
+    transactionEnded: "La transazione è terminata o è stata annullata. Nessun ripristino riuscito è stato registrato.",
+    rollbackBeforeClose: "Scartare le modifiche di ripristino non confermate e chiudere la cronologia?",
     title: "Cronologia",
     search: "Cerca nella cronologia...",
     conversationSearch: "Cerca conversazioni...",

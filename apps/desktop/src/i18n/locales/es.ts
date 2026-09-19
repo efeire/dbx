@@ -5529,6 +5529,11 @@ export default withEnglishFallback({
     deleteTableConfirm: "¿Eliminar la tabla HBase {table}? Todas las filas se eliminarán permanentemente.",
   },
   history: {
+    pendingRollback: "El SQL de reversión está pendiente. Confirma o descarta estos cambios.",
+    discardRollback: "Descartar cambios de reversión",
+    manualRollbackHint: "El SQL de reversión espera confirmación. DDL puede confirmar implícitamente.",
+    transactionEnded: "La transacción terminó o se revirtió. No se registró una reversión correcta.",
+    rollbackBeforeClose: "¿Descartar los cambios de reversión sin confirmar y cerrar el historial?",
     title: "Historial",
     search: "Buscar en historial...",
     conversationSearch: "Buscar conversaciones...",

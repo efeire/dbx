@@ -5830,6 +5830,11 @@ export default {
     deleteTableConfirm: "Delete HBase table {table}? All rows will be permanently removed.",
   },
   history: {
+    pendingRollback: "Rollback SQL is pending. Commit to apply it or discard these changes.",
+    discardRollback: "Discard rollback changes",
+    manualRollbackHint: "Rollback SQL waits for Commit. DDL may still commit implicitly.",
+    transactionEnded: "The transaction has ended or was rolled back. No rollback success was recorded.",
+    rollbackBeforeClose: "Discard the uncommitted rollback changes and close history?",
     title: "History",
     search: "Search history...",
     conversationSearch: "Search conversations...",
