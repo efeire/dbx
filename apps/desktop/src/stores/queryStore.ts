@@ -4660,6 +4660,36 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
+  const pendingManualTransactionStarts = new Map<string, Promise<string>>();
+
+  async function ensureManualTransactionSession(id: string, database: string, schema?: string, catalog?: string): Promise<string> {
+    const tab = tabs.value.find((item) => item.id === id);
+    if (!tab || tab.mode !== "query" || tab.autoCommit !== false || !tab.connectionId) {
+      throw new Error("Manual transaction mode is no longer active for this query tab");
+    }
+    if (tab.txnSessionId) return tab.txnSessionId;
+    const pending = pendingManualTransactionStarts.get(id);
+    if (pending) return pending;
+
+    const connectionId = tab.connectionId;
+    const originalSchema = tab.schema;
+    const start = api
+      .beginManualTransaction(connectionId, database, schema, catalog)
+      .then(async (sessionId) => {
+        if (tabs.value.find((item) => item.id === id) !== tab || tab.autoCommit !== false || tab.connectionId !== connectionId || tab.schema !== originalSchema) {
+          await api.rollbackManualTransaction(sessionId);
+          throw new Error("Query tab changed while the manual transaction was starting");
+        }
+        tab.txnSessionId = sessionId;
+        return sessionId;
+      })
+      .finally(() => {
+        pendingManualTransactionStarts.delete(id);
+      });
+    pendingManualTransactionStarts.set(id, start);
+    return start;
+  }
+
   function setAutoCommit(id: string, autoCommit: boolean) {
     const tab = tabs.value.find((t) => t.id === id);
     if (tab) {
@@ -7196,7 +7226,7 @@ export const useQueryStore = defineStore("query", () => {
         if (!tab.txnSessionId) {
           queryExecutionLog("info", "begin-manual-txn:start", { traceId, elapsed: elapsed() });
           try {
-            tab.txnSessionId = await api.beginManualTransaction(executionConnectionId, executionDatabase, executionSchema, executionCatalog);
+            tab.txnSessionId = await ensureManualTransactionSession(id, executionDatabase, executionSchema, executionCatalog);
             queryExecutionLog("info", "begin-manual-txn:done", { traceId, txnSessionId: tab.txnSessionId, elapsed: elapsed() });
           } catch (error) {
             const risk = classifySqlRisk(sqlToExecute, { dialect: effectiveDbType }).risk;
@@ -8796,6 +8826,7 @@ export const useQueryStore = defineStore("query", () => {
     markManualTransactionDirty,
     commitTransaction,
     rollbackTransaction,
+    ensureManualTransactionSession,
     renameTab,
     openDatabaseBrowser,
     openDriverProfileWorkspace,

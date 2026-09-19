@@ -118,6 +118,40 @@ describe("queryStore Oracle/OceanBase manual-transaction sticky state (behavior 
     return tabId;
   }
 
+  it("starts one session for a result-grid save before the next SQL execution", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const tabId = await setupManualTab(store);
+
+    const sessionId = await store.ensureManualTransactionSession(tabId, "ORCL", "APP");
+    expect(sessionId).toBe("txn-oracle");
+    expect(mocks.beginManualTransaction).toHaveBeenCalledWith("oracle-1", "ORCL", "APP", undefined);
+    expect(store.tabs.find((item) => item.id === tabId)?.txnSessionId).toBe("txn-oracle");
+    await store.ensureManualTransactionSession(tabId, "ORCL", "APP");
+    expect(mocks.beginManualTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back a session opened after the tab leaves manual mode", async () => {
+    let finishBegin!: (sessionId: string) => void;
+    mocks.beginManualTransaction.mockReturnValue(
+      new Promise<string>((resolve) => {
+        finishBegin = resolve;
+      }),
+    );
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const tabId = store.createTab("oracle-1", "ORCL", "Query", "query", "APP");
+    store.setAutoCommit(tabId, false);
+
+    const starting = store.ensureManualTransactionSession(tabId, "ORCL", "APP");
+    store.setAutoCommit(tabId, true);
+    finishBegin("txn-late");
+
+    await expect(starting).rejects.toThrow("Query tab changed");
+    expect(mocks.rollbackManualTransaction).toHaveBeenCalledWith("txn-late");
+    expect(store.tabs.find((item) => item.id === tabId)?.txnSessionId).toBeUndefined();
+  });
+
   it("sends classificationSql only for the initial Oracle manual execution", async () => {
     mocks.executeInManualTransaction.mockResolvedValue(cleanSelect());
 
