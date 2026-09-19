@@ -19,7 +19,13 @@ export interface SqlExecutionTargetGroup {
 
 export type SqlExecutionTargetValidationState = "valid" | "invalid" | "needsRecheck";
 
-export type MultiDbExecutionItemStatus = "pending" | "running" | "success" | "failed" | "skipped" | "cancelled" | "not_executed";
+export type MultiDbExecutionItemStatus = "pending" | "running" | "pending_commit" | "rolled_back" | "success" | "failed" | "skipped" | "cancelled" | "not_executed";
+
+/** An individual target owns its session until it is explicitly settled. */
+export interface MultiDbManualTransaction {
+  canCommit: boolean;
+  finish: (action: "commit" | "rollback") => Promise<void>;
+}
 
 export interface MultiDbResultRunExecution {
   kind: "multi-db";
@@ -35,6 +41,7 @@ export interface MultiDbTargetExecutionResult {
   status: Exclude<MultiDbExecutionItemStatus, "pending" | "running" | "not_executed">;
   errorMessage?: string;
   durationMs?: number;
+  transaction?: MultiDbManualTransaction;
 }
 
 export interface SqlExecutionTargetValidation {
