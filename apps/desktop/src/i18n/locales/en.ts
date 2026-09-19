@@ -6536,6 +6536,11 @@ export default {
     generateDataComingSoon: "Coming soon",
   },
   sqlFile: {
+    manualTransactionHint: "Changes wait for Commit or Rollback. Errors roll back. DDL and COMMIT inside the file can still commit changes.",
+    manualCancelHint: "Cancel waits for the current statement, then rolls back uncommitted changes.",
+    pendingTransaction: "Awaiting Commit or Rollback",
+    rollbackBeforeClose: "There are uncommitted changes. Roll back and close?",
+    transactionEnded: "The transaction has ended or was rolled back. Run the file again if needed.",
     restoreScope: "Restore scope",
     restoreAll: "All contents",
     restoreSelectedTables: "Selected tables",

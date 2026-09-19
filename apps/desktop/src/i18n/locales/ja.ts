@@ -6186,6 +6186,11 @@ export default withEnglishFallback({
     generateDataComingSoon: "近日公開",
   },
   sqlFile: {
+    manualTransactionHint: "変更は手動でコミットまたはロールバックするまで保留されます。エラー時はロールバックします。ファイル内の DDL や COMMIT により変更が確定する場合があります。",
+    manualCancelHint: "キャンセルすると現在の文の終了を待ち、未コミットの変更をロールバックします。",
+    pendingTransaction: "コミットまたはロールバック待ち",
+    rollbackBeforeClose: "未コミットの変更があります。ロールバックして閉じますか？",
+    transactionEnded: "トランザクションは終了したか、ロールバックされました。必要に応じてファイルを再実行してください。",
     restoreScope: "復元範囲",
     restoreAll: "すべての内容",
     restoreSelectedTables: "指定したテーブル",

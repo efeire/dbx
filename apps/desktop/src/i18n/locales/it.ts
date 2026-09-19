@@ -6148,6 +6148,11 @@ export default withEnglishFallback({
     generateDataComingSoon: "Prossimamente",
   },
   sqlFile: {
+    manualTransactionHint: "Le modifiche attendono commit o rollback. Gli errori causano il rollback. DDL e COMMIT nel file possono comunque confermare le modifiche.",
+    manualCancelHint: "L'annullamento attende la fine dell'istruzione corrente, poi esegue il rollback delle modifiche non confermate.",
+    pendingTransaction: "In attesa di commit o rollback",
+    rollbackBeforeClose: "Ci sono modifiche non confermate. Eseguire il rollback e chiudere?",
+    transactionEnded: "La transazione è terminata o è stata annullata. Esegui di nuovo il file se necessario.",
     restoreScope: "Ambito del ripristino",
     restoreAll: "Tutto il contenuto",
     restoreSelectedTables: "Tabelle selezionate",

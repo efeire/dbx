@@ -6510,6 +6510,11 @@ export default withEnglishFallback({
     generateDataComingSoon: "即将推出",
   },
   sqlFile: {
+    manualTransactionHint: "修改等待手动提交或回滚，出错时回滚。文件中的 DDL 和 COMMIT 仍可能提交修改。",
+    manualCancelHint: "取消会等待当前语句结束，再回滚未提交的修改。",
+    pendingTransaction: "等待提交或回滚",
+    rollbackBeforeClose: "尚有未提交的修改。回滚并关闭？",
+    transactionEnded: "事务已结束或已回滚，如有需要请重新执行文件。",
     restoreScope: "恢复范围",
     restoreAll: "全部内容",
     restoreSelectedTables: "指定表",

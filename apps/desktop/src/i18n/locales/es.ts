@@ -6150,6 +6150,11 @@ export default withEnglishFallback({
     generateDataComingSoon: "Próximamente",
   },
   sqlFile: {
+    manualTransactionHint: "Los cambios esperan confirmación o reversión. Los errores provocan una reversión. DDL y COMMIT dentro del archivo aún pueden confirmar cambios.",
+    manualCancelHint: "Cancelar espera a que termine la sentencia actual y luego revierte los cambios sin confirmar.",
+    pendingTransaction: "Pendiente de confirmar o revertir",
+    rollbackBeforeClose: "Hay cambios sin confirmar. ¿Revertir y cerrar?",
+    transactionEnded: "La transacción ha terminado o se ha revertido. Vuelve a ejecutar el archivo si es necesario.",
     restoreScope: "Alcance de la restauración",
     restoreAll: "Todo el contenido",
     restoreSelectedTables: "Tablas seleccionadas",

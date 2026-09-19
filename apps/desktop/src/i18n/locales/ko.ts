@@ -5865,6 +5865,11 @@ export default withEnglishFallback({
     generateDataComingSoon: "준비 중",
   },
   sqlFile: {
+    manualTransactionHint: "변경 사항은 수동 커밋 또는 롤백을 기다립니다. 오류가 발생하면 롤백합니다. 파일의 DDL과 COMMIT은 변경 사항을 커밋할 수 있습니다.",
+    manualCancelHint: "취소하면 현재 구문이 끝날 때까지 기다린 후 커밋되지 않은 변경 사항을 롤백합니다.",
+    pendingTransaction: "커밋 또는 롤백 대기 중",
+    rollbackBeforeClose: "커밋되지 않은 변경 사항이 있습니다. 롤백하고 닫을까요?",
+    transactionEnded: "트랜잭션이 종료되었거나 롤백되었습니다. 필요하면 파일을 다시 실행하세요.",
     restoreScope: "복원 범위",
     restoreAll: "모든 내용",
     restoreSelectedTables: "선택한 테이블",

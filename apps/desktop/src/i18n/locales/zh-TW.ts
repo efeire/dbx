@@ -5472,6 +5472,11 @@ export default withEnglishFallback({
     generateDataComingSoon: "即將推出",
   },
   sqlFile: {
+    manualTransactionHint: "修改等待手動提交或回復，出錯時回復。檔案中的 DDL 和 COMMIT 仍可能提交修改。",
+    manualCancelHint: "取消會等待目前陳述式結束，再回復未提交的修改。",
+    pendingTransaction: "等待提交或回復",
+    rollbackBeforeClose: "尚有未提交的修改。回復並關閉？",
+    transactionEnded: "交易已結束或已回復，如有需要請重新執行檔案。",
     restoreScope: "還原範圍",
     restoreAll: "全部內容",
     restoreSelectedTables: "指定資料表",
