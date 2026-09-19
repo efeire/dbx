@@ -734,7 +734,7 @@ public final class JdbcExecutor {
             while (rows.size() < effectivePageSize && session.rowsRead < session.maxRows) {
                 if (!session.resultSet.next()) {
                     closeSession(targetSessions, session.id);
-                    return new QueryPageResult(session.columns, session.columnTypes, rows, 0L, executionTimeMs, false, null, false);
+                    return sessionPageResult(session, rows, executionTimeMs, false, null, false);
                 }
                 rows.add(rowValues(session.resultSet, session.valueReader, session.sqlTypeByIndex, session.typeNameByIndex));
                 session.rowsRead += 1;
@@ -743,19 +743,32 @@ public final class JdbcExecutor {
             if (session.rowsRead >= session.maxRows) {
                 boolean truncated = session.resultSet.next();
                 closeSession(targetSessions, session.id);
-                return new QueryPageResult(session.columns, session.columnTypes, rows, 0L, executionTimeMs, truncated, null, false);
+                return sessionPageResult(session, rows, executionTimeMs, truncated, null, false);
             }
 
             boolean hasMore = session.resultSet.next();
             if (!hasMore) {
                 closeSession(targetSessions, session.id);
-                return new QueryPageResult(session.columns, session.columnTypes, rows, 0L, executionTimeMs, false, null, false);
+                return sessionPageResult(session, rows, executionTimeMs, false, null, false);
             }
 
             session.pendingRow = rowValues(session.resultSet, session.valueReader, session.sqlTypeByIndex, session.typeNameByIndex);
             session.rowsRead += 1;
-            return new QueryPageResult(session.columns, session.columnTypes, rows, 0L, executionTimeMs, false, session.id, true);
+            return sessionPageResult(session, rows, executionTimeMs, false, session.id, true);
         });
+    }
+
+    private static QueryPageResult sessionPageResult(
+        QuerySession session,
+        List<List<Object>> rows,
+        long executionTimeMs,
+        boolean truncated,
+        String sessionId,
+        boolean hasMore
+    ) {
+        QueryPageResult result = new QueryPageResult(session.columns, session.columnTypes, rows, 0L, executionTimeMs, truncated, sessionId, hasMore);
+        result.setCursor_rows_read(session.rowsRead);
+        return result;
     }
 
     private void closeAllSessions(ConcurrentHashMap<String, QuerySession> targetSessions) {
