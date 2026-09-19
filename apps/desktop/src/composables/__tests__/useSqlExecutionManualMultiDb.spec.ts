@@ -187,4 +187,17 @@ describe("manual multi-database submission", () => {
     ]);
     await result.transaction!.finish("rollback");
   });
+
+  it("preserves each submitted statement and editor range for the result summary", async () => {
+    const { execution, input, capture } = setup();
+    const first = "INSERT INTO t VALUES (1)";
+    const second = "INSERT INTO t VALUES (2)";
+    const result = await execution.executeTargetSql({ ...input, sql: `${first};\n${second};`, sourceOffset: 10 });
+    const worker = useQueryStore().getExecutionTab(capture.mock.calls[0][1]);
+    expect(worker?.results).toEqual([
+      expect.objectContaining({ statement_index: 0, sourceStatement: first, sourceFrom: 10, sourceTo: 10 + first.length }),
+      expect.objectContaining({ statement_index: 1, sourceStatement: second, sourceFrom: 12 + first.length, sourceTo: 12 + first.length + second.length }),
+    ]);
+    await result.transaction!.finish("rollback");
+  });
 });

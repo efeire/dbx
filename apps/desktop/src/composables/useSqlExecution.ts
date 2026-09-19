@@ -646,10 +646,17 @@ export function useSqlExecution(deps: {
         const compatibility = databaseType === "opengauss" ? connectionStore.databaseCompatibilityMode(executionTab.connectionId, executionTab.database) : undefined;
         const statements = splitSqlStatementRanges(sql, databaseType, sqlStatementParameterOptionsForCompatibility(databaseType, compatibility));
         const results: NonNullable<QueryTab["results"]> = [];
-        for (const statement of statements.length ? statements : [{ sql }]) {
+        for (const [statementIndex, statement] of (statements.length ? statements : [{ sql, from: 0, to: sql.length }]).entries()) {
           if (cancelRequested()) return await failedManualResult("cancelled");
           const statementResults = await api.executeInManualTransaction(manualSessionId, statement.sql, executionTab.database, executionTab.schema, maxRows);
-          results.push(...statementResults);
+          results.push(
+            ...statementResults.map((result) => ({
+              ...result,
+              statement_index: statementIndex,
+              sourceStatement: statement.sql,
+              ...(sourceOffset === undefined ? {} : { sourceFrom: sourceOffset + statement.from, sourceTo: sourceOffset + statement.to }),
+            })),
+          );
           if (statementResults.some(isQueryExecutionErrorResult)) break;
         }
         worker.results = results;
