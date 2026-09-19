@@ -6966,6 +6966,10 @@ export default {
     noTables: "No tables available",
   },
   dataCompare: {
+    manualTransactionHint: "Changes wait for Commit or Rollback. An error rolls back the transaction.",
+    pendingTransaction: "Awaiting Commit or Rollback",
+    rollbackBeforeClose: "There are uncommitted changes. Roll back and close?",
+    transactionEnded: "The transaction has ended or was rolled back. Compare again before retrying.",
     title: "Compare Data",
     selectTable: "Select table",
     searchTable: "Search tables...",

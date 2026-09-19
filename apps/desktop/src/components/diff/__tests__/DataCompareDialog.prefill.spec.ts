@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   getColumns: vi.fn().mockResolvedValue([{ name: "ID", data_type: "NUMBER", is_primary_key: true }]),
   buildDataCompareSyncPlan: vi.fn(),
   executeBatch: vi.fn(),
+  beginManualTransaction: vi.fn().mockResolvedValue("compare-txn"),
+  executeInManualTransaction: vi.fn().mockResolvedValue([]),
+  commitManualTransaction: vi.fn().mockResolvedValue({}),
+  rollbackManualTransaction: vi.fn().mockResolvedValue({}),
 }));
 
 const sessionMocks = vi.hoisted(() => ({
@@ -60,6 +64,10 @@ vi.mock("@/lib/backend/api", () => ({
   getColumns: mocks.getColumns,
   buildDataCompareSyncPlan: mocks.buildDataCompareSyncPlan,
   executeBatch: mocks.executeBatch,
+  beginManualTransaction: mocks.beginManualTransaction,
+  executeInManualTransaction: mocks.executeInManualTransaction,
+  commitManualTransaction: mocks.commitManualTransaction,
+  rollbackManualTransaction: mocks.rollbackManualTransaction,
 }));
 
 const mountedApps: App[] = [];
@@ -76,6 +84,7 @@ afterEach(() => {
   document.body.textContent = "";
   sessionMocks.session = null;
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function completedSession(): DataCompareSession {
@@ -158,6 +167,133 @@ function mountSessionDialog(session: DataCompareSession): App {
   app.mount(container);
   return app;
 }
+
+function buttonFor(key: string): HTMLButtonElement {
+  const button = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === i18n.global.t(key));
+  if (!button) throw new Error(`Missing button: ${key}`);
+  return button;
+}
+
+async function mountManualSession(session = completedSession()) {
+  const app = mountSessionDialog(session);
+  await flushAsyncSetup();
+  const label = [...document.querySelectorAll("label")].find((label) => label.textContent?.includes(i18n.global.t("toolbar.manualTransaction")));
+  const checkbox = label?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+  expect(checkbox).toBeDefined();
+  checkbox!.click();
+  await nextTick();
+  return app;
+}
+
+describe("DataCompareDialog manual transactions", () => {
+  it("keeps the target session pending until commit and locks target changes", async () => {
+    const session = completedSession();
+    await mountManualSession(session);
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain(i18n.global.t("dataCompare.pendingTransaction")));
+    expect(mocks.beginManualTransaction).toHaveBeenCalledWith("oracle-jdbc-11g", "REPORTING", "DBX_TEST");
+    expect(mocks.executeInManualTransaction).toHaveBeenCalledWith("compare-txn", "INSERT 1;\nINSERT 2", "REPORTING", "DBX_TEST");
+    expect(mocks.executeBatch).not.toHaveBeenCalled();
+    expect(mocks.commitManualTransaction).not.toHaveBeenCalled();
+    expect(buttonFor("dataCompare.recompare").disabled).toBe(true);
+    expect([...document.querySelectorAll<HTMLButtonElement>("button.dbx-searchable-select-trigger")].every((button) => button.disabled)).toBe(true);
+    buttonFor("toolbar.commit").click();
+    await vi.waitFor(() => expect(mocks.commitManualTransaction).toHaveBeenCalledWith("compare-txn"));
+    await flushAsyncSetup();
+    expect(document.body.textContent).not.toContain(i18n.global.t("dataCompare.pendingTransaction"));
+    expect(session.syncPlan.syncStatements).toEqual([]);
+    expect(session.batchResults).toEqual([]);
+  });
+
+  it("rolls back without committing", async () => {
+    await mountManualSession();
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain(i18n.global.t("dataCompare.pendingTransaction")));
+    buttonFor("toolbar.rollback").click();
+    await vi.waitFor(() => expect(mocks.rollbackManualTransaction).toHaveBeenCalledWith("compare-txn"));
+    expect(mocks.commitManualTransaction).not.toHaveBeenCalled();
+  });
+
+  it("stops on the first failed batch without ordinary retries or later batches", async () => {
+    const session = completedSession();
+    session.syncPlan.syncStatements = Array.from({ length: 501 }, (_, index) => `INSERT ${index}`);
+    session.syncPlan.statementCount = 501;
+    mocks.executeInManualTransaction.mockRejectedValueOnce(new Error("transaction statement rejected"));
+    await mountManualSession(session);
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(mocks.rollbackManualTransaction).toHaveBeenCalledWith("compare-txn"));
+    expect(mocks.executeInManualTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.executeBatch).not.toHaveBeenCalled();
+    expect(mocks.commitManualTransaction).not.toHaveBeenCalled();
+  });
+
+  it("cleans up a transaction created after the dialog unmounts", async () => {
+    let resolveBegin!: (id: string) => void;
+    mocks.beginManualTransaction.mockReturnValueOnce(new Promise((resolve) => (resolveBegin = resolve)));
+    const app = await mountManualSession();
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(mocks.beginManualTransaction).toHaveBeenCalled());
+    mountedApps.splice(mountedApps.indexOf(app), 1);
+    app.unmount();
+    resolveBegin("late-compare-txn");
+    await vi.waitFor(() => expect(mocks.rollbackManualTransaction).toHaveBeenCalledWith("late-compare-txn"));
+    expect(mocks.executeInManualTransaction).not.toHaveBeenCalled();
+  });
+
+  it("keeps a rollback control when commit fails", async () => {
+    mocks.commitManualTransaction.mockRejectedValueOnce(new Error("commit unavailable"));
+    await mountManualSession();
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain(i18n.global.t("dataCompare.pendingTransaction")));
+    buttonFor("toolbar.commit").click();
+    await vi.waitFor(() => expect(mocks.commitManualTransaction).toHaveBeenCalled());
+    await flushAsyncSetup();
+    expect(buttonFor("toolbar.rollback").disabled).toBe(false);
+    expect(document.body.textContent).toContain(i18n.global.t("dataCompare.pendingTransaction"));
+  });
+
+  it("waits for an active batch before rollback on unmount and skips later batches", async () => {
+    const session = completedSession();
+    session.syncPlan.syncStatements = Array.from({ length: 501 }, (_, index) => `INSERT ${index}`);
+    session.syncPlan.statementCount = 501;
+    let finish!: (rows: unknown[]) => void;
+    mocks.executeInManualTransaction.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const app = await mountManualSession(session);
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(mocks.executeInManualTransaction).toHaveBeenCalledOnce());
+    mountedApps.splice(mountedApps.indexOf(app), 1);
+    app.unmount();
+    expect(mocks.rollbackManualTransaction).not.toHaveBeenCalled();
+    finish([]);
+    await vi.waitFor(() => expect(mocks.rollbackManualTransaction).toHaveBeenCalledWith("compare-txn"));
+    expect(mocks.executeInManualTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables commit when rollback after an execution error fails", async () => {
+    mocks.executeInManualTransaction.mockRejectedValueOnce(new Error("statement failed"));
+    mocks.rollbackManualTransaction.mockRejectedValueOnce(new Error("rollback unavailable"));
+    await mountManualSession();
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(mocks.rollbackManualTransaction).toHaveBeenCalled());
+    await flushAsyncSetup();
+    expect(buttonFor("toolbar.commit").disabled).toBe(true);
+    expect(buttonFor("toolbar.rollback").disabled).toBe(false);
+  });
+
+  it("requires rollback confirmation before closing a pending transaction", async () => {
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+    vi.stubGlobal("confirm", confirm);
+    await mountManualSession();
+    buttonFor("diff.executeSync").click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain(i18n.global.t("dataCompare.pendingTransaction")));
+    buttonFor("common.close").click();
+    await flushAsyncSetup();
+    expect(mocks.rollbackManualTransaction).not.toHaveBeenCalled();
+    buttonFor("common.close").click();
+    await vi.waitFor(() => expect(mocks.rollbackManualTransaction).toHaveBeenCalledWith("compare-txn"));
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("DataCompareDialog source prefill", () => {
   it("keeps the Oracle source table after loading database and schema prefills", async () => {

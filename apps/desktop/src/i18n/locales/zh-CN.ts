@@ -6939,6 +6939,10 @@ export default withEnglishFallback({
     noTables: "没有可用表",
   },
   dataCompare: {
+    manualTransactionHint: "修改等待手动提交或回滚，出错时回滚事务。",
+    pendingTransaction: "等待提交或回滚",
+    rollbackBeforeClose: "尚有未提交的修改。回滚并关闭？",
+    transactionEnded: "事务已结束或已回滚，请重新比较后再执行。",
     title: "比较数据",
     selectTable: "选择表",
     searchTable: "搜索表名...",

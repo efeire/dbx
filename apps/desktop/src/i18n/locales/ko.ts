@@ -6277,6 +6277,10 @@ export default withEnglishFallback({
     },
   },
   dataCompare: {
+    manualTransactionHint: "변경 사항은 커밋 또는 롤백을 기다립니다. 오류가 발생하면 트랜잭션을 롤백합니다.",
+    pendingTransaction: "커밋 또는 롤백 대기 중",
+    rollbackBeforeClose: "커밋되지 않은 변경 사항이 있습니다. 롤백하고 닫을까요?",
+    transactionEnded: "트랜잭션이 종료되었거나 롤백되었습니다. 다시 실행하기 전에 비교하세요.",
     title: "데이터 비교",
     selectTable: "테이블 선택",
     searchTable: "테이블 검색...",

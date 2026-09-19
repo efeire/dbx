@@ -6565,6 +6565,10 @@ export default withEnglishFallback({
     noTables: "利用可能なテーブルがありません",
   },
   dataCompare: {
+    manualTransactionHint: "変更はコミットまたはロールバックを待ちます。エラー時はトランザクションをロールバックします。",
+    pendingTransaction: "コミットまたはロールバック待ち",
+    rollbackBeforeClose: "未コミットの変更があります。ロールバックして閉じますか？",
+    transactionEnded: "トランザクションは終了またはロールバックされました。再実行する前に比較し直してください。",
     title: "データを比較",
     selectTable: "テーブルを選択",
     searchTable: "テーブルを検索...",

@@ -5858,6 +5858,10 @@ export default withEnglishFallback({
     noTables: "沒有可用的資料表",
   },
   dataCompare: {
+    manualTransactionHint: "修改等待手動提交或回滾，發生錯誤時回滾交易。",
+    pendingTransaction: "等待提交或回滾",
+    rollbackBeforeClose: "尚有未提交的修改。回滾並關閉？",
+    transactionEnded: "交易已結束或已回滾，請重新比較後再執行。",
     title: "比較資料",
     selectTable: "選擇資料表",
     searchTable: "搜尋資料表……",

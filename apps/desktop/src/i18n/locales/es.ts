@@ -6527,6 +6527,10 @@ export default withEnglishFallback({
     noTables: "No hay tablas disponibles",
   },
   dataCompare: {
+    manualTransactionHint: "Los cambios esperan a Confirmar o Revertir. Un error revierte la transacción.",
+    pendingTransaction: "Esperando confirmación o reversión",
+    rollbackBeforeClose: "Hay cambios sin confirmar. ¿Revertir y cerrar?",
+    transactionEnded: "La transacción ha terminado o se ha revertido. Compara de nuevo antes de reintentar.",
     title: "Comparar datos",
     selectTable: "Seleccionar tabla",
     searchTable: "Buscar tablas...",

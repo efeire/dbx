@@ -6527,6 +6527,10 @@ export default withEnglishFallback({
     noTables: "Nessuna tabella disponibile",
   },
   dataCompare: {
+    manualTransactionHint: "Le modifiche attendono Conferma o Annulla. Un errore annulla la transazione.",
+    pendingTransaction: "In attesa di conferma o annullamento",
+    rollbackBeforeClose: "Ci sono modifiche non confermate. Annullare e chiudere?",
+    transactionEnded: "La transazione è terminata o è stata annullata. Confronta di nuovo prima di riprovare.",
     title: "Confronta Dati",
     selectTable: "Seleziona tabella",
     searchTable: "Cerca tabelle...",
