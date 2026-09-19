@@ -176,15 +176,14 @@ pub fn build_query_pagination_execution_plan(
     }
 
     let can_use_first_page_cursor = options.use_agent_cursor && options.pagination.offset == 0;
-    // HighGo's PostgreSQL-compatible JDBC driver can buffer an unbounded result
-    // before the Agent has a chance to expose its cursor page. Prefer an actual
-    // LIMIT/OFFSET query whenever it can be rewritten safely. For an unordered
-    // query, independent pages are not guaranteed to preserve row order; this is
-    // an intentional tradeoff to keep HighGo execution bounded. Kingbase keeps
-    // the cursor for unordered queries because separate executions may not
-    // preserve row order there.
+    // HighGo and OceanBase Oracle can spend substantially more time executing
+    // an unbounded query before the Agent exposes its first cursor page. Prefer
+    // a bounded SQL query whenever it can be rewritten safely. Independent
+    // pages of an unordered query do not have a stable row order; callers
+    // should add ORDER BY when that matters.
+    // Kingbase keeps the cursor for unordered queries to preserve its behavior.
     let prefer_server_pagination = match options.database_type {
-        Some(DatabaseType::Highgo) => true,
+        Some(DatabaseType::Highgo | DatabaseType::OceanbaseOracle) => true,
         Some(DatabaseType::Kingbase) => kingbase_server_pagination_is_stable(&options.query_base_sql),
         _ => false,
     };
@@ -4699,6 +4698,51 @@ WHERE u.id = picked.id;
         assert_eq!(second_page.page_limit, Some(500));
         assert_eq!(second_page.page_offset, Some(500));
         assert!(!second_page.use_agent_result_session);
+    }
+
+    #[test]
+    fn oceanbase_oracle_prefers_bounded_first_page_and_keeps_cursor_fallback() {
+        let sql = "SELECT * FROM events";
+        let first_page = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+            sql: sql.to_string(),
+            query_base_sql: sql.to_string(),
+            database_type: Some(DatabaseType::OceanbaseOracle),
+            pagination: QueryPagination { limit: 500, offset: 0, session_id: None },
+            use_agent_cursor: true,
+            first_page_uses_actual_sql: false,
+        });
+        assert_eq!(first_page.sql_to_execute, "SELECT * FROM (SELECT * FROM events) WHERE ROWNUM <= 500;");
+        assert_eq!(first_page.page_sql.as_deref(), Some(first_page.sql_to_execute.as_str()));
+        assert_eq!(first_page.page_limit, Some(500));
+        assert_eq!(first_page.page_offset, Some(0));
+        assert!(!first_page.use_agent_result_session);
+        assert!(first_page.count_sql.is_some());
+
+        let next_page = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+            sql: sql.to_string(),
+            query_base_sql: sql.to_string(),
+            database_type: Some(DatabaseType::OceanbaseOracle),
+            pagination: QueryPagination { limit: 500, offset: 500, session_id: None },
+            use_agent_cursor: true,
+            first_page_uses_actual_sql: false,
+        });
+        assert!(next_page.sql_to_execute.contains("ROWNUM <= 1000"));
+        assert!(next_page.sql_to_execute.contains("\"__dbx_row_num\" > 500"));
+        assert_eq!(next_page.page_sql.as_deref(), Some(next_page.sql_to_execute.as_str()));
+        assert!(!next_page.use_agent_result_session);
+
+        let unrewritable = "SELECT * FROM events; SELECT 1";
+        let fallback = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+            sql: unrewritable.to_string(),
+            query_base_sql: unrewritable.to_string(),
+            database_type: Some(DatabaseType::OceanbaseOracle),
+            pagination: QueryPagination { limit: 500, offset: 0, session_id: None },
+            use_agent_cursor: true,
+            first_page_uses_actual_sql: false,
+        });
+        assert_eq!(fallback.sql_to_execute, unrewritable);
+        assert!(fallback.page_sql.is_none());
+        assert!(fallback.use_agent_result_session);
     }
 
     #[test]
