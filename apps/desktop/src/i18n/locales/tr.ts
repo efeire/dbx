@@ -2545,6 +2545,7 @@ export default withEnglishFallback({
     apply: "Uygula",
   },
   explain: {
+    estimatedTime: "Tahmini süre",
     title: "Yürütme Planı",
     standardTable: "Tablo",
     tree: "Ağaç",
