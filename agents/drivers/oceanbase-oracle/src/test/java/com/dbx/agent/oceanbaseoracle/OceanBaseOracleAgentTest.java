@@ -157,7 +157,7 @@ class OceanBaseOracleAgentTest {
 
 
     @ParameterizedTest
-    @CsvSource({"10, 1000, false", "1, 1000, false", "1, 1, true"})
+    @CsvSource({"10, 1000, false", "1, 1000, false", "1, 1, true", "2, 2, false"})
     void preservesTheCursorStatementLimitWhenSamplingItsTerminalPage(int pageSize, int maxRows, boolean truncated) {
         List<Integer> auditLimits = new ArrayList<>();
         List<String> auditSql = new ArrayList<>();
