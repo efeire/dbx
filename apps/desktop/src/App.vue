@@ -27,6 +27,7 @@ import { useTheme } from "@/composables/useTheme";
 import { canDownloadAndInstallUpdate, useAppUpdater } from "@/composables/useAppUpdater";
 import { useMcpUpdateBadge } from "@/composables/useMcpUpdateBadge";
 import { useComponentUpdates, type ComponentUpdateCategory } from "@/composables/useComponentUpdates";
+import { notifyComponentPluginsUpdated } from "@/lib/updates/componentUpdateEvents";
 import { driverStoreUpdateBadgeCount, showMcpUpdateBadge } from "@/lib/updates/updateBadges";
 import { markPendingComponentUpdatesAfterAppUpdate, resolveUpdateAllAction, runPendingComponentUpdatePlan, shouldCloseUpdateCenterAfterComponentUpdate, takePendingComponentUpdatesAfterAppRestart, type PendingComponentUpdatePlan } from "@/lib/updates/componentUpdateOrchestration";
 import { isUpdatePreviewMockEnabled } from "@/lib/updates/updatePreviewMock";
@@ -314,7 +315,7 @@ const activeAiRunCount = computed(() => (isDesktop ? activeDesktopAiRuns().lengt
 /** Runs waiting for a write confirmation — the panel-entry badge shows these
  *  with a higher-priority indicator (parent PRD §4 line 71 / §9). */
 const awaitingAiRunCount = computed(() => (isDesktop ? activeDesktopAiRuns().filter((run) => run.status === "awaiting_write_confirmation").length : 0));
-const { mcpUpdateAvailable, refreshMcpUpdateStatus, handleMcpStatusChanged } = useMcpUpdateBadge({
+const { mcpUpdateAvailable, refreshMcpUpdateStatus, handleMcpStatusChanged, applyMcpStatus } = useMcpUpdateBadge({
   isDesktop,
   // Update availability remains visible when every auto-update switch is off;
   // the switches control installation, not whether the user can be reminded.
@@ -962,6 +963,7 @@ function requestActiveEditorPreviewChanges() {
 const multiExecuteDatabaseType = ref<DatabaseType>();
 const multiExecuteInitialTargets = ref<Array<{ connectionId: string; catalog?: string; database: string; schema?: string }>>([]);
 const multiExecuteLaunchId = ref(0);
+const multiExecuteManualTransaction = ref(false);
 // Launch-time input only. MultiDbExecuteDialog copies this into its immutable
 // batch context before the first target starts; execution never reads this ref.
 const multiExecuteSourceOffset = ref<number>();
@@ -971,7 +973,7 @@ function multiExecuteTargetLabel(target: { connectionId: string; catalog?: strin
   return [connection?.name || target.connectionId, target.catalog, target.database, target.schema].filter((value) => value !== undefined && value !== "").join(" / ");
 }
 
-async function executeMultiDbTarget(input: { target: { connectionId: string; catalog?: string; database: string; schema?: string }; sourceTabId: string; sql: string; scopeId: string; context: { sourceOffset?: number }; isCancellationRequested: () => boolean }) {
+async function executeMultiDbTarget(input: { target: { connectionId: string; catalog?: string; database: string; schema?: string }; sourceTabId: string; sql: string; scopeId: string; context: { sourceOffset?: number; manualTransaction?: boolean }; isCancellationRequested: () => boolean }) {
   const tab = queryStore.tabs.find((candidate) => candidate.id === input.sourceTabId);
   const connection = connectionStore.getConfig(input.target.connectionId);
   if (!tab || !connection) return { status: "failed" as const, errorMessage: t("multiDbExecute.targetMissingConnection") };
@@ -986,6 +988,7 @@ async function executeMultiDbTarget(input: { target: { connectionId: string; cat
       target: input.target,
     },
     sourceOffset: input.context.sourceOffset,
+    manualTransaction: input.context.manualTransaction,
     blockDangerousRedisCommands: blockDangerousRedisCommands.value,
     targetLabel: multiExecuteTargetLabel(input.target),
     scopeId: input.scopeId,
@@ -1005,7 +1008,7 @@ function cancelPendingMultiDbTarget(scopeId: string): void {
 
 async function requestMultiDbExecute() {
   const tab = activeTab.value;
-  if (!tab || !activeConnection.value || showMultiDbExecuteDialog.value) return;
+  if (!tab || !activeConnection.value || showMultiDbExecuteDialog.value || tab.txnSessionId) return;
   const sourceTabId = tab.id;
   const sourceConnection = connectionStore.getConfig(tab.connectionId) ?? activeConnection.value;
   const sourceTarget = normalizeSqlExecutionTarget(sourceConnection, {
@@ -1019,6 +1022,7 @@ async function requestMultiDbExecute() {
     multiExecuteSourceOffset.value = sourceOffset;
     multiExecuteLaunchId.value += 1;
     multiExecuteSourceTabId.value = sourceTabId;
+    multiExecuteManualTransaction.value = tab.autoCommit === false;
     multiExecuteDatabaseType.value = effectiveDatabaseTypeForConnection(sourceConnection);
     multiExecuteInitialTargets.value = [sourceTarget];
     showMultiDbExecuteDialog.value = true;
@@ -1206,7 +1210,8 @@ async function checkAllUpdates() {
   manualCheckingAllUpdates.value = true;
   const startedAt = Date.now();
   try {
-    await Promise.allSettled([checkUpdates({ silent: true }), componentUpdates.refresh()]);
+    const [, componentRefresh] = await Promise.allSettled([checkUpdates({ silent: true }), componentUpdates.refresh()]);
+    if (componentRefresh.status === "fulfilled" && componentRefresh.value) syncToolbarComponentUpdateState();
     const remaining = 500 - (Date.now() - startedAt);
     if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
   } finally {
@@ -1221,13 +1226,19 @@ function openDriverStoreFromUpdate(target?: DriverStoreTab) {
 
 function handleToolbarUpdateClick() {
   showUpdateDialog.value = true;
-  if (!toolbarHasUpdateAvailable.value && !checkingAllUpdates.value) void checkAllUpdates();
+  if (!checkingAllUpdates.value) void checkAllUpdates();
+}
+
+function syncToolbarComponentUpdateState() {
+  agentDriverUpdateCount.value = componentUpdates.driverUpdateCount.value;
+  applyMcpStatus(componentUpdates.mcpUpdateAvailable.value);
 }
 
 function reportComponentUpdateResult(result: Awaited<ReturnType<typeof componentUpdates.installCategory>>) {
   const updatedComponents = [result.drivers > 0 ? t("settings.updateDrivers") : "", result.jdbc ? t("settings.updateJdbc") : "", result.mcp ? t("settings.updateMcp") : "", result.plugins > 0 ? t("settings.updatePlugins") : ""].filter(Boolean);
-  // Only a clean refresh is authoritative; a failed registry check must not clear the toolbar count.
-  if (result.failed.length === 0) agentDriverUpdateCount.value = componentUpdates.driverUpdateCount.value;
+  // Only a clean refresh is authoritative; a failed registry check must not clear stale toolbar state.
+  if (result.failed.length === 0) syncToolbarComponentUpdateState();
+  if (result.plugins > 0) notifyComponentPluginsUpdated();
   if (updatedComponents.length) toast(t("updates.componentsAutoUpdated", { components: updatedComponents.join(t("updates.componentListSeparator")) }));
   if (result.skippedDrivers > 0) toast(t("updates.componentsAutoUpdateSkipped"), 6000);
   if (result.failed.length) toast(t("updates.componentsAutoUpdateFailed", { count: result.failed.length }), 6000);
@@ -4380,6 +4391,7 @@ onUnmounted(() => {
           :initial-targets="multiExecuteInitialTargets"
           :launch-id="multiExecuteLaunchId"
           :execute-target="executeMultiDbTarget"
+          :initial-manual-transaction="multiExecuteManualTransaction"
           :cancel-target="cancelMultiDbTarget"
           :cancel-pending="cancelPendingMultiDbTarget"
           :source-offset="multiExecuteSourceOffset"

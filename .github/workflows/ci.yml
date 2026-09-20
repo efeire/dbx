@@ -209,6 +209,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.1
 
+      - name: Install nextest
+        uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.68.13
+        with:
+          tool: cargo-nextest@0.9.137
+
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
@@ -254,11 +259,6 @@ jobs:
           cache-on-failure: true
           # PR caches are large and branch-scoped; restore them from main without saving per-PR copies.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install nextest
-        uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3
-        with:
-          tool: cargo-nextest@0.9.137
 
       # mold -run injects itself as `ld` through PATH for the whole process
       # tree. It must stay a wrapper: putting the linker into RUSTFLAGS or

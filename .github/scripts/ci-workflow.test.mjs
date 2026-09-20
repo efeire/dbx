@@ -90,7 +90,7 @@ test("Rust test jobs install pinned nextest and retain separate doctests", () =>
     assert.doesNotMatch(content, /cargo test (?!.*--doc)/);
     const testCommand = content.indexOf("cargo nextest run") >= 0 ? "cargo nextest run"
       : content.includes("pnpm test:packages") ? "pnpm test:packages"
-      : content.includes("ci-rust.mjs test") ? "ci-rust.mjs test" : "ci-agent-integration.sh";
+        : content.includes("ci-rust.mjs test") ? "ci-rust.mjs test" : "ci-agent-integration.sh";
     assert.ok(content.indexOf("tool: cargo-nextest@0.9.137") < content.indexOf(testCommand));
   }
   assert.ok(job("rust-test").includes('ci-rust.mjs doctest "$RUST_TEST_GROUP" "$RUST_FEATURE_MODE"'));

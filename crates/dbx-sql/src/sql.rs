@@ -59,6 +59,9 @@ pub struct SqlFileRequest {
     pub database: String,
     pub file_path: String,
     pub continue_on_error: bool,
+    /// Reuse a held manual transaction instead of committing through ordinary query execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txn_session_id: Option<String>,
     #[serde(default)]
     pub selected_tables: Option<Vec<dbx_types::sql_file::SqlFileTable>>,
     #[serde(default)]
@@ -952,6 +955,13 @@ fn starts_with_soft_statement_keyword(sql: &str, options: SqlParsingOptions) -> 
 #[allow(dead_code)]
 fn split_sql_statement_ranges(sql: &str) -> Vec<SqlStatementRange> {
     split_sql_statement_ranges_with_options(sql, SqlParsingOptions::default())
+}
+
+/// Statement ranges that keep their byte offsets into `sql`, so callers can rewrite
+/// individual statements in place (see the Oracle administrative DDL tolerance in
+/// `sql_analysis`).
+pub(crate) fn statement_ranges_for_database(sql: &str, db_type: DatabaseType) -> Vec<SqlStatementRange> {
+    split_sql_statement_ranges_with_options(sql, SqlParsingOptions::for_database_type(db_type))
 }
 
 fn split_sql_statement_ranges_with_options(sql: &str, options: SqlParsingOptions) -> Vec<SqlStatementRange> {
