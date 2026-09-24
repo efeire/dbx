@@ -9,6 +9,7 @@ const { t } = useI18n();
 const measured = (value: number | undefined): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 const format = (value: number | undefined) => (measured(value) ? `${Number(value.toFixed(3))}ms` : t("grid.timingUnavailable"));
 const wait = computed(() => (measured(props.result.client_request_wait_ms) ? `${Math.round(props.result.client_request_wait_ms)}ms` : "—"));
+const hasAgentTiming = computed(() => measured(props.result.query_timings_ms?.agent_total));
 const phases = computed(() => {
   const m = props.result.query_timings_ms ?? {};
   const waitMs = props.result.client_request_wait_ms;
@@ -23,8 +24,9 @@ const phases = computed(() => {
             .reduce((sum, [, value]) => sum + (measured(value) ? value : 0), 0),
       )
     : undefined;
-  return [
+  const stages = [
     { key: "prepare", value: props.result.client_prepare_ms },
+    { key: "request", value: waitMs },
     { key: "core_lock", value: m.core_lock },
     { key: "pool_acquire", value: m.pool_acquire },
     { key: "session_prepare", value: m.session_prepare },
@@ -39,6 +41,11 @@ const phases = computed(() => {
     { key: "result", value: props.result.client_result_ms },
     { key: "render", value: props.renderMs },
   ];
+  return stages.filter((stage) => {
+    if (["prepare", "result", "render"].includes(stage.key)) return true;
+    if (stage.key === "request") return !hasAgentTiming.value;
+    return hasAgentTiming.value && measured(stage.value);
+  });
 });
 </script>
 
@@ -68,7 +75,7 @@ const phases = computed(() => {
               </tr>
             </tbody>
           </table>
-          <dl class="border-t border-current/20 pt-2">
+          <dl v-if="hasAgentTiming" class="border-t border-current/20 pt-2">
             <div class="flex justify-between gap-4">
               <dt>{{ t("grid.timingBackend") }}</dt>
               <dd class="tabular-nums">{{ format(result.execution_time_ms) }}</dd>

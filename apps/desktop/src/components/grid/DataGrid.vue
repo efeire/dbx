@@ -6649,7 +6649,7 @@ let dataGridIsActive = true;
 let canvasRuntime: DataGridCanvasRuntime;
 const { elapsedMs: resultViewUpdateMs, canvasDrawCompleted: completeResultCanvasDraw } = useResultViewUpdateTiming(
   () => props.result,
-  () => resolvedDatabaseType.value === "oceanbase-oracle" && isResultsContext.value,
+  () => isResultsContext.value,
   () => (useCanvasGridRows.value ? "canvas" : "dom"),
 );
 
@@ -13943,7 +13943,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         </span>
         <span v-if="showTruncationWarning" class="shrink-0 text-amber-500 text-xs">(truncated)</span>
         <span v-if="!hasData" class="shrink-0">{{ t("grid.rowsAffected", { count: result.affected_rows }) }}</span>
-        <QueryTimingDetails v-if="resolvedDatabaseType === 'oceanbase-oracle' && isResultsContext" :result="result" :render-ms="resultViewUpdateMs" />
+        <QueryTimingDetails v-if="isResultsContext" :result="result" :render-ms="resultViewUpdateMs" />
         <span v-else class="shrink-0">{{ result.execution_time_ms }}ms</span>
 
         <template v-if="editable && hasDataGridSaveTarget">

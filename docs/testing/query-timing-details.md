@@ -1,46 +1,37 @@
-# OceanBase Oracle query timing details
+# Query timing details across databases
 
-The result status bar shows request wait as a number (for example, `364ms`). Hover or keyboard focus opens a three-column table: number, stage, time. All 14 stages remain visible; parenthetical notes identify preparation/rendering outside wait and derived remainders. Escape closes the tooltip. Missing telemetry shows unavailable, never a substituted zero or backend total.
+The query result status bar displays request wait as a number, for example `45ms`. Hover or keyboard focus opens a numbered three-column table. Notes stay in parentheses beside the stage. Escape closes the tooltip.
 
-![Timing details using a captured Agent response](query-timing-details.png)
+## Collected stages
 
-## Boundaries
+- All SQL query tabs, including manual transactions, measure request preparation, backend request wait, result processing and the latest grid update locally. This elapsed request wait includes backend/database processing and transport; it is not database CPU or execution-plan time.
+- Java JDBC agents additionally report measured pool acquisition, session preparation, schema selection, statement preparation, execution, metadata, fetch and pool return stages. Only reported internal phases are displayed. Core lock and calculated remainders appear when their inputs exist.
+- MongoDB, Redis and Elasticsearch command results use the same common stages. Sequential backend calls within one command accumulate their wait without counting result conversion twice. Local commands without a backend request and continuous Redis MONITOR do not invent a completed-request duration.
+- A single SQL batch returning multiple results has no independent client request span per result; unavailable values remain unavailable instead of assigning the whole batch duration to each result.
+- Pagination accumulates completed request waits and phase maps, including pages consumed during offset jumps. Grid update timing describes the latest update. Result cache serialization preserves the optional timing fields.
+- The backend total, when available with detailed Agent telemetry, overlaps the listed stages. Other wait is a calculated remainder, not measured network time. Missing values are never replaced by zero.
+- Normal OceanBase queries no longer run LAST_TRACE_ID or SQL audit lookups for timing. No additional diagnostic SQL is introduced for other databases.
 
-- Java uses request-scoped monotonic timings. The RPC scope includes pool checkout/checks and return/reset; nested driver scopes merge phase measurements, not overlapping totals.
-- Core measures the Agent execution lock. Optional telemetry crosses Java JSON, Rust typed/manual serialization, TypeScript results and result-cache snapshots.
-- Appended pages and OceanBase offset jumps accumulate timings without retaining skipped rows. Other database types keep their existing display and offset execution-time behavior.
-- Backend-reported time overlaps measured stages. Other wait is a derived remainder, not measured network time.
-- Ordinary queries no longer read LAST_TRACE_ID or the SQL audit view to obtain server plan time. The associated diagnostic rows and plan-time display are removed. Business SQL, timeout, transaction and row-limit behavior are unchanged.
+![JDBC stages from a captured Agent result](query-timing-details.png)
 
-## Failure modes reviewed
+![Common stages using an explicitly synthetic layout example](query-timing-common.png)
 
-Missing/old responses; invalid timing values; nested scopes double-counting totals; stale timings after errors; skipped pagination timings; cache loss/aliasing; misleading unavailable values; non-OceanBase regressions; keyboard access and constrained tooltip height.
+## Verification on 2026-09-24
 
-## Validation
+Environment: Windows, Node with repository dependencies, JDK 21. Tests and regression expectations were prepared before their corresponding implementation. Identified risks included missing/invalid telemetry, double counting, errors, pagination/cache loss, command conversion counted as wait, and regressions to query behavior.
 
-Java (JDK 21), from `agents/`:
-
-```sh
-./gradlew :common:test :oceanbase-oracle:test :oceanbase-oracle:shadowJar --console=plain
-```
-
-261 Java checks passed (218 common, 43 OceanBase). Obsolete sampler coverage was replaced with assertions that completed/capped cursors do not execute diagnostic SQL. Live JSON-RPC validation against an OceanBase Oracle 4.2.5.7 test instance with Connector/J 2.4.18 covered seven requests: two 27-table UNION counts, three cursor pages, a capped result, and an empty query. No table writes. Final no-audit validation passed row counts, nonnegative phases, bounded phase sums, no stale execute stage on fetch, and absence of trace/audit/server-plan telemetry on all seven requests. A held real pool connection measured 353.463ms acquisition inside a 363.0827ms Agent total; pool timeout and SQL-error paths recovered on subsequent requests.
-
-Frontend, from repository root:
+From the repository root:
 
 ```sh
-node node_modules/vitest/vitest.mjs run apps/desktop/src/components/grid/__tests__/QueryTimingDetails.spec.ts apps/desktop/src/components/grid/__tests__/DataGridSurfaces.spec.ts apps/desktop/src/lib/__tests__/tabs/tabResultCache.spec.ts apps/desktop/src/stores/__tests__/queryStore.multiStatementError.spec.ts apps/desktop/src/stores/__tests__/queryStore.spatialMetadata.spec.ts apps/desktop/src/stores/__tests__/queryStore.hiddenPrimaryKey.spec.ts apps/desktop/src/composables/__tests__/useResultViewUpdateTiming.spec.ts
+node node_modules/vitest/vitest.mjs run apps/desktop/src/components/grid/__tests__/QueryTimingDetails.spec.ts apps/desktop/src/components/grid/__tests__/DataGridSurfaces.spec.ts apps/desktop/src/lib/__tests__/queryRequestTiming.spec.ts apps/desktop/src/lib/__tests__/tabs/tabResultCache.spec.ts apps/desktop/src/stores/__tests__/queryStore.multiStatementError.spec.ts apps/desktop/src/stores/__tests__/queryStore.mongoExecutionSummary.spec.ts apps/desktop/src/stores/__tests__/queryStore.spatialMetadata.spec.ts apps/desktop/src/stores/__tests__/queryStore.hiddenPrimaryKey.spec.ts apps/desktop/src/stores/__tests__/queryStore.provenReadOnlyStickyState.spec.ts apps/desktop/src/composables/__tests__/useResultViewUpdateTiming.spec.ts
 node node_modules/vue-tsc/bin/vue-tsc.js --noEmit --project apps/desktop/tsconfig.json
+agents/gradlew.bat -p agents :common:test :oceanbase-oracle:test :oceanbase-oracle:shadowJar :db2:test :dameng:test --console=plain
 ```
 
-Existing component, store and cache tests exercise production behavior; regression expectations were updated before implementation. The final presentation passed its two focused component checks. Browser verification mounted the actual component, CSS, locale and production cache codec using a previously captured Agent result. The final status showed `26ms`, keyboard focus opened all 14 numbered rows with right-aligned values and inline notes, and Escape closed it. Screenshot above. Missing Core/store measurements in this fixture are intentionally unavailable.
+234 frontend tests passed. After the final phase-filter adjustment, the three component checks passed again. 405 Java checks passed: common 218, OceanBase 43, DB2 14, Dameng 130. The common pool/cursor test uses embedded H2 through actual multi-session JSON-RPC and confirms nonnegative acquisition, execution, fetch and release measurements while preserving cursor behavior. Driver tests are not evidence of connectivity to external DB2 or Dameng services.
 
-Rust: `cargo check -p dbx-core --no-default-features --target x86_64-pc-windows-gnu` passed with local OpenSSL; a prior GNU desktop release compilation passed before the final tooltip and audit-removal changes. `cargo run -p dbx-types --example query_timing_roundtrip -- <live-results.json>` verified all seven captured responses preserve telemetry, server timing and rows.
+Browser verification mounted the production component, styles, locale and cache codec. The captured JDBC response displayed `26ms` and 12 applicable rows; the native/HTTP layout example displayed `45ms` and four common rows. Keyboard focus opened both tables, values were right-aligned, and Escape closed the popup. The native/HTTP example is synthetic and does not prove live MongoDB, Redis or Elasticsearch execution.
 
-The live fixture requires a separately provisioned test database and local credentials; credentials and database captures are not committed. Browser evidence does not validate the complete native desktop Core/store/grid path. A previous local portable build predates the final tooltip presentation; no new release is published by this PR.
+Earlier OceanBase validation, before this cross-database extension, exercised seven read-only JSON-RPC requests against OceanBase Oracle 4.2.5.7 with Connector/J 2.4.18: two 27-table UNION counts, three cursor pages, a capped result and an empty query. It verified rows, phase bounds, cursor lifecycle and absence of trace/audit/server-plan telemetry. This extension does not repeat that external database run.
 
-## Pre-PR review
-
-Rebased onto origin/main 80141e353 on 2026-09-24. Standards: no blocking findings; no version bumps or generated build files included. Spec: inline notes and 14 ordered remaining stages match the confirmed presentation; audit/trace lookups are removed, including terminal cursor paths. Full native desktop execution remains unverified. After rebase, 191 focused frontend tests passed across seven files, including upstream grid surface coverage.
-
-Final Rust core check and Vue typecheck passed after rebase. Focused lint reported only two existing spread warnings. Review counts: Standards 0 blocking findings; Spec 0 blocking findings.
+The prior Rust core check passed for the timing protocol; this extension does not change Rust. Full native desktop Core/store/grid execution and real external services for every supported database remain unverified. No package has been rebuilt for this extension and the PR remains paused.

@@ -40,10 +40,30 @@ describe("query timing disclosure", () => {
     expect(text).toContain("归还连接");
     const details = document.querySelector('[data-testid="query-timing-details"]')!;
     const stages = [...details.querySelectorAll("tbody tr")].map((row) => row.textContent!);
-    expect(stages).toHaveLength(14);
+    // No Core lock sample means both the lock and dependent remainder are absent.
+    expect(stages).toHaveLength(12);
     expect([...details.querySelectorAll("thead th")].map((cell) => cell.textContent)).toEqual(["序号", "阶段", "耗时"]);
     expect(stages.findIndex((s) => s.includes("获取连接"))).toBeLessThan(stages.findIndex((s) => s.includes("会话")));
     expect(stages.findIndex((s) => s.includes("归还连接"))).toBeGreaterThan(stages.findIndex((s) => s.includes("读取结果")));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    app.unmount();
+    host.remove();
+  });
+  it("shows common request stages without inventing JDBC steps for a native or HTTP result", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const app = createApp(QueryTimingDetails, { result: { columns: [], rows: [], affected_rows: 0, execution_time_ms: 4, client_request_wait_ms: 12, client_prepare_ms: 2, client_result_ms: 1 }, renderMs: 3 });
+    app.use(createI18n({ legacy: false, locale: "zh-CN", messages: { "zh-CN": zh } }));
+    app.mount(host);
+    await nextTick();
+    host.querySelector<HTMLButtonElement>("button")!.focus();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTick();
+    const details = document.querySelector('[data-testid="query-timing-details"]')!;
+    expect(details.querySelectorAll("tbody tr")).toHaveLength(4);
+    expect(details.textContent).toContain("请求等待");
+    expect(details.textContent).not.toContain("JDBC");
+    expect(details.textContent).not.toContain("获取连接");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     app.unmount();
     host.remove();

@@ -33,6 +33,9 @@ public abstract class AbstractJdbcAgent extends BaseDatabaseAgent {
     private boolean pooledConnectionPoisoned;
 
     @Override
+    public boolean supportsQueryTiming() { return true; }
+
+    @Override
     public final Connection getConnection() {
         return connection;
     }
