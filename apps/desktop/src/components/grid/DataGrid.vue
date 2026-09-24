@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import QueryTimingDetails from "./QueryTimingDetails.vue";
 import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
 import { applyDdlSearchMarks } from "@/lib/sql/ddlSearchMarks";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
@@ -13942,12 +13943,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         </span>
         <span v-if="showTruncationWarning" class="shrink-0 text-amber-500 text-xs">(truncated)</span>
         <span v-if="!hasData" class="shrink-0">{{ t("grid.rowsAffected", { count: result.affected_rows }) }}</span>
-        <template v-if="resolvedDatabaseType === 'oceanbase-oracle' && isResultsContext">
-          <span class="shrink-0" :title="t('grid.serverExecuteTimeHint')">{{ result.server_execute_time_us !== undefined ? t("grid.serverExecuteTime", { us: result.server_execute_time_us }) : t("grid.serverExecuteTimeUnavailable") }}</span>
-          <span class="shrink-0" :title="t('grid.agentExecuteTimeHint')">{{ t("grid.agentExecuteTime", { ms: result.execution_time_ms }) }}</span>
-          <span v-if="result.client_request_wait_ms !== undefined" class="shrink-0" :title="t('grid.clientRequestWaitHint')">{{ t("grid.clientRequestWait", { ms: result.client_request_wait_ms }) }}</span>
-          <span v-if="resultViewUpdateMs !== undefined" class="shrink-0" :title="t('grid.resultViewUpdateHint')">{{ t("grid.resultViewUpdate", { ms: resultViewUpdateMs }) }}</span>
-        </template>
+        <QueryTimingDetails v-if="resolvedDatabaseType === 'oceanbase-oracle' && isResultsContext" :result="result" :render-ms="resultViewUpdateMs" />
         <span v-else class="shrink-0">{{ result.execution_time_ms }}ms</span>
 
         <template v-if="editable && hasDataGridSaveTarget">

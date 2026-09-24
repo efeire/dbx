@@ -346,6 +346,11 @@ export function appendQueryResultSegment(previous: QueryResult, segment: QueryRe
     // Independent page SQLs need every page sampled before a total is shown.
     server_execute_time_us: previous.session_id ? segment.server_execute_time_us : previous.server_execute_time_us !== undefined && segment.server_execute_time_us !== undefined ? previous.server_execute_time_us + segment.server_execute_time_us : undefined,
     client_request_wait_ms: previous.client_request_wait_ms !== undefined && segment.client_request_wait_ms !== undefined ? previous.client_request_wait_ms + segment.client_request_wait_ms : undefined,
+    query_timings_ms:
+      previous.query_timings_ms && segment.query_timings_ms ? Object.fromEntries([...new Set([...Object.keys(previous.query_timings_ms), ...Object.keys(segment.query_timings_ms)])].map((key) => [key, (previous.query_timings_ms![key] ?? 0) + (segment.query_timings_ms![key] ?? 0)])) : undefined,
+    client_prepare_ms: previous.client_prepare_ms !== undefined && segment.client_prepare_ms !== undefined ? previous.client_prepare_ms + segment.client_prepare_ms : undefined,
+    client_result_ms: previous.client_result_ms !== undefined && segment.client_result_ms !== undefined ? previous.client_result_ms + segment.client_result_ms : undefined,
+    timing_page_count: (previous.timing_page_count ?? 1) + (segment.timing_page_count ?? 1),
     has_more: previous.rows.length + appendedRowCount >= maxRows ? false : segment.has_more,
   });
 }
@@ -7587,6 +7592,10 @@ export const useQueryStore = defineStore("query", () => {
           return (async () => {
             let sessionId: string | undefined;
             let skipped = 0;
+            let pageCount = 0;
+            let executionMs = 0;
+            let completeTimings = true;
+            const timings: Record<string, number> = {};
             while (true) {
               const pageResults = await api.executeMulti(executionConnectionId, executionDatabase, sqlToExecute, executionSchema, executionId, {
                 ...executionOptions,
@@ -7594,10 +7603,17 @@ export const useQueryStore = defineStore("query", () => {
               });
               const page = pageResults[0];
               if (!page) return pageResults;
+              pageCount += 1;
+              executionMs += page.execution_time_ms;
+              if (!page.query_timings_ms) completeTimings = false;
+              else for (const [key, value] of Object.entries(page.query_timings_ms)) timings[key] = (timings[key] ?? 0) + value;
+              // Offset jumps consume several cursor pages before publication.
+              // Keep their timings as well, without retaining skipped rows.
+              const timingSummary = effectiveDbType === "oceanbase-oracle" ? { query_timings_ms: completeTimings ? { ...timings } : undefined, execution_time_ms: executionMs, timing_page_count: pageCount } : {};
               if (skipped + page.rows.length > pageOffset) {
                 const start = pageOffset - skipped;
                 const limit = typeof pageLimit === "number" ? pageLimit : page.rows.length - start;
-                return [{ ...page, rows: page.rows.slice(start, start + limit) }];
+                return [{ ...page, ...timingSummary, rows: page.rows.slice(start, start + limit) }];
               }
               skipped += page.rows.length;
               if (!page.has_more || !page.session_id) {
@@ -7606,7 +7622,7 @@ export const useQueryStore = defineStore("query", () => {
                   // returning the short page would show the wrong rows.
                   throw new Error("Result session ended before the requested page offset");
                 }
-                return [{ ...page, rows: [] }];
+                return [{ ...page, ...timingSummary, rows: [] }];
               }
               sessionId = page.session_id;
             }
@@ -7710,8 +7726,11 @@ export const useQueryStore = defineStore("query", () => {
       // A single result has an unambiguous request boundary. This includes fetch and
       // transport, but excludes SQL preparation and the grid's later render work.
       if (clientRequestStartedAt !== undefined && responseResults.length === 1 && !responseResults[0]?.execution_error) {
-        responseResults[0]!.client_request_wait_ms = Math.max(0, Math.round(performance.now() - clientRequestStartedAt));
+        responseResults[0]!.client_request_wait_ms = Math.max(0, performance.now() - clientRequestStartedAt);
+        responseResults[0]!.client_prepare_ms = Math.max(0, clientRequestStartedAt - startedAt);
+        responseResults[0]!.timing_page_count ??= 1;
       }
+      const resultProcessingStartedAt = performance.now();
       const annotatedResults = annotateQueryResultSources(markQueryResultsRowsRaw(responseResults), queryBaseSql, sourceLabelDatabase, effectiveDbType, options?.sourceOffset, sqlStatementParameterOptions, sqlToExecute, options?.sourceOffset === undefined ? undefined : tab.sql);
       const results = offsetBatchQueryResultIndexes(annotatedResults.results, batchResume?.startStatementIndex ?? 0);
       if (paginationRowNumberColumn && results.length === 1) {
@@ -7790,6 +7809,9 @@ export const useQueryStore = defineStore("query", () => {
           void closeClientConnectionSession(current);
           current.database = mysqlUseDatabase;
           current.schema = undefined;
+        }
+        if (clientRequestStartedAt !== undefined && results.length === 1 && !results[0]?.execution_error) {
+          results[0]!.client_result_ms = Math.max(0, performance.now() - resultProcessingStartedAt);
         }
         const activeGroupIndex = current.activeResultIndex;
         const activeGroupResults = current.results;

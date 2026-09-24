@@ -2158,6 +2158,7 @@ async fn do_execute_typed(
             }
             let cancel_for_agent = cancel_token.clone();
             let result = async move {
+                let lock_started = std::time::Instant::now();
                 let mut client = match cancel_for_agent.as_ref() {
                     Some(token) => {
                         tokio::select! {
@@ -2171,7 +2172,10 @@ async fn do_execute_typed(
                     }
                     None => client.lock().await,
                 };
-                if let Some(session_id) = options.result_session_id.as_deref() {
+                let lock_ms = lock_started.elapsed().as_secs_f64() * 1000.0;
+                let response: Result<db::QueryResult, AgentCallError> = if let Some(session_id) =
+                    options.result_session_id.as_deref()
+                {
                     let params = agent_fetch_query_page_params(session_id, options.page_size.unwrap_or(MAX_ROWS));
                     client
                         .fetch_query_page_typed_with_timeout_and_cancel(params, rpc_timeout, cancel_for_agent.clone())
@@ -2186,7 +2190,14 @@ async fn do_execute_typed(
                     client
                         .execute_query_typed_with_timeout_and_cancel(params, rpc_timeout, cancel_for_agent.clone())
                         .await
-                }
+                };
+                response.map(|mut result| {
+                    // Older agents have no phase map. Do not imply complete telemetry.
+                    if let Some(timings) = result.query_timings_ms.as_mut() {
+                        timings.insert("core_lock".into(), lock_ms);
+                    }
+                    result
+                })
             }
             .await
             .map(|result| truncate_result_with_max_rows(result, max_rows));
@@ -4191,6 +4202,7 @@ fn error_query_result(message: String) -> db::QueryResult {
         affected_rows: 0,
         execution_time_ms: 0,
         server_execute_time_us: None,
+        query_timings_ms: None,
         truncated: false,
         session_id: None,
         has_more: false,
@@ -4210,6 +4222,7 @@ fn empty_query_result(execution_time_ms: u128) -> db::QueryResult {
         affected_rows: 0,
         execution_time_ms,
         server_execute_time_us: None,
+        query_timings_ms: None,
         truncated: false,
         session_id: None,
         has_more: false,
@@ -4557,6 +4570,7 @@ async fn execute_statements_inner(
         affected_rows: total_affected,
         execution_time_ms: start.elapsed().as_millis(),
         server_execute_time_us: None,
+        query_timings_ms: None,
         truncated: false,
         session_id: None,
         has_more: false,
@@ -5169,6 +5183,7 @@ async fn exec_tx_pg_inner(
             affected_rows: total_affected,
             execution_time_ms: start.elapsed().as_millis(),
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -5263,6 +5278,7 @@ async fn exec_tx_mysql_inner(
         affected_rows: total_affected,
         execution_time_ms: start.elapsed().as_millis(),
         server_execute_time_us: None,
+        query_timings_ms: None,
         truncated: false,
         session_id: None,
         has_more: false,
@@ -5456,6 +5472,7 @@ async fn exec_tx_sqlite_inner(
                         affected_rows: total_affected,
                         execution_time_ms: start.elapsed().as_millis(),
                         server_execute_time_us: None,
+                        query_timings_ms: None,
                         truncated: false,
                         session_id: None,
                         has_more: false,
@@ -5540,6 +5557,7 @@ async fn exec_tx_explicit_inner(
         affected_rows: total_affected,
         execution_time_ms: start.elapsed().as_millis(),
         server_execute_time_us: None,
+        query_timings_ms: None,
         truncated: false,
         session_id: None,
         has_more: false,
@@ -6543,7 +6561,9 @@ async fn execute_manual_txn_agent_statement(
         execution_schema,
         options,
     );
+    let lock_started = std::time::Instant::now();
     let mut locked = client.lock().await;
+    let lock_ms = lock_started.elapsed().as_secs_f64() * 1000.0;
     let result = match request {
         ManualTxnAgentQueryRequest::Execute(params) => {
             locked.execute_query_typed_with_timeout::<db::QueryResult>(params, None).await
@@ -6556,7 +6576,12 @@ async fn execute_manual_txn_agent_statement(
         }
     };
     result
-        .map(|result| truncate_result_with_max_rows(result, Some(row_limit.max(1))))
+        .map(|mut result| {
+            if let Some(timings) = result.query_timings_ms.as_mut() {
+                timings.insert("core_lock".into(), lock_ms);
+            }
+            truncate_result_with_max_rows(result, Some(row_limit.max(1)))
+        })
         .map_err(|error| error.into_legacy_string())
 }
 
@@ -6648,6 +6673,7 @@ async fn execute_manual_txn_postgres_statement(
             affected_rows: affected,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -6683,6 +6709,7 @@ async fn execute_manual_txn_mysql_statement(
                 affected_rows,
                 execution_time_ms: start.elapsed().as_millis(),
                 server_execute_time_us: None,
+                query_timings_ms: None,
                 truncated: false,
                 session_id: None,
                 has_more: false,
@@ -6715,6 +6742,7 @@ async fn execute_manual_txn_mysql_statement(
             affected_rows: 0,
             execution_time_ms: start.elapsed().as_millis(),
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated,
             session_id: None,
             has_more: false,
@@ -6735,6 +6763,7 @@ async fn execute_manual_txn_mysql_statement(
             affected_rows,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -6792,6 +6821,7 @@ pub async fn commit_manual_transaction(state: &AppState, txn_session_id: &str) -
         affected_rows: 0,
         execution_time_ms: 0,
         server_execute_time_us: None,
+        query_timings_ms: None,
         truncated: false,
         session_id: None,
         has_more: false,
@@ -6822,6 +6852,7 @@ pub async fn rollback_manual_transaction(state: &AppState, txn_session_id: &str)
         affected_rows: 0,
         execution_time_ms: 0,
         server_execute_time_us: None,
+        query_timings_ms: None,
         truncated: false,
         session_id: None,
         has_more: false,
@@ -8983,6 +9014,7 @@ for line in sys.stdin:
                     affected_rows: 0,
                     execution_time_ms: 4,
                     server_execute_time_us: None,
+                    query_timings_ms: None,
                     truncated: false,
                     session_id: None,
                     has_more: false,
@@ -9258,6 +9290,7 @@ for line in sys.stdin:
             affected_rows: 0,
             execution_time_ms: 1,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -10318,6 +10351,7 @@ for line in sys.stdin:
                 affected_rows: 0,
                 execution_time_ms: 0,
                 server_execute_time_us: None,
+                query_timings_ms: None,
                 truncated: false,
                 session_id: None,
                 has_more: false,
@@ -10344,6 +10378,7 @@ for line in sys.stdin:
                 affected_rows: 0,
                 execution_time_ms: 0,
                 server_execute_time_us: None,
+                query_timings_ms: None,
                 truncated: false,
                 session_id: None,
                 has_more: false,
@@ -11640,6 +11675,7 @@ for line in sys.stdin:
             affected_rows: 0,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -11678,6 +11714,7 @@ for line in sys.stdin:
             affected_rows: 0,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -11746,6 +11783,7 @@ for line in sys.stdin:
             affected_rows: 0,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -11786,6 +11824,7 @@ for line in sys.stdin:
             affected_rows: 0,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -11818,6 +11857,7 @@ for line in sys.stdin:
             affected_rows: 0,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -11857,6 +11897,7 @@ for line in sys.stdin:
             affected_rows: 0,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -11890,6 +11931,7 @@ for line in sys.stdin:
             affected_rows: 0,
             execution_time_ms: 0,
             server_execute_time_us: None,
+            query_timings_ms: None,
             truncated: false,
             session_id: None,
             has_more: false,
