@@ -55,7 +55,7 @@ afterEach(() => {
 describe("complete trigger definition dialog", () => {
   it("saves and restores state using the trigger owner while checking the independent table owner", async () => {
     const { owner, safety, changed } = await mountDialog();
-    const otherSource = original.replace("TRIGGER APP.T", "TRIGGER OTHER.T");
+    const otherSource = original.replace("TRIGGER APP.T", "TRIGGER OTHER.T").replace("ON APP.DATA", "ON DATA");
     vi.mocked(api.getObjectSource).mockResolvedValue({ source: otherSource } as any);
     owner.value = "OTHER";
     await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenLastCalledWith("ob", "APP", "OTHER", "T", "TRIGGER"));
@@ -74,9 +74,10 @@ describe("complete trigger definition dialog", () => {
     const sql = vi.mocked(api.executeQuery).mock.calls.map((call) => call[2]);
     expect(sql[0]).toContain("o.OWNER = 'OTHER'");
     expect(sql[1]).toContain("TRIGGER OTHER.T");
-    expect(sql[1]).toContain("ON APP.DATA");
+    expect(sql[1]).toContain('ON "APP".DATA');
     expect(sql[3]).toBe('ALTER TRIGGER "OTHER"."T" ENABLE');
     expect([...storage.keys()][0]).toContain("OTHER");
+    expect([...storage.values()].some((value) => JSON.stringify(value).includes(otherSource))).toBe(true);
     expect(api.executeQuery).toHaveBeenCalledTimes(5);
   });
 

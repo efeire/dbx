@@ -12,6 +12,30 @@ function setup() {
 }
 
 describe("Oracle trigger replacement stages", () => {
+  it("binds unqualified source to the verified trigger and table identities without changing recovery text", async () => {
+    const options = setup();
+    options.schema = "OTHER";
+    options.originalSource = "CREATE TRIGGER T BEFORE INSERT ON DATA FOR EACH ROW BEGIN NULL; END;";
+    options.source = options.originalSource;
+    options.readSource.mockResolvedValue(options.originalSource);
+    options.execute.mockResolvedValueOnce(state(true, false)).mockResolvedValueOnce(empty).mockResolvedValueOnce(state(true, false)).mockResolvedValueOnce(state(true, false));
+    await saveOracleTriggerDefinition(options);
+    expect(options.execute.mock.calls[0][0]).toContain("o.OWNER = 'OTHER'");
+    expect(options.execute.mock.calls[1][0]).toContain('TRIGGER "OTHER".T');
+    expect(options.execute.mock.calls[1][0]).toContain('ON "APP".DATA');
+    expect(options.preserveOriginal).toHaveBeenCalledWith(options.originalSource, false);
+  });
+
+  it("does not qualify and replace an unqualified target until its actual table owner is confirmed", async () => {
+    const options = setup();
+    options.schema = "OTHER";
+    options.source = "CREATE TRIGGER T BEFORE INSERT ON DATA FOR EACH ROW BEGIN NULL; END;";
+    options.execute.mockResolvedValueOnce({ columns: [], rows: [["VALID", "DISABLED", "WRONG", "DATA"]] } as QueryResult);
+    await expect(saveOracleTriggerDefinition(options)).rejects.toThrow("target differs");
+    expect(options.execute).toHaveBeenCalledTimes(1);
+    expect(options.preserveOriginal).not.toHaveBeenCalled();
+  });
+
   it("preserves the old definition before DDL and restores enabled state only after VALID", async () => {
     const options = setup();
     options.execute.mockResolvedValueOnce(state()).mockImplementationOnce(async (sql) => {

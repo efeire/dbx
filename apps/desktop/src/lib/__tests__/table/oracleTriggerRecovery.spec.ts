@@ -11,6 +11,19 @@ const scope = { connectionId: "ob", database: "APP", schema: "Mixed Owner", name
 beforeEach(() => { state.clear(); vi.clearAllMocks(); });
 
 describe("trigger recovery versions", () => {
+  it("persists the verified table identity without substituting the trigger owner or rewriting source", async () => {
+    const original = "CREATE TRIGGER T BEFORE INSERT ON DATA BEGIN NULL; END;";
+    await preserveOracleTriggerRecovery({ ...scope, tableSchema: "Different Table Owner", tableName: "Data Table" }, original, false);
+    expect((await loadOracleTriggerRecovery(scope))[0]).toMatchObject({ source: original, tableSchema: "Different Table Owner", tableName: "Data Table", enabled: false });
+  });
+
+  it("loads old records without inventing a target identity", async () => {
+    await preserveOracleTriggerRecovery(scope, "old definition", true);
+    const [entry] = await loadOracleTriggerRecovery(scope);
+    expect(entry.tableSchema).toBeUndefined();
+    expect(entry.tableName).toBeUndefined();
+  });
+
   it("retains both concurrent attempts and their full definitions", async () => {
     const longSource = "BEGIN\n" + "-- original body\n".repeat(10000) + "END;";
     await Promise.all([preserveOracleTriggerRecovery(scope, longSource, false), preserveOracleTriggerRecovery(scope, "second definition", true)]);

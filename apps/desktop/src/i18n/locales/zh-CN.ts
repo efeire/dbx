@@ -5561,6 +5561,7 @@ export default withEnglishFallback({
     triggerReplacementWarning: "保存会直接替换定义。新定义在编译和目标核验通过前保持禁用，之后恢复原启用状态。DDL 无法自动回滚，请先预览完整定义再保存。",
     triggerRecoveryWarning: "这是本次保存前读取的定义。请核对当前触发器和错误后再人工恢复，并重新检查编译及启用状态。",
     triggerOwnerUnknown: "无法确认触发器所有者，请刷新元数据后重试。不会使用表所有者代替触发器所有者。",
+    triggerRecoveryTargetUnknown: "此记录未保存目标表身份，恢复前请查询字典确认。",
     primary: "主键",
     drop: "删除",
     restore: "恢复",

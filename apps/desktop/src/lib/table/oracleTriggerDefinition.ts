@@ -21,6 +21,8 @@ export interface OracleTriggerDefinition {
   name: string;
   tableSchema?: string;
   tableName?: string;
+  identityStart: number;
+  tableStart?: number;
   structured: boolean;
   reason?: string;
   fields?: OracleTriggerFields;
@@ -131,9 +133,10 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
   if (is("OR")) { index++; requireWord("REPLACE"); replace = true; }
   if (is("EDITIONABLE") || is("NONEDITIONABLE")) index++;
   requireWord("TRIGGER");
+  const identityStart = tokens[index]?.start;
   const identity = name();
   const sourceEnd = definitionEnd(source, tokens, identity);
-  const result: OracleTriggerDefinition = { source, ...identity, structured: false, createEnd, replace };
+  const result: OracleTriggerDefinition = { source, ...identity, identityStart: identityStart!, structured: false, createEnd, replace };
   const fallback = (reason: string) => ({ ...result, reason });
   const timingStart = tokens[index]?.start;
   if (timingStart === undefined) return fallback("Missing trigger timing");
@@ -151,11 +154,15 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
   const eventTokens = tokens.filter((token) => token.start >= eventsStart && token.end <= eventsEnd);
   if (!eventTokens.some((token) => token.kind === "word" && ["INSERT", "UPDATE", "DELETE"].includes(token.text.toUpperCase()))) return fallback("System trigger: edit the complete source");
   index++;
+  const nestedTarget = is("NESTED");
   try {
+    if (nestedTarget) { index++; requireWord("TABLE"); identifier(tokens[index++]); requireWord("OF"); }
+    result.tableStart = tokens[index]?.start;
     const table = name();
     result.tableName = table.name;
     result.tableSchema = table.schema;
   } catch { return fallback("Special trigger target: edit the complete source"); }
+  if (nestedTarget) return fallback("Nested table trigger: edit the complete source");
   let referencingSpan: Span | undefined;
   let rowSpan: Span | undefined;
   let whenSpan: Span | undefined;
@@ -280,19 +287,36 @@ function requireSingleTriggerBody(tokens: Token[]): void {
   throw new Error("Trigger body must end with a complete END statement");
 }
 
-export function prepareOracleTriggerReplacement(source: string, expected: { schema: string; name: string }): string {
+interface TriggerReplacementIdentity {
+  schema: string;
+  name: string;
+  tableSchema?: string;
+  tableName?: string;
+}
+
+export function prepareOracleTriggerReplacement(source: string, expected: TriggerReplacementIdentity): string {
   const definition = parseOracleTriggerDefinition(source);
   if (definition.name !== expected.name || (definition.schema ?? expected.schema) !== expected.schema) throw new Error("Trigger identity differs from the selected object");
+  if (expected.tableSchema !== undefined || expected.tableName !== undefined) {
+    if (!expected.tableSchema || !expected.tableName) throw new Error("Selected trigger target identity is incomplete");
+    if (definition.tableName !== expected.tableName || (definition.tableSchema ?? expected.tableSchema) !== expected.tableSchema) throw new Error("Replacement trigger target differs from the selected table");
+  }
   const tokens = scan(source);
   const end = definitionEnd(source, tokens, { schema: definition.schema ?? expected.schema, name: definition.name });
-  const singleDefinition = source.slice(0, end);
+  let singleDefinition = source.slice(0, end);
   const definitionTokens = tokens.filter((token) => token.start < end);
   if (definitionTokens.slice(1).some((token) => token.kind === "word" && ["DROP", "CREATE", "ALTER"].includes(token.text.toUpperCase()))) throw new Error("Additional DDL cannot be saved with a trigger definition");
   requireSingleTriggerBody(definitionTokens);
+  const qualifiers: Array<{ start: number; schema: string }> = [];
+  if (!definition.schema) qualifiers.push({ start: definition.identityStart, schema: expected.schema });
+  if (!definition.tableSchema && expected.tableSchema && definition.tableStart !== undefined) qualifiers.push({ start: definition.tableStart, schema: expected.tableSchema });
+  for (const qualifier of qualifiers.sort((a, b) => b.start - a.start)) {
+    singleDefinition = singleDefinition.slice(0, qualifier.start) + `"${qualifier.schema.replaceAll('"', '""')}".` + singleDefinition.slice(qualifier.start);
+  }
   return definition.replace ? singleDefinition : singleDefinition.slice(0, definition.createEnd) + " OR REPLACE" + singleDefinition.slice(definition.createEnd);
 }
 
-export function prepareDisabledOracleTriggerReplacement(source: string, expected: { schema: string; name: string }): string {
+export function prepareDisabledOracleTriggerReplacement(source: string, expected: TriggerReplacementIdentity): string {
   const sql = prepareOracleTriggerReplacement(source, expected);
   const tokens = scan(sql);
   let depth = 0;

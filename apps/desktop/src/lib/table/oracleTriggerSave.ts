@@ -1,4 +1,4 @@
-import { parseOracleTriggerDefinition, prepareDisabledOracleTriggerReplacement } from "@/lib/table/oracleTriggerDefinition";
+import { prepareDisabledOracleTriggerReplacement } from "@/lib/table/oracleTriggerDefinition";
 import type { QueryResult } from "@/types/database";
 
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
@@ -28,9 +28,7 @@ export async function saveOracleTriggerDefinition(options: {
   onMutationStarted?: () => void;
 }): Promise<void> {
   const { schema, name, execute } = options;
-  const definition = parseOracleTriggerDefinition(options.source);
-  if (definition.tableName !== options.tableName || (definition.tableSchema ?? schema) !== options.tableSchema) throw new Error("Replacement trigger target differs from the selected table");
-  const replacement = prepareDisabledOracleTriggerReplacement(options.source, { schema, name });
+  const replacement = prepareDisabledOracleTriggerReplacement(options.source, options);
   const readState = async () => {
     const result = await executeChecked(execute, oracleTriggerStateSql(schema, name));
     if (result.rows.length !== 1) throw new Error("Trigger metadata is missing or ambiguous; reload before saving");

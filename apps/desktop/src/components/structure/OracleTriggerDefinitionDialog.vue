@@ -82,7 +82,7 @@ function switchMode(next: "source" | "structured") {
 }
 
 function showPreview() {
-  try { preview.value = prepareDisabledOracleTriggerReplacement(currentSource.value, { schema: props.schema, name: props.name }); error.value = ""; }
+  try { preview.value = prepareDisabledOracleTriggerReplacement(currentSource.value, props); error.value = ""; }
   catch (e) { preview.value = ""; error.value = e instanceof Error ? e.message : String(e); }
 }
 
@@ -170,6 +170,7 @@ async function save() {
   <Dialog v-model:open="recoveryOpen">
     <DialogContent class="max-w-3xl"><DialogHeader><DialogTitle>{{ t("structureEditor.triggerOriginalDefinition") }}</DialogTitle></DialogHeader>
       <p class="text-sm text-muted-foreground">{{ t("structureEditor.triggerRecoveryWarning") }}</p>
+      <p class="break-all font-mono text-sm">{{ schema }}.{{ name }} → {{ selectedRecovery?.tableSchema && selectedRecovery?.tableName ? `${selectedRecovery.tableSchema}.${selectedRecovery.tableName}` : t("structureEditor.triggerRecoveryTargetUnknown") }}</p>
       <select v-model="recoveryId" class="rounded border bg-background p-2"><option v-for="entry in recovery" :key="entry.id" :value="entry.id">{{ entry.savedAt }} — {{ entry.enabled ? 'ENABLED' : 'DISABLED' }}</option></select>
       <textarea :value="selectedRecovery?.source || ''" readonly class="h-80 w-full rounded border bg-background p-2 font-mono text-sm" />
     </DialogContent>

@@ -6,12 +6,16 @@ export interface OracleTriggerRecoveryScope {
   database: string;
   schema: string;
   name: string;
+  tableSchema?: string;
+  tableName?: string;
 }
 export interface OracleTriggerRecoveryEntry {
   id: string;
   savedAt: string;
   source: string;
   enabled: boolean;
+  tableSchema?: string;
+  tableName?: string;
 }
 
 function key(scope: OracleTriggerRecoveryScope): string {
@@ -21,7 +25,12 @@ function key(scope: OracleTriggerRecoveryScope): string {
 export async function loadOracleTriggerRecovery(scope: OracleTriggerRecoveryScope): Promise<OracleTriggerRecoveryEntry[]> {
   const value = await loadBrowserAppState(key(scope));
   if (value === null) return [];
-  if (!Array.isArray(value) || value.some((entry) => !entry || typeof entry.id !== "string" || typeof entry.savedAt !== "string" || typeof entry.source !== "string" || typeof entry.enabled !== "boolean")) throw new Error("Trigger recovery history could not be read; existing recovery data was preserved");
+  const malformed = !Array.isArray(value) || value.some((entry) => {
+    if (!entry || typeof entry.id !== "string" || typeof entry.savedAt !== "string" || typeof entry.source !== "string" || typeof entry.enabled !== "boolean") return true;
+    const hasTarget = entry.tableSchema !== undefined || entry.tableName !== undefined;
+    return hasTarget && (typeof entry.tableSchema !== "string" || !entry.tableSchema || typeof entry.tableName !== "string" || !entry.tableName);
+  });
+  if (malformed) throw new Error("Trigger recovery history could not be read; existing recovery data was preserved");
   return value;
 }
 
@@ -33,6 +42,11 @@ export async function preserveOracleTriggerRecovery(scope: OracleTriggerRecovery
   const pending = previous.catch(() => undefined).then(async () => {
     const entries = await loadOracleTriggerRecovery(scope);
     const entry: OracleTriggerRecoveryEntry = { id: uuid(), savedAt: new Date().toISOString(), source, enabled };
+    if (scope.tableSchema !== undefined || scope.tableName !== undefined) {
+      if (!scope.tableSchema || !scope.tableName) throw new Error("Trigger recovery target identity is incomplete");
+      entry.tableSchema = scope.tableSchema;
+      entry.tableName = scope.tableName;
+    }
     await saveBrowserAppState(scopeKey, [...entries, entry]);
     return entry;
   });

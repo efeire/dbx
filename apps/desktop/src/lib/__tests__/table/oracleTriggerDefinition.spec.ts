@@ -35,6 +35,31 @@ describe("Oracle complete trigger definition editing", () => {
     expect(edited).toBe(source.replace('INSERT OR UPDATE OF "Value"', "DELETE"));
   });
 
+  it("qualifies unqualified trigger and table declarations using independent selected owners", () => {
+    const sql = 'CREATE TRIGGER /* trigger comment */ "Quoted Trigger" BEFORE INSERT ON /* target comment */ "Data Table" FOR EACH ROW BEGIN NULL; END;';
+    const replacement = prepareDisabledOracleTriggerReplacement(sql, { schema: 'Trigger"Owner', name: "Quoted Trigger", tableSchema: 'Table"Owner', tableName: "Data Table" });
+    expect(replacement).toContain('TRIGGER /* trigger comment */ "Trigger""Owner"."Quoted Trigger"');
+    expect(replacement).toContain('ON /* target comment */ "Table""Owner"."Data Table"');
+    expect(replacement).toContain("FOR EACH ROW DISABLE\nBEGIN NULL; END;");
+    const parsed = parseOracleTriggerDefinition(sql);
+    expect(updateOracleTriggerDefinition(parsed, { ...parsed.fields! })).toBe(sql);
+  });
+
+  it("rejects explicit table owner or name changes before generating replacement DDL", () => {
+    const selected = { schema: "OTHER", name: "T", tableSchema: "APP", tableName: "DATA" };
+    expect(() => prepareDisabledOracleTriggerReplacement("CREATE TRIGGER OTHER.T BEFORE INSERT ON WRONG.DATA BEGIN NULL; END;", selected)).toThrow("target");
+    expect(() => prepareDisabledOracleTriggerReplacement("CREATE TRIGGER OTHER.T BEFORE INSERT ON APP.WRONG BEGIN NULL; END;", selected)).toThrow("target");
+  });
+
+  it("keeps a nested-table trigger in complete-source mode and qualifies its parent view", () => {
+    const sql = 'CREATE TRIGGER OTHER.T INSTEAD OF INSERT ON NESTED TABLE "Nested Values" OF "Data View" REFERENCING NEW AS next PARENT AS parent FOR EACH ROW BEGIN NULL; END;';
+    const parsed = parseOracleTriggerDefinition(sql);
+    expect(parsed).toMatchObject({ structured: false, schema: "OTHER", name: "T", tableName: "Data View" });
+    const replacement = prepareDisabledOracleTriggerReplacement(sql, { schema: "OTHER", name: "T", tableSchema: "APP", tableName: "Data View" });
+    expect(replacement).toContain('NESTED TABLE "Nested Values" OF "APP"."Data View"');
+    expect(replacement).toContain("REFERENCING NEW AS next PARENT AS parent FOR EACH ROW DISABLE\nBEGIN NULL; END;");
+  });
+
   it("inserts row and alias clauses before an existing DISABLE and WHEN clause", () => {
     const initial = "CREATE TRIGGER APP.T AFTER INSERT ON APP.DATA DISABLE BEGIN NULL; END;";
     const parsed = parseOracleTriggerDefinition(initial);
