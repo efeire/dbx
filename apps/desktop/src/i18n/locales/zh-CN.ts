@@ -7611,6 +7611,7 @@ export default withEnglishFallback({
   diff: {
     routineIncomingDependencies: "可能失效的调用方：{dependencies}",
     routineRecoveryHint: "部分 DDL 可能已生效。请核对已执行步骤和字典状态后使用恢复计划，不能假定已自动回滚。",
+    routinePreviewReadOnly: "程序对象 SQL 为只读。执行使用生成的计划，触发器通过读回验证后才启用。",
     routineOracleKindsHint: "Oracle / OceanBase Oracle 还可比较包规格、包体和触发器。",
     routinePlanBlocked: "无法部署：{reason}",
     routineDependencies: "依赖对象：{dependencies}",

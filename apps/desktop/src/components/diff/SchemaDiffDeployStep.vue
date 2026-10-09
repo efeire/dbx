@@ -48,6 +48,7 @@ const props = defineProps<{
   missingRollbackObjects?: MissingRollbackObject[];
   canExecute?: boolean;
   destructiveStatementCount?: number;
+  readOnly?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -169,8 +170,10 @@ async function initEditor() {
       langSql.sql({ dialect }),
       themeComp.of(themeExt),
       fontComp.of(fontExt),
+      EditorState.readOnly.of(!!props.readOnly),
+      EditorView.editable.of(!props.readOnly),
       EditorView.updateListener.of((update: any) => {
-        if (update.docChanged) {
+        if (update.docChanged && !props.readOnly) {
           emit("update:deploySql", update.state.doc.toString());
         }
       }),
@@ -344,6 +347,7 @@ function getObjectIconColor(kind: DiffObjectKind): string {
       </ul>
     </div>
     <!-- Content -->
+    <p v-if="readOnly" class="px-3 py-1.5 border-b text-xs text-muted-foreground">{{ t("diff.routinePreviewReadOnly") }}</p>
     <Splitpanes class="flex-1 min-h-0">
       <Pane size="30" min-size="20">
         <div class="h-full overflow-auto p-2 space-y-0.5">

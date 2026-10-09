@@ -111,6 +111,23 @@ fn definition_without_client_delimiter(definition: &str) -> &str {
     }
 }
 
+fn disabled_trigger_source(definition: &str) -> Result<String, String> {
+    let (_, header_end) = header(definition).ok_or("The trigger declaration is incomplete")?;
+    let tokens = compatibility::source_tokens(&definition[header_end..]);
+    let (from, to, word) = tokens
+        .iter()
+        .find(|(_, _, word)| {
+            matches!(word.as_str(), "ENABLE" | "DISABLE" | "WHEN" | "DECLARE" | "BEGIN" | "COMPOUND" | "CALL")
+        })
+        .ok_or("The trigger body boundary could not be confirmed for disabled creation")?;
+    let from = header_end + from;
+    if matches!(word.as_str(), "ENABLE" | "DISABLE") {
+        Ok(format!("{}DISABLE{}", &definition[..from], &definition[header_end + to..]))
+    } else {
+        Ok(format!("{}DISABLE {}", &definition[..from], &definition[from..]))
+    }
+}
+
 /// Only the object declaration's owner/name and optional client slash are ignored.
 /// Strings, comments, quoted identifiers and all body whitespace remain byte-for-byte.
 pub fn comparable_oracle_routine(definition: &str) -> String {
@@ -279,6 +296,7 @@ pub fn oracle_routine_steps_with_context(
                 let trigger = info.trigger.as_ref().ok_or("Complete trigger metadata is required")?;
                 if !matches!(trigger.status.as_str(), "ENABLED" | "DISABLED") { return Err("Unknown trigger enabled state".into()); }
                 if !matches!(trigger.base_object_type.as_str(), "TABLE" | "VIEW") || trigger.table_owner.is_empty() || trigger.table_name.is_empty() { return Err("Schema/database triggers require a separate target compatibility review".into()); }
+                program = disabled_trigger_source(&program)?;
             }
             oracle_routine_sql(&program, &diff.name, schema, &kind)
         })();
@@ -287,7 +305,7 @@ pub fn oracle_routine_steps_with_context(
             (Some(owner), Some(target_owner)) if dependency.starts_with(&format!("{}.", quote(owner))) => format!("{}{}", quote(target_owner), &dependency[quote(owner).len()..]), _ => dependency.clone()
         }).collect()).unwrap_or_default();
         let trigger = info.and_then(|info| info.trigger.clone().map(|mut trigger| { if Some(trigger.table_owner.as_str()) == info.schema.as_deref() { trigger.table_owner = target_owner.to_string(); } trigger }));
-        let post_sql = if sql.is_some() && diff.diff_type != "removed" { trigger.as_ref().map(|trigger| vec![format!("ALTER TRIGGER {}.{} {};", quote(target_owner), quote(&diff.name), if trigger.status == "DISABLED" { "DISABLE" } else { "ENABLE" })]).unwrap_or_default() } else { Vec::new() };
+        let post_sql = if sql.is_some() && diff.diff_type != "removed" { trigger.as_ref().filter(|trigger| trigger.status == "ENABLED").map(|_| vec![format!("ALTER TRIGGER {}.{} ENABLE;", quote(target_owner), quote(&diff.name))]).unwrap_or_default() } else { Vec::new() };
         // Target callers matter on replacement, even if no source caller references the new object.
         let mut incoming_dependencies = info.map(|info| info.incoming_dependencies.iter().map(|dependency| mapped_dependency(dependency, info.schema.as_deref(), target_owner)).collect::<Vec<_>>()).unwrap_or_default();
         if let Some(target_info) = &diff.target { for dependency in &target_info.incoming_dependencies { if !incoming_dependencies.contains(dependency) { incoming_dependencies.push(dependency.clone()); } } }
@@ -402,11 +420,11 @@ pub fn add_oracle_routines_to_plan_with_context(
             if step.operation != "removed" {
                 plan.sync_sql.push_str("\n/");
             }
-            for sql in &step.post_sql {
-                plan.sync_sql.push('\n');
-                plan.sync_sql.push_str(sql);
-            }
         }
+    }
+    for sql in plan.routine_steps.iter().flat_map(|step| &step.post_sql) {
+        plan.sync_sql.push('\n');
+        plan.sync_sql.push_str(sql);
     }
     if let Some(rollback) = &mut plan.rollback_sync_sql {
         let reverse: Vec<_> = diffs
@@ -463,16 +481,14 @@ pub fn add_oracle_routines_to_plan_with_context(
                 changes: Vec::new(),
             })
             .collect();
-        for step in oracle_routine_steps(&reverse, target, schema, Some(target)) {
+        let reverse_steps = oracle_routine_steps(&reverse, target, schema, Some(target));
+        let activation: Vec<_> = reverse_steps.iter().flat_map(|step| step.post_sql.clone()).collect();
+        for step in reverse_steps {
             if let Some(sql) = step.sql {
                 rollback.push_str("\n\n");
                 rollback.push_str(&sql);
                 if step.operation != "removed" {
                     rollback.push_str("\n/");
-                }
-                for sql in &step.post_sql {
-                    rollback.push('\n');
-                    rollback.push_str(sql);
                 }
             } else if let Some(reason) = step.blocked_reason {
                 plan.rollback_completeness = super::RollbackCompleteness::Incomplete;
@@ -484,12 +500,24 @@ pub fn add_oracle_routines_to_plan_with_context(
                 });
             }
         }
+        for sql in activation {
+            rollback.push('\n');
+            rollback.push_str(&sql);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabled_creation_changes_only_the_trigger_header_state() {
+        let body = "CREATE TRIGGER \"ENABLE\" BEFORE INSERT ON \"BEGIN\" FOR EACH ROW ENABLE WHEN (NEW.X = 'DISABLE') BEGIN x := q'[ENABLE BEGIN]'; END;";
+        let disabled = disabled_trigger_source(body).unwrap();
+        assert_eq!(disabled, body.replacen("ROW ENABLE WHEN", "ROW DISABLE WHEN", 1));
+        assert_eq!(disabled_trigger_source(&disabled).unwrap(), disabled);
+        assert!(disabled_trigger_source("CREATE TRIGGER T BEFORE INSERT ON T").is_err());
+    }
     #[test]
     fn rewrites_only_the_declaration_and_preserves_literal_and_comment_spacing() {
         let source = "CREATE OR REPLACE PROCEDURE \"Old Owner\".\"Mixed Name\" AS BEGIN x := q'[old  owner]'; -- keep  spaces\nNULL; END;\n/";
@@ -650,7 +678,16 @@ mod tests {
         assert_eq!(diffs[0].diff_type, "modified");
         let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
         assert!(steps[0].sql.as_ref().unwrap().contains("'a  b'"));
-        assert_eq!(steps[0].post_sql, vec!["ALTER TRIGGER \"TARGET\".\"tr\" DISABLE;"]);
+        assert!(steps[0].sql.as_ref().unwrap().contains("DISABLE BEGIN"));
+        assert!(steps[0].post_sql.is_empty());
+        let enabled_steps = oracle_routine_steps(
+            &super::super::diff_functions(&[enabled.clone()], &[]),
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
+        assert!(enabled_steps[0].sql.as_ref().unwrap().contains("DISABLE BEGIN"));
+        assert_eq!(enabled_steps[0].post_sql, vec!["ALTER TRIGGER \"TARGET\".\"tr\" ENABLE;"]);
         let diffs = super::super::diff_functions(&[trigger_info("tr", "other", "ENABLED")], &[enabled]);
         assert_eq!(diffs.len(), 2);
         assert!(oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle))
@@ -694,7 +731,8 @@ mod tests {
         let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
         assert!(steps[0].sql.as_ref().unwrap().ends_with("END TR;"));
         assert!(steps[0].sql.as_ref().unwrap().contains("END BEFORE STATEMENT;"));
-        assert_eq!(steps[0].post_sql, vec!["ALTER TRIGGER \"TARGET\".\"TR\" DISABLE;"]);
+        assert!(steps[0].sql.as_ref().unwrap().contains("DISABLE COMPOUND TRIGGER"));
+        assert!(steps[0].post_sql.is_empty());
         for tail in ["ALTER TRIGGER SOURCE.OTHER DISABLE;", "DROP TABLE T;"] {
             info.definition = format!("{body}\n/\n{tail}");
             let diffs = super::super::diff_functions(&[info.clone()], &[]);
@@ -836,6 +874,7 @@ mod tests {
             Some(&context),
         );
         assert!(steps[0].sql.as_ref().unwrap().contains("ON \"TARGET\".DATA"));
-        assert_eq!(steps[0].post_sql, vec!["ALTER TRIGGER \"TARGET\".\"TR\" DISABLE;"]);
+        assert!(steps[0].sql.as_ref().unwrap().contains("DISABLE BEGIN"));
+        assert!(steps[0].post_sql.is_empty());
     }
 }

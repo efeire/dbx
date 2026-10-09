@@ -23,7 +23,7 @@ import SideBySideTextDiff, { type TextDiffSide } from "@/components/common/SideB
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { getSchemaDiffOptionsForDbType } from "@/lib/schema/schemaDiffOptions";
-import { finishSchemaDiffDeployment, schemaDiffRoutineExecutionStatements, schemaDiffRoutineExecutedSteps, schemaDiffRoutineExpectedDefinitions, type DeployTxResult } from "@/lib/schema/deployTxResult";
+import { finishSchemaDiffDeployment, executeSchemaDiffRoutineDeployment, schemaDiffRoutineExecutionStatements, type DeployTxResult } from "@/lib/schema/deployTxResult";
 import { getSchemaDiffNextProgressStep, isSchemaDiffPostgresLike, shouldLoadSchemaDiffExtraObjectPhase, type SchemaDiffProgressPhase } from "@/lib/schema/schemaDiffProgress";
 import { createSchemaDiffTableListLoader } from "@/lib/schema/schemaDiffTableList";
 import { countSchemaDiffActionableObjects, partitionSchemaDiffObjectsByResultTab, swapSchemaDiffRoutineMappings } from "@/lib/schema/schemaDiffRoutine";
@@ -1049,16 +1049,26 @@ async function executeDeploySql() {
     if (expected.length > 0 && programSteps.length !== expected.length) throw new Error(t("diff.routinePlanBlocked", { reason: t("diff.noObjectsSelected") }));
     const statements = expected.length > 0 ? schemaDiffRoutineExecutionStatements(programSteps) : [sql];
     const targetConnection = store.getConfig(connectionId);
-    const txLog = await executeWithProductionSqlGuard({
+    const result = await executeWithProductionSqlGuard({
       connection: targetConnection,
       database,
-      sql,
+      sql: expected.length > 0 ? statements.join("\n\n") : sql,
       source: t("production.sourceSchemaDiff"),
-      execute: () => api.executeScriptWith2pc(connectionId, database, statements, schema, destructive),
+      execute: () =>
+        expected.length > 0
+          ? executeSchemaDiffRoutineDeployment(
+              programSteps,
+              expected,
+              (batch) => api.executeScriptWith2pc(connectionId, database, batch, schema, destructive),
+              (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input),
+              t,
+              rollback,
+              schema,
+            )
+          : api.executeScriptWith2pc(connectionId, database, statements, schema, destructive).then((txLog) => finishSchemaDiffDeployment(txLog, [], (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input), t, rollback, schema)),
     });
-    if (txLog === undefined) return;
-    deployResult.value = await finishSchemaDiffDeployment(txLog, schemaDiffRoutineExpectedDefinitions(expected, programSteps, rollback), (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input), t, rollback, schema);
-    if (expected.length > 0) deployResult.value.executedSteps = schemaDiffRoutineExecutedSteps(programSteps, deployResult.value.executedCount ?? (txLog.status === "committed" ? statements.length : 0));
+    if (result === undefined) return;
+    deployResult.value = result;
     showResultDialog.value = true;
   } catch (e: any) {
     deployResult.value = {
@@ -1588,6 +1598,7 @@ const targetConnectionInfo = computed(() => {
             :missing-rollback-objects="missingRollbackObjects"
             :can-execute="canExecuteDeploy"
             :destructive-statement-count="destructiveStatements.length"
+            :read-only="isOracleRoutineTarget && selectedRoutineDiffs.length > 0"
             @update:deploy-sql-mode="switchDeploySqlMode"
             @back="step = 'result'"
             @deploy="handleDeploy"

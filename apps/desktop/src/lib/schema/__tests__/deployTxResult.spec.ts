@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildDeployTxResult, finishSchemaDiffDeployment, schemaDiffRoutineExecutionStatements, schemaDiffRoutineExecutedSteps, schemaDiffRoutineExpectedDefinitions } from "@/lib/schema/deployTxResult";
+import { buildDeployTxResult, executeSchemaDiffRoutineDeployment, finishSchemaDiffDeployment, schemaDiffRoutineExecutionStatements, schemaDiffRoutineExecutedSteps, schemaDiffRoutineExpectedDefinitions } from "@/lib/schema/deployTxResult";
 import type { FunctionDiff, SchemaDiffRoutineStep } from "@/lib/schema/schemaDiff";
 
 const t = (key: string, params?: Record<string, any>) => {
@@ -90,6 +90,38 @@ describe("buildDeployTxResult", () => {
 });
 
 describe("routine deployment readback", () => {
+  it.each(["ENABLED", "DISABLED"])("creates a %s trigger disabled and verifies before optional activation", async (status) => {
+    const trigger = { tableOwner: "DST", tableName: "T1", timing: "BEFORE", event: "INSERT", status, baseObjectType: "TABLE" };
+    const diff: FunctionDiff = { name: "TR", type: "added", source: { name: "TR", function_type: "TRIGGER", data_type: "", arguments: "", schema: "DST", definition: "old source", trigger } };
+    const step: SchemaDiffRoutineStep = { name: "TR", routineType: "TRIGGER", operation: "added", sql: "CREATE TRIGGER TR BEFORE INSERT ON T1 DISABLE BEGIN NULL; END;", dependencies: [], trigger, postSql: status === "ENABLED" ? ["ALTER TRIGGER TR ENABLE;"] : [] };
+    const order: string[] = [];
+    const execute = vi.fn(async (statements: string[]) => {
+      order.push(statements[0]!);
+      return { status: "committed", executedCount: statements.length };
+    });
+    const validate = vi.fn(async (diffs: FunctionDiff[]) => {
+      const actual = diffs[0]!.source!;
+      order.push(`verify ${actual.trigger!.status}`);
+      return [{ name: "TR", routineType: "TRIGGER", schema: "DST", success: true, message: "VALID", trigger: actual.trigger }];
+    });
+    const result = await executeSchemaDiffRoutineDeployment([step], [diff], execute, validate, t, false, "DST");
+    expect(result.success).toBe(true);
+    expect(order).toEqual(status === "ENABLED" ? [step.sql, "verify DISABLED", "ALTER TRIGGER TR ENABLE;", "verify ENABLED"] : [step.sql, "verify DISABLED"]);
+    expect(diff.source!.trigger!.status).toBe(status);
+  });
+
+  it("leaves a trigger disabled when compile/source readback fails", async () => {
+    const trigger = { tableOwner: "DST", tableName: "T1", timing: "BEFORE", event: "INSERT", status: "ENABLED", baseObjectType: "TABLE" };
+    const diff: FunctionDiff = { name: "TR", type: "added", source: { name: "TR", function_type: "TRIGGER", data_type: "", arguments: "", definition: "source", trigger } };
+    const step: SchemaDiffRoutineStep = { name: "TR", routineType: "TRIGGER", operation: "added", sql: "CREATE TRIGGER TR DISABLE BEGIN NULL; END;", postSql: ["ALTER TRIGGER TR ENABLE;"], dependencies: [] };
+    const execute = vi.fn().mockResolvedValue({ status: "committed", executedCount: 1 });
+    const validate = vi.fn().mockResolvedValue([{ name: "TR", routineType: "TRIGGER", success: false, message: "INVALID", trigger: { ...trigger, status: "DISABLED" } }]);
+    const result = await executeSchemaDiffRoutineDeployment([step], [diff], execute, validate, t);
+    expect(result.success).toBe(false);
+    expect(result.executedCount).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith([step.sql]);
+  });
   it("validates mapped package and body definitions without overwriting source or recovery snapshots", async () => {
     const source = { name: "Same.Package", function_type: "PACKAGE", data_type: "", arguments: "", schema: "SRC", definition: 'CREATE EDITIONABLE PACKAGE "Same.Package" AS FUNCTION f RETURN NUMBER; END;' };
     const body = { ...source, function_type: "PACKAGE BODY", definition: 'CREATE PACKAGE BODY "Same.Package" AS FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;' };

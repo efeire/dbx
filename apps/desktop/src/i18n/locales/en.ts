@@ -7625,6 +7625,7 @@ export default {
   diff: {
     routineIncomingDependencies: "Potentially affected callers: {dependencies}",
     routineRecoveryHint: "Some DDL may already be applied. Review the executed steps and dictionary status before using the rollback plan; automatic rollback is not guaranteed.",
+    routinePreviewReadOnly: "Program object SQL is read-only. Execution uses this generated plan and verifies triggers before enabling them.",
     routineOracleKindsHint: "Oracle / OceanBase Oracle also compare package specifications, package bodies, and triggers.",
     routinePlanBlocked: "Deployment blocked: {reason}",
     routineDependencies: "Dependencies: {dependencies}",

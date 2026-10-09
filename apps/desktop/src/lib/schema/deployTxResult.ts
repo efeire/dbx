@@ -16,11 +16,46 @@ export interface DeployTxResult {
 /** Keep each PL/SQL body whole; trigger state changes are separate statements. */
 export function schemaDiffRoutineExecutionStatements(steps: SchemaDiffRoutineStep[]): string[] {
   if (steps.some((step) => step.blockedReason || !step.sql?.trim())) throw new Error("Program object plan is blocked or incomplete");
-  return steps.flatMap((step) => [step.sql!, ...(step.postSql ?? [])]);
+  return [...steps.map((step) => step.sql!), ...steps.flatMap((step) => step.postSql ?? [])];
 }
 
 export function schemaDiffRoutineExecutedSteps(steps: SchemaDiffRoutineStep[], executedCount: number): string[] {
-  return steps.flatMap((step) => [`${step.routineType} ${step.targetSchema ? `${step.targetSchema}.` : ""}${step.name}${step.trigger ? ` · ${step.trigger.tableOwner}.${step.trigger.tableName}` : ""}`, ...(step.postSql ?? [])]).slice(0, Math.max(0, executedCount));
+  return [...steps.map((step) => `${step.routineType} ${step.targetSchema ? `${step.targetSchema}.` : ""}${step.name}${step.trigger ? ` · ${step.trigger.tableOwner}.${step.trigger.tableName}` : ""}`), ...steps.flatMap((step) => step.postSql ?? [])].slice(0, Math.max(0, executedCount));
+}
+
+/** Create triggers disabled, verify complete source and identity, then enable only reviewed targets. */
+export async function executeSchemaDiffRoutineDeployment(
+  steps: SchemaDiffRoutineStep[],
+  expected: FunctionDiff[],
+  execute: (statements: string[]) => Promise<any>,
+  validate: (expected: FunctionDiff[]) => Promise<SchemaDiffRoutineValidation[]>,
+  t: (key: string, params?: Record<string, any>) => string,
+  rollback = false,
+  targetSchema?: string,
+): Promise<DeployTxResult> {
+  schemaDiffRoutineExecutionStatements(steps);
+  const mapped = schemaDiffRoutineExpectedDefinitions(expected, steps, rollback);
+  const disabled = mapped.map((diff) => {
+    const key = rollback ? "target" : "source";
+    const info = diff[key];
+    return info?.trigger ? { ...diff, [key]: { ...info, trigger: { ...info.trigger, status: "DISABLED" } } } : diff;
+  });
+  const txLog = await execute(steps.map((step) => step.sql!));
+  let result = await finishSchemaDiffDeployment(txLog, disabled, validate, t, rollback, targetSchema);
+  const createdCount = result.executedCount ?? (result.success ? steps.length : 0);
+  result.executedSteps = schemaDiffRoutineExecutedSteps(steps, createdCount);
+  if (!result.success) return result;
+  const activation = steps.flatMap((step) => step.postSql ?? []);
+  if (activation.length === 0) return result;
+  let activationLog;
+  try {
+    activationLog = await execute(activation);
+  } catch (error) {
+    return { ...result, success: false, status: "mixed", message: t("diff.routineRecoveryHint"), error: error instanceof Error ? error.message : String(error), executedCount: createdCount, statementCount: steps.length + activation.length };
+  }
+  result = await finishSchemaDiffDeployment(activationLog, mapped, validate, t, rollback, targetSchema);
+  const activatedCount = result.executedCount ?? (result.success ? activation.length : 0);
+  return { ...result, executedCount: createdCount + activatedCount, statementCount: steps.length + activation.length, executedSteps: schemaDiffRoutineExecutedSteps(steps, createdCount + activatedCount) };
 }
 
 /** Validate the generated target definition, including reviewed owner/edition conversion. */
