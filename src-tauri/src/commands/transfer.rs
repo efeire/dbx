@@ -497,7 +497,7 @@ pub async fn start_transfer(
                 }
                 object_outcome = outcome;
             }
-            Err(e) if e == "Cancelled" => {
+            Err(e) if e == "Cancelled" || dbx_core::transfer::is_cancelled(&transfer_id).await => {
                 if let Some(journal) = history.as_ref() {
                     journal.record_schema_objects_error(true).await;
                 }
@@ -512,7 +512,7 @@ pub async fn start_transfer(
                         rows_transferred: 0,
                         total_rows: None,
                         status: TransferStatus::Cancelled,
-                        error: None,
+                        error: Some(e),
                         terminal: true,
                     },
                 )
