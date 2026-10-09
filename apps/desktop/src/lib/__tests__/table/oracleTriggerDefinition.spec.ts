@@ -55,4 +55,30 @@ describe("Oracle complete trigger definition editing", () => {
     const sql = "CREATE TRIGGER APP.T FOR INSERT ON APP.DATA COMPOUND TRIGGER BEFORE STATEMENT IS BEGIN NULL; END BEFORE STATEMENT; END;";
     expect(prepareDisabledOracleTriggerReplacement(sql, { schema: "APP", name: "T" })).toBe(sql.replace("CREATE TRIGGER", "CREATE OR REPLACE TRIGGER").replace("COMPOUND TRIGGER", "DISABLE\nCOMPOUND TRIGGER"));
   });
+
+  it("round-trips a matching ALTER footer while saving only the trigger definition", () => {
+    const sql = 'CREATE TRIGGER "APP"."Quoted Trigger" BEFORE INSERT ON "APP"."Data Table" FOR EACH ROW BEGIN NULL; END;\n/\nALTER TRIGGER "APP"."Quoted Trigger" ENABLE;\n';
+    const parsed = parseOracleTriggerDefinition(sql);
+    expect(parsed.fields?.body).toBe("BEGIN NULL; END;");
+    expect(updateOracleTriggerDefinition(parsed, { ...parsed.fields! })).toBe(sql);
+    const replacement = prepareDisabledOracleTriggerReplacement(sql, { schema: "APP", name: "Quoted Trigger" });
+    expect(replacement).toContain("DISABLE\nBEGIN NULL; END;");
+    expect(replacement).not.toContain("ALTER TRIGGER");
+    expect(replacement).not.toContain("\n/");
+  });
+
+  it("checks a qualified ALTER footer against the selected owner even when CREATE is unqualified", () => {
+    const sql = "CREATE TRIGGER T BEFORE INSERT ON APP.DATA BEGIN NULL; END;\nALTER TRIGGER OTHER.T DISABLE;";
+    expect(() => prepareOracleTriggerReplacement(sql, { schema: "APP", name: "T" })).toThrow("different identity");
+  });
+
+  it.each([
+    "ALTER TRIGGER APP.OTHER ENABLE;",
+    "ALTER TRIGGER APP.T COMPILE;",
+    "ALTER TRIGGER APP.T ENABLE; DROP TABLE APP.DATA;",
+    "DROP TABLE APP.DATA;",
+    "SELECT * FROM APP.DATA;",
+  ])("rejects an unsafe or unrelated trailing statement: %s", (tail) => {
+    expect(() => prepareOracleTriggerReplacement(`CREATE TRIGGER APP.T BEFORE INSERT ON APP.DATA BEGIN NULL; END;\n${tail}`, { schema: "APP", name: "T" })).toThrow();
+  });
 });

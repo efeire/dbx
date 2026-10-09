@@ -83,6 +83,29 @@ function identifier(token: Token | undefined): string {
   throw new Error("Expected a trigger identifier");
 }
 
+function definitionEnd(source: string, tokens: Token[], identity: { schema?: string; name: string }): number {
+  const alters = tokens.flatMap((token, index) => token.kind === "word" && token.text.toUpperCase() === "ALTER" ? [index] : []);
+  let end = source.length;
+  if (alters.length) {
+    if (alters.length !== 1) throw new Error("Only one matching trigger state clause may follow the definition");
+    let index = alters[0];
+    end = tokens[index++].start;
+    if (tokens[index]?.kind !== "word" || tokens[index++].text.toUpperCase() !== "TRIGGER") throw new Error("Only a matching ALTER TRIGGER state clause may follow the definition");
+    let name = identifier(tokens[index++]);
+    let schema: string | undefined;
+    if (tokens[index]?.text === ".") { index++; schema = name; name = identifier(tokens[index++]); }
+    if (name !== identity.name || (schema !== undefined && identity.schema !== undefined && schema !== identity.schema)) throw new Error("Trailing trigger state clause has a different identity");
+    const state = tokens[index++];
+    if (state?.kind !== "word" || !["ENABLE", "DISABLE"].includes(state.text.toUpperCase())) throw new Error("Unsupported trailing trigger state clause");
+    if (tokens[index]?.text === ";") index++;
+    if (tokens[index]?.text === "/") index++;
+    if (index !== tokens.length) throw new Error("Additional statements cannot be saved with a trigger definition");
+  }
+  const definition = source.slice(0, end);
+  const slash = /\r?\n[ \t]*\/[ \t]*(?:\r?\n[ \t]*)*$/.exec(definition);
+  return slash?.index ?? end;
+}
+
 export function parseOracleTriggerDefinition(source: string): OracleTriggerDefinition {
   const tokens = scan(source);
   let index = 0;
@@ -100,6 +123,7 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
   if (is("EDITIONABLE") || is("NONEDITIONABLE")) index++;
   requireWord("TRIGGER");
   const identity = name();
+  const sourceEnd = definitionEnd(source, tokens, identity);
   const result: OracleTriggerDefinition = { source, ...identity, structured: false, createEnd, replace };
   const fallback = (reason: string) => ({ ...result, reason });
   const timingStart = tokens[index]?.start;
@@ -164,8 +188,7 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
   if (!is("BEGIN") && !is("DECLARE") && !is("CALL")) return fallback("Ordering, edition or compound clauses: edit the complete source");
   const bodyStart = tokens[index].start;
   // A SQL*Plus slash belongs to the transport, not the PL/SQL definition.
-  const slash = /\r?\n[ \t]*\/[ \t]*(?:\r?\n)?$/.exec(source);
-  const bodyEnd = slash?.index ?? source.length;
+  const bodyEnd = sourceEnd;
   const insertAt = enabledStart ?? whenSpan?.start ?? bodyStart;
   return {
     ...result,
@@ -200,8 +223,29 @@ export function updateOracleTriggerDefinition(definition: OracleTriggerDefinitio
 export function prepareOracleTriggerReplacement(source: string, expected: { schema: string; name: string }): string {
   const definition = parseOracleTriggerDefinition(source);
   if (definition.name !== expected.name || (definition.schema ?? expected.schema) !== expected.schema) throw new Error("Trigger identity differs from the selected object");
-  const sql = definition.replace ? source : source.slice(0, definition.createEnd) + " OR REPLACE" + source.slice(definition.createEnd);
-  return sql.replace(/\r?\n[ \t]*\/[ \t]*(?:\r?\n)?$/, "");
+  const tokens = scan(source);
+  const end = definitionEnd(source, tokens, { schema: definition.schema ?? expected.schema, name: definition.name });
+  const singleDefinition = source.slice(0, end);
+  const definitionTokens = tokens.filter((token) => token.start < end);
+  if (definitionTokens.slice(1).some((token) => token.kind === "word" && ["DROP", "CREATE", "ALTER"].includes(token.text.toUpperCase()))) throw new Error("Additional DDL cannot be saved with a trigger definition");
+  let finalEnd = -1;
+  definitionTokens.forEach((token, index) => { if (token.kind === "word" && token.text.toUpperCase() === "END") finalEnd = index; });
+  if (finalEnd >= 0) {
+    let tail = finalEnd + 1;
+    if (definitionTokens[tail]?.kind === "identifier" || definitionTokens[tail]?.kind === "word") tail++;
+    if (definitionTokens[tail]?.text === ";") tail++;
+    if (tail !== definitionTokens.length) throw new Error("Additional statements follow the trigger body");
+  } else if (definition.spans?.body) {
+    let depth = 0;
+    const body = definitionTokens.filter((token) => token.start >= definition.spans!.body.start);
+    for (let index = 0; index < body.length; index++) {
+      const token = body[index];
+      if (token.text === "(" && token.kind === "symbol") depth++;
+      if (token.text === ")" && token.kind === "symbol") depth--;
+      if (token.text === ";" && token.kind === "symbol" && depth === 0 && index !== body.length - 1) throw new Error("Additional statements follow the trigger call");
+    }
+  }
+  return definition.replace ? singleDefinition : singleDefinition.slice(0, definition.createEnd) + " OR REPLACE" + singleDefinition.slice(definition.createEnd);
 }
 
 export function prepareDisabledOracleTriggerReplacement(source: string, expected: { schema: string; name: string }): string {
