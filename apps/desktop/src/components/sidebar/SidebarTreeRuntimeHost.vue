@@ -192,7 +192,7 @@ import {
   type MysqlAutoIncrementSqlOptions,
   type TableChildObjectType,
 } from "@/lib/database/dbAdminSql";
-import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, readOceanBaseViewRenameState, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
+import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, notifyViewRenameReadback, readOceanBaseViewRenameState, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
 import { buildRoutineRenameObjectSourceStatements, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildViewDdl } from "@/lib/table/viewDdl";
 import { formatSqlForDisplay, sqlFormatDialectForDbType } from "@/lib/sql/sqlFormatter";
@@ -3589,6 +3589,7 @@ async function confirmRenameObject() {
   } catch (e: any) {
     if (renameRequestSent && !renameApplied && databaseTypeForNode(node) === "oceanbase-oracle" && node.type === "view") {
       const schema = node.schema || node.database;
+      notifyViewRenameReadback(node.connectionId, node.database, schema, node.label, "pending");
       queryStore.invalidateRenamedViewTabs({ connectionId: node.connectionId, database: node.database, schema, name: node.label, objectType: "VIEW" });
       invalidateObjectBrowserRowsCache({ connectionId: node.connectionId, database: node.database, schema });
       await Promise.allSettled([node.label, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }), invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName })]));
