@@ -5,8 +5,12 @@ import type { ObjectSpaceStatistics } from "@/types/database";
 describe("OceanBase space presentation", () => {
   const t = (key: string) => key;
   const base: ObjectSpaceStatistics = {
-    status: "available", source: "SYS.DBA_OB_TABLE_SPACE_USAGE", replica_scope: "leader",
-    data_bytes: 0, allocated_bytes: 8192, components_status: "available",
+    status: "available",
+    source: "SYS.DBA_OB_TABLE_SPACE_USAGE",
+    replica_scope: "leader",
+    data_bytes: 0,
+    allocated_bytes: 8192,
+    components_status: "available",
     components: [{ kind: "INDEX", data_bytes: 20, allocated_bytes: 4096 }],
   };
   it("keeps real zero, missing LOB, Leader scope and independent index sizes visible", () => {

@@ -7,13 +7,15 @@ export function oceanbaseSpaceText(space: ObjectSpaceStatistics | null | undefin
 }
 
 export function oceanbaseSpaceHint(space: ObjectSpaceStatistics | null | undefined, t: (key: string) => string): string {
-  return oceanbaseSpaceRows(space, t).map((row) => `${row.label}: ${row.value}`).join("\n");
+  return oceanbaseSpaceRows(space, t)
+    .map((row) => `${row.label}: ${row.value}`)
+    .join("\n");
 }
 
 export function oceanbaseSpaceRows(space: ObjectSpaceStatistics | null | undefined, t: (key: string) => string): { label: string; value: string }[] {
   if (!space) return [];
   const status = (value: string) => t(`objects.spaceStatus.${value}`);
-  const bytes = (value: number | null | undefined) => value == null ? t("objects.spaceStatus.unknown") : formatObjectBrowserBytes(value);
+  const bytes = (value: number | null | undefined) => (value == null ? t("objects.spaceStatus.unknown") : formatObjectBrowserBytes(value));
   const rows = [
     { label: t("objects.spaceSource"), value: space.source },
     { label: t("objects.spaceScope"), value: t("objects.spaceLeader") },
@@ -22,7 +24,11 @@ export function oceanbaseSpaceRows(space: ObjectSpaceStatistics | null | undefin
     { label: t("objects.spaceAllocated"), value: bytes(space.allocated_bytes) },
     { label: t("objects.spaceComponentsState"), value: status(space.components_status) },
   ];
-  for (const [kind, key] of [["USER TABLE", "spaceBase"], ["INDEX", "spaceIndexes"], ["LOB AUX TABLE", "spaceLob"]]) {
+  for (const [kind, key] of [
+    ["USER TABLE", "spaceBase"],
+    ["INDEX", "spaceIndexes"],
+    ["LOB AUX TABLE", "spaceLob"],
+  ]) {
     const component = space.components.find((entry) => entry.kind === kind);
     rows.push({ label: `${t(`objects.${key}`)} · ${t("objects.spaceData")}`, value: bytes(component?.data_bytes) });
     rows.push({ label: `${t(`objects.${key}`)} · ${t("objects.spaceAllocated")}`, value: bytes(component?.allocated_bytes) });

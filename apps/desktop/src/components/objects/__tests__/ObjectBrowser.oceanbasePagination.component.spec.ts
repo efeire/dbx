@@ -98,7 +98,13 @@ describe("OceanBase Oracle object pagination (#11418)", () => {
   it.each(["schema", "refresh"] as const)("ignores an old statistics response after %s", async (change) => {
     let resolveOld!: (stats: ObjectStatistics[]) => void;
     mocks.listObjects.mockResolvedValueOnce([object("T")]).mockResolvedValue([object("T", change === "schema" ? "OTHER" : "APP")]);
-    mocks.listObjectStatistics.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; })).mockResolvedValue([{ name: "T", schema: change === "schema" ? "OTHER" : "APP", estimated_rows: 999, rows_status: "available" }]);
+    mocks.listObjectStatistics
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+      )
+      .mockResolvedValue([{ name: "T", schema: change === "schema" ? "OTHER" : "APP", estimated_rows: 999, rows_status: "available" }]);
     const { host, schema } = await mountBrowser();
     await vi.waitFor(() => expect(mocks.listObjectStatistics).toHaveBeenCalledTimes(1));
     if (change === "schema") schema.value = "OTHER";

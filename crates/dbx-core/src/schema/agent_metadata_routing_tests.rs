@@ -89,7 +89,14 @@ async fn oceanbase_statistics_route_space_over_agent_without_oracle_segments() {
         assert_eq!(requests.len(), 3);
         let sql = requests[2]["params"]["sql"].as_str().unwrap();
         assert!(sql.starts_with("WITH loc AS"), "Oracle CTEs must stay outside the paging subquery: {sql}");
-        for required in ["DATABASE_NAME = 'Mixed Owner'", "l.ROLE = 'LEADER'", "r.SVR_PORT = l.SVR_PORT", "r.SVR_IP = l.SVR_IP", "r.LS_ID = l.LS_ID", "r.TABLET_ID = l.TABLET_ID"] {
+        for required in [
+            "DATABASE_NAME = 'Mixed Owner'",
+            "l.ROLE = 'LEADER'",
+            "r.SVR_PORT = l.SVR_PORT",
+            "r.SVR_IP = l.SVR_IP",
+            "r.LS_ID = l.LS_ID",
+            "r.TABLET_ID = l.TABLET_ID",
+        ] {
             assert!(sql.contains(required), "{sql}");
         }
         assert!(!requests.iter().any(|request| request["params"]["sql"].as_str().unwrap().contains("SEGMENTS")));
