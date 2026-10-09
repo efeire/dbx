@@ -5074,6 +5074,17 @@ export default withEnglishFallback({
     sortDesc: "По убыванию",
     sortBy: "Сортировать по",
   },
+  checkEditor: {
+    title: "Изменение ограничений CHECK",
+    add: "Добавить CHECK",
+    existing: "Выберите CHECK",
+    edit: "Изменить выбранный CHECK",
+    drop: "Удалить этот CHECK",
+    expression: "Выражение",
+    hint: "Введите только выражение. Переносы строк, имена в кавычках и строки сохраняются. Результат NULL удовлетворяет CHECK.",
+    missing: "Ограничение CHECK больше не видно.",
+    current: "Текущий CHECK",
+  },
   foreignKeyEditor: {
     title: "Изменение внешних ключей",
     add: "Добавить внешний ключ",

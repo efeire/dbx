@@ -81,7 +81,7 @@ pub async fn apply_foreign_key_change(
     result
 }
 
-fn qualified(owner: &str, name: &str) -> Result<String, String> {
+pub(super) fn qualified(owner: &str, name: &str) -> Result<String, String> {
     Ok(format!("{}.{}", identifier(owner)?, identifier(name)?))
 }
 fn column_list(columns: &[String]) -> Result<String, String> {
@@ -166,7 +166,7 @@ fn foreign_key_sql(engine: Engine, change: &ForeignKeyChange, key: &ForeignKeyDe
     ))
 }
 
-async fn require_table(
+pub(super) async fn require_table(
     session: &impl ConstraintSession,
     owner: &str,
     name: &str,
@@ -187,7 +187,7 @@ async fn require_table(
     Ok(result.rows)
 }
 
-async fn require_alter(
+pub(super) async fn require_alter(
     session: &impl ConstraintSession,
     owner: &str,
     table_name: &str,

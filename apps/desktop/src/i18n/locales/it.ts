@@ -4550,6 +4550,17 @@ export default withEnglishFallback({
     invalid: "non valido",
     refreshDiscardConfirm: "L'aggiornamento eliminerà le modifiche non salvate al codice sorgente. Continuare?",
   },
+  checkEditor: {
+    title: "Modifica vincoli CHECK",
+    add: "Aggiungi CHECK",
+    existing: "Seleziona CHECK",
+    edit: "Modifica CHECK selezionato",
+    drop: "Elimina questo CHECK",
+    expression: "Espressione",
+    hint: "Inserisci solo l'espressione. Sono preservati righe, nomi tra virgolette e stringhe. Un risultato NULL soddisfa CHECK.",
+    missing: "Il vincolo CHECK non è più visibile.",
+    current: "CHECK attuale",
+  },
   foreignKeyEditor: {
     title: "Modifica chiavi esterne",
     add: "Aggiungi chiave esterna",

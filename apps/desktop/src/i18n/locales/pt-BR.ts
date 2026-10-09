@@ -4551,6 +4551,17 @@ export default withEnglishFallback({
     invalid: "Inválido",
     refreshDiscardConfirm: "Atualizar descartará as modificações não salvas no código-fonte. Deseja continuar?",
   },
+  checkEditor: {
+    title: "Editar restrições CHECK",
+    add: "Adicionar CHECK",
+    existing: "Selecionar CHECK",
+    edit: "Editar CHECK selecionado",
+    drop: "Excluir este CHECK",
+    expression: "Expressão",
+    hint: "Digite apenas a expressão. Quebras de linha, nomes entre aspas e strings são preservados. Um resultado NULL satisfaz CHECK.",
+    missing: "A restrição CHECK não está mais visível.",
+    current: "CHECK atual",
+  },
   foreignKeyEditor: {
     title: "Editar chaves estrangeiras",
     add: "Adicionar chave estrangeira",

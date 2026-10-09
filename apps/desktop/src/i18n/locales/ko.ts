@@ -4594,6 +4594,17 @@ export default withEnglishFallback({
     sortBy: "정렬 기준",
     refreshDiscardConfirm: "새로 고침하면 저장되지 않은 소스 코드 변경 사항이 삭제됩니다. 계속하시겠습니까?",
   },
+  checkEditor: {
+    title: "CHECK 제약 조건 편집",
+    add: "CHECK 추가",
+    existing: "CHECK 선택",
+    edit: "선택한 CHECK 편집",
+    drop: "이 CHECK 삭제",
+    expression: "표현식",
+    hint: "표현식만 입력하세요. 줄바꿈, 인용된 이름과 문자열은 유지됩니다. 결과가 NULL이면 CHECK 조건을 충족합니다.",
+    missing: "CHECK 제약 조건을 읽을 수 없습니다.",
+    current: "현재 CHECK",
+  },
   foreignKeyEditor: {
     title: "외래 키 편집",
     add: "외래 키 추가",

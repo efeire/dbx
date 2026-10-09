@@ -5280,6 +5280,17 @@ export default {
     sortDesc: "Descending",
     sortBy: "Sort by",
   },
+  checkEditor: {
+    title: "Edit CHECK constraints",
+    add: "Add CHECK",
+    existing: "Select a CHECK constraint",
+    edit: "Edit selected CHECK",
+    drop: "Delete this CHECK",
+    expression: "Expression",
+    hint: "Enter the expression only. Line breaks, quoted names and string literals are preserved. NULL results satisfy CHECK semantics.",
+    missing: "The CHECK constraint is no longer visible.",
+    current: "Current CHECK",
+  },
   foreignKeyEditor: {
     title: "Edit foreign keys",
     add: "Add foreign key",

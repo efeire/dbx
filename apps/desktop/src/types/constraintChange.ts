@@ -5,6 +5,29 @@ export interface PrimaryKeyChange {
   dropPreviousIndex?: boolean;
 }
 
+export interface CheckDefinition {
+  name: string;
+  expression: string;
+  enabled: boolean;
+  validated: boolean;
+  deferrable: boolean;
+  initiallyDeferred: boolean;
+  rely: boolean;
+}
+export interface CheckChange {
+  schema: string;
+  tableName: string;
+  originalName: string | null;
+  desired: CheckDefinition | null;
+}
+export interface CheckChangePreview extends Omit<ConstraintChangePreview, "currentConstraint"> {
+  currentConstraint: CheckDefinition | null;
+}
+export interface CheckChangeResult extends Omit<ConstraintChangeResult, "currentConstraint"> {
+  currentConstraint: CheckDefinition | null;
+  originalConstraint: CheckDefinition | null;
+}
+
 export interface ForeignKeyDefinition {
   name: string;
   columns: string[];

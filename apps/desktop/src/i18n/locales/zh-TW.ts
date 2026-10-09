@@ -4302,6 +4302,17 @@ export default withEnglishFallback({
     invalid: "無效",
     refreshDiscardConfirm: "重新整理將捨棄未儲存的原始碼修改，是否繼續？",
   },
+  checkEditor: {
+    title: "編輯 CHECK 約束",
+    add: "新增 CHECK",
+    existing: "選擇 CHECK 約束",
+    edit: "編輯所選 CHECK",
+    drop: "刪除此 CHECK",
+    expression: "運算式",
+    hint: "只填寫運算式。保留換行、quoted 名稱和字串；運算式結果為 NULL 時依 CHECK 語義通過。",
+    missing: "無法讀取此 CHECK 約束。",
+    current: "目前 CHECK",
+  },
   foreignKeyEditor: {
     title: "編輯外鍵",
     add: "新增外鍵",
