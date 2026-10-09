@@ -4022,6 +4022,8 @@ export default withEnglishFallback({
     renameObjectTitle: "重命名对象",
     renameObjectNamePlaceholder: "新名称",
     renameObjectSuccess: "已将「{oldName}」重命名为「{newName}」",
+    oceanbaseViewRenameWarning: "重命名不可回滚。现有授权随视图保留，依赖对象可能失效，其源码不会自动改写。跨所有者操作需要直接授予 ALTER ANY TABLE 且视图元数据可见；无法核验仅通过角色取得的权限。",
+    renamedSourceSnapshot: "对象已重命名。当前文本保留为只读快照；请重新打开改名后的对象编辑其当前定义。",
     renameDatabase: "重命名数据库",
     renameDatabaseTitle: "重命名数据库",
     renameDatabaseNotOwner: "只有数据库所有者才能重命名「{name}」。",

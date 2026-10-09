@@ -4088,6 +4088,8 @@ export default {
     renameObjectTitle: "Rename Object",
     renameObjectNamePlaceholder: "New name",
     renameObjectSuccess: '"{oldName}" renamed to "{newName}"',
+    oceanbaseViewRenameWarning: "Rename cannot be rolled back. Existing grants follow the view, but dependent objects may become invalid; their source is not rewritten. Cross-owner rename requires a direct ALTER ANY TABLE grant and visible view metadata; role-only privileges cannot be verified.",
+    renamedSourceSnapshot: "This object was renamed. Your text is preserved as a read-only snapshot. Reopen the renamed object to edit its current definition.",
     renameDatabase: "Rename Database",
     renameDatabaseTitle: "Rename Database",
     renameDatabaseNotOwner: 'Only the database owner can rename "{name}".',

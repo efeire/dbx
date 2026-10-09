@@ -5,6 +5,9 @@ import PluginWorkbenchHost from "@/components/plugins/PluginWorkbenchHost.vue";
 import type { PluginWorkbenchContext } from "@/lib/plugins/pluginHostBridge";
 import { createRoutedSidebarDialogController, routedCanSetCreateDatabaseCharset } from "./sidebarDialogControllerRouting";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
+import { invalidateObjectMetadataCache } from "@/lib/metadata/objectMetadataCache";
+import { invalidateObjectDdl } from "@/lib/metadata/objectDdlCache";
+import { invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
 import { useSidebarDataOpenRuntime } from "@/composables/useSidebarDataOpenRuntime";
 import { useSidebarConnectionMutationRuntime } from "@/composables/useSidebarConnectionMutationRuntime";
 import { useSidebarDatabaseSpecificMutationRuntime } from "@/composables/useSidebarDatabaseSpecificMutationRuntime";
@@ -3460,7 +3463,7 @@ async function refreshRenameObjectPreviewSql() {
     const sql = await buildRenameObjectSql({
       databaseType: currentDatabaseType(),
       objectType,
-      schema: node.schema,
+      schema: node.schema || (currentDatabaseType() === "oceanbase-oracle" ? node.database : undefined),
       oldName: node.label,
       newName,
     });
@@ -3556,13 +3559,26 @@ async function confirmRenameObject() {
       const sql = await buildRenameObjectSql({
         databaseType: dbType,
         objectType,
-        schema: node.schema,
+        schema: node.schema || (dbType === "oceanbase-oracle" ? node.database : undefined),
         oldName: node.label,
         newName,
       });
-      await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema: node.schema });
+      const executed = await executeTreeNodeSqlWithProductionGuard(node, sql, {
+        database: node.database,
+        schema: node.schema || (dbType === "oceanbase-oracle" ? node.database : undefined),
+      });
+      if (executed === undefined) return;
     }
     renameApplied = true;
+    if (dbType === "oceanbase-oracle" && objectType === "VIEW") {
+      const schema = node.schema || node.database;
+      queryStore.invalidateRenamedViewTabs({ connectionId: node.connectionId, database: node.database, schema, name: node.label, objectType: "VIEW" });
+      invalidateObjectBrowserRowsCache({ connectionId: node.connectionId, database: node.database, schema });
+      await Promise.all([node.label, newName].flatMap((tableName) => [
+        invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }),
+        invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName }),
+      ]));
+    }
     toast(t("contextMenu.renameObjectSuccess", { oldName: node.label, newName }), 3000);
     showRenameObjectDialog.value = false;
     const renamedNode: TreeNode = { ...node, label: newName, objectName: newName, tableName: newName };
@@ -5560,6 +5576,7 @@ function objectDialogCapabilities() {
     renameObjectName,
     renameObjectDialogTitle,
     renameObjectPreviewSql,
+    renameObjectWarning: computed(() => currentDatabaseType() === "oceanbase-oracle" && activeNode.value.type === "view" ? t("contextMenu.oceanbaseViewRenameWarning") : ""),
     renameObjectError,
     confirmRenameObject,
     showStructurePreviewDialog,
