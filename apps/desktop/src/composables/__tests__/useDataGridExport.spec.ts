@@ -175,7 +175,7 @@ function createExportState(
     selectedRowIds,
     hasRowSelection: computed(() => selectedRowIds.value.size > 0),
   };
-  return useDataGridExport(options);
+  return { ...useDataGridExport(options), contextCell: options.contextCell };
 }
 
 const editableTable: DataGridTableMeta = {
@@ -192,6 +192,19 @@ describe("useDataGridExport prepared row statements", () => {
     vi.clearAllMocks();
     clearDataGridClipboardCopy();
     vi.mocked(saveTextFile).mockResolvedValue(true);
+  });
+
+  it.each(["closed", "retargeted"] as const)("copies the clicked cell when the context menu is %s before its async callback finishes", async (menuState) => {
+    const state = createExportState(editableTable, ["id", "name"], undefined, [1, "clicked cell"]);
+    state.contextCell.value = { rowId: 1, rowIndex: 0, col: 1 };
+
+    const pendingCopy = state.copyCell();
+    // The menu starts the action, then clears or replaces its target on close.
+    state.contextCell.value = menuState === "closed" ? null : { rowId: 1, rowIndex: 0, col: 0 };
+
+    await expect(pendingCopy).resolves.toBeUndefined();
+    expect(copyToClipboard).toHaveBeenCalledWith("clicked cell");
+    expect(parseDataGridClipboard("clicked cell")).toEqual([["clicked cell"]]);
   });
 
   it("disables row copy when the result has no rows", () => {

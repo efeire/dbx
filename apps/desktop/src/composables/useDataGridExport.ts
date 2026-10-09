@@ -725,15 +725,17 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
 
   // --- Cell/row copy ---
   async function copyCell() {
-    if (!contextCell.value || contextCell.value.col < 0) return;
-    const item = getRowItem(contextCell.value.rowId);
+    const target = contextCell.value;
+    if (!target || target.col < 0) return;
+    const columnIndex = target.col;
+    const item = getRowItem(target.rowId);
     if (!item || item.isDraft) return;
-    const sourceIndex = visibleColumnIndexes.value[contextCell.value.col] ?? contextCell.value.col;
+    const sourceIndex = visibleColumnIndexes.value[columnIndex] ?? columnIndex;
     const [resolvedItem] = await resolveVisibleRowValues([item], [sourceIndex]);
-    const val = resolvedItem?.data[contextCell.value.col] ?? null;
+    const val = resolvedItem?.data[columnIndex] ?? null;
     // 外部剪贴板呈现文本型 MySQL VARBINARY（NULL 也按空串输出）；内部网格副本仍保留原 hex，保证回粘无损。
-    const rawValue = options.cellClipboardText?.(val, sourceIndex) ?? clipboardCellValue(binaryClipboardCellValue(val, contextCell.value.col));
-    const copyValue = options.databaseType.value === "oracle" && isTemporalColumnType(options.columnTypes.value?.[contextCell.value.col]) ? (options.displayValue?.(val, sourceIndex) ?? rawValue) : rawValue;
+    const rawValue = options.cellClipboardText?.(val, sourceIndex) ?? clipboardCellValue(binaryClipboardCellValue(val, columnIndex));
+    const copyValue = options.databaseType.value === "oracle" && isTemporalColumnType(options.columnTypes.value?.[columnIndex]) ? (options.displayValue?.(val, sourceIndex) ?? rawValue) : rawValue;
     await copyText(copyValue, { rows: [[val]] });
   }
 
