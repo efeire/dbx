@@ -315,7 +315,8 @@ async fn ensure_selected_table_types(state: &AppState, request: &TransferRequest
             if target_type == DatabaseType::OceanbaseOracle { return Err(format!("Table {table} stores user TYPE {owner}.{name}: OceanBase 4.2.5 does not support user-defined table columns/object tables")); }
             let mapped_owner = if owner == source_owner { target_owner.clone() } else { owner };
             let planned = mapped_owner == target_owner && selected(request).contains(&(TransferObjectKind::Type, name.clone()));
-            if !planned && object_status(state, target_pool, &mapped_owner, &name, "TYPE").await?.as_deref() != Some("VALID") {
+            let status = object_status(state, target_pool, &mapped_owner, &name, "TYPE").await?;
+            if !oracle_packages::dependency_available(planned, status.as_deref(), request.object_conflict_policy) {
                 return Err(format!("Table {table} requires unselected or invalid target TYPE {mapped_owner}.{name}; select its supported definition explicitly or provide a VALID target dependency"));
             }
         }
@@ -689,5 +690,8 @@ mod tests {
         assert!(require_details(&target).is_err());
         target.dependencies.state = OracleMetadataReadState::Denied;
         assert!(require_metadata(&target).is_err());
+        assert!(!oracle_packages::dependency_available(true, Some("INVALID"), TransferObjectConflictPolicy::Skip));
+        assert!(oracle_packages::dependency_available(true, None, TransferObjectConflictPolicy::Skip));
+        assert!(oracle_packages::dependency_available(true, Some("INVALID"), TransferObjectConflictPolicy::Replace));
     }
 }

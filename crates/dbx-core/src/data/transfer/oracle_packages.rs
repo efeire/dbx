@@ -318,7 +318,7 @@ async fn dependencies(
     Ok(result)
 }
 
-fn dependency_available(planned: bool, status: Option<&str>, policy: TransferObjectConflictPolicy) -> bool {
+pub(super) fn dependency_available(planned: bool, status: Option<&str>, policy: TransferObjectConflictPolicy) -> bool {
     status == Some("VALID") || (planned && (status.is_none() || policy == TransferObjectConflictPolicy::Replace))
 }
 
