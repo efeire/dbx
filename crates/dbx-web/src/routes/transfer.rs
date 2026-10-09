@@ -224,7 +224,7 @@ pub async fn start_transfer(
                 &progress_channel,
                 &terminal_transfer_error(
                     &req,
-                    "Type prerequisite failed; tables and dependent programs were not executed".into(),
+                    "Type prerequisite failed; tables and dependent programs were not executed",
                 ),
             );
             finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
