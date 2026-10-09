@@ -914,12 +914,20 @@ mod tests {
 
         let req = transfer_request("src", "dst", &dir);
         let transfer_id = req.transfer_id.clone();
-        let response = start_transfer(State(state.clone()), Json(StartTransferRequest { request: req, database_link_credentials: Vec::new() })).await.unwrap();
+        let response = start_transfer(
+            State(state.clone()),
+            Json(StartTransferRequest { request: req, database_link_credentials: Vec::new() }),
+        )
+        .await
+        .unwrap();
         let _ = response.into_response();
 
         let duplicate = start_transfer(
             State(state.clone()),
-            Json(StartTransferRequest { request: transfer_request("src", "dst", &dir), database_link_credentials: Vec::new() }),
+            Json(StartTransferRequest {
+                request: transfer_request("src", "dst", &dir),
+                database_link_credentials: Vec::new(),
+            }),
         )
         .await
         .unwrap_err();
@@ -987,9 +995,21 @@ mod tests {
     async fn demo_mode_transfer_does_not_write_task_history() {
         let (mut state, dir) = test_web_state().await;
         Arc::get_mut(&mut state).unwrap().demo_mode = true;
+        let src = sqlite_config("src", &dir.join("src.db").to_string_lossy());
+        let dst = sqlite_config("dst", &dir.join("dst.db").to_string_lossy());
+        std::fs::write(dir.join("src.db"), b"").unwrap();
+        std::fs::write(dir.join("dst.db"), b"").unwrap();
+        std::fs::write(dir.join("main.db"), b"").unwrap();
+        state.app.configs.write().await.insert("src".to_string(), src);
+        state.app.configs.write().await.insert("dst".to_string(), dst);
         let req = transfer_request("src", "dst", &dir);
         let transfer_id = req.transfer_id.clone();
-        let _ = start_transfer(State(state.clone()), Json(StartTransferRequest { request: req, database_link_credentials: Vec::new() })).await.unwrap();
+        let _ = start_transfer(
+            State(state.clone()),
+            Json(StartTransferRequest { request: req, database_link_credentials: Vec::new() }),
+        )
+        .await
+        .unwrap();
         let channel = {
             let channels = state.transfer_progress_channels.read().await;
             channels.get(&transfer_id).cloned().expect("transfer channel registered")
