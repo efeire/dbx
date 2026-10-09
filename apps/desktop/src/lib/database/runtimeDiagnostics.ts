@@ -185,16 +185,27 @@ export function createRuntimeDiagnostics(backend: Backend = api) {
     return async (sql) => {
       if (signal.aborted) throw new Error("Diagnostic cancelled");
       const executionId = uuid();
-      const cancel = () => {
+      let rejectWaiting!: (error: Error) => void;
+      const stopped = new Promise<never>((_resolve, reject) => {
+        rejectWaiting = reject;
+      });
+      const stop = (message: string) => {
+        rejectWaiting(new Error(message));
+        // Best effort only; ending local waiting does not confirm server termination.
         void backend.cancelQuery(executionId).catch(() => undefined);
       };
+      const cancel = () => {
+        stop("Diagnostic cancelled");
+      };
       signal.addEventListener("abort", cancel, { once: true });
+      const deadline = setTimeout(() => stop("Diagnostic timed out"), 10_000);
       try {
         // No tab/client/manual session ID: this read cannot join the user's transaction.
-        const result = await backend.executeQuery(context.connectionId, context.database, sql, undefined, executionId, { maxRows: 101, timeoutSecs: 10 });
+        const result = await Promise.race([backend.executeQuery(context.connectionId, context.database, sql, undefined, executionId, { maxRows: 101, timeoutSecs: 10 }), stopped]);
         if (signal.aborted) throw new Error("Diagnostic cancelled");
         return result;
       } finally {
+        clearTimeout(deadline);
         signal.removeEventListener("abort", cancel);
       }
     };

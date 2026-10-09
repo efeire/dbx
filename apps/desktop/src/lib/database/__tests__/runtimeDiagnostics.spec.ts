@@ -119,4 +119,25 @@ describe("production query and history boundary", () => {
     expect(backend.cancelQuery).toHaveBeenCalledWith(backend.executeQuery.mock.calls[0][4]);
     expect(backend.executeQuery).toHaveBeenCalledTimes(1);
   });
+  it.each(["abort", "deadline"])("ends local waiting on %s even when query and cancellation never return", async (stop) => {
+    vi.useFakeTimers();
+    try {
+      const backend = {
+        executeQuery: vi.fn().mockImplementation(() => new Promise<QueryResult>(() => {})),
+        cancelQuery: vi.fn().mockImplementation(() => new Promise<boolean>(() => {})),
+        saveHistory: vi.fn(),
+        searchHistory: vi.fn(),
+      };
+      const controller = new AbortController();
+      const collection = createRuntimeDiagnostics(backend).collect(context, target, controller.signal);
+      if (stop === "abort") controller.abort();
+      else await vi.advanceTimersByTimeAsync(10_000);
+      expect((await collection).status).toBe(stop === "abort" ? "cancelled" : "timeout");
+      expect(backend.cancelQuery).toHaveBeenCalledWith(backend.executeQuery.mock.calls[0][4]);
+      expect(backend.executeQuery).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
