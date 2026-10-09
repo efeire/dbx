@@ -72,6 +72,17 @@ final class AgentRpcError extends RuntimeException {
         );
     }
 
+    static AgentRpcError sqlExecutionErrorPreservingDisposition(Throwable error) {
+        AgentRpcError original = classify(error, AgentProtocol.METHOD_EXECUTE_QUERY);
+        if (!"connection".equals(original.category) || !"execute".equals(original.stage)
+            || !"unknown".equals(original.operationOutcome)) {
+            return original;
+        }
+        return new AgentRpcError(message(error), "sql", original.retryable, original.disposition,
+            original.stage, original.operationOutcome, original.sqlState, original.vendorCode,
+            original.exceptionClass, error);
+    }
+
     static JsonObject toJson(Throwable error, String method, String agentSessionId) {
         AgentRpcError classified = classify(error, method);
         JsonObject rpcError = new JsonObject();

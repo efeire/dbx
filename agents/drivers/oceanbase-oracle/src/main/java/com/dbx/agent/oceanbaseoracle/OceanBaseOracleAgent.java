@@ -95,6 +95,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             QueryResult result = super.executeQuery(sql, schema, options);
             result.setQuery_timings_ms(timing.finish());
             return result;
+        } catch (RuntimeException error) {
+            throw permissionExecutionError(error);
         }
     }
 
@@ -110,7 +112,29 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             );
             result.setQuery_timings_ms(timing.finish());
             return result;
+        } catch (RuntimeException error) {
+            throw permissionExecutionError(error);
         }
+    }
+
+    private RuntimeException permissionExecutionError(RuntimeException error) {
+        SQLException permission = null;
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            // Mixed failures can include reset/network errors; keep their original classification.
+            if (current.getSuppressed().length != 0) return error;
+            if (current instanceof SQLException sqlError) {
+                if (permission != null || sqlError.getNextException() != null
+                    || !(sqlError instanceof java.sql.SQLTransientConnectionException)
+                    || !"HY000".equals(sqlError.getSQLState()) || sqlError.getErrorCode() != 1031
+                    || sqlError.getMessage() == null || !sqlError.getMessage().contains("ORA-01031:")) {
+                    return error;
+                }
+                permission = sqlError;
+            }
+        }
+        // The OB driver wraps this confirmed server permission error as a connection exception.
+        // Change the diagnostic category only; quarantine and the unknown outcome remain intact.
+        return permission == null ? error : sqlExecutionErrorPreservingDisposition(error);
     }
 
     @Override
