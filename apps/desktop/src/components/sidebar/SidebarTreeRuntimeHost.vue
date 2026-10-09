@@ -192,7 +192,7 @@ import {
   type MysqlAutoIncrementSqlOptions,
   type TableChildObjectType,
 } from "@/lib/database/dbAdminSql";
-import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
+import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, readOceanBaseViewRenameState, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
 import { buildRoutineRenameObjectSourceStatements, executeOceanBaseRoutineRenameSteps, RoutineRenameStepError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { executePackageCleanup, executePackageRename, PackageRenameCleanupError, PackageRenameStepError, preparePackageRename, supportsPackageRename } from "@/lib/table/packageRename";
 import { buildViewDdl } from "@/lib/table/viewDdl";
@@ -3524,6 +3524,7 @@ async function confirmRenameObject() {
   if (!newName || newName === node.label || !node.connectionId || !node.database) return;
   renameObjectError.value = "";
   let renameApplied = false;
+  let renameRequestSent = false;
   try {
     const dbType = databaseTypeForNode(node);
     await connectionStore.ensureConnected(node.connectionId);
@@ -3665,6 +3666,9 @@ async function confirmRenameObject() {
       const executed = await executeTreeNodeSqlWithProductionGuard(node, sql, {
         database: node.database,
         schema: node.schema || (dbType === "oceanbase-oracle" ? node.database : undefined),
+        markDispatched: () => {
+          renameRequestSent = true;
+        },
       });
       if (executed === undefined) return;
     }
@@ -3681,6 +3685,19 @@ async function confirmRenameObject() {
     await refreshTableList(node);
     connectionStore.replacePinnedTreeNode(node, renamedNode);
   } catch (e: any) {
+    if (renameRequestSent && !renameApplied && databaseTypeForNode(node) === "oceanbase-oracle" && node.type === "view") {
+      const schema = node.schema || node.database;
+      queryStore.invalidateRenamedObjectTabs({ connectionId: node.connectionId, database: node.database, schema, name: node.label, objectType: "VIEW" });
+      invalidateObjectBrowserRowsCache({ connectionId: node.connectionId, database: node.database, schema });
+      await Promise.allSettled([node.label, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }), invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName })]));
+      const state = await readOceanBaseViewRenameState(node.connectionId, node.database, schema, node.label, newName);
+      if (state !== "unchanged") {
+        connectionStore.removePinnedTreeNodes([node]);
+        renameObjectError.value = `${e?.message || String(e)}\n${t(state === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown")}`;
+        await Promise.allSettled([refreshTableList(node)]);
+        return;
+      }
+    }
     if (renameApplied) {
       // The database mutation succeeded even when metadata refresh did not;
       // remove the old pin instead of allowing it to revive later.

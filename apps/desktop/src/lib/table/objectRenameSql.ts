@@ -35,6 +35,19 @@ export function buildRenameObjectSql(options: BuildRenameObjectSqlOptions): Prom
   return api.buildRenameObjectSql(options);
 }
 
+export async function readOceanBaseViewRenameState(connectionId: string, database: string, schema: string, oldName: string, newName: string): Promise<"renamed" | "unchanged" | "unknown"> {
+  const literal = (value: string) => `'${value.replace(/'/g, "''")}'`;
+  try {
+    const result = await api.executeQuery(connectionId, database, `SELECT VIEW_NAME FROM SYS.ALL_VIEWS WHERE OWNER = ${literal(schema)} AND VIEW_NAME IN (${literal(oldName)}, ${literal(newName)})`, schema);
+    const names = result.rows.map((row) => row[0]);
+    if (names.length === 1 && names[0] === newName) return "renamed";
+    if (names.length === 1 && names[0] === oldName) return "unchanged";
+  } catch {
+    // A missing response or unreadable dictionary cannot establish DDL outcome.
+  }
+  return "unknown";
+}
+
 // ── Database rename (PostgreSQL family) ──
 
 const DATABASE_RENAME_TYPES = new Set<DatabaseType>(["postgres", "redshift", "gaussdb", "kwdb", "kingbase", "highgo", "uxdb", "vastbase", "opengauss"]);

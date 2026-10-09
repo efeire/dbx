@@ -14,6 +14,7 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   getObjectSource: vi.fn().mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true }),
   buildRoutineRenameObjectSourceStatements: vi.fn().mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]),
   executeQuery: vi.fn(),
+  buildEditableObjectSource: vi.fn().mockResolvedValue("CREATE VIEW old_view AS SELECT 2"),
   loadSchemaCache: vi.fn().mockResolvedValue(null),
   saveSchemaCache: vi.fn().mockResolvedValue(undefined),
   deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
@@ -40,8 +41,8 @@ vi.mock("@/components/ui/CustomContextMenu.vue", () => ({
           slots.default?.({ onContextMenu: () => undefined, isOpen: false }),
           ...props
             .items()
-            .filter((item: ContextMenuItem) => item.label === i18n.global.t("contextMenu.renameObject"))
-            .map((item: ContextMenuItem) => h("button", { "data-open-rename": true, onClick: item.action }, item.label)),
+            .filter((item: ContextMenuItem) => [i18n.global.t("contextMenu.renameObject"), i18n.global.t("contextMenu.viewSource")].includes(item.label || ""))
+            .map((item: ContextMenuItem) => h("button", { "data-open-rename": item.label === i18n.global.t("contextMenu.renameObject") ? true : undefined, "data-open-source": item.label === i18n.global.t("contextMenu.viewSource") ? true : undefined, onClick: item.action }, item.label)),
         ]);
     },
   }),
@@ -66,7 +67,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   invalidateObjectBrowserRowsCache({});
   vi.mocked(api.listObjects).mockResolvedValue([{ name: "Old View", schema: "APP", object_type: "VIEW" }]);
-  vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [] } as any);
+  vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [["Old View"]] } as any);
   vi.mocked(api.getObjectSource).mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true } as any);
   vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]);
 });
@@ -78,6 +79,7 @@ afterEach(() => {
 });
 
 async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE_BODY" = "VIEW", cleanup = false) {
+  if (objectType === "VIEW") vi.mocked(api.getObjectSource).mockResolvedValue({ source: "CREATE VIEW old_view AS SELECT 2", editable: true } as any);
   vi.mocked(api.listObjects).mockResolvedValue([{ name: "Old View", schema: "APP", object_type: objectType }]);
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -98,6 +100,9 @@ async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" | "PACKA
   app.mount(container);
   mounted.push(app);
   await vi.waitFor(() => expect(container.querySelector("[data-open-rename]")).not.toBeNull());
+  (container.querySelector("[data-open-source]") as HTMLElement).click();
+  await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenCalled());
+  await nextTick();
   (container.querySelector("[data-open-rename]") as HTMLElement).click();
   await nextTick();
   const dialog = document.querySelector('[role="dialog"]')!;
@@ -129,13 +134,13 @@ describe("ObjectBrowser OceanBase view rename", () => {
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
-  it("keeps old source editable and reports the database error on failure", async () => {
+  it("reports the database error and preserves source text when readback confirms the old name", async () => {
     vi.mocked(api.executeQuery).mockRejectedValueOnce(new Error("ORA-00955: name is already used"));
     const { queries, sourceId, safety, refresh } = await openRename();
     safety.confirm();
     await vi.waitFor(() => expect(document.body.textContent).toContain("ORA-00955"));
-    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource?.name).toBe("Old View");
-    expect(refresh).not.toHaveBeenCalled();
+    expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "CREATE VIEW old_view AS SELECT 2" });
+    expect(api.executeQuery).toHaveBeenCalledTimes(2);
   });
 
   it("refreshes the renamed view and preserves edited source as a non-executable snapshot", async () => {
@@ -146,6 +151,30 @@ describe("ObjectBrowser OceanBase view rename", () => {
     expect(container.textContent).toContain("New View");
     expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "CREATE VIEW old_view AS SELECT 2" });
     expect(api.executeQuery).toHaveBeenCalledWith(connection.id, "APP", expect.any(String), "APP");
+  });
+
+  it("freezes old source when the rename committed but its response was lost", async () => {
+    vi.mocked(api.executeQuery)
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({ columns: [], rows: [["New View"]] } as any);
+    const { queries, sourceId, safety, refresh } = await openRename();
+    vi.mocked(api.listObjects).mockResolvedValue([{ name: "New View", schema: "APP", object_type: "VIEW" }]);
+    safety.confirm();
+    await vi.waitFor(() => expect(document.body.textContent).toContain(i18n.global.t("contextMenu.viewRenameResponseLost")));
+    expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "CREATE VIEW old_view AS SELECT 2" });
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
+    expect([...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === i18n.global.t("objects.saveSource"))).toBe(false);
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+  });
+
+  it("keeps an unreadable rename outcome as a snapshot rather than a saveable old identity", async () => {
+    vi.mocked(api.executeQuery).mockRejectedValue(new Error("connection lost"));
+    const { queries, sourceId, safety } = await openRename();
+    safety.confirm();
+    await vi.waitFor(() => expect(document.body.textContent).toContain(i18n.global.t("contextMenu.viewRenameStateUnknown")));
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.sourceSnapshot).toBe(true);
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
+    expect([...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === i18n.global.t("objects.saveSource"))).toBe(false);
   });
 });
 

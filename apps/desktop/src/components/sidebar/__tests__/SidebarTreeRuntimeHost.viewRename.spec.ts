@@ -39,6 +39,7 @@ async function openRename(target: TreeNode = node) {
   store.connections = [{ id: "ob", name: "OB", db_type: "oceanbase-oracle", host: "localhost", port: 2881, username: "APP", password: "", is_production: true }];
   vi.spyOn(store, "ensureConnected").mockResolvedValue(undefined);
   const replacePin = vi.spyOn(store, "replacePinnedTreeNode");
+  vi.spyOn(store, "refreshTreeNode").mockResolvedValue(undefined);
   vi.spyOn(store, "refreshObjectListTreeNode").mockResolvedValue(undefined);
   const queries = useQueryStore();
   const sourceId = queries.openObjectSourceTab({
@@ -46,7 +47,7 @@ async function openRename(target: TreeNode = node) {
     database: "APP",
     schema: "APP",
     title: target.label,
-    sql: "unsaved original definition",
+    sql: target.type === "view" ? "CREATE VIEW old_view AS SELECT 2" : "unsaved original definition",
     objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "package" ? "PACKAGE" : target.type === "package-body" ? "PACKAGE_BODY" : target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" },
   });
   const instance = ref<{ buildContextMenu(target: TreeNode): ContextMenuItem[] }>();
@@ -79,7 +80,7 @@ async function openRename(target: TreeNode = node) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [] } as any);
+  vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [["Old View"]] } as any);
   vi.mocked(api.getObjectSource).mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true } as any);
   vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]);
 });
@@ -150,7 +151,23 @@ describe("OceanBase ordinary view rename", () => {
     expect(dialog.renameObjectError).toContain("ORA-00955");
     expect(dialog.showRenameObjectDialog).toBe(true);
     expect(replacePin).not.toHaveBeenCalled();
-    expect(api.executeQuery).toHaveBeenCalledWith("ob", "APP", expect.any(String), "APP", undefined, expect.any(Object));
+    expect(api.executeQuery).toHaveBeenCalledWith("ob", "APP", expect.stringContaining("RENAME"), "APP", undefined, expect.any(Object));
+    expect(api.executeQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["renamed", "unknown"])("freezes the old source after a lost response with %s readback", async (outcome) => {
+    vi.mocked(api.executeQuery).mockRejectedValueOnce(new Error("response lost"));
+    if (outcome === "renamed") vi.mocked(api.executeQuery).mockResolvedValueOnce({ columns: [], rows: [["New View"]] } as any);
+    else vi.mocked(api.executeQuery).mockRejectedValueOnce(new Error("dictionary unavailable"));
+    const { dialog, safety, queries, sourceId, replacePin } = await openRename();
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await execution;
+    expect(dialog.renameObjectError).toContain(i18n.global.t(outcome === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown"));
+    expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "CREATE VIEW old_view AS SELECT 2" });
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
+    expect(replacePin).not.toHaveBeenCalled();
   });
 });
 
