@@ -136,7 +136,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     return largeValueCellsByKey.value.get(largeValueCellKey(item.sourceIndex, columnIndex))?.value_ref;
   }
 
-  async function downloadSnapshotCell(rowId: number, columnIndex: number, filePath: string): Promise<void> {
+  async function downloadSnapshotCell(rowId: number, columnIndex: number, filePath: string, downloadEncoding?: "binary" | "utf8" | "gbk"): Promise<void> {
     const sourceResult = options.result.value;
     const ref = snapshotReference(options.getRowItem(rowId), columnIndex);
     const context = sourceResult.large_value_context;
@@ -144,7 +144,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     const executionId = options.uuid();
     snapshotExecutionIds.add(executionId);
     try {
-      await api.downloadLargeValue({ ...context, valueRef: ref, executionId }, filePath);
+      await api.downloadLargeValue({ ...context, valueRef: ref, executionId, downloadEncoding }, filePath);
       if (options.result.value !== sourceResult) throw new Error("LOB result context changed");
     } finally {
       snapshotExecutionIds.delete(executionId);
@@ -610,11 +610,6 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
         const rows = sourceResult.rows.slice();
         rows[item.sourceIndex!] = row;
         sourceResult.rows = rows;
-        const snapshotRef = sourceResult.large_value_cells?.find((cell) => cell.row_index === item.sourceIndex && cell.column_index === columnIndex)?.value_ref;
-        if (snapshotRef && sourceResult.large_value_context) {
-          void api.releaseLargeValue({ ...sourceResult.large_value_context, valueRef: snapshotRef })
-            .catch((error) => options.appendDebugLog("warn", "[DBX][DataGrid:large-value] release failed", error));
-        }
         visibleLargeValuePreviewCaches.get(sourceResult)?.forget(item.sourceIndex!, columnIndex);
         sourceResult.large_value_cells = sourceResult.large_value_cells?.filter((cell) => cell.row_index !== item.sourceIndex || cell.column_index !== columnIndex);
         options.largeValueResolutionVersion.value += 1;

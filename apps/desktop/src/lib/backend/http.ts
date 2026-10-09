@@ -1597,6 +1597,7 @@ export interface LargeValueRequest {
   clientSessionId?: string;
   catalog?: string;
   txnSessionId?: string;
+  downloadEncoding?: "binary" | "utf8" | "gbk";
 }
 
 export interface LargeValueChunk {

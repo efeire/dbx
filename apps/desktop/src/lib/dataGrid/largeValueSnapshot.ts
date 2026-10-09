@@ -23,6 +23,9 @@ export async function readLargeValueSnapshot(
     if (amount > 4096 || chunk.value_kind === "text" && Array.from(chunk.data).length !== amount) {
       throw new Error("Invalid LOB chunk character count");
     }
+    if (chunk.value_kind === "binary" && (!/^(?:[0-9a-f]{2})*$/i.test(chunk.data) || chunk.data.length / 2 !== amount)) {
+      throw new Error("Invalid LOB chunk binary encoding");
+    }
     await consume(chunk);
     if (!isCurrent()) throw new Error("LOB result context changed");
     if (chunk.eof) return;
@@ -33,12 +36,15 @@ export async function readLargeValueSnapshot(
 export async function materializeLargeValueSnapshot(request: LargeValueRequest, isCurrent: () => boolean): Promise<string> {
   const chunks: string[] = [];
   let bytes = 0;
+  let kind: LargeValueChunk["value_kind"] | undefined;
   await readLargeValueSnapshot(request, isCurrent, (chunk) => {
+    if (kind && kind !== chunk.value_kind) throw new Error("LOB chunk type changed");
+    kind = chunk.value_kind;
     bytes += chunk.value_kind === "binary" ? chunk.data.length / 2 : new TextEncoder().encode(chunk.data).length;
     if (bytes > MAX_MATERIALIZED_BYTES) throw new Error("LOB exceeds the 16 MiB view/copy limit; download the complete value instead");
     chunks.push(chunk.data);
   });
-  return chunks.join("");
+  return (kind === "binary" ? "0x" : "") + chunks.join("");
 }
 
 export async function materializeSnapshotResultRows(result: QueryResult, isCurrent: () => boolean): Promise<QueryResult["rows"]> {

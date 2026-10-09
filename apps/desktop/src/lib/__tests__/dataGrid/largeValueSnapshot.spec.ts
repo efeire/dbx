@@ -8,6 +8,21 @@ const response = (data: string, next_offset: number, eof = false) => ({ status: 
 beforeEach(() => mocks.readLargeValueChunk.mockReset());
 
 describe("original-result LOB snapshot consumption", () => {
+  it("preserves every binary byte and prefixes the assembled value exactly once", async () => {
+    const hex = Array.from({ length: 256 }, (_, index) => index.toString(16).padStart(2, "0")).join("");
+    mocks.readLargeValueChunk.mockResolvedValueOnce({ ...response(hex.slice(0, 200), 100), value_kind: "binary" })
+      .mockResolvedValueOnce({ ...response(hex.slice(200), 256, true), value_kind: "binary" });
+    expect(await materializeLargeValueSnapshot(request, () => true)).toBe("0x" + hex);
+  });
+
+  it("distinguishes an empty BLOB from a zero byte and rejects malformed or incomplete hex", async () => {
+    mocks.readLargeValueChunk.mockResolvedValueOnce({ ...response("", 0, true), value_kind: "binary" });
+    expect(await materializeLargeValueSnapshot(request, () => true)).toBe("0x");
+    mocks.readLargeValueChunk.mockResolvedValueOnce({ ...response("00", 1, true), value_kind: "binary" });
+    expect(await materializeLargeValueSnapshot(request, () => true)).toBe("0x00");
+    mocks.readLargeValueChunk.mockResolvedValueOnce({ ...response("0", 1, true), value_kind: "binary" });
+    await expect(materializeLargeValueSnapshot(request, () => true)).rejects.toThrow("binary encoding");
+  });
   it("uses server character offsets and preserves Chinese and emoji across chunks", async () => {
     mocks.readLargeValueChunk.mockResolvedValueOnce(response("中文😀", 3)).mockResolvedValueOnce(response("末尾😀", 6, true));
     expect(await materializeLargeValueSnapshot(request, () => true)).toBe("中文😀末尾😀");

@@ -2137,11 +2137,12 @@ export const useQueryStore = defineStore("query", () => {
     for (const result of results) {
       const context = result?.large_value_context;
       if (!context) continue;
-      for (const cell of result.large_value_cells ?? []) {
-        if (!cell.value_ref || released.has(cell.value_ref)) continue;
-        released.add(cell.value_ref);
+      const refs = new Set([...(result.large_value_refs ?? []), ...(result.large_value_cells ?? []).flatMap((cell) => cell.value_ref ? [cell.value_ref] : [])]);
+      for (const valueRef of refs) {
+        if (released.has(valueRef)) continue;
+        released.add(valueRef);
         try {
-          await api.releaseLargeValue({ ...context, valueRef: cell.value_ref });
+          await api.releaseLargeValue({ ...context, valueRef });
         } catch (error) {
           console.warn("[DBX][large-value:release:error]", error);
         }
@@ -8212,6 +8213,7 @@ export const useQueryStore = defineStore("query", () => {
           }];
         }
         if (result.large_value_cells?.some((cell) => cell.value_ref)) {
+          result.large_value_refs = result.large_value_cells.flatMap((cell) => cell.value_ref ? [cell.value_ref] : []);
           result.large_value_context = {
             connectionId: executionConnectionId, database: executionDatabase,
             clientSessionId: executionClientSessionId, txnSessionId: tab.autoCommit === false ? tab.txnSessionId : undefined,

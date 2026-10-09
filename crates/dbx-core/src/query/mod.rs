@@ -3124,6 +3124,7 @@ pub struct LargeValueRequest {
     pub client_session_id: Option<String>,
     pub catalog: Option<String>,
     pub txn_session_id: Option<String>,
+    pub download_encoding: Option<String>,
 }
 
 /// Fetches only the original captured locator; never retries by selecting the current row.
@@ -3151,6 +3152,9 @@ async fn request_large_value_with_cancel(
     release: bool,
     cancel_token: Option<CancellationToken>,
 ) -> Result<serde_json::Value, String> {
+    if request.value_ref.len() > 128 || (!release && (request.limit == 0 || request.limit > 4096)) {
+        return Err("Invalid LOB chunk request".to_string());
+    }
     let method = if release { "release_large_value" } else { "read_large_value_chunk" };
     let params = serde_json::json!({ "valueRef": request.value_ref, "offset": request.offset, "limit": request.limit });
     if let Some(txn_id) = request.txn_session_id.as_deref() {
@@ -3210,6 +3214,14 @@ pub async fn write_large_value_snapshot(
     request.offset = 0;
     request.limit = 4096;
     let mut written = 0;
+    let mut value_kind: Option<String> = None;
+    let mut decoder = match request.download_encoding.as_deref() {
+        None | Some("binary") => None,
+        Some("utf8") => Some(encoding_rs::UTF_8.new_decoder_without_bom_handling()),
+        Some("gbk") => Some(encoding_rs::GBK.new_decoder_without_bom_handling()),
+        Some(_) => return Err("Unsupported LOB download encoding".to_string()),
+    };
+    let mut first_decoded_output = request.download_encoding.as_deref() == Some("utf8");
     loop {
         if is_canceled(&cancel) { return Err(canceled_error()); }
         let chunk = request_large_value_with_cancel(state, request.clone(), false, cancel.clone()).await?;
@@ -3219,14 +3231,53 @@ pub async fn write_large_value_snapshot(
         let next = chunk.get("next_offset").and_then(|value| value.as_u64()).ok_or("Invalid LOB offset")?;
         let eof = chunk.get("eof").and_then(|value| value.as_bool()).ok_or("Invalid LOB EOF")?;
         let data = chunk.get("data").and_then(|value| value.as_str()).ok_or("Invalid LOB data")?;
+        let kind = chunk.get("value_kind").and_then(|value| value.as_str()).ok_or("Invalid LOB type")?;
+        if value_kind.as_deref().is_some_and(|original| original != kind) {
+            return Err("LOB chunk type changed".to_string());
+        }
+        value_kind = Some(kind.to_string());
         if next < request.offset || (!eof && next == request.offset) { return Err("Invalid LOB offset".to_string()); }
-        output.write_all(data.as_bytes()).map_err(|error| error.to_string())?;
-        written += data.len() as u64;
+        let bytes = if kind == "binary" {
+            let bytes = decode_lob_hex_chunk(data)?;
+            if bytes.len() as u64 != next - request.offset { return Err("Invalid LOB byte count".to_string()); }
+            if let Some(decoder) = decoder.as_mut() {
+                let mut text = decode_lob_text_chunk(decoder, &bytes, eof)?;
+                if first_decoded_output && !text.is_empty() {
+                    if text.starts_with('\u{feff}') { text.drain(..3); }
+                    first_decoded_output = false;
+                }
+                text.into_bytes()
+            } else { bytes }
+        } else if kind == "text" {
+            if data.chars().count() as u64 != next - request.offset { return Err("Invalid LOB character count".to_string()); }
+            data.as_bytes().to_vec()
+        } else { return Err("Invalid LOB type".to_string()); };
+        output.write_all(&bytes).map_err(|error| error.to_string())?;
+        written += bytes.len() as u64;
         if eof { break; }
         request.offset = next;
     }
     output.flush().map_err(|error| error.to_string())?;
     Ok(written)
+}
+
+fn decode_lob_hex_chunk(hex: &str) -> Result<Vec<u8>, String> {
+    if hex.len() > 8192 || hex.len() % 2 != 0 || !hex.is_ascii() {
+        return Err("Invalid LOB binary encoding".to_string());
+    }
+    hex.as_bytes().chunks_exact(2).map(|pair| {
+        u8::from_str_radix(std::str::from_utf8(pair).map_err(|_| "Invalid LOB binary encoding".to_string())?, 16)
+            .map_err(|_| "Invalid LOB binary encoding".to_string())
+    }).collect()
+}
+
+fn decode_lob_text_chunk(decoder: &mut encoding_rs::Decoder, bytes: &[u8], eof: bool) -> Result<String, String> {
+    let mut text = String::with_capacity(bytes.len() * 3 + 12);
+    let (status, consumed, _) = decoder.decode_to_string(bytes, &mut text, eof);
+    if status != encoding_rs::CoderResult::InputEmpty || consumed != bytes.len() {
+        return Err("LOB download decoding did not consume the complete chunk".to_string());
+    }
+    Ok(text)
 }
 
 pub async fn close_query_session(
@@ -10460,6 +10511,38 @@ for line in sys.stdin:
         })).unwrap();
         assert_eq!(legacy.value_ref, None);
         assert!(serde_json::to_value(legacy).unwrap().get("value_ref").is_none());
+    }
+
+    #[test]
+    fn lob_binary_download_decodes_every_byte_without_text_conversion() {
+        let original: Vec<u8> = (0..=255).collect();
+        let hex: String = original.iter().map(|value| format!("{value:02x}")).collect();
+        assert_eq!(decode_lob_hex_chunk(&hex).unwrap(), original);
+        assert_eq!(decode_lob_hex_chunk("").unwrap(), Vec::<u8>::new());
+        assert_eq!(decode_lob_hex_chunk("00FF").unwrap(), vec![0, 255]);
+        assert!(decode_lob_hex_chunk("0").is_err());
+        assert!(decode_lob_hex_chunk("zz").is_err());
+        assert!(decode_lob_hex_chunk("00".repeat(4097).as_str()).is_err());
+    }
+
+    #[test]
+    fn lob_download_text_modes_preserve_multibyte_characters_split_across_chunks() {
+        let original = "中文😀末尾";
+        let mut utf8 = encoding_rs::UTF_8.new_decoder_without_bom_handling();
+        let bytes = original.as_bytes();
+        let mut decoded = String::new();
+        for (index, byte) in bytes.iter().enumerate() {
+            decoded.push_str(&decode_lob_text_chunk(&mut utf8, &[*byte], index + 1 == bytes.len()).unwrap());
+        }
+        assert_eq!(decoded, original);
+        let (bytes, _, errors) = encoding_rs::GBK.encode("中文末尾");
+        assert!(!errors);
+        let mut gbk = encoding_rs::GBK.new_decoder_without_bom_handling();
+        let mut decoded = String::new();
+        for (index, byte) in bytes.iter().enumerate() {
+            decoded.push_str(&decode_lob_text_chunk(&mut gbk, &[*byte], index + 1 == bytes.len()).unwrap());
+        }
+        assert_eq!(decoded, "中文末尾");
     }
 
     #[test]
