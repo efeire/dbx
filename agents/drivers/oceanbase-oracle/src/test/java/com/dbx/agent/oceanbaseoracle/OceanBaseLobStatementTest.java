@@ -22,6 +22,45 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OceanBaseLobStatementTest {
     @Test
+    void serverLengthMarksExactLastChunkAndPastEndWithoutHidingReadErrors() throws Exception {
+        for (boolean binary : new boolean[]{false, true}) {
+        for (String scenario : List.of("exact", "past-end", "beyond-end", "full-interior", "read-error")) {
+            Options options = new Options();
+            Protocol protocol = proxy(Protocol.class, (object, method, args) -> {
+                if (method.getName().equals("getOptions")) return options;
+                if (method.getName().equals("getLock")) return new ReentrantLock();
+                return defaultValue(method.getReturnType());
+            });
+            OceanBaseStatement vendor = new OceanBaseStatement(new OceanBaseConnection(protocol), 1003, 1007, null);
+            // JDBC UTF-16 length deliberately differs from the server's code-point length.
+            Object locator = binary ? proxy(Blob.class, (o, m, a) -> m.getName().equals("length") ? 10L : defaultValue(m.getReturnType()))
+                : proxy(Clob.class, (o, m, a) -> m.getName().equals("length") ? 10L : defaultValue(m.getReturnType()));
+            SQLException failure = new SQLException("ORA-06502: real read failure", "HY000", 6502);
+            CallableStatement call = proxy(CallableStatement.class, (object, method, args) -> {
+                switch (method.getName()) {
+                    case "unwrap": return vendor;
+                    case "execute": if (scenario.equals("read-error")) throw failure; return false;
+                    case "getInt": return scenario.equals("past-end") || scenario.equals("beyond-end") ? 0 : 3;
+                    case "getLong": return scenario.equals("full-interior") ? 9L : 8L;
+                    case "getBytes": return scenario.equals("past-end") || scenario.equals("beyond-end") ? null : binary ? new byte[]{0, (byte) 255, 1} : "中😀末".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    default: return defaultValue(method.getReturnType());
+                }
+            });
+            Connection connection = proxy(Connection.class, (object, method, args) -> method.getName().equals("prepareCall") ? call : defaultValue(method.getReturnType()));
+            if (scenario.equals("read-error")) {
+                assertSame(failure, assertThrows(SQLException.class, () -> OceanBaseLobValues.read(connection, locator, 5, 3)));
+            } else {
+                var chunk = OceanBaseLobValues.read(connection, locator, scenario.equals("beyond-end") ? 9 : scenario.equals("past-end") ? 8 : 5, 3);
+                assertEquals(scenario.equals("past-end") || scenario.equals("beyond-end") ? "" : binary ? "00ff01" : "中😀末", chunk.data());
+                assertEquals(scenario.equals("beyond-end") ? 9 : 8, chunk.next_offset());
+                assertEquals(!scenario.equals("full-interior"), chunk.eof(), "EOF must use server length, not JDBC UTF-16 length");
+            }
+            assertFalse(JdbcExecutor.current().hasActiveStatements());
+        }
+        }
+    }
+
+    @Test
     void emptyLocatorReturnsEmptyEofWithoutCallingDbmsLobRead() throws Exception {
         for (boolean binary : new boolean[]{false, true}) {
         java.lang.reflect.InvocationHandler handler = (object, method, args) -> {
@@ -63,7 +102,7 @@ class OceanBaseLobStatementTest {
                     case "setInt": assertEquals(3, args[1]); return null;
                     case "setLong": assertEquals(6L, args[1]); return null;
                     case "setQueryTimeout": assertEquals(20, args[0]); return null;
-                    case "registerOutParameter": assertEquals((int) args[0] == 2 ? Types.INTEGER : Types.VARCHAR, args[1]); return null;
+                    case "registerOutParameter": assertEquals((int) args[0] == 4 ? Types.INTEGER : (int) args[0] == 5 ? (binary ? Types.VARBINARY : Types.VARCHAR) : Types.BIGINT, args[1]); return null;
                     case "execute":
                         assertTrue(vendor.isInternal());
                         assertTrue(JdbcExecutor.current().hasActiveStatements());
@@ -71,6 +110,7 @@ class OceanBaseLobStatementTest {
                         calls.add("execute"); return false;
                     case "cancel", "close": calls.add(method.getName()); return null;
                     case "getInt": return 2;
+                    case "getLong": return 7L;
                     case "getBytes": return binary ? new byte[]{0, (byte) 255} : "中😀".getBytes(java.nio.charset.StandardCharsets.UTF_8);
                     default: return defaultValue(method.getReturnType());
                 }
