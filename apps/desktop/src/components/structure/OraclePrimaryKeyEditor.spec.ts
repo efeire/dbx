@@ -5,17 +5,31 @@ import OraclePrimaryKeyEditor from "./OraclePrimaryKeyEditor.vue";
 
 const mocks = vi.hoisted(() => ({ listConstraints: vi.fn(), previewPrimaryKeyChange: vi.fn(), applyPrimaryKeyChange: vi.fn() }));
 vi.mock("@/lib/backend/api", () => mocks);
-vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string, values?: { column: string }) => values ? `${key}:${values.column}` : key }) }));
+vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string, values?: { column: string }) => (values ? `${key}:${values.column}` : key) }) }));
 vi.mock("@/components/ui/button", async () => {
   const { defineComponent, h } = await import("vue");
-  return { Button: defineComponent({ inheritAttrs: false, setup: (_, { attrs, slots }) => () => h("button", attrs, slots.default?.()) }) };
+  return {
+    Button: defineComponent({
+      inheritAttrs: false,
+      setup:
+        (_, { attrs, slots }) =>
+        () =>
+          h("button", attrs, slots.default?.()),
+    }),
+  };
 });
 
 let app: App;
 let root: HTMLElement;
 const confirm = vi.fn();
 const changed = vi.fn();
-const plan = { statements: ['CREATE UNIQUE INDEX "support" ON "T" ("B", "A")', 'ALTER TABLE "T" DROP CONSTRAINT "PK" KEEP INDEX', 'ALTER TABLE "T" ADD CONSTRAINT "PK" PRIMARY KEY ("B", "A")'], revision: "reviewed", currentConstraint: null, affectedObjects: ["Preserve User Index"], recoveryStatements: ['ALTER TABLE "T" ADD CONSTRAINT "PK" PRIMARY KEY ("A") USING INDEX "User Index"'] };
+const plan = {
+  statements: ['CREATE UNIQUE INDEX "support" ON "T" ("B", "A")', 'ALTER TABLE "T" DROP CONSTRAINT "PK" KEEP INDEX', 'ALTER TABLE "T" ADD CONSTRAINT "PK" PRIMARY KEY ("B", "A")'],
+  revision: "reviewed",
+  currentConstraint: null,
+  affectedObjects: ["Preserve User Index"],
+  recoveryStatements: ['ALTER TABLE "T" ADD CONSTRAINT "PK" PRIMARY KEY ("A") USING INDEX "User Index"'],
+};
 
 async function settle() {
   await Promise.resolve();
@@ -33,9 +47,21 @@ function button(label: string): HTMLButtonElement {
 function mount(disabled = false) {
   root = document.createElement("div");
   document.body.append(root);
-  app = createApp(defineComponent({ setup: () => () => h(OraclePrimaryKeyEditor, {
-    connectionId: "oracle", database: "service", schema: "Owner", tableName: "T", columns: ["A", "B"], disabled, confirm, onChanged: changed,
-  }) }));
+  app = createApp(
+    defineComponent({
+      setup: () => () =>
+        h(OraclePrimaryKeyEditor, {
+          connectionId: "oracle",
+          database: "service",
+          schema: "Owner",
+          tableName: "T",
+          columns: ["A", "B"],
+          disabled,
+          confirm,
+          onChanged: changed,
+        }),
+    }),
+  );
   app.mount(root);
 }
 
@@ -59,7 +85,10 @@ beforeEach(() => {
   mocks.previewPrimaryKeyChange.mockResolvedValue(plan);
   confirm.mockResolvedValue(true);
 });
-afterEach(() => { app?.unmount(); root?.remove(); });
+afterEach(() => {
+  app?.unmount();
+  root?.remove();
+});
 
 describe("Oracle primary-key editing", () => {
   it("preserves selected column order, previews real backend DDL, and cancel executes nothing", async () => {
@@ -74,7 +103,16 @@ describe("Oracle primary-key editing", () => {
   });
 
   it("shows partial results and recovery without a success indication or blind retry", async () => {
-    const partial = { success: false, steps: [{ sql: plan.statements[1], success: true, error: null }, { sql: plan.statements[2], success: false, error: "ORA-02437" }], currentConstraint: null, refreshError: null, recoveryStatements: plan.recoveryStatements };
+    const partial = {
+      success: false,
+      steps: [
+        { sql: plan.statements[1], success: true, error: null },
+        { sql: plan.statements[2], success: false, error: "ORA-02437" },
+      ],
+      currentConstraint: null,
+      refreshError: null,
+      recoveryStatements: plan.recoveryStatements,
+    };
     mocks.applyPrimaryKeyChange.mockResolvedValue(partial);
     mount();
     await editComposite();
