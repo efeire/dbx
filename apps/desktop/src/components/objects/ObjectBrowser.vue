@@ -4,7 +4,7 @@ import DatabaseActionsMenu from "@/components/objects/DatabaseActionsMenu.vue";
 import { useDatabaseBrowserMutation } from "@/lib/database/databaseBrowserActions";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
 
-import { computed, createApp, nextTick, onActivated, onBeforeUnmount, ref, watch, type Component } from "vue";
+import { computed, createApp, nextTick, onActivated, onBeforeUnmount, onMounted, onUnmounted, ref, watch, type Component } from "vue";
 import { RecycleScroller } from "vue-virtual-scroller";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
 import {
@@ -100,7 +100,7 @@ import {
 } from "@/lib/database/dbAdminSql";
 import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeOceanBaseRoutineRenameSteps, RoutineRenameStepError, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
-import { buildRenameObjectSql, readOceanBaseViewRenameState, supportsObjectRename } from "@/lib/table/objectRenameSql";
+import { buildRenameObjectSql, notifyViewRenameReadback, readOceanBaseViewRenameState, supportsObjectRename } from "@/lib/table/objectRenameSql";
 import { executePackageCleanup, executePackageRename, PackageRenameCleanupError, PackageRenameStepError, preparePackageRename, supportsPackageRename } from "@/lib/table/packageRename";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
@@ -1671,6 +1671,32 @@ async function refreshActiveSource() {
   await loadSourcePanel(row, { preserveEditing: true });
 }
 
+let sourceBeforeRenameReadback: { rowId: string; canEdit: boolean; editing: boolean } | null = null;
+function onViewRenameReadback(event: Event) {
+  const target = (event as CustomEvent<{ connectionId: string; database: string; schema: string; oldName: string; state: string }>).detail;
+  const row = sourceRow.value;
+  if (!row || row.type !== "VIEW" || target.connectionId !== props.connection.id || target.database !== props.database || target.schema !== (row.schema || selectedSchema.value || props.database) || target.oldName !== row.name) return;
+  if (target.state === "pending") {
+    sourceBeforeRenameReadback = { rowId: row.id, canEdit: sourceCanEdit.value, editing: sourceEditing.value };
+    sidePanelGuard.start();
+    sourceCanEdit.value = false;
+    sourceEditing.value = false;
+    sourceContent.value = sourceDraft.value;
+    sourceLoading.value = false;
+    sourceSaving.value = false;
+    sourceSaveError.value = t("contextMenu.viewRenameStateUnknown");
+  } else if (target.state === "unchanged" && sourceBeforeRenameReadback?.rowId === row.id) {
+    sourceCanEdit.value = sourceBeforeRenameReadback.canEdit;
+    sourceEditing.value = sourceBeforeRenameReadback.editing;
+    sourceSaveError.value = "";
+    sourceBeforeRenameReadback = null;
+  } else {
+    sourceSaveError.value = t(target.state === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown");
+  }
+}
+onMounted(() => window.addEventListener("dbx:view-rename-readback", onViewRenameReadback));
+onUnmounted(() => window.removeEventListener("dbx:view-rename-readback", onViewRenameReadback));
+
 function openEventEditor(row: ObjectBrowserRow) {
   sidePanelGuard.start();
   sidePanelRow.value = row;
@@ -1829,7 +1855,6 @@ async function confirmRename() {
   let renameApplied = false;
   const schema = row.schema || selectedSchema.value || props.database;
   let renameRequestSent = false;
-  const sourceWasEditable = sourceRow.value?.id === row.id && sourceCanEdit.value;
   try {
     if (supportsPackageRename(effectiveDatabaseType.value, row.type)) {
       const cleanup = packageCleanupReviewed.value;
@@ -1941,24 +1966,13 @@ async function confirmRename() {
   } catch (e: any) {
     if (renameRequestSent && !renameApplied && effectiveDatabaseType.value === "oceanbase-oracle" && row.type === "VIEW") {
       const schema = row.schema || selectedSchema.value || props.database;
+      notifyViewRenameReadback(props.connection.id, props.database, schema, row.name, "pending");
       // Freeze saved identities before awaiting a readback of possibly committed DDL.
       queryStore.invalidateRenamedObjectTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: "VIEW" });
-      if (sourceRow.value?.id === row.id) {
-        sidePanelGuard.start();
-        sourceCanEdit.value = false;
-        sourceEditing.value = false;
-        sourceContent.value = sourceDraft.value;
-        sourceLoading.value = false;
-        sourceSaving.value = false;
-      }
       invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
       await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
       const state = await readOceanBaseViewRenameState(props.connection.id, props.database, schema, row.name, newName);
       if (state !== "unchanged") connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
-      if (state === "unchanged" && sourceRow.value?.id === row.id) {
-        sourceCanEdit.value = sourceWasEditable;
-        sourceEditing.value = sourceWasEditable;
-      }
       if (state !== "unchanged") {
         const message = t(state === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown");
         if (sourceRow.value?.id === row.id) sourceSaveError.value = message;
