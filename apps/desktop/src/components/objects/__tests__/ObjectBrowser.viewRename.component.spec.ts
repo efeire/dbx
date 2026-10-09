@@ -11,7 +11,6 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   listSchemas: vi.fn().mockResolvedValue(["APP"]),
   listObjectStatistics: vi.fn().mockResolvedValue([]),
   buildRenameObjectSql: vi.fn().mockResolvedValue('RENAME "Old View" TO "New View"'),
-  getObjectSource: vi.fn().mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true }),
   buildRoutineRenameObjectSourceStatements: vi.fn().mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]),
   executeQuery: vi.fn(),
   getObjectSource: vi.fn().mockResolvedValue({ source: "CREATE VIEW old_view AS SELECT 2", editable: true }),
@@ -88,6 +87,7 @@ afterEach(() => {
 
 async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" = "VIEW") {
   vi.mocked(api.listObjects).mockResolvedValue([{ name: "Old View", schema: "APP", object_type: objectType }]);
+  vi.mocked(api.getObjectSource).mockResolvedValue({ source: objectType === "VIEW" ? "CREATE VIEW old_view AS SELECT 2" : 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true });
   const pinia = createPinia();
   setActivePinia(pinia);
   const connections = useConnectionStore();
