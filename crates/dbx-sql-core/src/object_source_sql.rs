@@ -27,6 +27,8 @@ pub struct RoutineRenameObjectSourceInput {
     pub name: String,
     pub new_name: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_body_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,6 +82,9 @@ pub fn supports_source_backed_routine_rename(
 pub fn build_routine_rename_object_source_statements(
     input: RoutineRenameObjectSourceInput,
 ) -> Result<Vec<String>, String> {
+    if matches!(input.object_type, ObjectSourceKind::Package | ObjectSourceKind::PackageBody) {
+        return crate::package_rename::build_package_rename_steps(&input);
+    }
     if input.database_type == DatabaseType::OceanbaseOracle {
         return build_oceanbase_routine_rename_steps(&input);
     }
@@ -2608,6 +2613,7 @@ mod tests {
     fn oceanbase_rename_create_preserves_body_and_comments_without_replace() {
         let source = "-- keep header\nCREATE /* keep */ OR REPLACE PROCEDURE \"APP\".\"Old Proc\" AS\nBEGIN\n  dbms_output.put_line(q'[Old Proc: O'Reilly]'); -- Old Proc\nEND;\n/";
         let sql = build_oceanbase_renamed_routine_create(&RoutineRenameObjectSourceInput {
+            package_body_source: None,
             database_type: DatabaseType::OceanbaseOracle,
             object_type: ObjectSourceKind::Procedure,
             schema: Some("APP".to_string()),
@@ -2627,6 +2633,7 @@ mod tests {
             "CREATE FUNCTION APP.P RETURN NUMBER AS BEGIN RETURN 1; END;",
         ] {
             assert!(build_oceanbase_renamed_routine_create(&RoutineRenameObjectSourceInput {
+                package_body_source: None,
                 database_type: DatabaseType::OceanbaseOracle,
                 object_type: ObjectSourceKind::Procedure,
                 schema: Some("APP".to_string()),
@@ -2645,6 +2652,7 @@ mod tests {
             (ObjectSourceKind::Function, "FUNCTION", "RETURN NUMBER AS BEGIN RETURN 1; END;"),
         ] {
             let statements = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+                package_body_source: None,
                 database_type: DatabaseType::OceanbaseOracle,
                 object_type,
                 schema: Some("APP".to_string()),
@@ -2670,6 +2678,7 @@ mod tests {
     #[test]
     fn oceanbase_routine_rename_quotes_identifiers_and_nested_metadata_literals() {
         let statements = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+            package_body_source: None,
             database_type: DatabaseType::OceanbaseOracle,
             object_type: ObjectSourceKind::Procedure,
             schema: Some("O'Reilly".to_string()),
@@ -2686,6 +2695,7 @@ mod tests {
     #[test]
     fn oracle_family_routine_rename_rewrites_source_and_drops_original() {
         let statements = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+            package_body_source: None,
             database_type: DatabaseType::Dameng,
             object_type: ObjectSourceKind::Procedure,
             schema: Some("SYSDBA".to_string()),

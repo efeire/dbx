@@ -47,6 +47,8 @@ beforeEach(() => {
   invalidateObjectBrowserRowsCache({});
   vi.mocked(api.listObjects).mockResolvedValue([{ name: "Old View", schema: "APP", object_type: "VIEW" }]);
   vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [] } as any);
+  vi.mocked(api.getObjectSource).mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true } as any);
+  vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]);
 });
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
@@ -55,7 +57,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" = "VIEW") {
+async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE_BODY" = "VIEW") {
   vi.mocked(api.listObjects).mockResolvedValue([{ name: "Old View", schema: "APP", object_type: objectType }]);
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -170,5 +172,50 @@ describe("ObjectBrowser OceanBase routine rename", () => {
     expect(vi.mocked(api.executeQuery).mock.calls.map((call) => call[2])).toEqual(["preflight", "create", "validate", "grants", "drop"]);
     expect(container.textContent).toContain("New View");
     expect(queries.tabs.find((tab) => tab.id === sourceId)?.sourceSnapshot).toBe(true);
+  });
+});
+
+describe("ObjectBrowser package migration", () => {
+  function preparePackage(fail?: string) {
+    vi.mocked(api.getObjectSource).mockImplementation(async (_connection, _database, schema, name, objectType) => ({
+      schema, name, object_type: objectType, source: `CREATE ${objectType === "PACKAGE_BODY" ? "PACKAGE BODY" : "PACKAGE"} "APP"."Old View" AS END;`,
+    }));
+    vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockResolvedValue(["preflight", "create spec", "create body", "validate pair", "copy grants", "dependencies"]);
+    vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => {
+      if (sql.startsWith("SELECT OBJECT_TYPE")) return { columns: ["OBJECT_TYPE"], rows: [["PACKAGE"], ["PACKAGE BODY"]] } as any;
+      if (sql === fail) throw new Error("package-stage-error");
+      return { columns: [], rows: [] } as any;
+    });
+  }
+
+  it("allows read-only preparation but sends no DDL when production confirmation is cancelled", async () => {
+    preparePackage();
+    const { safety, queries } = await openRename("PACKAGE");
+    safety.cancel();
+    await nextTick();
+    expect(vi.mocked(api.executeQuery).mock.calls.every((call) => call[2].startsWith("SELECT"))).toBe(true);
+    expect(queries.tabs.some((tab) => tab.sourceSnapshot)).toBe(false);
+  });
+
+  it("keeps the original identity and recovery snapshot after the new package is validated", async () => {
+    preparePackage();
+    const { safety, queries, sourceId, refresh } = await openRename("PACKAGE_BODY");
+    safety.confirm();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource?.name).toBe("Old View");
+    const snapshot = queries.tabs.find((tab) => tab.sourceSnapshot);
+    expect(snapshot?.sql).toContain("ORIGINAL BODY");
+    expect(snapshot?.sql).toContain("6. inspect remaining dependencies: response received");
+    expect(vi.mocked(api.executeQuery).mock.calls.some((call) => /DROP PACKAGE/i.test(call[2]))).toBe(false);
+  });
+
+  it("stops after pair validation fails and records the attempted step", async () => {
+    preparePackage("validate pair");
+    const { safety, queries, refresh } = await openRename("PACKAGE");
+    safety.confirm();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("package-stage-error"));
+    expect(vi.mocked(api.executeQuery).mock.calls.some((call) => call[2] === "copy grants")).toBe(false);
+    expect(queries.tabs.find((tab) => tab.sourceSnapshot)?.sql).toContain("attempted; read back database state");
+    expect(refresh).toHaveBeenCalled();
   });
 });

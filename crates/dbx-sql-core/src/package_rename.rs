@@ -2,6 +2,108 @@
 //! execute DDL or authorize removal of the original package.
 
 use crate::models::connection::DatabaseType;
+use crate::object_source_sql::RoutineRenameObjectSourceInput;
+
+/// A package migration intentionally ends with both names present. External and
+/// dynamic callers require a separate, explicit migration before removing the old name.
+pub fn build_package_rename_steps(input: &RoutineRenameObjectSourceInput) -> Result<Vec<String>, String> {
+    let owner = input.schema.as_deref().ok_or("A package owner is required.")?;
+    let sources = prepare_package_rename_sources(
+        input.database_type,
+        owner,
+        &input.name,
+        &input.new_name,
+        &input.source,
+        input.package_body_source.as_deref(),
+    )?;
+    let literal = |value: &str| format!("'{}'", value.replace('\'', "''"));
+    let schema = literal(owner);
+    let old = literal(&input.name);
+    let new = literal(&input.new_name);
+    let body_count = usize::from(sources.create_body.is_some());
+    let object_count = 1 + body_count;
+    let preflight = format!("-- Preflight: no DDL. Complete dependency/grant visibility is required.
+DECLARE n PLS_INTEGER;
+BEGIN
+  IF SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') <> {schema} THEN
+    RAISE_APPLICATION_ERROR(-20031, 'DBX package migration: execution schema differs from selected owner.');
+  END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={old} AND OBJECT_TYPE='PACKAGE';
+  IF n<>1 THEN RAISE_APPLICATION_ERROR(-20032, 'Original package is missing or inaccessible.'); END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={old} AND OBJECT_TYPE='PACKAGE BODY';
+  IF n<>{body_count} THEN RAISE_APPLICATION_ERROR(-20033, 'Package body visibility or source changed; reload both definitions.'); END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={new};
+  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20034, 'Replacement name already exists; nothing changed.'); END IF;
+  IF SYS_CONTEXT('USERENV', 'SESSION_USER')={schema} AND SYS_CONTEXT('USERENV', 'SESSION_USER')<>'SYS' THEN
+    SELECT COUNT(*) INTO n FROM SYS.SESSION_PRIVS WHERE PRIVILEGE IN ('CREATE PROCEDURE','CREATE ANY PROCEDURE');
+    IF n=0 THEN RAISE_APPLICATION_ERROR(-20035, 'Package creation privilege is unavailable.'); END IF;
+  END IF;
+  IF SYS_CONTEXT('USERENV', 'SESSION_USER') NOT IN ({schema}, 'SYS') THEN
+    SELECT COUNT(*) INTO n FROM SYS.USER_SYS_PRIVS WHERE PRIVILEGE='CREATE ANY PROCEDURE';
+    IF n=0 THEN RAISE_APPLICATION_ERROR(-20035, 'Cross-owner package creation requires direct CREATE ANY PROCEDURE.'); END IF;
+  END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_DEPENDENCIES WHERE REFERENCED_OWNER={schema} AND REFERENCED_NAME={old};
+  SELECT COUNT(*) INTO n FROM SYS.DBA_SYNONYMS WHERE TABLE_OWNER={schema} AND TABLE_NAME={old};
+  SELECT COUNT(*) INTO n FROM SYS.DBA_TAB_PRIVS WHERE OWNER={schema} AND TABLE_NAME={old} AND (PRIVILEGE<>'EXECUTE' OR HIERARCHY='YES');
+  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20036, 'Unsupported package grants; migrate manually.'); END IF;
+  IF SYS_CONTEXT('USERENV', 'SESSION_USER') NOT IN ({schema}, 'SYS') THEN
+    SELECT COUNT(*) INTO n FROM SYS.DBA_TAB_PRIVS WHERE OWNER={schema} AND TABLE_NAME={old};
+    IF n>0 THEN
+      SELECT COUNT(*) INTO n FROM SYS.USER_SYS_PRIVS WHERE PRIVILEGE='GRANT ANY OBJECT PRIVILEGE';
+      IF n=0 THEN RAISE_APPLICATION_ERROR(-20036, 'Cross-owner grant migration requires direct GRANT ANY OBJECT PRIVILEGE.'); END IF;
+    END IF;
+  END IF;
+END;");
+    let procedures = |name: &str| {
+        format!("SELECT PROCEDURE_NAME,SUBPROGRAM_ID,OVERLOAD FROM SYS.ALL_PROCEDURES WHERE OWNER={schema} AND OBJECT_NAME={name} AND OBJECT_TYPE='PACKAGE' AND PROCEDURE_NAME IS NOT NULL")
+    };
+    let arguments = |name: &str| {
+        format!("SELECT OBJECT_NAME,SUBPROGRAM_ID,POSITION,SEQUENCE,DATA_LEVEL,ARGUMENT_NAME,IN_OUT,DATA_TYPE,DATA_LENGTH,DATA_PRECISION,DATA_SCALE,TYPE_OWNER,CASE WHEN TYPE_OWNER={schema} AND TYPE_NAME={name} THEN {old} ELSE TYPE_NAME END TYPE_NAME,TYPE_SUBNAME,DEFAULTED FROM SYS.ALL_ARGUMENTS WHERE OWNER={schema} AND PACKAGE_NAME={name}")
+    };
+    let mut comparisons = String::new();
+    for (left, right) in [(procedures(&old), procedures(&new)), (arguments(&old), arguments(&new))] {
+        for (a, b) in [(&left, &right), (&right, &left)] {
+            comparisons.push_str(&format!("\n  SELECT COUNT(*) INTO n FROM ({a} MINUS {b});\n  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20038, 'Package members or overload signatures differ; original retained.'); END IF;"));
+        }
+    }
+    let validate = format!("-- Validate the specification and body together, including public overloads.
+DECLARE n PLS_INTEGER; compile_error VARCHAR2(1500);
+BEGIN
+  SELECT COUNT(*) INTO n FROM SYS.ALL_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={new} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY') AND STATUS='VALID';
+  IF n<>{object_count} THEN
+    SELECT MIN(SUBSTR(TEXT,1,1400)) INTO compile_error FROM SYS.ALL_ERRORS WHERE OWNER={schema} AND NAME={new} AND TYPE IN ('PACKAGE','PACKAGE BODY');
+    RAISE_APPLICATION_ERROR(-20037, 'New package is not VALID; original retained. ' || compile_error);
+  END IF;
+  SELECT COUNT(*) INTO n FROM SYS.ALL_ERRORS WHERE OWNER={schema} AND NAME={new} AND TYPE IN ('PACKAGE','PACKAGE BODY') AND ATTRIBUTE='ERROR';
+  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20037, 'New package has compilation errors; original retained.'); END IF;{comparisons}
+END;");
+    let target = format!("{}.{}", quoted(owner), quoted(&input.new_name));
+    let grant_prefix = literal(&format!("GRANT EXECUTE ON {target} TO "));
+    let grants = format!(
+        r#"-- Copy effective EXECUTE grants and verify them; never remove the original.
+DECLARE n PLS_INTEGER; grant_sql VARCHAR2(4000);
+BEGIN
+  FOR r IN (SELECT DISTINCT GRANTEE,GRANTABLE FROM SYS.DBA_TAB_PRIVS WHERE OWNER={schema} AND TABLE_NAME={old} AND PRIVILEGE='EXECUTE') LOOP
+    grant_sql := {grant_prefix} || CASE WHEN r.GRANTEE='PUBLIC' THEN 'PUBLIC' ELSE '"' || REPLACE(r.GRANTEE,'"','""') || '"' END;
+    IF r.GRANTABLE='YES' THEN grant_sql := grant_sql || ' WITH GRANT OPTION'; END IF;
+    EXECUTE IMMEDIATE grant_sql;
+  END LOOP;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_TAB_PRIVS a WHERE a.OWNER={schema} AND a.TABLE_NAME={old}
+    AND NOT EXISTS (SELECT 1 FROM SYS.DBA_TAB_PRIVS b WHERE b.OWNER={schema} AND b.TABLE_NAME={new} AND b.GRANTEE=a.GRANTEE AND b.PRIVILEGE=a.PRIVILEGE AND (a.GRANTABLE='NO' OR b.GRANTABLE='YES'));
+  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20039, 'Package grant verification failed; both names retained.'); END IF;
+END;"#
+    );
+    let dependencies = format!("-- Migration is incomplete: review external and dynamic callers before any separate DROP.
+SELECT 'STATIC_DEPENDENCIES' AS KIND, COUNT(*) AS REMAINING FROM SYS.DBA_DEPENDENCIES WHERE REFERENCED_OWNER={schema} AND REFERENCED_NAME={old} AND NOT (OWNER={schema} AND NAME={old})
+UNION ALL
+SELECT 'SYNONYMS',COUNT(*) FROM SYS.DBA_SYNONYMS WHERE TABLE_OWNER={schema} AND TABLE_NAME={old}");
+    let mut steps = vec![preflight, sources.create_specification];
+    if let Some(body) = sources.create_body {
+        steps.push(body);
+    }
+    steps.extend([validate, grants, dependencies]);
+    Ok(steps)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackageRenameSources {
@@ -186,8 +288,15 @@ fn lex(source: &str) -> Result<Vec<Lexeme<'_>>, String> {
         }
         let start = offset;
         let mut identifier = None;
-        if (rest.starts_with("q'") || rest.starts_with("Q'")) && rest.len() > 2 {
-            let delimiter = rest[2..].chars().next().unwrap();
+        let alternative_prefix = if rest.get(..3).is_some_and(|value| value.eq_ignore_ascii_case("nq'")) {
+            3
+        } else if rest.starts_with("q'") || rest.starts_with("Q'") {
+            2
+        } else {
+            0
+        };
+        if alternative_prefix > 0 && rest.len() > alternative_prefix {
+            let delimiter = rest[alternative_prefix..].chars().next().unwrap();
             let close = match delimiter {
                 '[' => ']',
                 '(' => ')',
@@ -195,7 +304,7 @@ fn lex(source: &str) -> Result<Vec<Lexeme<'_>>, String> {
                 '<' => '>',
                 other => other,
             };
-            let content = 2 + delimiter.len_utf8();
+            let content = alternative_prefix + delimiter.len_utf8();
             let marker = format!("{close}'");
             offset += content
                 + rest[content..].find(&marker).ok_or("Unterminated alternative-quoted package literal.")?
@@ -237,6 +346,43 @@ fn lex(source: &str) -> Result<Vec<Lexeme<'_>>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object_source_sql::build_routine_rename_object_source_statements;
+    use crate::types::ObjectSourceKind;
+
+    #[test]
+    fn public_package_plan_validates_both_sources_grants_and_members_without_dropping_original() {
+        for database_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle] {
+            for with_body in [false, true] {
+                let steps = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+                    database_type,
+                    object_type: ObjectSourceKind::Package,
+                    schema: Some("APP".into()),
+                    name: "PKG".into(),
+                    new_name: "NEW_PKG".into(),
+                    source: "CREATE PACKAGE PKG AS PROCEDURE RUN; END PKG;".into(),
+                    package_body_source: with_body
+                        .then(|| "CREATE PACKAGE BODY PKG AS PROCEDURE RUN IS BEGIN NULL; END RUN; END PKG;".into()),
+                })
+                .unwrap();
+                assert_eq!(steps.len(), if with_body { 6 } else { 5 });
+                assert!(steps[0].contains("DBA_OBJECTS"));
+                assert!(steps[0].contains("DBA_DEPENDENCIES"));
+                assert!(steps[1].contains("PACKAGE \"APP\".\"NEW_PKG\""));
+                if with_body {
+                    assert!(steps[2].contains("PACKAGE BODY \"APP\".\"NEW_PKG\""));
+                }
+                let validation = &steps[if with_body { 3 } else { 2 }];
+                assert!(validation.contains("STATUS='VALID'"));
+                assert!(validation.contains("ATTRIBUTE='ERROR'"));
+                assert!(validation.contains("SUBPROGRAM_ID"));
+                assert!(validation.contains("DEFAULTED"));
+                assert!(validation.contains(" MINUS "));
+                assert!(steps[steps.len() - 2].contains("GRANT EXECUTE"));
+                assert!(steps.last().unwrap().contains("STATIC_DEPENDENCIES"));
+                assert!(steps.iter().all(|sql| !sql.contains("DROP PACKAGE") && !sql.contains("CREATE OR REPLACE")));
+            }
+        }
+    }
 
     #[test]
     fn preserves_source_snapshots_and_prepares_specification_without_a_body() {
@@ -282,6 +428,25 @@ mod tests {
         assert!(plan.create_specification.contains("END \"New\"\"Name\";"));
         assert!(prepare_package_rename_sources(DatabaseType::Oracle, "MIXED.OWNER", "Pkg.Name", "NEW", source, None)
             .is_err());
+    }
+
+    #[test]
+    fn preserves_national_alternative_literals_containing_apostrophes() {
+        let source = "CREATE PACKAGE PKG AS x NVARCHAR2(100) := NQ'[PKG.RUN '中文😀']'; END PKG;";
+        let plan = prepare_package_rename_sources(DatabaseType::Oracle, "APP", "PKG", "NEW", source, None).unwrap();
+        assert!(plan.create_specification.contains("NQ'[PKG.RUN '中文😀']'"));
+    }
+
+    #[test]
+    fn package_body_survives_the_existing_web_and_tauri_input_contract() {
+        let input: RoutineRenameObjectSourceInput = serde_json::from_value(serde_json::json!({
+            "databaseType":"oceanbase-oracle", "objectType":"PACKAGE", "schema":"APP", "name":"PKG", "newName":"NEW",
+            "source":"CREATE PACKAGE PKG AS PROCEDURE RUN; END;",
+            "packageBodySource":"CREATE PACKAGE BODY PKG AS PROCEDURE RUN IS BEGIN NULL; END; END;"
+        }))
+        .unwrap();
+        assert!(input.package_body_source.is_some());
+        assert_eq!(build_routine_rename_object_source_statements(input).unwrap().len(), 6);
     }
 
     #[test]

@@ -40,7 +40,7 @@ async function openRename(target: TreeNode = node) {
   const replacePin = vi.spyOn(store, "replacePinnedTreeNode");
   vi.spyOn(store, "refreshObjectListTreeNode").mockResolvedValue(undefined);
   const queries = useQueryStore();
-  const sourceId = queries.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "APP", title: target.label, sql: "unsaved original definition", objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" } });
+  const sourceId = queries.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "APP", title: target.label, sql: "unsaved original definition", objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "package" ? "PACKAGE" : target.type === "package-body" ? "PACKAGE_BODY" : target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" } });
   const instance = ref<{ buildContextMenu(target: TreeNode): ContextMenuItem[] }>();
   let controller: RenameDialog | undefined;
   const container = document.createElement("div");
@@ -62,6 +62,8 @@ async function openRename(target: TreeNode = node) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [] } as any);
+  vi.mocked(api.getObjectSource).mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true } as any);
+  vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]);
 });
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
@@ -131,5 +133,40 @@ describe("OceanBase ordinary view rename", () => {
     expect(dialog.showRenameObjectDialog).toBe(true);
     expect(replacePin).not.toHaveBeenCalled();
     expect(api.executeQuery).toHaveBeenCalledWith("ob", "APP", expect.any(String), "APP", undefined, expect.any(Object));
+  });
+});
+
+describe("OceanBase package migration from the sidebar", () => {
+  const target: TreeNode = { ...node, type: "package", id: "ob:APP:package:Old View" };
+  function preparePackage() {
+    vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => ({ columns: [], rows: sql.startsWith("SELECT OBJECT_TYPE") ? [["PACKAGE"]] : [] }) as any);
+    vi.mocked(api.getObjectSource).mockResolvedValue({ name: "Old View", schema: "APP", object_type: "PACKAGE", source: 'CREATE PACKAGE "APP"."Old View" AS END;' });
+    vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockResolvedValue(["preflight", "create spec", "validate", "grants", "dependencies"]);
+  }
+
+  it("cancels after read-only preparation without replacing the original pin", async () => {
+    preparePackage();
+    const { dialog, safety, replacePin, queries } = await openRename(target);
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.cancel();
+    await execution;
+    expect(vi.mocked(api.executeQuery).mock.calls.every((call) => call[2].startsWith("SELECT"))).toBe(true);
+    expect(replacePin).not.toHaveBeenCalled();
+    expect(queries.tabs.some((tab) => tab.sourceSnapshot)).toBe(false);
+  });
+
+  it("keeps the original source identity after a specification-only migration", async () => {
+    preparePackage();
+    const { dialog, safety, replacePin, queries, sourceId } = await openRename(target);
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await execution;
+    expect(dialog.showRenameObjectDialog).toBe(false);
+    expect(replacePin).not.toHaveBeenCalled();
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource?.name).toBe("Old View");
+    expect(queries.tabs.find((tab) => tab.sourceSnapshot)?.sql).toContain("5. inspect remaining dependencies: response received");
+    expect(vi.mocked(api.executeQuery).mock.calls.some((call) => /DROP PACKAGE/i.test(call[2]))).toBe(false);
   });
 });
