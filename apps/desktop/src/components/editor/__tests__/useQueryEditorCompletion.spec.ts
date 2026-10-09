@@ -147,6 +147,24 @@ describe.each([false, true])("OceanBase standalone routine completion (semantic=
     const result = await pending;
     expect(result?.options.some((option) => option.label === "P_OLD") ?? false).toBe(false);
   });
+
+  it.each(["schema", "database", "catalog", "connectionId"] as const)("drops a held routine response after %s changes", async (scopeKey) => {
+    const { provide, props, store } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", database: "OB", schema: "B", modelValue: "SELECT 函数" }, undefined, semanticCompletionEnabled);
+    let release!: (objects: SqlCompletionObject[]) => void;
+    store.listCompletionObjects.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    const pending = provide();
+    await vi.waitFor(() => expect(store.listCompletionObjects).toHaveBeenCalled());
+    props[scopeKey] = "A";
+    release([{ name: "函数.Mixed", schema: "A", type: "function" }]);
+    expect(await pending).toBeNull();
+    if (scopeKey === "catalog") props.catalog = undefined;
+    store.listCompletionObjects.mockResolvedValue([{ name: "函数.Mixed", schema: "A", type: "function" }]);
+    expect((await provide())?.options.some((option) => (option.displayLabel ?? option.label) === "函数.Mixed")).toBe(true);
+  });
 });
 
 describe.each([false, true])("Snowflake namespace completion (semantic=%s)", (semanticCompletionEnabled) => {

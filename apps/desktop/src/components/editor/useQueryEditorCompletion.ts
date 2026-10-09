@@ -1,5 +1,5 @@
 import { type RoutineCompletionTarget } from "./useQueryEditorCompletionMetadata";
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import type { CompletionContext } from "@codemirror/autocomplete";
 import type { EditorView as EditorViewType } from "@codemirror/view";
 import { type QueryCompletionItem, type BatchColumnSelectionActionItem } from "./useQueryEditorBatchSelection";
@@ -224,6 +224,15 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
   let deferredCompletionTriggerTimer: ReturnType<typeof setTimeout> | null = null;
 
   let completionEpoch = 0;
+
+  watch(
+    [() => props.connectionId, () => props.database, () => props.catalog, () => props.schema],
+    () => {
+      completionEpoch++;
+      cancelEditorSqlCompletionAnalysis();
+    },
+    { flush: "sync" },
+  );
 
   let tableCompletionRefreshActive = false;
 
@@ -959,9 +968,9 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           }
           try {
             const result = await performAsyncCompletionWithResult(epoch, completionContext, fullDoc, position, completionScope);
-            resolve(result ?? localResult);
+            resolve(epoch === completionEpoch ? (result ?? localResult) : null);
           } catch {
-            resolve(localResult);
+            resolve(epoch === completionEpoch ? localResult : null);
           }
         }, COMPLETION_DEBOUNCE_DELAY_MS);
       });
