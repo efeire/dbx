@@ -1,8 +1,9 @@
 # Oracle primary-key editing (#6973)
 
-Development checkpoint only. The tests below have been written but have not been
-run under the current development-first delivery schedule. Oracle database,
-desktop/Web GUI, compilation, and integrated acceptance are pending.
+Development checkpoint only. At commit 9a63958745ccc80343e6bd8d1850f36b96801848,
+CI frontend checks, typecheck and both frontend test shards passed. The local
+primary-key editor suite (5 tests) also passed. Rust CI is still queued; Oracle
+database, desktop/Web GUI and integrated acceptance remain pending.
 
 ## Production path
 
@@ -40,12 +41,13 @@ Oracle references: [ALTER TABLE](https://docs.oracle.com/en/database/oracle/orac
 and [ALL_CONSTRAINTS](https://docs.oracle.com/en/database/oracle/oracle-database/26/refrn/ALL_CONSTRAINTS.html).
 Engine semantics are not established by SQL generation tests alone.
 
-## Written behavior suites (not run)
+## Behavior suites and verification scope
 
 - Core `schema::oracle_constraint_change::tests`: ordered replacement, quoted
   identifiers, NULL/duplicate/dependency/permission/incomplete-result rejection,
   stale preview, pre-index failure, failed replacement and recovery, retry,
   complete removal, existing add behavior, explicit old-index removal.
+  These cases are written; execution on the current head is not yet confirmed.
 - `OraclePrimaryKeyEditor.spec.ts`: mounted component selection/order, real
   backend-plan presentation, cancellation, production confirmation cancellation,
   partial result/recovery, blocked preflight and disabled parent state.
