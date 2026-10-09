@@ -68,19 +68,17 @@ async function select(label: string, value: string) {
 }
 beforeEach(() => {
   mocks.guard.mockReset().mockImplementation((options) => options.execute());
-  mocks.oracleRoleAdmin
-    .mockReset()
-    .mockImplementation(async (_id, _database, request: OracleRoleRequest) =>
-      request.operation === "preview"
-        ? {
-            revision: "rev",
-            before: {},
-            sources: [],
-            requiresPassword: request.change.authentication === "password",
-            steps: [{ label: request.change.action, sql: request.change.authentication === "password" ? 'ALTER ROLE "U" IDENTIFIED BY "<password omitted>"' : 'REVOKE CREATE SESSION FROM "U"' }],
-          }
-        : { outcome: "verified", sentSteps: [request.change.action], completedSteps: [request.change.action], remainingSources: [{ source: "role", grant: { GRANTEE: "R", PRIVILEGE: "CREATE SESSION" } }] },
-    );
+  mocks.oracleRoleAdmin.mockReset().mockImplementation(async (_id, _database, request: OracleRoleRequest) =>
+    request.operation === "preview"
+      ? {
+          revision: "rev",
+          before: {},
+          sources: [],
+          requiresPassword: request.change.authentication === "password",
+          steps: [{ label: request.change.action, sql: request.change.authentication === "password" ? 'ALTER ROLE "U" IDENTIFIED BY "<password omitted>"' : 'REVOKE CREATE SESSION FROM "U"' }],
+        }
+      : { outcome: "verified", sentSteps: [request.change.action], completedSteps: [request.change.action], remainingSources: [{ source: "role", grant: { GRANTEE: "R", PRIVILEGE: "CREATE SESSION" } }] },
+  );
 });
 afterEach(() => {
   app?.unmount();
