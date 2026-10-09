@@ -617,11 +617,8 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
           sizes.set(hydrationKey, bytes);
           materializedSnapshotBytes.set(sourceResult, sizes);
         }
-        const row = [...(sourceResult.rows[item.sourceIndex!] ?? [])];
-        row[columnIndex] = value ?? null;
-        const rows = sourceResult.rows.slice();
-        rows[item.sourceIndex!] = row;
-        sourceResult.rows = rows;
+        // Keep row identity so loading another LOB does not clear pending edits or undo history.
+        sourceResult.rows[item.sourceIndex!]![columnIndex] = value ?? null;
         visibleLargeValuePreviewCaches.get(sourceResult)?.forget(item.sourceIndex!, columnIndex);
         sourceResult.large_value_cells = sourceResult.large_value_cells?.filter((cell) => cell.row_index !== item.sourceIndex || cell.column_index !== columnIndex);
         options.largeValueResolutionVersion.value += 1;

@@ -101,13 +101,10 @@ function mountLargeValues(databaseType: DatabaseType, result: Ref<QueryResult>, 
             tableMeta: computed(() => ({
               schema: "public",
               tableName: "APP_DATA",
-              columns: [
-                { name: "ID", data_type: "NUMBER" },
-                { name: "APP", data_type: "CLOB" },
-              ],
+              columns: result.value.columns.map((name, index) => ({ name, data_type: index === 0 ? "NUMBER" : "CLOB" })),
               primaryKeys: ["ID"],
             })),
-            sourceColumns: computed(() => ["ID", "APP"]),
+            sourceColumns: computed(() => result.value.columns),
             onExecuteSql: computed(() => undefined),
             sql: computed(() => undefined),
             searchText: ref(""),
@@ -145,6 +142,47 @@ function previewResult(columnType = "bytea", value = "\\x00017f80ff...", origina
 }
 
 describe("useDataGridLargeValues", () => {
+  it("keeps the first pending BLOB edit when loading a second complete BLOB on the same row", async () => {
+    const result = previewResult("BLOB", "0x11", 2057);
+    result.value.columns.push("DOCUMENT");
+    result.value.column_types!.push("BLOB");
+    result.value.rows[0]!.push("0x22");
+    result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO" };
+    result.value.large_value_cells = [
+      { row_index: 0, column_index: 1, original_bytes: 2057, value_ref: "first" },
+      { row_index: 0, column_index: 2, original_bytes: 2061, value_ref: "second" },
+    ];
+    mocks.readLargeValueChunk.mockImplementation(async (options) => {
+      const bytes = options.valueRef === "first" ? 2057 : 2061;
+      return { status: "ok", data: (options.valueRef === "first" ? "11" : "22").repeat(bytes), next_offset: bytes, eof: true, value_kind: "binary" };
+    });
+    const { largeValues, editor } = mountLargeValues("oceanbase-oracle", result, true);
+    await expect(largeValues.hydrateLargeValueCell(1, 1)).resolves.toBe(true);
+    editor!.applyCellValue(0, 1, "0x00ff80");
+    await nextTick();
+    const row = result.value.rows[0];
+    await expect(largeValues.hydrateLargeValueCell(1, 2)).resolves.toBe(true);
+    await nextTick();
+    expect(editor!.dirtyRows.value.get(0)?.get(1)).toBe("0x00ff80");
+    expect(result.value.rows[0]).toBe(row);
+    editor!.applyCellValue(0, 2, "0xaabbcc");
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["both BLOB updates"], rollbackStatements: [] });
+    await editor!.previewChanges();
+    expect(mocks.prepareDataGridSave.mock.calls[0]![0].dirtyRows).toEqual([
+      [
+        0,
+        [
+          [1, "0x00ff80"],
+          [2, "0xaabbcc"],
+        ],
+      ],
+    ]);
+    expect(result.value.rows[0]).toEqual([1, "0x" + "11".repeat(2057), "0x" + "22".repeat(2061)]);
+    editor!.undoPendingChange();
+    expect(editor!.dirtyRows.value.get(0)?.get(1)).toBe("0x00ff80");
+    expect(editor!.dirtyRows.value.get(0)?.has(2)).toBe(false);
+  });
+
   it.each([
     ["CLOB", "preview"],
     ["CLOB", "failed preparation"],
