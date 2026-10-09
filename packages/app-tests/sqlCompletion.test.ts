@@ -2085,7 +2085,10 @@ test("prioritizes UNIQUEIDENTIFIER above UNION and UPDATE and suppresses externa
   });
 
   // Should NOT suggest columns from other tables when defining column types
-  assert.equal(items.some((item) => item.label === "UpdateDate"), false);
+  assert.equal(
+    items.some((item) => item.label === "UpdateDate"),
+    false,
+  );
 
   // UNIQUEIDENTIFIER must rank above UNION and UPDATE
   const uniqueIdIdx = items.findIndex((item) => item.label === "UNIQUEIDENTIFIER");

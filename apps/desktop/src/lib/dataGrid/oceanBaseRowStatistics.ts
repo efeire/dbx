@@ -28,9 +28,14 @@ export function loadOceanBaseRowStatistics(connectionId: string, database: strin
 export function oceanBaseTableStatistics(snapshot: Snapshot, name: string, schema: string): ObjectStatistics {
   // Dictionary names are already resolved identifiers. Quoted names differing
   // only by case must never borrow another table's estimate.
-  return snapshot.statistics.find((stat) => stat.name === name && (!schema || stat.schema === schema)) ?? {
-    name, schema, estimated_rows: null, rows_status: snapshot.status ?? "unknown",
-  };
+  return (
+    snapshot.statistics.find((stat) => stat.name === name && (!schema || stat.schema === schema)) ?? {
+      name,
+      schema,
+      estimated_rows: null,
+      rows_status: snapshot.status ?? "unknown",
+    }
+  );
 }
 
 export function estimatedRowsText(stats: ObjectStatistics | null | undefined, t: (key: string) => string): string {

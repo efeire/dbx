@@ -21,11 +21,13 @@ describe("OceanBase optimizer row statistics", () => {
   });
 
   it("matches exact quoted identifiers and never borrows another schema's estimate", () => {
-    const snapshot = { statistics: [
-      { name: "Table", schema: "APP", estimated_rows: 0, rows_status: "available" as const },
-      { name: "TABLE", schema: "APP", estimated_rows: 9, rows_status: "available" as const },
-      { name: "Table", schema: "OTHER", estimated_rows: 7, rows_status: "available" as const },
-    ] };
+    const snapshot = {
+      statistics: [
+        { name: "Table", schema: "APP", estimated_rows: 0, rows_status: "available" as const },
+        { name: "TABLE", schema: "APP", estimated_rows: 9, rows_status: "available" as const },
+        { name: "Table", schema: "OTHER", estimated_rows: 7, rows_status: "available" as const },
+      ],
+    };
     expect(estimatedRowsText(oceanBaseTableStatistics(snapshot, "Table", "APP"), t)).toBe("0");
     expect(oceanBaseTableStatistics(snapshot, "TABLE", "APP").estimated_rows).toBe(9);
     expect(oceanBaseTableStatistics(snapshot, "Table", "OTHER").estimated_rows).toBe(7);
@@ -42,7 +44,11 @@ describe("OceanBase optimizer row statistics", () => {
 
   it("shares a schema batch, refreshes explicitly and ignores an old response in the cache", async () => {
     let resolveOld!: (stats: ObjectStatistics[]) => void;
-    mocks.listObjectStatistics.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }));
+    mocks.listObjectStatistics.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOld = resolve;
+      }),
+    );
     const old = loadOceanBaseRowStatistics("cache-race", "DB", "APP", true);
     expect(loadOceanBaseRowStatistics("cache-race", "DB", "APP")).toBe(old);
     mocks.listObjectStatistics.mockResolvedValueOnce([{ name: "T", schema: "APP", estimated_rows: 99 }]);
