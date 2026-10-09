@@ -42,6 +42,22 @@ beforeEach(() => {
 });
 
 describe("OceanBase Oracle structure clone", () => {
+  it("carries FLOAT binary precision from metadata into the CREATE request", async () => {
+    api.getColumns.mockResolvedValue([...columns, { name: "measurement", data_type: "FLOAT", numeric_precision: 24, numeric_scale: null, is_nullable: true, column_default: null, is_primary_key: false, extra: "" }]);
+    const plan = await buildDuplicateTableStructurePlan(options);
+    const request = api.buildCreateTableSql.mock.calls[0]![0];
+    expect(request.columns.find((column: any) => column.name === "measurement")).toMatchObject({ dataType: "FLOAT(24)", original: undefined });
+    expect(plan.oceanbaseClone?.copied.join("\n")).toContain('"measurement"');
+  });
+
+  it("rejects virtual columns even when source columns are supplied without their identity", async () => {
+    const original = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args: Parameters<typeof original>) => (args[2].includes("VIRTUAL_COLUMN") ? result([['Computed"Value']]) : original(...args)));
+    await expect(buildDuplicateTableStructurePlan({ ...options, sourceColumns: columns })).rejects.toThrow('Cloning virtual columns is not supported: "Computed""Value". No DDL was executed.');
+    expect(api.buildCreateTableSql).not.toHaveBeenCalled();
+    expect(api.executeQuery.mock.calls.every((call) => call[2].startsWith("SELECT "))).toBe(true);
+    expect(api.executeQuery.mock.calls.find((call) => call[2].includes("VIRTUAL_COLUMN"))?.[2]).toContain("OWNER = 'Source''s Schema' AND TABLE_NAME = 'Order'");
+  });
   it("routes through column DDL and preserves compound key/index order, quoting and comments", async () => {
     const plan = await buildDuplicateTableStructurePlan(options);
     expect(api.buildCreateTableSql).toHaveBeenCalledWith(expect.objectContaining({ databaseType: "oceanbase-oracle", schema: options.targetSchema, tableName: options.targetName, indexes: [], foreignKeys: [], triggers: [] }));

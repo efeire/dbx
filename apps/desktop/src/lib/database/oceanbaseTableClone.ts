@@ -37,7 +37,7 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
   const targetSchema = options.targetSchema || sourceSchema;
   if (!options.targetName.trim()) throw new Error("Target table name is required.");
   const where = `OWNER = ${literal(sourceSchema)} AND TABLE_NAME = ${literal(options.sourceName)}`;
-  const [columns, constraints, indexes, triggers, comments, directions, conflicts] = await Promise.all([
+  const [columns, constraints, indexes, triggers, comments, directions, conflicts, virtualColumns] = await Promise.all([
     options.sourceColumns ?? api.getColumns(options.connectionId, options.database, sourceSchema, options.sourceName, options.catalog),
     api.listConstraints(options.connectionId, options.database, sourceSchema, options.sourceName, options.catalog),
     api.listIndexes(options.connectionId, options.database, sourceSchema, options.sourceName, options.catalog),
@@ -45,7 +45,9 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
     query(`SELECT COMMENTS FROM SYS.ALL_TAB_COMMENTS WHERE ${where} AND TABLE_TYPE = 'TABLE'`),
     query(`SELECT INDEX_NAME, COLUMN_NAME, COLUMN_POSITION, DESCEND FROM SYS.ALL_IND_COLUMNS WHERE TABLE_OWNER = ${literal(sourceSchema)} AND TABLE_NAME = ${literal(options.sourceName)} ORDER BY INDEX_NAME, COLUMN_POSITION`),
     query(`SELECT OBJECT_NAME FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(targetSchema)} AND OBJECT_NAME = ${literal(options.targetName)} AND ROWNUM <= 1`),
+    query(`SELECT COLUMN_NAME FROM SYS.ALL_TAB_COLUMNS WHERE ${where} AND VIRTUAL_COLUMN = 'YES'`),
   ]);
+  if (virtualColumns.length) throw new Error(`Cloning virtual columns is not supported: ${virtualColumns.map((row) => ident(String(row[0]))).join(", ")}. No DDL was executed.`);
   if (!columns.length || comments.length !== 1) throw new Error("Source table metadata is missing or inaccessible. No DDL was executed.");
   if (conflicts.length) throw new Error(`Target already exists: ${ident(targetSchema)}.${ident(options.targetName)}. No DDL was executed.`);
   const primaryKeys = constraints.filter((constraint) => constraint.constraint_type === "PRIMARY KEY");

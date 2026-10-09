@@ -1049,6 +1049,9 @@ function columnDataTypeForEditor(column: ColumnInfo, databaseType?: DatabaseType
 
   const baseType = parsed.baseType.trim().replace(/\s+/g, " ");
   const normalized = baseType.toLowerCase();
+  if (databaseType === "oceanbase-oracle" && normalized === "float" && Number.isInteger(column.numeric_precision) && Number(column.numeric_precision) > 0) {
+    return combineDataType(baseType, String(column.numeric_precision));
+  }
   if (CHARACTER_LENGTH_METADATA_TYPES.has(normalized) && Number.isInteger(column.character_maximum_length) && Number(column.character_maximum_length) > 0) {
     return combineDataTypeForDatabase(databaseType, baseType, String(column.character_maximum_length));
   }
