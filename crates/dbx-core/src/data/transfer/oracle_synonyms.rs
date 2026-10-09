@@ -541,21 +541,12 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
             }
             let written = match execute_on_pool(state, target_pool, &item.ddl).await {
                 Ok(_) => verify(state, target_pool, definition).await,
-                Err(_) => Err("Synonym DDL failed; verify target privileges and dependencies".into()),
+                Err(_) => Err("Synonym DDL failed; target state may be unknown. Verify target privileges, dependencies and current definition before manual recovery".into()),
             };
             if let Err(error) = written {
                 result.source_verified = Some(false);
-                if let (Some(original), Some(path)) = (&existing, backup_path) {
-                    let restored = execute_on_pool(state, target_pool, &ddl(original)?).await.is_ok()
-                        && verify(state, target_pool, original).await.is_ok();
-                    result.recovery = Some(format!(
-                        "{}; backup retained at {path}",
-                        if restored {
-                            "Target synonym restored and verified"
-                        } else {
-                            "Automatic restoration incomplete; manual recovery required"
-                        }
-                    ));
+                if let Some(path) = backup_path {
+                    result.recovery = Some(format!("Complete target synonym backup retained at {path}; target state is unverified. No automatic restoration was executed; inspect the current definition and explicitly confirm manual recovery"));
                 } else {
                     result.recovery = Some("New synonym retained for inspection; no DROP was executed".into());
                 }
