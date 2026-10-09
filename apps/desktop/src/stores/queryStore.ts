@@ -2932,6 +2932,15 @@ export const useQueryStore = defineStore("query", () => {
     return id;
   }
 
+  function openSourceRecoverySnapshot(options: Omit<OpenObjectSourceTabOptions, "objectSource">) {
+    // Always preserve the definition read for this attempt, independently of any
+    // editable tab and without stealing focus from the confirmation dialog.
+    const id = createTab(options.connectionId, options.database, options.title, "query", options.schema, options.sql, options.catalog, { forceNew: true, sourceView: true, activate: false });
+    const tab = tabs.value.find((candidate) => candidate.id === id);
+    if (tab) tab.sourceSnapshot = true;
+    return id;
+  }
+
   /**
    * 正在后台重新校验源码的 tab。非响应式：仅用于避免同一个 tab 上叠起多次
    * 取源请求（Oracle 的 GET_DDL 正是慢的那一步）。
@@ -4942,13 +4951,17 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function invalidateRenamedViewTabs(target: DroppedTableObjectTarget) {
-    closeDroppedTableObjectTabs({ ...target, objectType: "VIEW" });
-    const schemas = droppedTableObjectSchemaCandidates(target);
+    invalidateRenamedObjectTabs({ ...target, objectType: "VIEW" });
+  }
+
+  function invalidateRenamedObjectTabs(target: Omit<DroppedTableObjectTarget, "objectType"> & { objectType: "VIEW" | "PROCEDURE" | "FUNCTION" }) {
+    if (target.objectType === "VIEW") closeDroppedTableObjectTabs({ ...target, objectType: "VIEW" });
+    const schemas = droppedTableObjectSchemaCandidates({ ...target, objectType: undefined });
     for (const tab of tabs.value) {
       if (tab.connectionId !== target.connectionId || tab.database !== target.database) continue;
       const source = tab.objectSource ?? tab.sourceLoad?.request;
-      const sourceMatches = source?.objectType === "VIEW" && source.name === target.name && schemas.has(normalizeOptionalSchema(tab.objectSource?.schema ?? tab.schema));
-      const ddlMatches = tab.ddlViewer?.objectType === "VIEW" && tab.ddlViewer.tableName === target.name && schemas.has(normalizeOptionalSchema(tab.ddlViewer.schema ?? tab.schema));
+      const sourceMatches = source?.objectType === target.objectType && source.name === target.name && schemas.has(normalizeOptionalSchema(tab.objectSource?.schema ?? tab.schema));
+      const ddlMatches = tab.ddlViewer?.objectType === target.objectType && tab.ddlViewer.tableName === target.name && schemas.has(normalizeOptionalSchema(tab.ddlViewer.schema ?? tab.schema));
       if (!sourceMatches && !ddlMatches) continue;
       // Preserve unsaved text as a read-only snapshot. Removing load identities
       // also prevents an in-flight response from restoring the old editable name.
@@ -9922,6 +9935,8 @@ export const useQueryStore = defineStore("query", () => {
     closeDatabaseTabs,
     closeDroppedTableObjectTabs,
     invalidateRenamedViewTabs,
+    invalidateRenamedObjectTabs,
+    openSourceRecoverySnapshot,
     refreshDataTab,
     refreshDataTabsForTable,
     releaseConnectionTabs,
