@@ -7,7 +7,7 @@ import type { ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import type { TreeNode } from "@/types/database";
 
 vi.mock("@/lib/backend/api", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/backend/api")>(),
+  ...(await importOriginal<typeof import("@/lib/backend/api")>()),
   listPlugins: vi.fn().mockResolvedValue([]),
   buildRenameObjectSql: vi.fn().mockResolvedValue('RENAME "Old View" TO "New View"'),
   getObjectSource: vi.fn().mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true }),
@@ -41,12 +41,29 @@ async function openRename(target: TreeNode = node) {
   const replacePin = vi.spyOn(store, "replacePinnedTreeNode");
   vi.spyOn(store, "refreshObjectListTreeNode").mockResolvedValue(undefined);
   const queries = useQueryStore();
-  const sourceId = queries.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "APP", title: target.label, sql: "unsaved original definition", objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "package" ? "PACKAGE" : target.type === "package-body" ? "PACKAGE_BODY" : target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" } });
+  const sourceId = queries.openObjectSourceTab({
+    connectionId: "ob",
+    database: "APP",
+    schema: "APP",
+    title: target.label,
+    sql: "unsaved original definition",
+    objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "package" ? "PACKAGE" : target.type === "package-body" ? "PACKAGE_BODY" : target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" },
+  });
   const instance = ref<{ buildContextMenu(target: TreeNode): ContextMenuItem[] }>();
   let controller: RenameDialog | undefined;
   const container = document.createElement("div");
   document.body.append(container);
-  const app = createApp({ setup: () => () => h(SidebarTreeRuntimeHost, { ref: instance, node: target, depth: 0, "onOpen-dialog-controller": (value: RenameDialog) => { controller = value; } }) });
+  const app = createApp({
+    setup: () => () =>
+      h(SidebarTreeRuntimeHost, {
+        ref: instance,
+        node: target,
+        depth: 0,
+        "onOpen-dialog-controller": (value: RenameDialog) => {
+          controller = value;
+        },
+      }),
+  });
   app.use(pinia);
   app.use(i18n);
   app.mount(container);
@@ -140,9 +157,11 @@ describe("OceanBase ordinary view rename", () => {
 describe("OceanBase package migration from the sidebar", () => {
   const target: TreeNode = { ...node, type: "package", id: "ob:APP:package:Old View" };
   function preparePackage() {
-    vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => ({ columns: sql === "readback" ? ["OLD_OBJECTS", "VALID_NEW_OBJECTS", "NEW_OBJECTS", "COMPILE_ERRORS"] : [], rows: sql.startsWith("SELECT OBJECT_TYPE") ? [["PACKAGE"]] : sql === "readback" ? [[0, 1, 1, 0]] : [] }) as any);
+    vi.mocked(api.executeQuery).mockImplementation(
+      async (_connection, _database, sql) => ({ columns: sql === "readback" ? ["OLD_OBJECTS", "VALID_NEW_OBJECTS", "NEW_OBJECTS", "COMPILE_ERRORS"] : [], rows: sql.startsWith("SELECT OBJECT_TYPE") ? [["PACKAGE"]] : sql === "readback" ? [[0, 1, 1, 0]] : [] }) as any,
+    );
     vi.mocked(api.getObjectSource).mockImplementation(async (_connection, _database, schema, name, objectType) => ({ name, schema, object_type: objectType, source: `CREATE PACKAGE "APP"."${name}" AS END;` }));
-    vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockImplementation(async (input) => input.packageCleanup ? ["cleanup", "readback"] : ["preflight", "create spec", "validate", "grants", "dependencies"]);
+    vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockImplementation(async (input) => (input.packageCleanup ? ["cleanup", "readback"] : ["preflight", "create spec", "validate", "grants", "dependencies"]));
   }
 
   it("cancels after read-only preparation without replacing the original pin", async () => {

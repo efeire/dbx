@@ -55,17 +55,17 @@ export function buildRoutineRenameObjectSourceStatements(input: BuildRoutineRena
 }
 
 export class RoutineRenameStepError extends Error {
-  constructor(readonly step: number, cause: unknown) {
+  constructor(
+    readonly step: number,
+    cause: unknown,
+  ) {
     super(errorMessage(cause));
     this.name = "RoutineRenameStepError";
   }
 }
 
 /** Execute the guarded OceanBase plan in order; never continue after a failed step. */
-export async function executeOceanBaseRoutineRenameSteps(
-  statements: string[],
-  execute: (sql: string) => Promise<{ execution_error?: boolean; error?: { detail?: string } | null }>,
-): Promise<void> {
+export async function executeOceanBaseRoutineRenameSteps(statements: string[], execute: (sql: string) => Promise<{ execution_error?: boolean; error?: { detail?: string } | null }>): Promise<void> {
   if (statements.length !== 5) throw new Error("Expected the complete five-step OceanBase routine rename plan.");
   for (let index = 0; index < statements.length; index += 1) {
     try {

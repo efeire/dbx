@@ -26,7 +26,11 @@ describe("OceanBase guarded routine rename", () => {
   });
 
   it("treats an execution-error result as failure even when the API resolves", async () => {
-    const execute = vi.fn().mockResolvedValueOnce({}).mockResolvedValueOnce({}).mockResolvedValueOnce({ execution_error: true, error: { detail: "INVALID routine" } });
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ execution_error: true, error: { detail: "INVALID routine" } });
     await expect(executeOceanBaseRoutineRenameSteps(plan, execute)).rejects.toBeInstanceOf(RoutineRenameStepError);
     expect(execute).toHaveBeenCalledTimes(3);
   });

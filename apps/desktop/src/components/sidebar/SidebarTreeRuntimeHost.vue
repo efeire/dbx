@@ -3465,10 +3465,16 @@ async function refreshRenameObjectPreviewSql() {
   if (supportsPackageRename(currentDatabaseType(), objectType)) {
     try {
       if (!node.connectionId || !node.database) return;
-      const plan = await preparePackageRename({ connectionId: node.connectionId, database: node.database, databaseType: currentDatabaseType()!, schema: node.schema || node.database, name: node.objectName || node.label, newName }, { cleanup: packageCleanupReviewed.value, callersMigrated: packageCleanupReviewed.value });
+      const plan = await preparePackageRename(
+        { connectionId: node.connectionId, database: node.database, databaseType: currentDatabaseType()!, schema: node.schema || node.database, name: node.objectName || node.label, newName },
+        { cleanup: packageCleanupReviewed.value, callersMigrated: packageCleanupReviewed.value },
+      );
       if (requestId === renameObjectPreviewRequestId) renameObjectPreviewSql.value = plan.statements.join("\n\n");
     } catch (error: any) {
-      if (requestId === renameObjectPreviewRequestId) { renameObjectPreviewSql.value = ""; renameObjectError.value = error?.message || String(error); }
+      if (requestId === renameObjectPreviewRequestId) {
+        renameObjectPreviewSql.value = "";
+        renameObjectError.value = error?.message || String(error);
+      }
     }
     return;
   }
@@ -3505,7 +3511,9 @@ async function refreshRenameObjectPreviewSql() {
   }
 }
 
-watch([renameObjectName, () => activeNode.value.label, () => activeNode.value.schema, () => activeNode.value.type, () => currentDatabaseType()], () => { packageCleanupReviewed.value = false; });
+watch([renameObjectName, () => activeNode.value.label, () => activeNode.value.schema, () => activeNode.value.type, () => currentDatabaseType()], () => {
+  packageCleanupReviewed.value = false;
+});
 watch([showRenameObjectDialog, renameObjectName, () => activeNode.value.label, () => activeNode.value.schema, () => activeNode.value.type, () => currentDatabaseType(), packageCleanupReviewed], () => {
   void refreshRenameObjectPreviewSql();
 });
@@ -3580,16 +3588,22 @@ async function confirmRenameObject() {
       let recoveryId: string | undefined;
       let attempted = false;
       try {
-        const executed = await executeWithProductionSqlGuard({ connection: connectionStore.getConfig(node.connectionId), database: node.database, sql: plan.statements.join("\n\n"), source: t("production.sourceSidebar"), execute: async () => {
-          attempted = true;
-          const saveRecovery = (sql: string) => {
-            if (recoveryId) queryStore.updateSql(recoveryId, sql);
-            else recoveryId = queryStore.openSourceRecoverySnapshot({ connectionId: node.connectionId!, database: node.database!, schema, title: t("contextMenu.packageRenameRecoveryTitle", { name: oldName }), sql });
-          };
-          if (cleanup) await executePackageCleanup(plan, cleanup, saveRecovery);
-          else await executePackageRename(plan, saveRecovery);
-          return true;
-        } });
+        const executed = await executeWithProductionSqlGuard({
+          connection: connectionStore.getConfig(node.connectionId),
+          database: node.database,
+          sql: plan.statements.join("\n\n"),
+          source: t("production.sourceSidebar"),
+          execute: async () => {
+            attempted = true;
+            const saveRecovery = (sql: string) => {
+              if (recoveryId) queryStore.updateSql(recoveryId, sql);
+              else recoveryId = queryStore.openSourceRecoverySnapshot({ connectionId: node.connectionId!, database: node.database!, schema, title: t("contextMenu.packageRenameRecoveryTitle", { name: oldName }), sql });
+            };
+            if (cleanup) await executePackageCleanup(plan, cleanup, saveRecovery);
+            else await executePackageRename(plan, saveRecovery);
+            return true;
+          },
+        });
         if (!executed) return;
         if (cleanup) {
           renameApplied = true;
@@ -3623,15 +3637,21 @@ async function confirmRenameObject() {
       if (dbType === "oceanbase-oracle") {
         const config = connectionStore.getConfig(node.connectionId);
         const timeoutSecs = queryTimeoutSecsForConnection(config, settingsStore.editorSettings.globalQueryTimeoutSecs);
-        const executed = await executeWithProductionSqlGuard({ connection: config, database: node.database, sql: statements.join("\n\n"), source: t("production.sourceSidebar"), execute: async () => {
-          queryStore.openSourceRecoverySnapshot({ connectionId: node.connectionId!, database: node.database!, schema, title: t("contextMenu.routineRenameRecoveryTitle", { name: node.objectName || node.label }), sql: source.source });
-          await executeOceanBaseRoutineRenameSteps(statements, (sql) => api.executeQuery(node.connectionId!, node.database!, sql, schema, undefined, { timeoutSecs }));
-          return true;
-        } });
+        const executed = await executeWithProductionSqlGuard({
+          connection: config,
+          database: node.database,
+          sql: statements.join("\n\n"),
+          source: t("production.sourceSidebar"),
+          execute: async () => {
+            queryStore.openSourceRecoverySnapshot({ connectionId: node.connectionId!, database: node.database!, schema, title: t("contextMenu.routineRenameRecoveryTitle", { name: node.objectName || node.label }), sql: source.source });
+            await executeOceanBaseRoutineRenameSteps(statements, (sql) => api.executeQuery(node.connectionId!, node.database!, sql, schema, undefined, { timeoutSecs }));
+            return true;
+          },
+        });
         if (!executed) return;
       } else {
         for (const sql of statements) {
-          if (await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema }) === undefined) return;
+          if ((await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema })) === undefined) return;
         }
       }
     } else {
@@ -3653,10 +3673,7 @@ async function confirmRenameObject() {
       const schema = node.schema || node.database;
       queryStore.invalidateRenamedObjectTabs({ connectionId: node.connectionId, database: node.database, schema, name: node.objectName || node.label, objectType });
       invalidateObjectBrowserRowsCache({ connectionId: node.connectionId, database: node.database, schema });
-      await Promise.all([node.label, newName].flatMap((tableName) => [
-        invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }),
-        invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName }),
-      ]));
+      await Promise.all([node.label, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }), invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName })]));
     }
     toast(t("contextMenu.renameObjectSuccess", { oldName: node.label, newName }), 3000);
     showRenameObjectDialog.value = false;
@@ -3674,13 +3691,14 @@ async function confirmRenameObject() {
       for (const objectType of ["PACKAGE", "PACKAGE_BODY"] as const) queryStore.invalidateRenamedObjectTabs({ connectionId: node.connectionId, database: node.database, schema, name: node.objectName || node.label, objectType });
       if (e.oldObjects === 0) connectionStore.removePinnedTreeNodes([node]);
     }
-    renameObjectError.value = e instanceof PackageRenameCleanupError
-      ? t("contextMenu.packageCleanupFailed", { message: e.message, state: t(e.oldObjects == null ? "contextMenu.packageCleanupStateUnknown" : e.oldObjects === 0 ? "contextMenu.packageCleanupStateRemoved" : "contextMenu.packageCleanupStateRetained") })
-      : e instanceof PackageRenameStepError
-      ? t("contextMenu.packageRenameFailed", { step: e.step, message: e.message })
-      : e instanceof RoutineRenameStepError
-      ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: node.label, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
-      : e?.message || String(e);
+    renameObjectError.value =
+      e instanceof PackageRenameCleanupError
+        ? t("contextMenu.packageCleanupFailed", { message: e.message, state: t(e.oldObjects == null ? "contextMenu.packageCleanupStateUnknown" : e.oldObjects === 0 ? "contextMenu.packageCleanupStateRemoved" : "contextMenu.packageCleanupStateRetained") })
+        : e instanceof PackageRenameStepError
+          ? t("contextMenu.packageRenameFailed", { step: e.step, message: e.message })
+          : e instanceof RoutineRenameStepError
+            ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: node.label, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
+            : e?.message || String(e);
     if (e instanceof RoutineRenameStepError && e.step >= 2) {
       const schema = node.schema || node.database;
       const oldName = node.objectName || node.label;
@@ -3688,10 +3706,7 @@ async function confirmRenameObject() {
         queryStore.invalidateRenamedObjectTabs({ connectionId: node.connectionId, database: node.database, schema, name: oldName, objectType: node.type === "procedure" ? "PROCEDURE" : "FUNCTION" });
       }
       invalidateObjectBrowserRowsCache({ connectionId: node.connectionId, database: node.database, schema });
-      await Promise.allSettled([oldName, newName].flatMap((tableName) => [
-        invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }),
-        invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName }),
-      ]));
+      await Promise.allSettled([oldName, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }), invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName })]));
       await Promise.allSettled([refreshTableList(node)]);
     }
   }
@@ -6983,6 +6998,9 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
   }
 
   if (node.type === "trigger" || node.type === "package" || node.type === "package-body") {
+    if (canRenameObject.value) {
+      items.push({ label: t("contextMenu.renameObject"), action: openRenameObjectDialog, icon: Pencil, shortcut: shortcutRename });
+    }
     if (currentDatabaseType() === "xugu" && buildXuguCompileSql({ objectType: node.type, schema: node.schema, name: node.objectName || node.label })) {
       items.push({ label: t("contextMenu.compileObject"), action: compileXuguObject, icon: Wrench });
     }

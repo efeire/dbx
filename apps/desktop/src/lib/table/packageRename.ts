@@ -43,59 +43,71 @@ export async function preparePackageRename(context: PackageRenameContext, option
   if (options?.cleanup && !options.callersMigrated) throw new Error("Confirm migration of external and dynamic callers before preparing original-package removal.");
   if (!supportsPackageRename(context.databaseType, "PACKAGE") || !context.schema || !context.newName || context.name === context.newName) throw new Error("Invalid package migration target.");
   const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
-  const objects = assertQuerySucceeded(await api.executeQuery(context.connectionId, context.database,
-    `SELECT OBJECT_TYPE FROM SYS.DBA_OBJECTS WHERE OWNER=${literal(context.schema)} AND OBJECT_NAME=${literal(context.name)} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY') ORDER BY OBJECT_TYPE`, context.schema));
+  const objects = assertQuerySucceeded(
+    await api.executeQuery(context.connectionId, context.database, `SELECT OBJECT_TYPE FROM SYS.DBA_OBJECTS WHERE OWNER=${literal(context.schema)} AND OBJECT_NAME=${literal(context.name)} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY') ORDER BY OBJECT_TYPE`, context.schema),
+  );
   const kinds = objects.rows.map((row) => String(row[0]));
   if (kinds.filter((kind) => kind === "PACKAGE").length !== 1 || kinds.filter((kind) => kind === "PACKAGE BODY").length > 1) throw new Error("The complete package identity is missing or ambiguous.");
   const specification = validateSource(await api.getObjectSource(context.connectionId, context.database, context.schema, context.name, "PACKAGE"), context, "PACKAGE");
-  const body = kinds.includes("PACKAGE BODY")
-    ? validateSource(await api.getObjectSource(context.connectionId, context.database, context.schema, context.name, "PACKAGE_BODY"), context, "PACKAGE_BODY")
-    : undefined;
+  const body = kinds.includes("PACKAGE BODY") ? validateSource(await api.getObjectSource(context.connectionId, context.database, context.schema, context.name, "PACKAGE_BODY"), context, "PACKAGE_BODY") : undefined;
   let replacementSpecification: string | undefined;
   let replacementBody: string | undefined;
   if (options?.cleanup) {
-    const replacement = assertQuerySucceeded(await api.executeQuery(context.connectionId, context.database,
-      `SELECT OBJECT_TYPE FROM SYS.DBA_OBJECTS WHERE OWNER=${literal(context.schema)} AND OBJECT_NAME=${literal(context.newName)} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY') ORDER BY OBJECT_TYPE`, context.schema));
+    const replacement = assertQuerySucceeded(
+      await api.executeQuery(context.connectionId, context.database, `SELECT OBJECT_TYPE FROM SYS.DBA_OBJECTS WHERE OWNER=${literal(context.schema)} AND OBJECT_NAME=${literal(context.newName)} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY') ORDER BY OBJECT_TYPE`, context.schema),
+    );
     if (JSON.stringify(replacement.rows.map((row) => String(row[0])).sort()) !== JSON.stringify([...kinds].sort())) throw new Error("Replacement specification/body pair differs from the original.");
     const target = { ...context, name: context.newName };
     replacementSpecification = validateSource(await api.getObjectSource(context.connectionId, context.database, context.schema, context.newName, "PACKAGE"), target, "PACKAGE");
     if (body !== undefined) replacementBody = validateSource(await api.getObjectSource(context.connectionId, context.database, context.schema, context.newName, "PACKAGE_BODY"), target, "PACKAGE_BODY");
   }
   const statements = await buildRoutineRenameObjectSourceStatements({
-    databaseType: context.databaseType, objectType: "PACKAGE", schema: context.schema, name: context.name, newName: context.newName,
-    source: specification, packageBodySource: body,
+    databaseType: context.databaseType,
+    objectType: "PACKAGE",
+    schema: context.schema,
+    name: context.name,
+    newName: context.newName,
+    source: specification,
+    packageBodySource: body,
     ...(options?.cleanup ? { packageCleanup: true } : {}),
   });
-  const stages = options?.cleanup ? ["verify and remove original package", "read back package identities"]
-    : ["preflight", "create specification", ...(body !== undefined ? ["create body"] : []), "validate compilation and overloads", "copy and verify grants", "inspect remaining dependencies"];
+  const stages = options?.cleanup ? ["verify and remove original package", "read back package identities"] : ["preflight", "create specification", ...(body !== undefined ? ["create body"] : []), "validate compilation and overloads", "copy and verify grants", "inspect remaining dependencies"];
   if (statements.length !== stages.length) throw new Error("The backend returned an incomplete package migration plan.");
   return { context, specification, body, statements, stages, ...(options?.cleanup ? { cleanup: true, replacementSpecification, replacementBody } : {}) };
 }
 
 export class PackageRenameStepError extends Error {
-  constructor(readonly step: number, readonly stage: string, cause: unknown) {
+  constructor(
+    readonly step: number,
+    readonly stage: string,
+    cause: unknown,
+  ) {
     super(`${stage}: ${cause instanceof Error ? cause.message : String(cause)}`);
     this.name = "PackageRenameStepError";
   }
 }
 
 export function packageRenameRecoveryText(plan: PackageRenamePlan, completed: number, attempted?: number, error?: string, dependencies?: QueryResult, stageStates?: string[]): string {
-  const comment = (value: string) => value.split(/\r?\n/).map((line) => `-- ${line}`).join("\n");
+  const comment = (value: string) =>
+    value
+      .split(/\r?\n/)
+      .map((line) => `-- ${line}`)
+      .join("\n");
   return [
-    plan.cleanup ? "-- Explicit package cleanup recovery. DDL is not transactional; determine old/new object state from readback."
-      : "-- Package migration recovery snapshot. DDL is not transactional. The original package was not dropped by this plan.",
+    plan.cleanup ? "-- Explicit package cleanup recovery. DDL is not transactional; determine old/new object state from readback." : "-- Package migration recovery snapshot. DDL is not transactional. The original package was not dropped by this plan.",
     comment(`${plan.context.schema}.${plan.context.name} -> ${plan.context.newName}`),
     ...plan.stages.map((stage, index) => comment(`${index + 1}. ${stage}: ${stageStates?.[index] ?? (index < completed ? "response received" : index === attempted ? "attempted; read back database state" : "not executed")}`)),
     ...(error ? [comment(error)] : []),
     ...(dependencies ? [comment(`${plan.cleanup ? "Cleanup readback" : "Remaining dependencies"}: ${JSON.stringify(dependencies.rows)}`)] : []),
-    plan.cleanup ? "-- Original definitions below are recovery material, not an automatic rollback. Inspect actual state before repair."
-      : "-- Review both names, compilation, grants and static/dynamic callers. Keep the original until callers are migrated.",
+    plan.cleanup ? "-- Original definitions below are recovery material, not an automatic rollback. Inspect actual state before repair." : "-- Review both names, compilation, grants and static/dynamic callers. Keep the original until callers are migrated.",
     "-- Any cleanup is a separate explicit operation. Inspect the replacement before deciding to repair or remove it.",
-    "-- ORIGINAL SPECIFICATION", plan.specification,
+    "-- ORIGINAL SPECIFICATION",
+    plan.specification,
     ...(plan.body !== undefined ? ["-- ORIGINAL BODY", plan.body] : []),
     ...(plan.replacementSpecification !== undefined ? ["-- REPLACEMENT SPECIFICATION", plan.replacementSpecification] : []),
     ...(plan.replacementBody !== undefined ? ["-- REPLACEMENT BODY", plan.replacementBody] : []),
-    "-- PLANNED STATEMENTS", ...plan.statements,
+    "-- PLANNED STATEMENTS",
+    ...plan.statements,
   ].join("\n\n");
 }
 
@@ -124,7 +136,12 @@ export async function executePackageRename(
 }
 
 export class PackageRenameCleanupError extends PackageRenameStepError {
-  constructor(step: number, cause: unknown, readonly oldObjects?: number, readonly readback?: QueryResult) {
+  constructor(
+    step: number,
+    cause: unknown,
+    readonly oldObjects?: number,
+    readonly readback?: QueryResult,
+  ) {
     super(step, step === 1 ? "explicit original-package removal" : "cleanup readback", cause);
     this.name = "PackageRenameCleanupError";
   }
@@ -171,7 +188,10 @@ export async function executePackageCleanup(
   const expected = plan.body !== undefined ? 2 : 1;
   const confirmed = oldObjects === 0 && count(1) === expected && count(2) === expected && count(3) === 0;
   if (removalError || readbackError || !confirmed) {
-    const detail = [removalError, readbackError, ...(!confirmed ? ["Readback did not confirm the original absent and replacement pair VALID."] : [])].filter(Boolean).map((error) => error instanceof Error ? error.message : String(error)).join("; ");
+    const detail = [removalError, readbackError, ...(!confirmed ? ["Readback did not confirm the original absent and replacement pair VALID."] : [])]
+      .filter(Boolean)
+      .map((error) => (error instanceof Error ? error.message : String(error)))
+      .join("; ");
     save(detail, readback);
     throw new PackageRenameCleanupError(removalError ? 1 : 2, new Error(detail), oldObjects, readback);
   }

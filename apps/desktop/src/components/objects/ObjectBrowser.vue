@@ -283,6 +283,7 @@ const tableTriggersLoaded = ref(false);
 const tableConstraints = ref<ConstraintInfo[]>([]);
 const tableConstraintsLoading = ref(false);
 const tableConstraintsLoaded = ref(false);
+const tableConstraintsError = ref("");
 const tablePartitions = ref<PgTablePartitioning | null>(null);
 const tablePartitionsLoading = ref(false);
 const tablePartitionsLoaded = ref(false);
@@ -302,6 +303,7 @@ const activeTableInfoLoading = computed(() => {
   if (tableInfoTab.value === "indexes") return tableIndexesLoading.value;
   if (tableInfoTab.value === "foreignKeys") return tableForeignKeysLoading.value;
   if (tableInfoTab.value === "partitions") return tablePartitionsLoading.value;
+  if (tableInfoTab.value === "constraints") return tableConstraintsLoading.value;
   return tableInfoTab.value === "triggers" && tableTriggersLoading.value;
 });
 const SIDE_PANEL_MIN_WIDTH = 280;
@@ -1198,6 +1200,7 @@ async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
   tableForeignKeys.value = [];
   tableTriggers.value = [];
   tableConstraints.value = [];
+  tableConstraintsError.value = "";
   tablePartitions.value = null;
   tablePartitionsLoaded.value = false;
   tablePartitionsLoading.value = false;
@@ -1436,6 +1439,7 @@ async function fetchTableConstraints(force = false) {
   if (!row || (tableConstraintsLoaded.value && !force)) return;
   const epoch = sidePanelGuard.capture();
   tableConstraintsLoading.value = true;
+  tableConstraintsError.value = "";
   let loadedSuccessfully = false;
   try {
     const request = tableMetadataRequest(row);
@@ -1446,7 +1450,7 @@ async function fetchTableConstraints(force = false) {
   } catch (error) {
     if (sidePanelGuard.isStale(epoch)) return;
     tableConstraints.value = [];
-    toast(translateBackendError(t, error), 5000);
+    tableConstraintsError.value = translateBackendError(t, error);
   } finally {
     if (sidePanelGuard.isFresh(epoch)) {
       tableConstraintsLoaded.value = loadedSuccessfully;
@@ -1763,10 +1767,16 @@ async function refreshRenamePreviewSql() {
   }
   if (supportsPackageRename(effectiveDatabaseType.value, row.type)) {
     try {
-      const plan = await preparePackageRename({ connectionId: props.connection.id, database: props.database, databaseType: effectiveDatabaseType.value, schema: row.schema || selectedSchema.value || props.database, name: row.name, newName }, { cleanup: packageCleanupReviewed.value, callersMigrated: packageCleanupReviewed.value });
+      const plan = await preparePackageRename(
+        { connectionId: props.connection.id, database: props.database, databaseType: effectiveDatabaseType.value, schema: row.schema || selectedSchema.value || props.database, name: row.name, newName },
+        { cleanup: packageCleanupReviewed.value, callersMigrated: packageCleanupReviewed.value },
+      );
       if (requestId === renamePreviewRequestId) renamePreviewSqlText.value = plan.statements.join("\n\n");
     } catch (error: any) {
-      if (requestId === renamePreviewRequestId) { renamePreviewSqlText.value = ""; renameError.value = error?.message || String(error); }
+      if (requestId === renamePreviewRequestId) {
+        renamePreviewSqlText.value = "";
+        renameError.value = error?.message || String(error);
+      }
     }
     return;
   }
@@ -1802,7 +1812,9 @@ async function refreshRenamePreviewSql() {
   }
 }
 
-watch([renameTarget, renameInput, selectedSchema], () => { packageCleanupReviewed.value = false; });
+watch([renameTarget, renameInput, selectedSchema], () => {
+  packageCleanupReviewed.value = false;
+});
 watch([showRenameDialog, renameTarget, renameInput, selectedSchema, packageCleanupReviewed], () => {
   void refreshRenamePreviewSql();
 });
@@ -1844,14 +1856,22 @@ async function confirmRename() {
       } finally {
         if (attempted) {
           invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
-          await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
+          await Promise.allSettled(
+            [row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]),
+          );
           await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
         }
       }
       if (cleanup && renameApplied) {
         const renamedTarget = { ...oldPinnedNode, label: newName, objectName: newName, tableName: newName };
         const renamedRow = rows.value.find((candidate) => objectBrowserRowMatchesPinnedTreeNode(candidate, treeNodePinIdentity(renamedTarget), objectBrowserPinnedTreeNodeContext()));
-        if (renamedRow) connectionStore.replacePinnedTreeNode(oldPinnedNode, pinnedTreeNodeForObjectBrowserRow(renamedRow), canonicalizeObjectBrowserPinnedIdentity, oldLegacyPinnedNodes.map((node) => node.id));
+        if (renamedRow)
+          connectionStore.replacePinnedTreeNode(
+            oldPinnedNode,
+            pinnedTreeNodeForObjectBrowserRow(renamedRow),
+            canonicalizeObjectBrowserPinnedIdentity,
+            oldLegacyPinnedNodes.map((node) => node.id),
+          );
         else connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
       }
       return;
@@ -1892,10 +1912,7 @@ async function confirmRename() {
       queryStore.invalidateRenamedObjectTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: row.type });
       if (sourceRow.value?.id === row.id) closeSource();
       invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
-      await Promise.all([row.name, newName].flatMap((tableName) => [
-        invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }),
-        invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName }),
-      ]));
+      await Promise.all([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
     }
     toast(t("contextMenu.renameObjectSuccess", { oldName: row.name, newName }));
     showRenameDialog.value = false;
@@ -1927,13 +1944,14 @@ async function confirmRename() {
       if (sourceRow.value?.id === row.id) closeSource();
       if (e.oldObjects === 0) connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
     }
-    renameError.value = e instanceof PackageRenameCleanupError
-      ? t("contextMenu.packageCleanupFailed", { message: e.message, state: t(e.oldObjects == null ? "contextMenu.packageCleanupStateUnknown" : e.oldObjects === 0 ? "contextMenu.packageCleanupStateRemoved" : "contextMenu.packageCleanupStateRetained") })
-      : e instanceof PackageRenameStepError
-      ? t("contextMenu.packageRenameFailed", { step: e.step, message: e.message })
-      : e instanceof RoutineRenameStepError
-      ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: row.name, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
-      : e?.message || String(e);
+    renameError.value =
+      e instanceof PackageRenameCleanupError
+        ? t("contextMenu.packageCleanupFailed", { message: e.message, state: t(e.oldObjects == null ? "contextMenu.packageCleanupStateUnknown" : e.oldObjects === 0 ? "contextMenu.packageCleanupStateRemoved" : "contextMenu.packageCleanupStateRetained") })
+        : e instanceof PackageRenameStepError
+          ? t("contextMenu.packageRenameFailed", { step: e.step, message: e.message })
+          : e instanceof RoutineRenameStepError
+            ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: row.name, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
+            : e?.message || String(e);
     if (e instanceof RoutineRenameStepError && e.step >= 2) {
       // CREATE may have succeeded even if the response was lost. Refresh both
       // identities without replacing the old pin or masking the original error.
@@ -1942,10 +1960,7 @@ async function confirmRename() {
         if (sourceRow.value?.id === row.id) closeSource();
       }
       invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
-      await Promise.allSettled([row.name, newName].flatMap((tableName) => [
-        invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }),
-        invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName }),
-      ]));
+      await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
       await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
     }
   }
@@ -3870,6 +3885,7 @@ function getPackageMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
   return [
     ...(effectiveDatabaseType.value === "xugu" && buildXuguCompileSql({ objectType: item.type, schema: item.schema || selectedSchema.value, name: item.name }) ? [{ label: t("contextMenu.compileObject"), action: () => compileXuguObject(item), icon: Wrench }] : []),
     { label: t("contextMenu.viewSource"), action: () => openSource(item), icon: Code2 },
+    ...(canRename(item) ? [{ label: t("contextMenu.renameObject"), action: () => requestRename(item), icon: Pencil }] : []),
     { label: "", separator: true },
     { label: t("contextMenu.copyName"), action: () => copyName(item), icon: Copy },
   ];
@@ -4464,6 +4480,9 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
             <div v-if="tableConstraintsLoading" class="h-full flex items-center justify-center">
               <Loader2 class="w-4 h-4 animate-spin text-muted-foreground" />
             </div>
+            <div v-else-if="tableConstraintsError" class="p-3 text-xs text-destructive">
+              {{ tableConstraintsError }}
+            </div>
             <div v-else-if="tableInfoSearchQuery && filteredTableConstraints.length === 0" class="p-6 text-center text-xs text-muted-foreground">
               {{ t("grid.tableInfoNoResults") }}
             </div>
@@ -4471,12 +4490,12 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               {{ t("grid.tableInfoEmpty") }}
             </div>
             <div v-else class="divide-y">
-              <div v-for="constraint in filteredTableConstraints" :key="constraint.name" class="p-3 text-xs" :class="constraint.enabled ? '' : 'opacity-60'">
+              <div v-for="constraint in filteredTableConstraints" :key="constraint.name" class="p-3 text-xs" :class="constraint.enabled === false ? 'opacity-60' : ''">
                 <div class="flex flex-wrap items-center gap-1.5">
                   <span class="font-medium truncate">{{ constraint.name }}</span>
                   <span class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ constraint.constraint_type }}</span>
-                  <span v-if="!constraint.enabled" class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t("grid.tableInfoConstraintDisabled") }}</span>
-                  <span v-else-if="!constraint.valid" class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t("grid.tableInfoConstraintNotValidated") }}</span>
+                  <span class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t(constraint.enabled === true ? "grid.tableInfoConstraintEnabled" : constraint.enabled === false ? "grid.tableInfoConstraintDisabled" : "grid.tableInfoConstraintEnabledUnknown") }}</span>
+                  <span class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t(constraint.valid === true ? "grid.tableInfoConstraintValidated" : constraint.valid === false ? "grid.tableInfoConstraintNotValidated" : "grid.tableInfoConstraintValidationUnknown") }}</span>
                 </div>
                 <div v-if="constraint.columns.length" class="mt-1 font-mono text-[11px] text-muted-foreground break-all">{{ constraint.columns.join(", ") }}</div>
                 <div v-if="constraint.ref_table" class="mt-1 font-mono text-[11px] text-muted-foreground break-all">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>

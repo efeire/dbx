@@ -6,7 +6,7 @@ import i18n from "@/i18n";
 import type { ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 
 vi.mock("@/lib/backend/api", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/backend/api")>(),
+  ...(await importOriginal<typeof import("@/lib/backend/api")>()),
   listObjects: vi.fn(),
   listSchemas: vi.fn().mockResolvedValue(["APP"]),
   listObjectStatistics: vi.fn().mockResolvedValue([]),
@@ -19,13 +19,33 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/composables/useSqlHighlighter", () => ({ useSqlHighlighter: () => ({ highlight: (sql: string) => sql }) }));
-vi.mock("vue-virtual-scroller", () => ({ RecycleScroller: defineComponent({ props: ["items"], setup: (props, { slots }) => () => h("div", props.items.map((item: unknown) => slots.default?.({ item }))) }) }));
-vi.mock("@/components/ui/CustomContextMenu.vue", () => ({ default: defineComponent({
-  props: ["items"],
-  setup(props, { slots }) {
-    return () => h("div", [slots.default?.({ onContextMenu: () => undefined, isOpen: false }), ...props.items().filter((item: ContextMenuItem) => item.label === i18n.global.t("contextMenu.renameObject")).map((item: ContextMenuItem) => h("button", { "data-open-rename": true, onClick: item.action }, item.label))]);
-  },
-}) }));
+vi.mock("vue-virtual-scroller", () => ({
+  RecycleScroller: defineComponent({
+    props: ["items"],
+    setup:
+      (props, { slots }) =>
+      () =>
+        h(
+          "div",
+          props.items.map((item: unknown) => slots.default?.({ item })),
+        ),
+  }),
+}));
+vi.mock("@/components/ui/CustomContextMenu.vue", () => ({
+  default: defineComponent({
+    props: ["items"],
+    setup(props, { slots }) {
+      return () =>
+        h("div", [
+          slots.default?.({ onContextMenu: () => undefined, isOpen: false }),
+          ...props
+            .items()
+            .filter((item: ContextMenuItem) => item.label === i18n.global.t("contextMenu.renameObject"))
+            .map((item: ContextMenuItem) => h("button", { "data-open-rename": true, onClick: item.action }, item.label)),
+        ]);
+    },
+  }),
+}));
 vi.mock("@/components/editor/QueryEditor.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/objects/ProcedureExecutionDialog.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/objects/CustomTypeInfoPanel.vue", () => ({ default: { render: () => null } }));
@@ -184,9 +204,12 @@ describe("ObjectBrowser OceanBase routine rename", () => {
 describe("ObjectBrowser package migration", () => {
   function preparePackage(fail?: string) {
     vi.mocked(api.getObjectSource).mockImplementation(async (_connection, _database, schema, name, objectType) => ({
-      schema, name, object_type: objectType, source: `CREATE ${objectType === "PACKAGE_BODY" ? "PACKAGE BODY" : "PACKAGE"} "APP"."${name}" AS END;`,
+      schema,
+      name,
+      object_type: objectType,
+      source: `CREATE ${objectType === "PACKAGE_BODY" ? "PACKAGE BODY" : "PACKAGE"} "APP"."${name}" AS END;`,
     }));
-    vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockImplementation(async (input) => input.packageCleanup ? ["cleanup", "readback"] : ["preflight", "create spec", "create body", "validate pair", "copy grants", "dependencies"]);
+    vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockImplementation(async (input) => (input.packageCleanup ? ["cleanup", "readback"] : ["preflight", "create spec", "create body", "validate pair", "copy grants", "dependencies"]));
     vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => {
       if (sql.startsWith("SELECT OBJECT_TYPE")) return { columns: ["OBJECT_TYPE"], rows: [["PACKAGE"], ["PACKAGE BODY"]] } as any;
       if (sql === fail) throw new Error("package-stage-error");

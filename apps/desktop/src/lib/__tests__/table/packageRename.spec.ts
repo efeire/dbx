@@ -71,7 +71,10 @@ describe("package migration", () => {
 
   it("keeps migration incomplete after successful creation and retains dependency results", async () => {
     const plan = await preparePackageRename(context);
-    const dependencies = result([["STATIC_DEPENDENCIES", 2], ["SYNONYMS", 1]]);
+    const dependencies = result([
+      ["STATIC_DEPENDENCIES", 2],
+      ["SYNONYMS", 1],
+    ]);
     const execute = vi.fn().mockResolvedValue(dependencies);
     const save = vi.fn();
     expect(await executePackageRename(plan, save, execute)).toEqual({ migrationComplete: false, dependencies });
@@ -101,7 +104,10 @@ describe("explicit original-package cleanup", () => {
     const plan = await cleanupPlan();
     expect(plan.cleanup).toBe(true);
     expect(backend.getObjectSource.mock.calls.map((call) => [call[3], call[4]])).toEqual([
-      [context.name, "PACKAGE"], [context.name, "PACKAGE_BODY"], [context.newName, "PACKAGE"], [context.newName, "PACKAGE_BODY"],
+      [context.name, "PACKAGE"],
+      [context.name, "PACKAGE_BODY"],
+      [context.newName, "PACKAGE"],
+      [context.newName, "PACKAGE_BODY"],
     ]);
     expect(backend.buildRoutineRenameObjectSourceStatements).toHaveBeenCalledWith(expect.objectContaining({ packageCleanup: true, source: specification, packageBodySource: body }));
   });
@@ -127,7 +133,10 @@ describe("explicit original-package cleanup", () => {
 
   it.each([2, 0])("preserves a failed removal response and records actual old-object count %s without retrying DDL", async (oldObjects) => {
     const plan = await cleanupPlan();
-    const execute = vi.fn().mockRejectedValueOnce(new Error("removal-response-error")).mockResolvedValueOnce(result([[oldObjects, 2, 2, 0]]));
+    const execute = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("removal-response-error"))
+      .mockResolvedValueOnce(result([[oldObjects, 2, 2, 0]]));
     const save = vi.fn();
     await expect(executePackageCleanup(plan, true, save, execute)).rejects.toMatchObject({ oldObjects, message: expect.stringContaining("removal-response-error") });
     expect(execute.mock.calls.map((call) => call[0])).toEqual(["guarded cleanup", "readback"]);
