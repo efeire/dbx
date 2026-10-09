@@ -145,7 +145,17 @@ async fn live_oceanbase_bound_manual_savepoint_and_user_rollback() {
     use sha2::{Digest, Sha256};
     let database = required("DATABASE");
     let user = required("USER");
-    assert!(database.starts_with("DBX_BIND_") && user == database, "use a dedicated DBX_BIND_* schema owner");
+    assert!(
+        database.starts_with("DBX_BIND_")
+            && database.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_'),
+        "use a dedicated DBX_BIND_* schema owner"
+    );
+    assert_eq!(user, format!("{database}@oracletest"), "use the dedicated owner in the verified tenant");
+    let url_params = required("URL_PARAMS");
+    assert_eq!(
+        url_params, "connectTimeout=10000&socketTimeout=30000",
+        "use the verified bounded connection parameters"
+    );
     assert_eq!(required("ALLOW_BOUND_MANUAL_WRITE"), "yes", "explicit live write gate required");
     let evidence = std::path::PathBuf::from(required("BOUND_MANUAL_EVIDENCE"));
     assert!(evidence.is_dir(), "prepare an independent evidence directory first");
@@ -173,6 +183,7 @@ async fn live_oceanbase_bound_manual_savepoint_and_user_rollback() {
         "id": "bound-writer", "name": "Bound manual transaction regression", "db_type": DatabaseType::OceanbaseOracle,
         "host": required("HOST"), "port": std::env::var("DBX_LIVE_SQL_FILE_OB_PORT").ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(2881),
         "username": user, "password": required("PASSWORD"), "database": database,
+        "default_schema": database, "url_params": url_params, "driver_profile": "oceanbase-oracle",
         "connect_timeout_secs": 10, "query_timeout_secs": 30, "keepalive_interval_secs": 0,
     })).unwrap();
     let mut reader = config.clone();
@@ -184,8 +195,17 @@ async fn live_oceanbase_bound_manual_savepoint_and_user_rollback() {
     std::fs::write(evidence.join("fixture-manifest.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     let mut created = false;
     let mut checks = Vec::<serde_json::Value>::new();
-    let mut phase = "create fixture";
+    let mut phase = "verify writer and independent reader identity before DDL";
     let outcome: Result<(), String> = async {
+        for connection in ["bound-writer", "bound-reader"] {
+            let identity = query(&state, connection, &database, "SELECT SYS_CONTEXT('USERENV','CON_NAME'), USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL").await?;
+            let row = identity.rows.first().ok_or("Connection identity query returned no row")?;
+            if row.len() != 3 || row[0].as_str().is_none_or(|v| !v.eq_ignore_ascii_case("oracletest")) || row[1].as_str() != Some(database.as_str()) || row[2].as_str() != Some(database.as_str()) {
+                return Err(format!("Refused fixture write: {connection} tenant/user/schema mismatch"));
+            }
+            checks.push(serde_json::json!({"phase": phase, "connection": connection, "identity": row}));
+        }
+        phase = "create fixture";
         query(&state, "bound-writer", &database, &format!("CREATE TABLE {table} (ID NUMBER PRIMARY KEY, VAL NUMBER NOT NULL, PAYLOAD BLOB)")).await?;
         created = true;
         for id in 1..=3 {
