@@ -208,6 +208,43 @@ async fn core_detects_source_and_target_preview_drift() {
 }
 
 #[tokio::test]
+async fn modified_type_plan_blocks_unselected_global_program_callers_before_execution() {
+    const CURRENT: &str = "CREATE OR REPLACE TYPE T AS OBJECT (N DATE);";
+    for incoming in [
+        json!([]),
+        json!([["DST", "CALLER", "PROCEDURE"]]),
+        json!([["DST", "CALLER", "PACKAGE"]]),
+        json!([["OTHER", "T", "PROCEDURE"]]),
+    ] {
+        let allowed = incoming.as_array().unwrap().is_empty();
+        let fixture = Fixture::new(json!({
+            "target_status":"VALID", "target_spec":CURRENT, "incoming":incoming
+        }))
+        .await;
+        let options = serde_json::from_value(json!({
+            "routineEndpoints":endpoints(), "sourceDatabaseType":DatabaseType::Oracle,
+            "databaseType":DatabaseType::OceanbaseOracle, "sourceSchema":"SRC", "targetSchema":"DST",
+            "sourceFunctions":[routine("TYPE", "SRC", SPEC)],
+            "targetFunctions":[routine("TYPE", "DST", CURRENT)]
+        }))
+        .unwrap();
+        let plan = prepare_schema_diff_core(&fixture.state, options).await.unwrap();
+        let step = &plan.routine_steps[0];
+        assert_eq!(step.operation, "modified");
+        assert_eq!(step.sql.is_some(), allowed);
+        if !allowed {
+            assert!(step.blocked_reason.as_deref().unwrap().contains("Unselected global dependent objects"));
+            assert!(step.blocked_reason.as_deref().unwrap().contains("replacement"));
+        }
+        assert!(!fixture
+            .requests()
+            .iter()
+            .any(|request| request["params"]["sql"].as_str().is_some_and(|sql| sql.starts_with("CREATE "))));
+        fixture.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn core_independent_body_requires_matching_valid_live_specification() {
     for (status, spec, allowed) in [
         (Some("VALID"), BODY_SPEC, true),

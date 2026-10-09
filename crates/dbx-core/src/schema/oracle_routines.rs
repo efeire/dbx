@@ -169,18 +169,35 @@ pub async fn schema_diff_routine_context(
                 {
                     context.blocked_types.push((info.name.clone(), "Target global type references include stored data or dependent types; a data-preserving evolution plan is required".into()));
                 }
-                if removed_objects.iter().any(|removed| removed.name == info.name && removed.function_type == "TYPE")
+                let deleting =
+                    removed_objects.iter().any(|removed| removed.name == info.name && removed.function_type == "TYPE");
+                let replacing =
+                    target_objects.iter().any(|target| target.name == info.name && target.function_type == "TYPE");
+                if (deleting || replacing)
                     && dependency_rows(&incoming.rows)?.iter().any(|dependency| {
-                        !removed_objects.iter().any(|removed| {
-                            removed.schema.as_deref() == Some(dependency.owner.as_str())
-                                && removed.name == dependency.name
-                                && removed.function_type == dependency.object_type
+                        let selected = if deleting { removed_objects } else { source_objects };
+                        !selected.iter().any(|selected| {
+                            let owner = if deleting {
+                                selected.schema.as_deref()
+                            } else {
+                                selected
+                                    .schema
+                                    .as_deref()
+                                    .filter(|owner| *owner == source_schema)
+                                    .map(|_| target_schema)
+                            };
+                            owner == Some(dependency.owner.as_str())
+                                && selected.name == dependency.name
+                                && selected.function_type == dependency.object_type
                         })
                     })
                 {
                     context.blocked_types.push((
                         info.name.clone(),
-                        "Unselected global dependent objects prevent target TYPE deletion".into(),
+                        format!(
+                            "Unselected global dependent objects prevent target TYPE {}",
+                            if deleting { "deletion" } else { "replacement" }
+                        ),
                     ));
                 }
             }
