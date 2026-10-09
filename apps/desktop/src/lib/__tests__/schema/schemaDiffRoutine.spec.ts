@@ -42,7 +42,9 @@ describe("schemaDiffRoutine", () => {
     const diffs: FunctionDiff[] = source.map((item) => ({ name: item.name, type: "added", source: item }));
     const objects = convertToSchemaDiffObjects([], diffs);
     expect(new Set(objects.map((item) => item.id)).size).toBe(5);
-    objects.forEach((item, index) => { item.selected = index === 1 || index === 3; });
+    objects.forEach((item, index) => {
+      item.selected = index === 1 || index === 3;
+    });
     expect(selectSchemaDiffInput({ diffs: [], functionDiffs: diffs, syncSql: "" }, objects).functionDiffs).toEqual([diffs[1], diffs[3]]);
   });
 

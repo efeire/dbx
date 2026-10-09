@@ -29,7 +29,7 @@ it("renders distinct package parts and trigger state, dependencies, and affected
   const view = vi.fn();
   const host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
+  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, selectable: true, onToggleSelection: toggle, onViewDiff: view }) });
   app.use(
     createI18n({
       legacy: false,
@@ -67,7 +67,7 @@ it("shows both routine owners and dependencies while blocked rows remain inspect
   const view = vi.fn();
   const host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
+  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, selectable: true, onToggleSelection: toggle, onViewDiff: view }) });
   app.use(
     createI18n({
       legacy: false,

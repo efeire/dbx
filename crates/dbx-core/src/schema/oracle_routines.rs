@@ -37,6 +37,10 @@ fn cell(row: &[serde_json::Value], index: usize) -> String {
     row.get(index).and_then(serde_json::Value::as_str).unwrap_or_default().to_string()
 }
 
+#[cfg(all(test, unix))]
+#[path = "oracle_routine_context_tests.rs"]
+mod context_tests;
+
 #[allow(clippy::too_many_arguments)]
 pub async fn schema_diff_routine_context(
     state: &AppState,

@@ -705,6 +705,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn package_recovery_uses_target_callers_and_selected_source_callers_only() {
+        let mut spec = package("P", false);
+        spec.incoming_dependencies.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "UNSELECTED_SOURCE_CALLER".into(),
+            object_type: "PROCEDURE".into(),
+        });
+        let mut body = package("P", true);
+        body.dependency_objects.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "P".into(),
+            object_type: "PACKAGE".into(),
+        });
+        let diffs = super::super::diff_functions(&[spec, body], &[]);
+        let mut plan = SchemaSyncSqlPlan {
+            routine_steps: Vec::new(),
+            sync_sql: String::new(),
+            rollback_sync_sql: Some(String::new()),
+            rollback_completeness: super::super::RollbackCompleteness::Complete,
+            missing_rollback_objects: Vec::new(),
+        };
+        add_oracle_routines_to_plan(
+            &mut plan,
+            &diffs,
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some("SOURCE"),
+        );
+        assert_eq!(plan.rollback_completeness, super::super::RollbackCompleteness::Complete);
+        let rollback = plan.rollback_sync_sql.unwrap();
+        assert!(rollback.find("DROP PACKAGE BODY").unwrap() < rollback.find("DROP PACKAGE \"TARGET\"").unwrap());
+        assert!(!rollback.contains("UNSELECTED_SOURCE_CALLER"));
+    }
+
     fn conversion_context(
         objects: &[crate::types::FunctionInfo],
         source: DatabaseType,
