@@ -741,6 +741,7 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
             error: None,
             recovery: None,
         };
+        let mut mutation_attempted = false;
         let operation: Result<(), String> = async {
             if blocked { return Err(if item.errors.is_empty() { "Type plan is incomplete; no type DDL executed".into() } else { item.errors.join("; ") }); }
             if is_cancelled(&request.transfer_id).await { return Err("Cancelled before type execution".into()); }
@@ -767,12 +768,16 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
                 if object_status(state, target_pool, &dependency.owner, &dependency.name, &dependency.object_type).await?.as_deref() != Some("VALID") { return Err("Target dependency is not valid at execution time".into()); }
             }
             // Existing transfer writes are non-replayable. There is no DROP/FORCE/CASCADE path.
+            mutation_attempted = true;
             execute_on_pool(state, target_pool, &item.ddl).await?;
             verify(state, request, target_pool, item).await?;
             result.status = if item.action == "replace" { "replaced" } else { "created" }.into(); result.compile_status = Some("VALID".into()); result.source_verified = Some(true);
             Ok(())
         }.await;
         if let Err(error) = operation {
+            if !mutation_attempted {
+                result.status = "not_started".into();
+            }
             result.error = Some(error);
             failed.insert((item.target_schema.clone(), item.name.clone(), api_kind(item.object_type).to_string()));
         }
@@ -780,6 +785,7 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
         match result.status.as_str() {
             "created" | "replaced" => outcome.transferred.push(key),
             "skipped" => outcome.skipped.push(key),
+            "not_started" => {}
             _ => outcome.failed.push(key),
         }
         progress(TransferProgress {

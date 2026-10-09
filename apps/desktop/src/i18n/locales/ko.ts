@@ -5931,7 +5931,7 @@ export default withEnglishFallback({
     objectDependencyMissing: "없거나 읽을 수 없음",
     objectPreviewUnavailable: "선택한 객체의 전체 계획이 반환되지 않아 전송을 시작하지 않았습니다.",
     objectResults: "객체 마이그레이션 결과",
-    objectResult_transferred: "마이그레이션 및 검증 완료",
+    objectResult_transferred: "마이그레이션 완료",
     objectResult_skipped: "건너뜀",
     objectResult_failed: "마이그레이션 또는 검증 실패",
     objectCompilation: "컴파일 상태",

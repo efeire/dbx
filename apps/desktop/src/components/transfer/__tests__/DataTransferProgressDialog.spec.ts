@@ -60,6 +60,46 @@ afterEach(() => {
 });
 
 describe("DataTransferProgressDialog", () => {
+  it.each([
+    ["transferred", "Migrated"],
+    ["created", "Created and verified"],
+    ["replaced", "Replaced and verified"],
+    ["not_started", "Not executed"],
+  ] as const)("renders %s as a readable object result without inventing compilation", async (status, label) => {
+    const tracker = useExportTracker();
+    const task = tracker.addDataTransferTask(`type-result-${status}`, "SOURCE → TARGET", 1);
+    tracker.updateDataTransferTask(task.exportId, {
+      transferId: task.exportId,
+      table: "T",
+      tableIndex: 0,
+      totalTables: 1,
+      rowsTransferred: 0,
+      totalRows: null,
+      status: "running",
+      terminal: false,
+      error: null,
+      objectResult: { objectType: "TYPE_BODY", name: "T", schema: "TARGET", status, ...(status === "not_started" ? { error: "Prerequisite did not complete; no DDL executed" } : {}) },
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const app = createApp({ render: () => h(DataTransferProgressDialog, { open: true, task }) });
+    mountedApps.push(app);
+    app.use(i18n);
+    app.mount(container);
+    await nextTick();
+    expect(container.textContent).toContain(label);
+    expect(container.textContent).not.toContain(`transfer.objectResult_${status}`);
+    expect(container.textContent).not.toContain("INVALID");
+    expect(container.textContent).not.toContain("Source verified");
+    if (status === "transferred") expect(container.textContent).not.toContain("and verified");
+    if (status === "not_started") {
+      expect(task.transferFailures ?? []).toHaveLength(0);
+      expect(container.textContent).not.toContain("Migration or verification failed");
+      const result = [...container.querySelectorAll("p")].find((element) => element.textContent?.includes("TYPE_BODY TARGET.T"));
+      expect(result?.parentElement?.className).not.toContain("text-green");
+      expect(result?.parentElement?.className).not.toContain("text-destructive");
+    }
+  });
   it("reports a public synonym privilege failure without losing the private synonym result", async () => {
     const tracker = useExportTracker();
     const task = tracker.addDataTransferTask("synonym-results", "SOURCE → TARGET", 2);

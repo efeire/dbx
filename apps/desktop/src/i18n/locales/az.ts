@@ -6077,7 +6077,7 @@ export default withEnglishFallback({
     objectDependencyMissing: "Yoxdur və ya oxunmur",
     objectPreviewUnavailable: "Seçilmiş obyektlərin tam planı serverdən alınmadı. Köçürmə başlamayıb.",
     objectResults: "Obyekt köçürmə nəticələri",
-    objectResult_transferred: "Köçürüldü və yoxlanıldı",
+    objectResult_transferred: "Köçürüldü",
     objectResult_skipped: "Ötürüldü",
     objectResult_failed: "Köçürmə və ya yoxlama alınmadı",
     objectCompilation: "Kompilyasiya vəziyyəti",

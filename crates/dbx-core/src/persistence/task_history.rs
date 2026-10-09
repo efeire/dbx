@@ -852,6 +852,80 @@ impl TransferTaskJournal {
                 .await;
             }
         }
+        for result in &outcome.object_results {
+            let identity = format!("{:?}:{}", result.object_type, result.name);
+            if outcome.transferred.iter().chain(&outcome.skipped).chain(&outcome.failed).any(|raw| raw == &identity) {
+                continue;
+            }
+            let status = match result.status.as_str() {
+                "transferred" | "created" | "replaced" => TaskItemStatus::Succeeded,
+                "skipped" => TaskItemStatus::Skipped,
+                "failed" => TaskItemStatus::Failed,
+                "not_started" => TaskItemStatus::NotStarted,
+                _ => continue,
+            };
+            let (item_kind, source_object) = TaskItemKind::from_transfer(&identity);
+            self.persist_item(TaskRunItem {
+                run_id: self.run_id.clone(),
+                item_index: self.object_item_index(Some(&identity)) as i64,
+                item_kind,
+                target_object: source_object.clone(),
+                source_object,
+                status,
+                source_row_count: None,
+                moved_row_count: None,
+                target_row_count: None,
+                row_count_state: RowCountState::NotApplicable,
+                has_table_filter: false,
+                safe_error_summary: if status == TaskItemStatus::NotStarted {
+                    Some("Not executed because an earlier transfer stage did not complete.".into())
+                } else {
+                    safe_item_summary(status)
+                },
+            })
+            .await;
+        }
+    }
+
+    /// Legacy executors may stop without an exact result event. Once their stage starts,
+    /// keep such objects unconfirmed rather than asserting they were never reached.
+    pub async fn start_legacy_schema_objects(&self) {
+        let identities = self
+            .object_indices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|(identity, index)| identity.as_ref().map(|identity| (identity.clone(), *index)))
+            .collect::<Vec<_>>();
+        for (identity, index) in identities {
+            let (item_kind, source_object) = TaskItemKind::from_transfer(&identity);
+            if matches!(
+                item_kind,
+                TaskItemKind::Table
+                    | TaskItemKind::Package
+                    | TaskItemKind::PackageBody
+                    | TaskItemKind::Synonym
+                    | TaskItemKind::PublicSynonym
+                    | TaskItemKind::Object
+            ) {
+                continue;
+            }
+            self.persist_item(TaskRunItem {
+                run_id: self.run_id.clone(),
+                item_index: index as i64,
+                item_kind,
+                target_object: source_object.clone(),
+                source_object,
+                status: TaskItemStatus::Running,
+                source_row_count: None,
+                moved_row_count: None,
+                target_row_count: None,
+                row_count_state: RowCountState::NotApplicable,
+                has_table_filter: false,
+                safe_error_summary: None,
+            })
+            .await;
+        }
     }
 
     pub async fn record_schema_objects_error(&self, cancelled: bool) {
@@ -1122,6 +1196,80 @@ mod tests {
         assert_eq!(separate.items.len(), 1);
         assert_eq!(separate.items[0].item_index, 0);
         assert_eq!(separate.items[0].source_object, "Mixed Name");
+    }
+
+    #[tokio::test]
+    async fn interrupted_legacy_stage_keeps_observed_success_and_unknown_progress_separate_from_unexecuted_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("dbx.db");
+        let storage = crate::persistence::test_storage::open_unmigrated(&db_path).await.unwrap();
+        let app = AppState::new_with_plugin_dir(storage.clone(), dir.path().join("plugins"));
+        let request: TransferRequest = serde_json::from_value(serde_json::json!({
+            "transferId": format!("interrupted-history-{}", uuid::Uuid::new_v4()),
+            "sourceConnectionId": "s", "sourceDatabase": "S", "sourceSchema": "S",
+            "targetConnectionId": "t", "targetDatabase": "T", "targetSchema": "T", "tables": [],
+            "createTable": true, "batchSize": 10, "content": "structureOnly",
+            "objects": [{"objectType": "VIEW", "names": ["DONE", "UNKNOWN"]}, {"objectType": "TYPE_BODY", "names": ["LATE"]}]
+        })).unwrap();
+        let journal =
+            TransferTaskJournal::accept(&storage, &app, &request, TaskLifecycleOwner::Web).await.unwrap().unwrap();
+        journal.start_legacy_schema_objects().await;
+        let outcome = TransferObjectOutcome {
+            object_results: vec![
+                crate::transfer::TransferSchemaObjectResult {
+                    object_type: crate::transfer::TransferObjectKind::View,
+                    name: "DONE".into(),
+                    schema: "T".into(),
+                    status: "transferred".into(),
+                    compile_status: None,
+                    source_verified: None,
+                    error: None,
+                    recovery: None,
+                },
+                crate::transfer::TransferSchemaObjectResult {
+                    object_type: crate::transfer::TransferObjectKind::TypeBody,
+                    name: "LATE".into(),
+                    schema: "T".into(),
+                    status: "not_started".into(),
+                    compile_status: None,
+                    source_verified: None,
+                    error: Some("Earlier stage did not complete".into()),
+                    recovery: None,
+                },
+            ],
+            ..Default::default()
+        };
+        journal.record_object_outcome(&outcome).await;
+        journal
+            .finish(&TransferProgress {
+                transfer_id: request.transfer_id.clone(),
+                table: String::new(),
+                table_index: 0,
+                total_tables: 0,
+                rows_transferred: 0,
+                total_rows: None,
+                status: TransferStatus::Error,
+                error: Some("Earlier stage did not complete".into()),
+                terminal: true,
+                object_result: None,
+            })
+            .await;
+        let before = storage.list_task_run_items(&request.transfer_id, TaskRunItemsQuery::default()).await.unwrap();
+        assert_eq!(before.items.len(), 3);
+        assert_eq!(before.items[0].status, TaskItemStatus::Succeeded);
+        assert_eq!(before.items[0].safe_error_summary, None);
+        assert_eq!(before.items[1].status, TaskItemStatus::Incomplete);
+        assert_eq!(before.items[2].status, TaskItemStatus::NotStarted);
+        assert!(before.items[2].safe_error_summary.as_deref().unwrap().contains("Not executed"));
+        assert!(!serde_json::to_string(&before).unwrap().contains("INVALID"));
+        drop(journal);
+        drop(app);
+        drop(storage);
+        let reopened = crate::persistence::test_storage::open_unmigrated(&db_path).await.unwrap();
+        assert_eq!(
+            reopened.list_task_run_items(&request.transfer_id, TaskRunItemsQuery::default()).await.unwrap(),
+            before
+        );
     }
 
     #[tokio::test]

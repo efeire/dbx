@@ -6137,7 +6137,7 @@ export default withEnglishFallback({
     objectDependencyMissing: "Mancante o non leggibile",
     objectPreviewUnavailable: "Il server non ha restituito il piano completo degli oggetti selezionati. Il trasferimento non è iniziato.",
     objectResults: "Risultati della migrazione degli oggetti",
-    objectResult_transferred: "Migrato e verificato",
+    objectResult_transferred: "Migrato",
     objectResult_skipped: "Saltato",
     objectResult_failed: "Migrazione o verifica non riuscita",
     objectCompilation: "Stato di compilazione",

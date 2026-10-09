@@ -6722,7 +6722,7 @@ export default withEnglishFallback({
     objectDependencyMissing: "Tidak ada atau tidak dapat dibaca",
     objectPreviewUnavailable: "Server tidak mengembalikan rencana lengkap objek yang dipilih. Transfer belum dimulai.",
     objectResults: "Hasil migrasi objek",
-    objectResult_transferred: "Dimigrasikan dan diverifikasi",
+    objectResult_transferred: "Dimigrasikan",
     objectResult_skipped: "Dilewati",
     objectResult_failed: "Migrasi atau verifikasi gagal",
     objectCompilation: "Status kompilasi",

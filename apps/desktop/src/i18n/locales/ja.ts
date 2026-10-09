@@ -6158,7 +6158,7 @@ export default withEnglishFallback({
     objectDependencyMissing: "存在しないか読み取り不可",
     objectPreviewUnavailable: "選択したオブジェクトの完全な計画が返されていないため、転送は開始されていません。",
     objectResults: "オブジェクトの移行結果",
-    objectResult_transferred: "移行と検証が完了",
+    objectResult_transferred: "移行が完了",
     objectResult_skipped: "スキップ済み",
     objectResult_failed: "移行または検証に失敗",
     objectCompilation: "コンパイル状態",
