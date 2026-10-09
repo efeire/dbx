@@ -10,7 +10,7 @@ import java.util.UUID;
 /** Opt-in isolated Oracle tenant only. Run during the unified acceptance phase. */
 class OceanBaseLobSnapshotIntegrationTest {
     @Test
-    void capturesOriginalBlobBytesAcrossCursorCloseAndConcurrentUpdate() throws Exception {
+    void capturesOriginalBlobBytesAcrossCursorCloseAndConcurrentUpdateAndDelete() throws Exception {
         String url = System.getenv("OB_LOB_INTEGRATION_URL");
         Assumptions.assumeTrue(url != null && !url.isBlank(), "Isolated OB LOB integration environment not configured");
         String user = System.getenv("OB_LOB_INTEGRATION_USER");
@@ -47,16 +47,24 @@ class OceanBaseLobSnapshotIntegrationTest {
                     update.setBytes(1, new byte[]{1, 2, 3});
                     assertEquals(1, update.executeUpdate());
                 }
+                try (var statement = other.createStatement()) { assertEquals(1, statement.executeUpdate("DELETE FROM " + table + " WHERE ID = 1")); }
                 StringBuilder complete = new StringBuilder();
                 long offset = 0;
                 while (true) {
                     var chunk = values.fetch(connection, preview.ref(), offset, 4096);
+                    assertEquals("ok", chunk.status());
                     assertEquals("binary", chunk.value_kind());
                     complete.append(chunk.data());
                     if (chunk.eof()) break;
                     offset = chunk.next_offset();
                 }
-                assertArrayEquals(original, java.util.HexFormat.of().parseHex(complete.toString()));
+                byte[] actual = java.util.HexFormat.of().parseHex(complete.toString());
+                assertEquals(original.length, actual.length);
+                assertArrayEquals(original, actual);
+                var digest = java.security.MessageDigest.getInstance("SHA-256");
+                assertArrayEquals(digest.digest(original), digest.digest(actual));
+                values.clear();
+                assertEquals("expired", values.fetch(connection, preview.ref(), 0, 4096).status());
             } finally {
                 values.clear();
                 if (created) try (var statement = connection.createStatement()) { statement.execute("DROP TABLE " + table + " PURGE"); }
