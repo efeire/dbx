@@ -1041,6 +1041,27 @@ class OceanBaseOracleAgentTest {
     }
 
     @Test
+    void triggerListUsesTableOwnerAndKeepsRealTriggerOwners() {
+        var agent = new OceanBaseOracleAgent();
+        List<String> sql = new ArrayList<>();
+        List<String> params = new ArrayList<>();
+        TestSupport.setPrivateConnection(agent, preparedConnection(sql, params,
+            resultSet(new String[]{"TRIGGER_NAME", "TRIGGERING_EVENT", "TRIGGER_TYPE", "OWNER"},
+                new Object[][]{{"AUDIT", "INSERT", "AFTER", "A"}, {"AUDIT", "UPDATE", "BEFORE", "B"}})));
+        var triggers = agent.listTriggers("APP", "MixedTable");
+        Assertions.assertEquals(2, triggers.size());
+        Assertions.assertEquals("A", triggers.get(0).getOwner());
+        Assertions.assertEquals("B", triggers.get(1).getOwner());
+        Assertions.assertEquals("AUDIT", triggers.get(0).getName());
+        Assertions.assertEquals("AUDIT", triggers.get(1).getName());
+        Assertions.assertNotEquals(triggers.get(0), triggers.get(1));
+        Assertions.assertTrue(sql.get(0).contains("WHERE TABLE_OWNER = ? AND TABLE_NAME = ?"));
+        Assertions.assertTrue(sql.get(0).contains("ORDER BY OWNER, TRIGGER_NAME"));
+        Assertions.assertFalse(sql.get(0).contains("WHERE OWNER = ?"));
+        Assertions.assertEquals(List.of("APP", "MixedTable"), params);
+    }
+
+    @Test
     void tableDdlDistinguishesNoVisibleTriggersFromUnreadableMetadata() {
         var agent = new OceanBaseOracleAgent();
         TestSupport.setPrivateConnection(agent, triggerExportConnection(new ArrayList<>(), new ArrayList<>(), false, new Object[][]{}));

@@ -1356,10 +1356,10 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             String owner = normalizeSchema(schema);
             String tableName = normalizeObjectName(table);
             String sql = """
-                SELECT TRIGGER_NAME, TRIGGERING_EVENT, TRIGGER_TYPE
+                SELECT TRIGGER_NAME, TRIGGERING_EVENT, TRIGGER_TYPE, OWNER
                 FROM ALL_TRIGGERS
-                WHERE OWNER = ? AND TABLE_NAME = ?
-                ORDER BY TRIGGER_NAME
+                WHERE TABLE_OWNER = ? AND TABLE_NAME = ?
+                ORDER BY OWNER, TRIGGER_NAME
                 """.stripIndent().trim();
 
             List<TriggerInfo> result = new ArrayList<>();
@@ -1368,7 +1368,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 stmt.setString(2, tableName);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
-                        result.add(new TriggerInfo(rs.getString(1), rs.getString(2), rs.getString(3)));
+                        result.add(new TriggerInfo(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)));
                     }
                 }
             }

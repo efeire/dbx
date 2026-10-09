@@ -3388,6 +3388,7 @@ pub async fn list_triggers(
     Ok(rows
         .iter()
         .map(|row| TriggerInfo {
+            owner: None,
             name: row.get::<&str, _>(0).unwrap_or("").to_string(),
             event: row.get::<&str, _>(1).unwrap_or("").to_string(),
             timing: row.get::<&str, _>(2).unwrap_or("AFTER").to_string(),
