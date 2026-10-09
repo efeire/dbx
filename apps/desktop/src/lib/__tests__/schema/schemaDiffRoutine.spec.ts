@@ -24,6 +24,30 @@ function obj(partial: Partial<SchemaDiffObject> & Pick<SchemaDiffObject, "id" | 
 }
 
 describe("schemaDiffRoutine", () => {
+  it("keeps type definitions, bodies, quoted identities, and ordered source separate", () => {
+    const definition = 'CREATE TYPE "Dot.Type" UNDER BaseType (first NUMBER, second VARCHAR2(20)) NOT FINAL;';
+    const source = [
+      { ...fn('Dot.Type'), schema: 'Owner.With Dot', function_type: "TYPE", definition },
+      { ...fn('Dot.Type'), schema: 'Owner.With Dot', function_type: "TYPE_BODY", definition: 'CREATE TYPE BODY "Dot.Type" AS MEMBER PROCEDURE run AS BEGIN NULL; END; END;' },
+      { ...fn('Dot"Type'), schema: 'Owner.With Dot', function_type: "TYPE" },
+    ];
+    const keys = source.map(schemaDiffRoutineKeyFromFunction);
+    expect(keys).toEqual(['TYPE "Dot.Type"', 'TYPE BODY "Dot.Type"', 'TYPE "Dot""Type"']);
+    const target = source.map((item) => ({ ...item, schema: "Destination" }));
+    const filtered = filterSchemaDiffFunctions(source, target, [keys[1]!]);
+    expect(filtered.sourceFunctions).toEqual([source[1]]);
+    expect(filtered.targetFunctions).toEqual([target[1]]);
+    const diffs: FunctionDiff[] = source.map((item) => ({ name: item.name, type: "added", source: item }));
+    const objects = convertToSchemaDiffObjects([], diffs);
+    expect(new Set(objects.map((item) => item.id)).size).toBe(3);
+    expect(objects[0]!.sourceDdl).toBe(definition);
+    expect(objects.map((item) => item.routineType)).toEqual(["TYPE", "TYPE BODY", "TYPE"]);
+    objects.forEach((item, index) => { item.selected = index === 1; });
+    expect(selectSchemaDiffInput({ diffs: [], functionDiffs: diffs, syncSql: "" }, objects).functionDiffs).toEqual([diffs[1]]);
+    expect(summarizeSchemaDiffRoutineTextDiff(definition, definition.replace("first NUMBER, second VARCHAR2(20)", "second VARCHAR2(20), first NUMBER")).modified).toBeGreaterThan(0);
+    expect(summarizeSchemaDiffRoutineTextDiff(definition, definition.replace("NOT FINAL", "FINAL")).modified).toBeGreaterThan(0);
+  });
+
   it("keeps same-name package parts and trigger relations separate throughout selection", () => {
     const trigger = { tableOwner: "SRC", tableName: "T1", timing: "BEFORE EACH ROW", event: "UPDATE", status: "ENABLED", baseObjectType: "TABLE" };
     const source = [

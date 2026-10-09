@@ -158,11 +158,11 @@ export function supportsSchemaDiffRoutines(dbType?: DatabaseType): boolean {
   return SCHEMA_DIFF_ROUTINE_KINDS.some((kind) => sidebarObjects.includes(kind) && sourceReadable.includes(kind));
 }
 
-export type SchemaDiffRoutineObjectType = "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE_BODY" | "TRIGGER";
+export type SchemaDiffRoutineObjectType = "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE_BODY" | "TRIGGER" | "TYPE" | "TYPE_BODY";
 
 export function schemaDiffRoutineObjectTypes(dbType?: DatabaseType): SchemaDiffRoutineObjectType[] {
   if (!supportsSchemaDiffRoutines(dbType)) return [];
-  if (dbType === "oracle" || dbType === "oceanbase-oracle") return ["PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE_BODY", "TRIGGER"];
+  if (dbType === "oracle" || dbType === "oceanbase-oracle") return ["PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE_BODY", "TRIGGER", "TYPE", "TYPE_BODY"];
   const { sidebarObjects, sourceReadable } = databaseObjectCapabilities(dbType);
   return SCHEMA_DIFF_ROUTINE_KINDS.filter((kind) => sidebarObjects.includes(kind) && sourceReadable.includes(kind));
 }

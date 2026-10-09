@@ -6719,6 +6719,16 @@ export default withEnglishFallback({
     routinePlanBlocked: "デプロイできません: {reason}",
     routineDependencies: "依存オブジェクト: {dependencies}",
     routineValidationTitle: "コンパイル状態とソースの再取得",
+    typeReferencedColumns: "型を参照する表の列: {columns}",
+    typeMetadataState: "対応: {pairing}; 依存先: {outgoing}; 参照元: {incoming}",
+    typeReadState: {
+      available: "取得可能",
+      empty: "参照可能なレコードなし",
+      unknown: "不明",
+      unsupported: "未対応",
+      denied: "権限なし",
+      error: "読み取り失敗",
+    },
     routineValidationFailed: "DDL は実行されましたが、コンパイル状態またはソースの再取得の検証に失敗したか、検証が不完全です。適用済みの変更はロールバックされていません。",
     progress: {
       loadingObjects: "ソースとターゲットのデータベースオブジェクトを読み込み中...",

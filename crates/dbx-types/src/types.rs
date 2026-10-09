@@ -976,7 +976,28 @@ pub struct RoutineTriggerInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RoutineTypeInfo {
+    pub pairing_state: crate::oracle_types::OracleMetadataReadState,
+    pub dependency_state: crate::oracle_types::OracleMetadataReadState,
+    pub incoming_state: crate::oracle_types::OracleMetadataReadState,
+    pub referenced_columns: Vec<RoutineColumnDependency>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutineColumnDependency {
+    pub owner: String,
+    pub table_name: String,
+    pub column_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FunctionInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_info: Option<RoutineTypeInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<RoutineTriggerInfo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

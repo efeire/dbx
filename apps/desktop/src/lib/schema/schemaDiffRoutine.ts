@@ -69,17 +69,17 @@ export function schemaDiffRoutineKey(name: string, args = ""): string {
   return trimmedArgs ? `${name}(${trimmedArgs})` : name;
 }
 
-export type SchemaDiffRoutineKind = "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE BODY" | "TRIGGER";
+export type SchemaDiffRoutineKind = "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE BODY" | "TRIGGER" | "TYPE" | "TYPE BODY";
 
 export function schemaDiffRoutineType(type = ""): SchemaDiffRoutineKind {
   const kind = type.toUpperCase().replaceAll("_", " ");
-  if (kind === "PACKAGE" || kind === "PACKAGE BODY" || kind === "TRIGGER") return kind;
+  if (kind === "PACKAGE" || kind === "PACKAGE BODY" || kind === "TRIGGER" || kind === "TYPE" || kind === "TYPE BODY") return kind;
   return kind.includes("PROC") ? "PROCEDURE" : "FUNCTION";
 }
 
 export function schemaDiffRoutineKeyFromFunction(fn: Pick<FunctionInfo, "name" | "arguments"> & Partial<Pick<FunctionInfo, "function_type" | "trigger" | "schema">>): string {
   const kind = schemaDiffRoutineType(fn.function_type);
-  if (kind === "PACKAGE" || kind === "PACKAGE BODY" || kind === "TRIGGER") {
+  if (kind === "PACKAGE" || kind === "PACKAGE BODY" || kind === "TRIGGER" || kind === "TYPE" || kind === "TYPE BODY") {
     const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
     const trigger = fn.trigger;
     const table = trigger ? ` ON ${trigger.tableOwner === fn.schema ? "" : `${quote(trigger.tableOwner)}.`}${quote(trigger.tableName)}` : "";

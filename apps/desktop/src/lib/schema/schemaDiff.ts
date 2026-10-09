@@ -1,4 +1,4 @@
-import type { ColumnInfo, IndexInfo, ForeignKeyInfo, TriggerInfo, FunctionInfo, SequenceInfo, RuleInfo, OwnerInfo, DatabaseType, TableInfo, ConnectionConfig, SchemaDiffTriggerInfo, SchemaDiffDependencyObject } from "@/types/database";
+import type { ColumnInfo, IndexInfo, ForeignKeyInfo, TriggerInfo, FunctionInfo, SequenceInfo, RuleInfo, OwnerInfo, DatabaseType, TableInfo, ConnectionConfig, SchemaDiffTriggerInfo, SchemaDiffDependencyObject, SchemaDiffTypeInfo } from "@/types/database";
 import { schemaDiffRoutineObjectId, schemaDiffRoutineType, type SchemaDiffRoutineKind } from "@/lib/schema/schemaDiffRoutine";
 import type { SchemaDiffTableMapping } from "@/types/schemaDiff";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
@@ -357,6 +357,7 @@ export interface SchemaDiffRoutineStep {
   blockedReason?: string;
   dependencies: string[];
   incomingDependencies?: SchemaDiffDependencyObject[];
+  typeInfo?: SchemaDiffTypeInfo;
   trigger?: SchemaDiffTriggerInfo;
   postSql?: string[];
 }
@@ -448,6 +449,11 @@ export interface SchemaDiffObject {
   routineType?: SchemaDiffRoutineKind;
   sourceTrigger?: SchemaDiffTriggerInfo;
   targetTrigger?: SchemaDiffTriggerInfo;
+  typeInfo?: SchemaDiffTypeInfo;
+  sourceTypeInfo?: SchemaDiffTypeInfo;
+  targetTypeInfo?: SchemaDiffTypeInfo;
+  sourcePairedObjectPresent?: boolean;
+  targetPairedObjectPresent?: boolean;
   incomingDependencies?: SchemaDiffDependencyObject[];
   sourceSchema?: string;
   targetSchema?: string;
@@ -802,6 +808,11 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
       routineType,
       sourceTrigger: diff.source?.trigger,
       targetTrigger: diff.target?.trigger,
+      typeInfo: routineStep?.typeInfo,
+      sourceTypeInfo: diff.source?.typeInfo,
+      targetTypeInfo: diff.target?.typeInfo,
+      sourcePairedObjectPresent: diff.source?.pairedObjectPresent,
+      targetPairedObjectPresent: diff.target?.pairedObjectPresent,
       incomingDependencies: routineStep?.incomingDependencies,
       sourceSchema: diff.source?.schema,
       targetSchema: diff.target?.schema,

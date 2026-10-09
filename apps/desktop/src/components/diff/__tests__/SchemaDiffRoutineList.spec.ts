@@ -48,6 +48,40 @@ it("renders distinct package parts and trigger state, dependencies, and affected
   expect(view).toHaveBeenCalledWith(objects[1]);
 });
 
+it("shows type table-column impact and unreadable metadata while keeping blocked bodies inspectable", async () => {
+  const typeInfo = { pairingState: "available", dependencyState: "empty", incomingState: "denied", referencedColumns: [{ owner: "DST", tableName: "Orders", columnName: "payload" }], metadataMessage: "ALL_DEPENDENCIES permission denied" } as const;
+  const source = { name: "Order.Type", function_type: "TYPE", data_type: "", arguments: "", definition: "CREATE TYPE OrderType AS OBJECT (id NUMBER);", schema: "SRC" };
+  const objects = convertToSchemaDiffObjects([], [
+    { name: source.name, type: "modified", source, target: { ...source, schema: "DST", pairedObjectPresent: true, typeInfo: { ...typeInfo, referencedColumns: [...typeInfo.referencedColumns] } } },
+    { name: source.name, type: "added", source: { ...source, function_type: "TYPE BODY" } },
+  ], [], [], [], undefined, [
+    { name: source.name, routineType: "TYPE", operation: "modified", dependencies: [], blockedReason: "Dependent table columns exist", incomingDependencies: [{ owner: "DST", name: "ReadOrders", objectType: "FUNCTION" }] },
+    { name: source.name, routineType: "TYPE BODY", operation: "added", dependencies: ["DST.Order.Type TYPE"] },
+  ]);
+  const toggle = vi.fn();
+  const view = vi.fn();
+  const host = document.createElement("div");
+  document.body.append(host);
+  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
+  app.use(createI18n({ legacy: false, locale: "en", messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}", routineIncomingDependencies: "Affected: {dependencies}", typeReferencedColumns: "Columns: {columns}", typeMetadataState: "Pair: {pairing}; outgoing: {outgoing}; incoming: {incoming}", typeReadState: { available: "Available", empty: "No visible rows", denied: "Permission denied" } } } } }));
+  app.mount(host);
+  await nextTick();
+  expect(host.textContent).toContain("TYPE SRC.Order.Type");
+  expect(host.textContent).toContain("TYPE BODY SRC.Order.Type");
+  expect(host.textContent).toContain("Columns: DST.Orders.payload");
+  expect(host.textContent).toContain("Pair: TYPE BODY DST.Order.Type");
+  expect(host.textContent).toContain("Affected: FUNCTION DST.ReadOrders");
+  expect(host.textContent).toContain("incoming: Permission denied");
+  expect(host.textContent).toContain("ALL_DEPENDENCIES permission denied");
+  expect(host.querySelectorAll("input")[0]!.disabled).toBe(true);
+  (host.querySelectorAll('[role="button"]')[0] as HTMLElement).click();
+  expect(view).toHaveBeenCalledWith(objects[0]);
+  const bodyCheckbox = host.querySelectorAll("input")[1]!;
+  bodyCheckbox.checked = false;
+  bodyCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
+  expect(toggle).toHaveBeenCalledWith(objects[1], false);
+});
+
 it("shows both routine owners and dependencies while blocked rows remain inspectable but unselectable", async () => {
   const source = { name: "P_SYNC", function_type: "PROCEDURE", data_type: "", arguments: "", definition: "BEGIN NULL; END;", schema: "SRC" };
   const target = { ...source, schema: "DST", definition: "BEGIN old_call; END;" };

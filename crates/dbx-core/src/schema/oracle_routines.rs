@@ -143,6 +143,7 @@ pub(super) async fn list_routines(
             return Err(format!("{schema}.{name} ({kind}) changed during metadata collection"));
         }
         routines.push(db::FunctionInfo {
+            type_info: None,
             name,
             function_type: kind,
             data_type: String::new(),
@@ -164,6 +165,53 @@ pub(super) async fn list_routines(
             incoming_dependencies: dependency_rows(&incoming.rows)?,
             paired_object_present,
             trigger,
+        });
+    }
+    let kinds = vec!["TYPE".to_string(), "TYPE_BODY".to_string()];
+    let types = list_objects_core(state, connection, database, schema, None, None, None, Some(&kinds), None).await?;
+    for object in types {
+        if object.schema.as_deref() != Some(schema) {
+            return Err("Type inventory owner differs from the selected schema".into());
+        }
+        let (kind, _) = schema_diff_routine_kind(&object.object_type).ok_or("Unexpected type inventory kind")?;
+        let details = oracle_types::get_oracle_type_details_core(state, connection, database, schema, &object.name, &object.object_type).await?;
+        let definition = source(state, connection, database, schema, &object.name, kind).await?;
+        let incoming = dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, NAME, TYPE FROM ALL_DEPENDENCIES WHERE REFERENCED_OWNER = {} AND REFERENCED_NAME = {} AND REFERENCED_TYPE = {} ORDER BY OWNER, NAME, TYPE", literal(schema), literal(&object.name), literal(kind))).await?;
+        let incoming_dependencies = dependency_rows(&incoming.rows)?;
+        let columns = if kind == "TYPE" {
+            dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, TABLE_NAME, COLUMN_NAME FROM ALL_TAB_COLUMNS WHERE DATA_TYPE_OWNER = {} AND DATA_TYPE = {} ORDER BY OWNER, TABLE_NAME, COLUMN_ID", literal(schema), literal(&object.name))).await?.rows
+        } else { Vec::new() };
+        let referenced_columns = columns.iter().map(|row| {
+            let column = db::RoutineColumnDependency { owner: cell(row, 0), table_name: cell(row, 1), column_name: cell(row, 2) };
+            if column.owner.is_empty() || column.table_name.is_empty() || column.column_name.is_empty() { return Err("Incomplete type column dependency metadata".to_string()); }
+            Ok(column)
+        }).collect::<Result<Vec<_>, _>>()?;
+        let mut dependency_state = details.dependencies.state.clone();
+        let mut metadata_message = details.dependencies.message.clone();
+        let mut dependency_objects = Vec::new();
+        for dependency in details.dependencies.rows {
+            if dependency.referenced_schema.as_deref().is_none_or(str::is_empty) || dependency.referenced_link.is_some() {
+                dependency_state = oracle_types::OracleMetadataReadState::Unknown;
+                let message = format!("Type dependency {}.{} ({}) via {} cannot be mapped automatically", dependency.referenced_schema.as_deref().unwrap_or("UNKNOWN"), dependency.referenced_name, dependency.referenced_type, dependency.referenced_link.as_deref().unwrap_or("unknown owner"));
+                metadata_message = Some(match metadata_message { Some(previous) => format!("{previous}\n{message}"), None => message });
+                continue;
+            }
+            dependency_objects.push(db::RoutineDependency { owner: dependency.referenced_schema.unwrap(), name: dependency.referenced_name, object_type: dependency.referenced_type.replace('_', " ") });
+        }
+        let paired_object_present = match &details.pairing_state {
+            oracle_types::OracleMetadataReadState::Available => Some(details.paired_object.is_some()),
+            oracle_types::OracleMetadataReadState::Empty => Some(false),
+            _ => None,
+        };
+        let incoming_state = if incoming_dependencies.is_empty() && referenced_columns.is_empty() { oracle_types::OracleMetadataReadState::Empty } else { oracle_types::OracleMetadataReadState::Available };
+        if status(state, connection, database, schema, &object.name, kind).await? != details.status {
+            return Err(format!("{schema}.{} ({kind}) changed during type metadata collection", object.name));
+        }
+        routines.push(db::FunctionInfo {
+            name: object.name, function_type: kind.to_string(), data_type: String::new(), definition, arguments: String::new(), schema: Some(schema.to_string()), status: details.status,
+            dependencies: dependency_objects.iter().map(|dependency| format!("\"{}\".\"{}\"", dependency.owner.replace('"', "\"\""), dependency.name.replace('"', "\"\""))).collect(),
+            dependency_objects, incoming_dependencies, paired_object_present, trigger: None,
+            type_info: Some(db::RoutineTypeInfo { pairing_state: details.pairing_state, dependency_state, incoming_state, referenced_columns, metadata_message }),
         });
     }
     Ok(routines)

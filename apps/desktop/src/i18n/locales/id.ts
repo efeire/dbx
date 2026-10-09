@@ -7350,6 +7350,16 @@ export default withEnglishFallback({
     routinePlanBlocked: "Penerapan diblokir: {reason}",
     routineDependencies: "Dependensi: {dependencies}",
     routineValidationTitle: "Kompilasi dan pembacaan ulang sumber",
+    typeReferencedColumns: "Kolom tabel yang merujuk tipe: {columns}",
+    typeMetadataState: "Pasangan: {pairing}; dependensi keluar: {outgoing}; masuk: {incoming}",
+    typeReadState: {
+      available: "Tersedia",
+      empty: "Tidak ada baris yang terlihat",
+      unknown: "Tidak diketahui",
+      unsupported: "Tidak didukung",
+      denied: "Izin ditolak",
+      error: "Gagal membaca",
+    },
     routineValidationFailed: "DDL telah dijalankan, tetapi verifikasi kompilasi atau sumber gagal atau belum lengkap. Perubahan yang diterapkan belum dibatalkan.",
     progress: {
       loadingObjects: "Membaca objek database sumber dan target...",
