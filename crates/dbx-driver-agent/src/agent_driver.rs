@@ -5763,7 +5763,8 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn bound_blob_execution_rejects_unsupported_agents_and_edited_previews_before_rpc() {
-        let mut client = AgentDriverClient::test_stub();
+        let pool = super::PooledAgentClient::new(AgentDriverClient::test_stub());
+        let mut client = pool.lock().await;
         let previews = vec!["reviewed BLOB save".to_string()];
         let bound = vec![dbx_types::types::BlobBoundStatement {
             preview_sql: previews[0].clone(),
