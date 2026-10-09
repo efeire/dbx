@@ -119,28 +119,27 @@ describe("read-only session blocking snapshots", () => {
     };
     const controller = new AbortController();
     const pending = createSessionBlockingMonitor(backend).collect(oracle, controller.signal);
+    const assertion = expect(pending).rejects.toThrow("cancelled");
     controller.abort();
     expect(backend.cancelQuery).toHaveBeenCalledWith(backend.executeQuery.mock.calls[0][4]);
+    await assertion;
     finish(result([]));
-    await expect(pending).rejects.toThrow("cancelled");
   });
-  it("enforces a whole-sample deadline and does not report timeout as user cancellation", async () => {
+  it.each(["pending", "rejected", "throws"])("enforces the deadline even if execution never returns and cancellation %s", async (cancellation) => {
     vi.useFakeTimers();
-    let finish!: (value: QueryResult) => void;
     const backend = {
-      executeQuery: vi.fn().mockImplementation(
-        () =>
-          new Promise<QueryResult>((resolve) => {
-            finish = resolve;
-          }),
-      ),
-      cancelQuery: vi.fn().mockResolvedValue(undefined),
+      executeQuery: vi.fn().mockImplementation(() => new Promise<QueryResult>(() => {})),
+      cancelQuery: vi.fn().mockImplementation(() => {
+        if (cancellation === "throws") throw new Error("transport failure");
+        if (cancellation === "rejected") return Promise.reject(new Error("transport failure"));
+        return new Promise<void>(() => {});
+      }),
     };
     const pending = createSessionBlockingMonitor(backend).collect(oracle, signal());
     const assertion = expect(pending).rejects.toThrow("timeout");
     await vi.advanceTimersByTimeAsync(30_000);
     expect(backend.cancelQuery).toHaveBeenCalledTimes(1);
-    finish(result([]));
     await assertion;
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

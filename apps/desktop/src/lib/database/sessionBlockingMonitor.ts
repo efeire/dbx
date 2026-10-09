@@ -100,13 +100,24 @@ export function createSessionBlockingMonitor(backend: Backend = api) {
       async function query(sql: string): Promise<Row[]> {
         if (controller.signal.aborted) throw new Error(timedOut ? "timeout" : "cancelled");
         const executionId = crypto.randomUUID();
+        let rejectAbort!: (cause: Error) => void;
+        const aborted = new Promise<never>((_, reject) => {
+          rejectAbort = reject;
+        });
         const cancel = () => {
-          void backend.cancelQuery(executionId).catch(() => undefined);
+          // End local waiting even if execution or cancellation never settles.
+          // Requesting cancellation does not confirm that the server stopped.
+          rejectAbort(new Error(timedOut ? "timeout" : "cancelled"));
+          try {
+            void backend.cancelQuery(executionId).catch(() => undefined);
+          } catch {
+            // A transport failure must not retain the local pending state.
+          }
         };
         controller.signal.addEventListener("abort", cancel, { once: true });
         try {
           // Separate diagnostic execution; never borrow the editor's manual transaction.
-          const result = await backend.executeQuery(context.connectionId, context.database, sql, undefined, executionId, { maxRows: limit + 1, timeoutSecs: 10 });
+          const result = await Promise.race([backend.executeQuery(context.connectionId, context.database, sql, undefined, executionId, { maxRows: limit + 1, timeoutSecs: 10 }), aborted]);
           if (controller.signal.aborted) throw new Error(timedOut ? "timeout" : "cancelled");
           if (result.execution_error) throw new Error(JSON.stringify(result.error ?? "Collection failed"));
           if (result.rows.length > limit) addLimit("truncated");
