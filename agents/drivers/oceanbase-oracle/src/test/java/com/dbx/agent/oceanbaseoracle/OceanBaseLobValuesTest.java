@@ -15,6 +15,32 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 class OceanBaseLobValuesTest {
     @Test
+    void idleAndAbsoluteExpiryFreeLocatorsAndRestorePayloadCapacity() throws Exception {
+        OceanBaseLobValues values = new OceanBaseLobValues((connection, locator, offset, limit) -> chunk("x".repeat(1000), offset, limit), ignored -> 40L * 1024 * 1024);
+        for (String fieldName : List.of("accessed", "created")) {
+            Fixture fixture = new Fixture();
+            var preview = (OceanBaseLobValues.Preview) values.preview(fixture.resultSet, 1, Types.CLOB, "CLOB");
+            var entriesField = OceanBaseLobValues.class.getDeclaredField("entries");
+            entriesField.setAccessible(true);
+            Object entry = ((java.util.Map<?, ?>) entriesField.get(values)).get(preview.ref());
+            var ageField = entry.getClass().getDeclaredField(fieldName);
+            ageField.setAccessible(true);
+            ageField.setLong(entry, System.currentTimeMillis() - (fieldName.equals("accessed") ? 5 : 30) * 60_000L - 1);
+            assertEquals("expired", values.fetch(fixture.connection, preview.ref(), 0, 1).status());
+            assertTrue(fixture.freed.get());
+            assertFalse(values.hasValues());
+        }
+    }
+
+    @Test
+    void nclobRetainsTheExistingCompleteReaderWithoutCapturingAPreview() throws Exception {
+        Fixture fixture = new Fixture();
+        OceanBaseLobValues values = new OceanBaseLobValues((connection, locator, offset, limit) -> { fail("NCLOB must use its existing complete reader"); return null; });
+        assertNull(values.preview(fixture.resultSet, 1, Types.NCLOB, "NCLOB"));
+        assertFalse(values.hasValues());
+        assertFalse(fixture.freed.get());
+    }
+    @Test
     void refusesNewLocatorsWhenRetainedPayloadBudgetIsFullAndRestoresCapacityOnRelease() throws Exception {
         OceanBaseLobValues values = new OceanBaseLobValues((connection, locator, offset, limit) -> chunk("x".repeat(1000), offset, limit), ignored -> 40L * 1024 * 1024);
         Fixture first = new Fixture();
