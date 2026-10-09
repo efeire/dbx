@@ -89,6 +89,8 @@ pub(super) fn selected(request: &TransferRequest) -> Vec<(TransferObjectKind, St
 }
 
 fn dictionary_kind(kind: TransferObjectKind) -> &'static str {
+    if kind == TransferObjectKind::Type { return "TYPE"; }
+    if kind == TransferObjectKind::TypeBody { return "TYPE BODY"; }
     if kind == TransferObjectKind::PackageBody {
         "PACKAGE BODY"
     } else {
@@ -110,13 +112,14 @@ fn ident(name: &str) -> String {
 
 /// Parse only the declaration head. The remainder is returned byte-for-byte, including
 /// literals, comments, explicit schema references and quoted identifiers in the body.
-fn declaration(source: &str, kind: TransferObjectKind) -> Result<(String, String, String), String> {
+pub(super) fn declaration(source: &str, kind: TransferObjectKind) -> Result<(String, String, String), String> {
     let identifier = r#"(?:"(?:[^"]|"")*"|[\p{L}][\p{L}\p{N}_$#]*)"#;
+    let keyword = if matches!(kind, TransferObjectKind::Type | TransferObjectKind::TypeBody) { "TYPE" } else { "PACKAGE" };
     let re = Regex::new(&format!(
-        r#"(?is)\A\s*(?:(?:/\*.*?\*/|--[^\r\n]*(?:\r?\n|$))\s*)*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?)?PACKAGE\s+(?P<body>BODY\s+)?(?P<name>{identifier}(?:\s*\.\s*{identifier})?)(?P<tail>.+)\z"#
+        r#"(?is)\A\s*(?:(?:/\*.*?\*/|--[^\r\n]*(?:\r?\n|$))\s*)*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?)?{keyword}\s+(?P<body>BODY\s+)?(?P<name>{identifier}(?:\s*\.\s*{identifier})?)(?P<tail>.+)\z"#
     )).map_err(|e| e.to_string())?;
     let captures = re.captures(source).ok_or("Cannot parse the complete package declaration")?;
-    if captures.name("body").is_some() != (kind == TransferObjectKind::PackageBody) {
+    if captures.name("body").is_some() != matches!(kind, TransferObjectKind::PackageBody | TransferObjectKind::TypeBody) {
         return Err("Package specification/body source kind does not match the selection".into());
     }
     let name = captures.name("name").unwrap();
@@ -151,14 +154,15 @@ fn declared_name(name: &str) -> String {
     unquote(&name[start..])
 }
 
-fn map_header(source: &str, kind: TransferObjectKind, name: &str, target_schema: &str) -> Result<String, String> {
+pub(super) fn map_header(source: &str, kind: TransferObjectKind, name: &str, target_schema: &str) -> Result<String, String> {
     let (prefix, declared, tail) = declaration(source, kind)?;
     if declared_name(&declared) != name {
         return Err("Source declaration name does not match the selected object".into());
     }
-    let header = Regex::new(
-        r"(?is)(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?P<edition>(?:NON)?EDITIONABLE\s+)?)?PACKAGE\s+(?:BODY\s+)?$",
-    )
+    let keyword = if matches!(kind, TransferObjectKind::Type | TransferObjectKind::TypeBody) { "TYPE" } else { "PACKAGE" };
+    let header = Regex::new(&format!(
+        r"(?is)(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?P<edition>(?:NON)?EDITIONABLE\s+)?)?{keyword}\s+(?:BODY\s+)?$",
+    ))
     .unwrap();
     let parsed = header.captures(&prefix).ok_or("Cannot parse package header")?;
     let prefix = format!(
@@ -186,7 +190,7 @@ fn body_fingerprint(source: &str, kind: TransferObjectKind) -> Result<String, St
     Ok(tail.replace("\r\n", "\n").trim().to_string())
 }
 
-fn verify_readback(readback: &str, item: &TransferSchemaObjectItem) -> Result<(), String> {
+pub(super) fn verify_readback(readback: &str, item: &TransferSchemaObjectItem) -> Result<(), String> {
     let (_, name, _) = declaration(readback, item.object_type)?;
     if declared_name(&name) != item.name
         || body_fingerprint(readback, item.object_type)? != body_fingerprint(&item.ddl, item.object_type)?
@@ -274,6 +278,7 @@ async fn dependencies(
         let target_owner = if owner == source_schema && !explicit { target_schema.clone() } else { owner };
         let planned = target_owner == target_schema
             && ((object_type == "PACKAGE" && selected.contains(&(TransferObjectKind::Package, dependency.clone())))
+                || (object_type == "TYPE" && request.object_selection_mode().selections().iter().any(|selection| selection.object_type == TransferObjectKind::Type && selection.names.contains(&dependency)))
                 || (object_type == "TABLE" && request.create_table && request.tables.contains(&dependency)));
         let status = if link.is_empty() {
             object_status(state, target_pool, &target_owner, &dependency, &object_type).await?
@@ -422,7 +427,7 @@ async fn build_plan(
 
 /// Lexical words only, omitting comments and string literals. Quoted identifiers retain
 /// their spelling. Used for conservative compatibility/reference checks, never rewriting.
-fn sql_words(sql: &str) -> Vec<String> {
+pub(super) fn sql_words(sql: &str) -> Vec<String> {
     let chars: Vec<char> = sql.chars().collect();
     let mut words = Vec::new();
     let mut i = 0;
@@ -520,7 +525,7 @@ fn explicit_owner_reference(source: &str, schema: &str) -> bool {
     words.windows(2).any(|pair| identifier_word(&pair[0]) == schema && pair[1] == ".")
 }
 
-fn identifier_word(word: &str) -> String {
+pub(super) fn identifier_word(word: &str) -> String {
     if word.starts_with('"') { unquote(word) } else { word.to_string() }
 }
 

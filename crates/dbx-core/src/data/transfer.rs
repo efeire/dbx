@@ -26,6 +26,7 @@ mod db2;
 mod ddl_plan;
 mod oracle_packages;
 mod oracle_synonyms;
+mod oracle_types;
 mod oracle_database_links;
 pub use oracle_database_links::{TransferDatabaseLinkConfig, TransferDatabaseLinkCredential};
 mod structure_plan;
@@ -214,6 +215,8 @@ pub enum TransferObjectKind {
     PublicSynonym,
     DbLink,
     PublicDbLink,
+    Type,
+    TypeBody,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -269,6 +272,7 @@ pub fn transfer_object_kinds(db_type: &DatabaseType) -> Vec<TransferObjectKind> 
         let mut kinds = transfer_object_kinds_for_family(&TransferObjectFamily::Oracle);
         kinds.extend([TransferObjectKind::Package, TransferObjectKind::PackageBody, TransferObjectKind::Synonym, TransferObjectKind::PublicSynonym]);
         kinds.extend([TransferObjectKind::DbLink, TransferObjectKind::PublicDbLink]);
+        kinds.extend([TransferObjectKind::Type, TransferObjectKind::TypeBody]);
         return kinds;
     }
     match transfer_object_family(db_type) {
@@ -7965,6 +7969,8 @@ pub fn ordered_transfer_object_kinds(kinds: Vec<TransferObjectKind>) -> Vec<Tran
         TransferObjectKind::Synonym => 7,
         TransferObjectKind::PublicSynonym => 8,
         TransferObjectKind::DbLink | TransferObjectKind::PublicDbLink => 0,
+        TransferObjectKind::Type => 1,
+        TransferObjectKind::TypeBody => 2,
     };
     let mut kinds = kinds;
     kinds.sort_by_key(rank);
@@ -8181,6 +8187,7 @@ pub async fn ensure_transfer_schema_objects_ready(
     target_pool_key: &str,
 ) -> Result<(), String> {
     oracle_database_links::ensure_ready(state, request, source_pool_key, target_pool_key).await?;
+    oracle_types::ensure_ready(state, request, source_pool_key, target_pool_key).await?;
     oracle_packages::ensure_ready(state, request, source_pool_key, target_pool_key).await?;
     oracle_synonyms::ensure_ready(state, request, source_pool_key, target_pool_key).await
 }
@@ -8272,6 +8279,12 @@ where
     if !outcome.failed.is_empty() {
         return Ok(outcome);
     }
+    let types = oracle_types::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
+    outcome.transferred.extend(types.transferred);
+    outcome.skipped.extend(types.skipped);
+    outcome.failed.extend(types.failed);
+    outcome.object_results.extend(types.object_results);
+    if !outcome.failed.is_empty() { return Ok(outcome); }
     let packages = oracle_packages::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
     outcome.transferred.extend(packages.transferred);
     outcome.skipped.extend(packages.skipped);
@@ -8283,7 +8296,7 @@ where
         request.object_selection_mode().selections().iter().map(|s| s.object_type).collect(),
     );
     for kind in order {
-        if matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody | TransferObjectKind::Synonym | TransferObjectKind::PublicSynonym | TransferObjectKind::DbLink | TransferObjectKind::PublicDbLink) {
+        if matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody | TransferObjectKind::Synonym | TransferObjectKind::PublicSynonym | TransferObjectKind::DbLink | TransferObjectKind::PublicDbLink | TransferObjectKind::Type | TransferObjectKind::TypeBody) {
             continue;
         }
         for name in selected_object_names(request.object_selection_mode().selections(), &kind) {
@@ -9329,6 +9342,10 @@ pub async fn preview_transfer_ownership(
     };
 
     let mut schema_objects = oracle_packages::preview(state, request, source_pool_key, target_pool_key).await?;
+    if let Some(mut types) = oracle_types::preview(state, request, source_pool_key, target_pool_key).await? {
+        if let Some(objects) = schema_objects.take() { types.can_execute &= objects.can_execute; types.items.extend(objects.items); }
+        schema_objects = Some(types);
+    }
     if let Some(mut links) = oracle_database_links::preview(state, request, source_pool_key, target_pool_key).await? {
         if let Some(objects) = schema_objects.take() {
             links.can_execute &= objects.can_execute;
