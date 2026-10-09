@@ -318,7 +318,8 @@ fn component_sql(schema: &str) -> (String, String) {
  ON r.TABLET_ID = l.TABLET_ID AND r.LS_ID = l.LS_ID
  AND r.SVR_IP = l.SVR_IP AND r.SVR_PORT = l.SVR_PORT
  WHERE l.ROLE = 'LEADER'
-)\n"#,
+)
+"#,
         owner = sql_string(schema)
     );
     let select = r#"SELECT root.TABLE_NAME, root.DATABASE_NAME, o.TABLE_TYPE,
@@ -357,6 +358,13 @@ mod tests {
             },
             db::ObjectStatistics { name: "T".into(), schema: Some("B".into()), ..Default::default() },
         ]
+    }
+
+    #[test]
+    fn component_cte_ends_with_sql_whitespace_instead_of_a_literal_escape() {
+        let (ctes, _) = component_sql("APP");
+        assert!(ctes.ends_with(")\n"));
+        assert!(!ctes.contains(r"\n"));
     }
 
     #[tokio::test]
