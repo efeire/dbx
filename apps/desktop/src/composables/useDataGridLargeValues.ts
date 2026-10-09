@@ -610,11 +610,6 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
         const rows = sourceResult.rows.slice();
         rows[item.sourceIndex!] = row;
         sourceResult.rows = rows;
-        const snapshotRef = sourceResult.large_value_cells?.find((cell) => cell.row_index === item.sourceIndex && cell.column_index === columnIndex)?.value_ref;
-        if (snapshotRef && sourceResult.large_value_context) {
-          void api.releaseLargeValue({ ...sourceResult.large_value_context, valueRef: snapshotRef })
-            .catch((error) => options.appendDebugLog("warn", "[DBX][DataGrid:large-value] release failed", error));
-        }
         visibleLargeValuePreviewCaches.get(sourceResult)?.forget(item.sourceIndex!, columnIndex);
         sourceResult.large_value_cells = sourceResult.large_value_cells?.filter((cell) => cell.row_index !== item.sourceIndex || cell.column_index !== columnIndex);
         options.largeValueResolutionVersion.value += 1;
