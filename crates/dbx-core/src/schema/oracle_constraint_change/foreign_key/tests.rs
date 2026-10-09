@@ -323,6 +323,73 @@ async fn invalid_data_missing_reference_privileges_and_truncated_metadata_block_
 }
 
 #[tokio::test]
+async fn disabled_foreign_key_with_disabled_parent_can_be_loaded_and_deleted() {
+    let mut original = key();
+    original.enabled = false;
+    original.validated = false;
+    let request = ForeignKeyChange { desired: None, ..change() };
+    let session = session(Engine::Oracle, &request);
+    {
+        let mut fixture = session.fixture.lock().unwrap();
+        fixture.current = Some(original.clone());
+        fixture.eligible = false;
+    }
+    // The editor loads its existing definition through the same read-only drop preview.
+    let plan = preview_foreign_key(&session, &request).await.unwrap();
+    assert_eq!(plan.current_constraint, Some(original));
+    assert_eq!(plan.statements.len(), 1);
+    assert!(plan.statements[0].contains("DROP CONSTRAINT"));
+    assert!(plan.recovery_statements[0].ends_with("DISABLE NOVALIDATE"));
+    assert!(session.fixture.lock().unwrap().writes.is_empty());
+    let result = apply_foreign_key(&session, &request, &plan.revision).await.unwrap();
+    assert!(result.success);
+    assert!(result.current_constraint.is_none());
+    assert_eq!(session.fixture.lock().unwrap().writes, plan.statements);
+}
+
+#[tokio::test]
+async fn disabled_parent_allows_disabled_replacement_but_blocks_enabling_before_drop() {
+    for enabled in [false, true] {
+        let mut request = change();
+        request.desired.as_mut().unwrap().enabled = enabled;
+        request.desired.as_mut().unwrap().validated = false;
+        let session = session(Engine::Oracle, &request);
+        {
+            let mut fixture = session.fixture.lock().unwrap();
+            fixture.current.as_mut().unwrap().enabled = false;
+            fixture.current.as_mut().unwrap().validated = false;
+            fixture.eligible = false;
+        }
+        let plan = preview_foreign_key(&session, &request).await;
+        if enabled {
+            assert!(plan.unwrap_err().contains("enabled when"));
+            assert!(session.fixture.lock().unwrap().writes.is_empty());
+        } else {
+            let plan = plan.unwrap();
+            assert!(plan.statements[1].ends_with("DISABLE NOVALIDATE"));
+            assert!(apply_foreign_key(&session, &request, &plan.revision).await.unwrap().success);
+        }
+    }
+}
+
+#[tokio::test]
+async fn disabled_parent_drop_still_requires_reference_permissions_and_complete_metadata() {
+    for truncated in [false, true] {
+        let request = ForeignKeyChange { desired: None, ..change() };
+        let session = session(Engine::Oracle, &request);
+        {
+            let mut fixture = session.fixture.lock().unwrap();
+            fixture.current.as_mut().unwrap().enabled = false;
+            fixture.eligible = false;
+            fixture.privilege = truncated;
+            fixture.truncated = truncated;
+        }
+        assert!(preview_foreign_key(&session, &request).await.is_err());
+        assert!(session.fixture.lock().unwrap().writes.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn partial_failure_returns_original_recovery_without_replaying_drop() {
     let request = change();
     let session = session(Engine::Oracle, &request);
