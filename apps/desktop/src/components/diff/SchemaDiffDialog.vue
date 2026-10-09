@@ -1020,7 +1020,13 @@ async function executeDeploySql() {
       sql,
       source: t("production.sourceSchemaDiff"),
       execute: async () => {
-        await preflightRoutineDeployment(expected, () => api.listFunctions(...sourceEndpoint), (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input, true), rollback, schema);
+        await preflightRoutineDeployment(
+          expected,
+          () => api.listFunctions(...sourceEndpoint),
+          (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input, true),
+          rollback,
+          schema,
+        );
         return api.executeScriptWith2pc(connectionId, database, [sql], schema, destructive);
       },
     });
