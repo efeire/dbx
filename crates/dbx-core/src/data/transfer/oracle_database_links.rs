@@ -423,6 +423,7 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
     let mut outcome = TransferObjectOutcome::default();
     for entry in plan {
         let item = &entry.item;
+        let mut mutation_attempted = false;
         let mut result = TransferSchemaObjectResult {
             object_type: item.object_type,
             name: item.name.clone(),
@@ -444,10 +445,14 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
                 let path = backup(state, existing)?;
                 result.recovery = Some(format!("Dictionary owner/name/username/host snapshot retained at {path}. Original password is unavailable. Restore requires explicitly supplied authentication and, for OB, protocol/tenant/cluster configuration. No automatic rollback."));
                 let public = if config.target_scope == "public" { "PUBLIC " } else { "" };
+                if is_cancelled(&request.transfer_id).await { return Err("Cancelled before database-link DROP".into()); }
+                mutation_attempted = true;
                 execute_on_pool(state, target, &format!("DROP {public}DATABASE LINK {}", config.target_name)).await.map_err(|_| "DBLINK_DROP_OUTCOME_UNKNOWN")?;
                 result.recovery = Some(format!("Original target link was deleted. Dictionary owner/name/username/host snapshot retained at {path}; restore explicitly with original authentication, a newly supplied password and, for OB, protocol/tenant/cluster. No automatic rollback."));
             }
             let password = credential(request, item.object_type, &item.name)?;
+            if is_cancelled(&request.transfer_id).await { return Err("Cancelled before database-link creation".into()); }
+            mutation_attempted = true;
             let reply = secure_rpc(state, target, "create_database_link_secure_v1", serde_json::json!({ "name": config.target_name, "scope": config.target_scope, "authentication": config.authentication, "username": config.username, "password": password, "host": config.host, "protocol": config.protocol, "tenant": config.tenant, "cluster": config.cluster })).await?;
             if reply.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                 let code = reply.get("errorCode").and_then(|v| v.as_str()).unwrap_or_default();
@@ -460,12 +465,16 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
             Ok(())
         }.await;
         if let Err(error) = operation {
+            if !mutation_attempted {
+                result.status = "not_started".into();
+            }
             result.error = Some(error);
         }
         let key = format!("{:?}:{}", item.object_type, item.name);
         match result.status.as_str() {
             "transferred" => outcome.transferred.push(key),
             "skipped" => outcome.skipped.push(key),
+            "not_started" => {}
             _ => outcome.failed.push(key),
         }
         progress(TransferProgress {
@@ -475,7 +484,13 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
             total_tables: request.tables.len(),
             rows_transferred: outcome.transferred.len() as u64,
             total_rows: None,
-            status: if result.error.is_some() { TransferStatus::Error } else { TransferStatus::Running },
+            status: if is_cancelled(&request.transfer_id).await {
+                TransferStatus::Cancelled
+            } else if result.status == "failed" {
+                TransferStatus::Error
+            } else {
+                TransferStatus::Running
+            },
             error: result.error.clone(),
             terminal: false,
             object_result: Some(result.clone()),

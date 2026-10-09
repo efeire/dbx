@@ -5724,7 +5724,7 @@ export interface TransferObjectResult {
   objectType: TransferObjectKind;
   name: string;
   schema: string;
-  status: "transferred" | "skipped" | "failed";
+  status: "transferred" | "created" | "replaced" | "skipped" | "failed" | "not_started";
   compileStatus?: string;
   sourceVerified?: boolean;
   error?: string;

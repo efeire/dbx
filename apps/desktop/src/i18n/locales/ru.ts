@@ -7311,7 +7311,7 @@ export default withEnglishFallback({
     objectDependencyMissing: "Отсутствует или недоступно для чтения",
     objectPreviewUnavailable: "Сервер не вернул полный план выбранных объектов. Перенос не начат.",
     objectResults: "Результаты переноса объектов",
-    objectResult_transferred: "Перенесено и проверено",
+    objectResult_transferred: "Перенесено",
     objectResult_skipped: "Пропущено",
     objectResult_failed: "Ошибка переноса или проверки",
     objectCompilation: "Статус компиляции",

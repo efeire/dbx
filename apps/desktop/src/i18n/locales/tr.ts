@@ -5967,7 +5967,7 @@ export default withEnglishFallback({
     objectDependencyMissing: "Eksik veya okunamıyor",
     objectPreviewUnavailable: "Sunucu seçilen nesnelerin tam planını döndürmedi. Aktarım başlamadı.",
     objectResults: "Nesne taşıma sonuçları",
-    objectResult_transferred: "Taşındı ve doğrulandı",
+    objectResult_transferred: "Taşındı",
     objectResult_skipped: "Atlandı",
     objectResult_failed: "Taşıma veya doğrulama başarısız",
     objectCompilation: "Derleme durumu",

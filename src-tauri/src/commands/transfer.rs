@@ -23,6 +23,38 @@ async fn emit_terminal_progress(app: &AppHandle, history: Option<&TransferTaskJo
     emit_progress(app, progress);
 }
 
+async fn report_unexecuted_objects(
+    app: &AppHandle,
+    request: &TransferRequest,
+    outcome: &mut dbx_core::transfer::TransferObjectOutcome,
+    reason: &str,
+    history: Option<&TransferTaskJournal>,
+    all_selected_are_accounted_for: bool,
+) {
+    for result in
+        dbx_core::transfer::mark_unexecuted_transfer_objects(request, outcome, reason, all_selected_are_accounted_for)
+    {
+        emit_progress(
+            app,
+            TransferProgress {
+                transfer_id: request.transfer_id.clone(),
+                table: format!("schema object: {}", result.name),
+                table_index: request.tables.len(),
+                total_tables: request.tables.len(),
+                rows_transferred: 0,
+                total_rows: None,
+                status: TransferStatus::Running,
+                error: None,
+                terminal: false,
+                object_result: Some(result),
+            },
+        );
+    }
+    if let Some(history) = history {
+        history.record_object_outcome(outcome).await;
+    }
+}
+
 #[tauri::command]
 pub async fn start_transfer(
     app: AppHandle,
@@ -81,10 +113,6 @@ pub async fn start_transfer(
     )
     .await?;
 
-    dbx_core::transfer::ensure_transfer_source_types_supported(&state, &request, &source_pool_key).await?;
-    dbx_core::transfer::ensure_transfer_schema_objects_ready(&state, &request, &source_pool_key, &target_pool_key)
-        .await?;
-
     let history = match TransferTaskJournal::accept(&state.storage, &state, &request, TaskLifecycleOwner::Tauri).await {
         Ok(history) => history,
         Err(TaskHistoryStorageError::RunIdConflict) => return Err("TRANSFER_RUN_ID_CONFLICT".to_string()),
@@ -92,6 +120,51 @@ pub async fn start_transfer(
     };
 
     tokio::spawn(async move {
+        let preflight = async {
+            dbx_core::transfer::ensure_transfer_source_types_supported(&state, &request, &source_pool_key).await?;
+            dbx_core::transfer::ensure_transfer_schema_objects_ready(
+                &state,
+                &request,
+                &source_pool_key,
+                &target_pool_key,
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = preflight {
+            report_unexecuted_objects(
+                &app,
+                &request,
+                &mut dbx_core::transfer::TransferObjectOutcome::default(),
+                "Preflight did not complete; no selected schema object was executed",
+                history.as_ref(),
+                true,
+            )
+            .await;
+            emit_terminal_progress(
+                &app,
+                history.as_ref(),
+                TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    table: "schema objects".into(),
+                    table_index: 0,
+                    total_tables: request.tables.len(),
+                    rows_transferred: 0,
+                    total_rows: None,
+                    status: if dbx_core::transfer::is_cancelled(&transfer_id).await {
+                        TransferStatus::Cancelled
+                    } else {
+                        TransferStatus::Error
+                    },
+                    error: Some(error),
+                    terminal: true,
+                    object_result: None,
+                },
+            )
+            .await;
+            dbx_core::transfer::clear_cancelled(&transfer_id).await;
+            return;
+        }
         // Sort tables by FK dependency so referenced tables are transferred first,
         // and keep the foreign key metadata fetched along the way — MySQL-family
         // targets reuse it per table below instead of re-querying it.
@@ -494,22 +567,58 @@ pub async fn start_transfer(
         // transfers schema objects; PG→PG keeps the legacy empty-selection
         // default only when structure participates in the transfer.
         let mut object_outcome = dbx_core::transfer::TransferObjectOutcome::default();
-        match dbx_core::transfer::transfer_schema_objects(
-            &state,
-            &request,
-            &source_pool_key,
-            &target_pool_key,
-            |progress| emit_progress(&app, progress),
-        )
-        .await
-        {
+        let mut observed_objects = dbx_core::transfer::TransferObjectOutcome::default();
+        let exact_object_progress =
+            matches!(source_db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle | DatabaseType::Dameng)
+                && dbx_core::transfer::is_same_transfer_family(&source_db_type, &target_db_type);
+        let schema_objects = {
+            if let Some(journal) = history.as_ref() {
+                journal.start_legacy_schema_objects().await;
+            }
+            dbx_core::transfer::transfer_schema_objects(
+                &state,
+                &request,
+                &source_pool_key,
+                &target_pool_key,
+                |progress| {
+                    if let Some(result) = &progress.object_result {
+                        observed_objects.object_results.push(result.clone());
+                    }
+                    emit_progress(&app, progress)
+                },
+            )
+            .await
+        };
+        match schema_objects {
             Ok(outcome) => {
                 if let Some(journal) = history.as_ref() {
                     journal.record_object_outcome(&outcome).await;
                 }
-                object_outcome = outcome;
+                object_outcome.transferred.extend(outcome.transferred);
+                object_outcome.skipped.extend(outcome.skipped);
+                object_outcome.failed.extend(outcome.failed);
+                object_outcome.object_results.extend(outcome.object_results);
+                report_unexecuted_objects(
+                    &app,
+                    &request,
+                    &mut object_outcome,
+                    "An earlier schema object stage did not complete; this selected object was not executed",
+                    history.as_ref(),
+                    true,
+                )
+                .await;
             }
-            Err(e) if e == "Cancelled" => {
+            Err(e) if dbx_core::transfer::is_cancelled(&transfer_id).await => {
+                object_outcome.object_results.extend(observed_objects.object_results);
+                report_unexecuted_objects(
+                    &app,
+                    &request,
+                    &mut object_outcome,
+                    "Transfer was cancelled; this selected object was not executed",
+                    history.as_ref(),
+                    exact_object_progress,
+                )
+                .await;
                 if let Some(journal) = history.as_ref() {
                     journal.record_schema_objects_error(true).await;
                 }
@@ -524,7 +633,7 @@ pub async fn start_transfer(
                         rows_transferred: 0,
                         total_rows: None,
                         status: TransferStatus::Cancelled,
-                        error: None,
+                        error: Some(e),
                         terminal: true,
                         object_result: None,
                     },
@@ -534,6 +643,16 @@ pub async fn start_transfer(
                 return;
             }
             Err(e) => {
+                object_outcome.object_results.extend(observed_objects.object_results);
+                report_unexecuted_objects(
+                    &app,
+                    &request,
+                    &mut object_outcome,
+                    "Schema object stage did not complete; this selected object was not executed",
+                    history.as_ref(),
+                    tables_blocked_objects || exact_object_progress,
+                )
+                .await;
                 if let Some(journal) = history.as_ref() {
                     journal.record_schema_objects_error(false).await;
                 }
@@ -555,8 +674,42 @@ pub async fn start_transfer(
                 );
             }
         }
+        if dbx_core::transfer::is_cancelled(&transfer_id).await {
+            let error = object_outcome
+                .object_results
+                .iter()
+                .filter_map(|result| result.error.as_deref())
+                .collect::<Vec<_>>()
+                .join("; ");
+            if let Some(journal) = history.as_ref() {
+                journal.record_schema_objects_error(true).await;
+            }
+            emit_terminal_progress(
+                &app,
+                history.as_ref(),
+                TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    table: "schema objects".into(),
+                    table_index: total_tables,
+                    total_tables,
+                    rows_transferred: 0,
+                    total_rows: None,
+                    status: TransferStatus::Cancelled,
+                    error: Some(if error.is_empty() { "Transfer cancelled".into() } else { error }),
+                    terminal: true,
+                    object_result: None,
+                },
+            )
+            .await;
+            dbx_core::transfer::clear_cancelled(&transfer_id).await;
+            return;
+        }
         if !object_outcome.failed.is_empty() {
             failed_tables.push(format!("schema objects ({})", object_outcome.failed.len()));
+        }
+        let not_started = object_outcome.object_results.iter().filter(|result| result.status == "not_started").count();
+        if not_started > 0 {
+            failed_tables.push(format!("schema objects not executed ({not_started})"));
         }
 
         // The rename pre-pass left one backup per rebuilt table. Drop them only now that
@@ -612,7 +765,7 @@ pub async fn start_transfer(
                     }
                 } else {
                     Some(format!(
-                        "{} table(s) failed: {}{}",
+                        "{} transfer stage(s) did not complete: {}{}",
                         failed_tables.len(),
                         failed_tables.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
                         skip_suffix
