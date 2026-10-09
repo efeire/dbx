@@ -2094,6 +2094,7 @@ mod tests {
             permission_diffs: vec![],
             permission_sync_sql: None,
             dependency_graph: None,
+            routine_steps: vec![],
         }
     }
 
