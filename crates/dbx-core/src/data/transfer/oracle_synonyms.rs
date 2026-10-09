@@ -212,7 +212,15 @@ async fn dependency_chain(
         if !current.db_link.is_empty() {
             let target_context = resolve_oracle_schema(&request.target_schema, &request.target_database);
             let link_owner = if public(&current.owner) { target_context.as_str() } else { current.owner.as_str() };
-            let available = oracle_database_links::dependency_available(state, request, pool, link_owner, &current.db_link, allow_planned_objects).await?;
+            let available = oracle_database_links::dependency_available(
+                state,
+                request,
+                pool,
+                link_owner,
+                &current.db_link,
+                allow_planned_objects,
+            )
+            .await?;
             dependencies.push(TransferSchemaObjectDependency {
                 owner: link_owner.into(),
                 name: current.db_link,
