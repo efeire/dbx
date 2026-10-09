@@ -93,7 +93,10 @@ describe("routine deployment readback", () => {
   it("validates mapped type and body definitions without overwriting source or recovery snapshots", async () => {
     const source = { name: "Same.Type", function_type: "TYPE", data_type: "", arguments: "", schema: "SRC", definition: 'CREATE EDITIONABLE TYPE "Same.Type" AS TABLE OF SRC.Parent;' };
     const body = { ...source, function_type: "TYPE BODY", definition: 'CREATE TYPE BODY "Same.Type" AS MEMBER FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;' };
-    const diffs: FunctionDiff[] = [{ name: source.name, type: "modified", source, target: { ...source, schema: "DST", definition: "original target specification" } }, { name: source.name, type: "modified", source: body, target: { ...body, schema: "DST", definition: "original target body" } }];
+    const diffs: FunctionDiff[] = [
+      { name: source.name, type: "modified", source, target: { ...source, schema: "DST", definition: "original target specification" } },
+      { name: source.name, type: "modified", source: body, target: { ...body, schema: "DST", definition: "original target body" } },
+    ];
     const steps: SchemaDiffRoutineStep[] = [
       { name: source.name, routineType: "TYPE", operation: "modified", sql: 'CREATE OR REPLACE TYPE "DST"."Same.Type" AS TABLE OF "DST".Parent;', dependencies: [] },
       { name: source.name, routineType: "TYPE BODY", operation: "modified", sql: 'CREATE OR REPLACE TYPE BODY "DST"."Same.Type" AS MEMBER FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;', dependencies: [] },
