@@ -129,6 +129,7 @@ pub async fn validate_schema_diff_routines(
     database: &str,
     schema: &str,
     expected: &[FunctionDiff],
+    preflight: bool,
 ) -> Result<Vec<RoutineValidation>, String> {
     if schema.is_empty() {
         return Err("An explicit target schema is required".to_string());
@@ -139,6 +140,40 @@ pub async fn validate_schema_diff_routines(
             .ok_or("Routine metadata is missing")?;
         let (kind, source_kind) = schema_diff_routine_kind(&info.function_type).ok_or("Unsupported routine type")?;
         let current_status = status(state, connection, database, schema, &diff.name, kind).await?;
+        if preflight {
+            if let Some(previous) = &diff.target {
+                if previous.schema.as_deref() != Some(schema) || current_status != previous.status {
+                    return Err("Routine target owner/status changed; reload comparison".into());
+                }
+                let actual =
+                    get_object_source_core(state, connection, database, schema, &diff.name, source_kind, None, None)
+                        .await?;
+                let dependencies = dictionary_query(state, connection, database, schema, &format!("SELECT REFERENCED_OWNER, REFERENCED_NAME FROM ALL_DEPENDENCIES WHERE OWNER = {} AND NAME = {} AND TYPE = {} ORDER BY REFERENCED_OWNER, REFERENCED_NAME", literal(schema), literal(&diff.name), literal(kind))).await?;
+                let current: Vec<_> = dependencies
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        format!("\"{}\".\"{}\"", cell(row, 0).replace('"', "\"\""), cell(row, 1).replace('"', "\"\""))
+                    })
+                    .collect();
+                ensure_saved_source(previous, &actual.source, &current)?;
+            } else if current_status.is_some() {
+                return Err("Routine target appeared after comparison; reload comparison".into());
+            }
+            if diff.diff_type == "removed" {
+                // ALL_DEPENDENCIES can hide callers outside the account's visibility.
+                let callers = dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, NAME, TYPE FROM DBA_DEPENDENCIES WHERE REFERENCED_OWNER = {} AND REFERENCED_NAME = {} AND REFERENCED_TYPE = {} ORDER BY OWNER, NAME, TYPE", literal(schema), literal(&diff.name), literal(kind))).await
+                    .map_err(|error| format!("Cannot confirm complete incoming dependencies; deletion blocked: {error}"))?;
+                ensure_selected_callers(&callers.rows, schema, expected)?;
+            }
+            results.push(RoutineValidation {
+                name: diff.name.clone(),
+                routine_type: kind.to_string(),
+                success: true,
+                message: "Saved target snapshot and incoming dependencies verified".into(),
+            });
+            continue;
+        }
         let result = if diff.diff_type == "removed" {
             if current_status.is_none() {
                 Ok(())
@@ -172,4 +207,73 @@ pub async fn validate_schema_diff_routines(
         });
     }
     Ok(results)
+}
+
+fn ensure_saved_source(previous: &db::FunctionInfo, actual: &str, dependencies: &[String]) -> Result<(), String> {
+    if actual.trim().is_empty() || comparable_oracle_routine(actual) != comparable_oracle_routine(&previous.definition)
+    {
+        return Err("Routine target source changed; reload comparison".into());
+    }
+    if dependencies != previous.dependencies.as_slice() {
+        return Err("Routine target dependencies changed; reload comparison".into());
+    }
+    Ok(())
+}
+
+fn ensure_selected_callers(
+    rows: &[Vec<serde_json::Value>],
+    schema: &str,
+    expected: &[FunctionDiff],
+) -> Result<(), String> {
+    for row in rows {
+        let owner = cell(row, 0);
+        let name = cell(row, 1);
+        let kind = cell(row, 2);
+        if owner != schema
+            || !expected.iter().any(|diff| {
+                diff.diff_type == "removed"
+                    && diff.name == name
+                    && diff
+                        .target
+                        .as_ref()
+                        .is_some_and(|info| info.schema.as_deref() == Some(schema) && info.function_type == kind)
+            })
+        {
+            return Err(format!("Deletion would invalidate retained caller {owner}.{name} ({kind}); reload and select a complete removal plan"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preflight_rejects_changed_or_empty_target_source_and_changed_dependencies() {
+        let previous: db::FunctionInfo = serde_json::from_value(serde_json::json!({
+            "name": "P", "functionType": "PROCEDURE", "dataType": "", "arguments": "", "definition": "CREATE PROCEDURE DST.P AS BEGIN NULL; END;", "schema": "DST", "status": "VALID", "dependencies": []
+        })).unwrap();
+        assert!(ensure_saved_source(&previous, &previous.definition, &[]).is_ok());
+        assert!(ensure_saved_source(&previous, "", &[]).is_err());
+        assert!(ensure_saved_source(&previous, "CREATE PROCEDURE DST.P AS BEGIN NEW_CALL; END;", &[]).is_err());
+        assert!(ensure_saved_source(&previous, &previous.definition, &["\"DST\".\"Q\"".into()]).is_err());
+    }
+
+    #[test]
+    fn removal_requires_all_incoming_callers_to_be_selected_for_removal() {
+        let caller = vec![serde_json::json!("DST"), serde_json::json!("Q"), serde_json::json!("PROCEDURE")];
+        let selected: FunctionDiff = serde_json::from_value(serde_json::json!({
+            "type": "removed", "name": "Q", "target": {
+                "name": "Q", "functionType": "PROCEDURE", "dataType": "", "arguments": "", "definition": "CREATE PROCEDURE Q AS BEGIN NULL; END;", "schema": "DST"
+            }
+        })).unwrap();
+        assert!(ensure_selected_callers(&[caller.clone()], "DST", &[]).is_err());
+        assert!(ensure_selected_callers(&[caller.clone()], "DST", &[selected.clone()]).is_ok());
+        let mut retained = selected.clone();
+        retained.diff_type = "modified".into();
+        assert!(ensure_selected_callers(&[caller.clone()], "DST", &[retained]).is_err());
+        let external = vec![serde_json::json!("OTHER"), serde_json::json!("Q"), serde_json::json!("PROCEDURE")];
+        assert!(ensure_selected_callers(&[external], "DST", &[selected]).is_err());
+    }
 }

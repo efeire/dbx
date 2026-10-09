@@ -93,6 +93,15 @@ pub async fn validate_schema_diff_routines(
     database: String,
     schema: String,
     expected: Vec<dbx_core::schema_diff::FunctionDiff>,
+    preflight: Option<bool>,
 ) -> Result<Vec<dbx_core::schema::RoutineValidation>, String> {
-    dbx_core::schema::validate_schema_diff_routines(&state, &connection_id, &database, &schema, &expected).await
+    dbx_core::schema::validate_schema_diff_routines(
+        &state,
+        &connection_id,
+        &database,
+        &schema,
+        &expected,
+        preflight.unwrap_or(false),
+    )
+    .await
 }

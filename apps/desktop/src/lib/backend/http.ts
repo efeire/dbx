@@ -1357,8 +1357,8 @@ export async function listFunctions(connectionId: string, database: string, sche
   return get(`/api/schema/functions?${qs({ connection_id: connectionId, database, schema })}`);
 }
 
-export async function validateSchemaDiffRoutines(connectionId: string, database: string, schema: string, expected: FunctionDiff[]): Promise<SchemaDiffRoutineValidation[]> {
-  return post("/api/schema-diff/validate-routines", { connectionId, database, schema, expected });
+export async function validateSchemaDiffRoutines(connectionId: string, database: string, schema: string, expected: FunctionDiff[], preflight = false): Promise<SchemaDiffRoutineValidation[]> {
+  return post("/api/schema-diff/validate-routines", { connectionId, database, schema, expected, preflight });
 }
 
 export async function listSequences(connectionId: string, database: string, schema: string, withLastValues: boolean): Promise<SequenceInfo[]> {

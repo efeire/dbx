@@ -63,6 +63,8 @@ pub struct ValidateRoutinesRequest {
     database: String,
     schema: String,
     expected: Vec<dbx_core::schema_diff::FunctionDiff>,
+    #[serde(default)]
+    preflight: bool,
 }
 
 pub async fn validate_schema_diff_routines(
@@ -75,6 +77,7 @@ pub async fn validate_schema_diff_routines(
         &req.database,
         &req.schema,
         &req.expected,
+        req.preflight,
     )
     .await?;
     Ok(Json(results))

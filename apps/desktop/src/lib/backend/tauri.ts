@@ -2630,8 +2630,8 @@ export async function listFunctions(connectionId: string, database: string, sche
   return invoke("list_functions", { connectionId, database, schema });
 }
 
-export async function validateSchemaDiffRoutines(connectionId: string, database: string, schema: string, expected: FunctionDiff[]): Promise<SchemaDiffRoutineValidation[]> {
-  return invoke("validate_schema_diff_routines", { connectionId, database, schema, expected });
+export async function validateSchemaDiffRoutines(connectionId: string, database: string, schema: string, expected: FunctionDiff[], preflight = false): Promise<SchemaDiffRoutineValidation[]> {
+  return invoke("validate_schema_diff_routines", { connectionId, database, schema, expected, preflight });
 }
 
 export async function listSequences(connectionId: string, database: string, schema: string, withLastValues: boolean): Promise<SequenceInfo[]> {

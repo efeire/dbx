@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { getSchemaDiffOptionsForDbType } from "@/lib/schema/schemaDiffOptions";
 import { finishSchemaDiffDeployment, type DeployTxResult } from "@/lib/schema/deployTxResult";
+import { preflightRoutineDeployment } from "@/lib/schema/routinePreflight";
 import { getSchemaDiffNextProgressStep, isSchemaDiffPostgresLike, shouldLoadSchemaDiffExtraObjectPhase, type SchemaDiffProgressPhase } from "@/lib/schema/schemaDiffProgress";
 import { createSchemaDiffTableListLoader } from "@/lib/schema/schemaDiffTableList";
 import { countSchemaDiffActionableObjects, partitionSchemaDiffObjectsByResultTab, swapSchemaDiffRoutineMappings } from "@/lib/schema/schemaDiffRoutine";
@@ -1009,6 +1010,7 @@ async function executeDeploySql() {
   const destructive = destructiveStatements.value.length > 0;
   const rollback = deploySqlMode.value === "rollback";
   const expected = isOracleRoutineTarget.value ? selectedRoutineDiffs.value.map((diff) => ({ ...diff, source: diff.source ? { ...diff.source } : undefined, target: diff.target ? { ...diff.target } : undefined })) : [];
+  const sourceEndpoint = [sourceConnectionId.value, sourceDatabase.value, sourceSchema.value] as const;
   executing.value = true;
   try {
     const targetConnection = store.getConfig(connectionId);
@@ -1017,7 +1019,10 @@ async function executeDeploySql() {
       database,
       sql,
       source: t("production.sourceSchemaDiff"),
-      execute: () => api.executeScriptWith2pc(connectionId, database, [sql], schema, destructive),
+      execute: async () => {
+        await preflightRoutineDeployment(expected, () => api.listFunctions(...sourceEndpoint), (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input, true), rollback, schema);
+        return api.executeScriptWith2pc(connectionId, database, [sql], schema, destructive);
+      },
     });
     if (txLog === undefined) return;
     deployResult.value = await finishSchemaDiffDeployment(txLog, expected, (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input), t, rollback);
