@@ -24,6 +24,37 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OceanBaseOracleObjectListTest {
     @Test
+    void jdbcFixtureRejectsMissingCommentsColumn() {
+        JdbcFixture jdbc = new JdbcFixture();
+        jdbc.rows(row("S", "SYNONYM"));
+
+        RuntimeException error = assertThrows(RuntimeException.class,
+            () -> jdbc.agent.listObjects("APP", constraints(null, null, null, "SYNONYM")));
+        assertInstanceOf(SQLException.class, error.getCause());
+        assertEquals("Invalid column index: 3", error.getCause().getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void synonymUnionKeepsThreeColumnsAndTableViewCommentsWithAndWithoutPaging(boolean paged) {
+        JdbcFixture jdbc = new JdbcFixture();
+        JdbcCall call = jdbc.rows(row("T", "TABLE", "订单备注"), row("V", "VIEW", "Customer view"),
+            objectRow("S", "SYNONYM"));
+        MetadataListConstraints requested = paged ? constraints("", 3, 0, "TABLE", "VIEW", "SYNONYM")
+            : constraints("", null, null, "TABLE", "VIEW", "SYNONYM");
+
+        assertEquals(List.of(new ObjectInfo("T", "TABLE", "APP", "订单备注"),
+            new ObjectInfo("V", "VIEW", "APP", "Customer view"),
+            new ObjectInfo("S", "SYNONYM", "APP", null)), jdbc.agent.listObjects("APP", requested));
+        assertTrue(call.sql.contains("SELECT OBJECT_NAME, OBJECT_TYPE, COMMENTS\nFROM ("), call.sql);
+        assertTrue(call.sql.contains("SELECT o.OWNER, o.OBJECT_NAME, o.OBJECT_TYPE, tc.COMMENTS"), call.sql);
+        assertTrue(call.sql.contains("LEFT JOIN ALL_TAB_COMMENTS tc"), call.sql);
+        assertTrue(call.sql.contains("'SYNONYM' AS OBJECT_TYPE, NULL AS COMMENTS"), call.sql);
+        assertEquals(paged, call.sql.contains("WHERE ROWNUM <= ?"));
+        call.assertClosed();
+    }
+
+    @Test
     void tableAndViewCommentsSurviveObjectListing() {
         JdbcFixture jdbc = new JdbcFixture();
         jdbc.rows(row("T", "TABLE", "订单备注"), row("V", "VIEW", "Customer view"),
@@ -66,9 +97,9 @@ class OceanBaseOracleObjectListTest {
         JdbcFixture jdbc = new JdbcFixture();
         for (int request = 0; request < 4; request++) {
             JdbcCall call = jdbc.rows(
-                row("T", "TABLE"), row("V", "VIEW"), row("P", "PROCEDURE"),
-                row("F", "FUNCTION"), row("PKG", "PACKAGE"), row("PKG", "PACKAGE BODY"),
-                row("SEQ", "SEQUENCE"), row("SYN", "SYNONYM")
+                objectRow("T", "TABLE"), objectRow("V", "VIEW"), objectRow("P", "PROCEDURE"),
+                objectRow("F", "FUNCTION"), objectRow("PKG", "PACKAGE"), objectRow("PKG", "PACKAGE BODY"),
+                objectRow("SEQ", "SEQUENCE"), objectRow("SYN", "SYNONYM")
             );
             List<ObjectInfo> objects = switch (request) {
                 case 0 -> jdbc.agent.listObjects("APP");
@@ -94,7 +125,7 @@ class OceanBaseOracleObjectListTest {
     @Test
     void packageGroupRetainsSameNameSpecAndBodyWithDistinctProtocolTypes() {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(row("Pkg.With\"Quote", "PACKAGE"), row("Pkg.With\"Quote", "PACKAGE BODY"));
+        JdbcCall call = jdbc.rows(objectRow("Pkg.With\"Quote", "PACKAGE"), objectRow("Pkg.With\"Quote", "PACKAGE BODY"));
 
         List<ObjectInfo> objects = jdbc.agent.listObjects("Mixed.Owner\"Name",
             constraints(null, null, null, " package_body ", "package", "PACKAGE BODY"));
@@ -114,7 +145,7 @@ class OceanBaseOracleObjectListTest {
     @ValueSource(strings = {"PACKAGE_BODY", "package body", " package_body "})
     void bodyOnlyBindsDatabaseSpellingAndReturnsProtocolSpelling(String requestedType) {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(row("OnlyBody", "PACKAGE BODY"));
+        JdbcCall call = jdbc.rows(objectRow("OnlyBody", "PACKAGE BODY"));
 
         assertEquals(List.of(new ObjectInfo("OnlyBody", "PACKAGE_BODY", "APP", null)),
             jdbc.agent.listObjects("APP", constraints(null, null, null, requestedType)));
@@ -126,7 +157,7 @@ class OceanBaseOracleObjectListTest {
     @Test
     void specOnlyDoesNotRequestBodies() {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(row("OnlySpec", "PACKAGE"));
+        JdbcCall call = jdbc.rows(objectRow("OnlySpec", "PACKAGE"));
 
         assertEquals(List.of(new ObjectInfo("OnlySpec", "PACKAGE", "APP", null)),
             jdbc.agent.listObjects("APP", constraints(null, null, null, "PACKAGE")));
@@ -139,7 +170,7 @@ class OceanBaseOracleObjectListTest {
         JdbcFixture jdbc = new JdbcFixture();
         List<ObjectInfo> pages = new ArrayList<>();
         for (int offset = 0; offset < 2; offset++) {
-            JdbcCall call = jdbc.rows(row("Pkg_'%", offset == 0 ? "PACKAGE" : "PACKAGE BODY"));
+            JdbcCall call = jdbc.rows(objectRow("Pkg_'%", offset == 0 ? "PACKAGE" : "PACKAGE BODY"));
             pages.addAll(jdbc.agent.listObjects("APP",
                 constraints("k_'%", 1, offset, "PACKAGE", "PACKAGE_BODY")));
 
@@ -159,7 +190,7 @@ class OceanBaseOracleObjectListTest {
     @Test
     void offsetWithoutLimitKeepsTheOrderedRemainingBody() {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(row("PKG", "PACKAGE BODY"));
+        JdbcCall call = jdbc.rows(objectRow("PKG", "PACKAGE BODY"));
 
         assertEquals(List.of(new ObjectInfo("PKG", "PACKAGE_BODY", "APP", null)),
             jdbc.agent.listObjects("APP", constraints(null, null, 1, "PACKAGE", "PACKAGE_BODY")));
@@ -173,7 +204,7 @@ class OceanBaseOracleObjectListTest {
     @ValueSource(strings = {"TABLE", "VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "SYNONYM"})
     void unrelatedTypeRequestsKeepTheirParametersAndMapping(String type) {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(row("Existing", type));
+        JdbcCall call = jdbc.rows(objectRow("Existing", type));
 
         assertEquals(List.of(new ObjectInfo("Existing", type, "APP", null)),
             jdbc.agent.listObjects("APP", constraints(null, null, null, type)));
@@ -192,9 +223,9 @@ class OceanBaseOracleObjectListTest {
     @Test
     void refreshDoesNotRetainPreviousObjectsOrSchema() {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall first = jdbc.rows(row("PKG", "PACKAGE BODY"));
+        JdbcCall first = jdbc.rows(objectRow("PKG", "PACKAGE BODY"));
         JdbcCall second = jdbc.rows();
-        JdbcCall third = jdbc.rows(row("PKG", "PACKAGE BODY"));
+        JdbcCall third = jdbc.rows(objectRow("PKG", "PACKAGE BODY"));
 
         assertEquals(List.of(new ObjectInfo("PKG", "PACKAGE_BODY", "APP", null)),
             jdbc.agent.listObjects("APP", constraints(null, null, null, "PACKAGE_BODY")));
@@ -214,7 +245,7 @@ class OceanBaseOracleObjectListTest {
         SQLException denied = new SQLException("ORA-01031: insufficient privileges", "42000", 1031);
         JdbcCall failed = jdbc.rows();
         failed.executeFailure = denied;
-        JdbcCall next = jdbc.rows(row("PKG", "PACKAGE BODY"));
+        JdbcCall next = jdbc.rows(objectRow("PKG", "PACKAGE BODY"));
 
         RuntimeException error = assertThrows(RuntimeException.class,
             () -> jdbc.agent.listObjects("APP", constraints(null, null, null, "PACKAGE_BODY")));
@@ -229,7 +260,7 @@ class OceanBaseOracleObjectListTest {
     void cancelledResultReadClosesResourcesAndDoesNotReturnPartialObjects() {
         JdbcFixture jdbc = new JdbcFixture();
         SQLException cancelled = new SQLException("ORA-01013: user requested cancel of current operation", "72000", 1013);
-        JdbcCall call = jdbc.rows(row("PKG", "PACKAGE"));
+        JdbcCall call = jdbc.rows(objectRow("PKG", "PACKAGE"));
         call.readFailure = cancelled;
 
         RuntimeException error = assertThrows(RuntimeException.class,
@@ -242,7 +273,7 @@ class OceanBaseOracleObjectListTest {
     @Test
     void listedSpecAndBodyOpenTheirSeparateDictionarySources() {
         JdbcFixture jdbc = new JdbcFixture();
-        jdbc.rows(row("Mixed.Pkg", "PACKAGE"), row("Mixed.Pkg", "PACKAGE BODY"));
+        jdbc.rows(objectRow("Mixed.Pkg", "PACKAGE"), objectRow("Mixed.Pkg", "PACKAGE BODY"));
         List<ObjectInfo> objects = jdbc.agent.listObjects("Mixed.Owner", constraints(null, null, null, "PACKAGE", "PACKAGE_BODY"));
         assertEquals(2, objects.size());
         for (ObjectInfo object : objects) {
@@ -310,12 +341,14 @@ class OceanBaseOracleObjectListTest {
         JdbcFixture jdbc = new JdbcFixture();
         List<ObjectInfo> objects = new ArrayList<>();
         for (String owner : List.of("Mixed.Owner", "PUBLIC")) {
-            JdbcCall call = jdbc.rows(row("Mixed.Syn", "SYNONYM"));
+            JdbcCall call = jdbc.rows(objectRow("Mixed.Syn", "SYNONYM"));
             objects.addAll(jdbc.agent.listObjects(owner, constraints("Mixed", 1, 1, "SYNONYM")));
             assertEquals(List.of(owner, "SYNONYM", "%M%I%X%E%D%", 2, 1), call.args);
             assertTrue(call.sql.contains("FROM ALL_SYNONYMS"), call.sql);
             assertTrue(call.sql.contains("WHEN OWNER = '__public' THEN 'PUBLIC' ELSE OWNER END"), call.sql);
-            assertTrue(call.sql.contains("FROM ALL_OBJECTS WHERE OBJECT_TYPE <> 'SYNONYM'"), call.sql);
+            assertTrue(call.sql.contains("WHERE o.OBJECT_TYPE <> 'SYNONYM'"), call.sql);
+            assertTrue(call.sql.contains(") c\nWHERE OWNER = ?"), call.sql);
+            assertTrue(call.sql.contains("OR UPPER(c.COMMENTS) LIKE ?"), call.sql);
             // UNION removes duplicate PUBLIC/__public identities before SQL paging.
             assertTrue(call.sql.contains("UNION\n"), call.sql);
             assertFalse(call.sql.contains("UNION ALL"), call.sql);
@@ -388,6 +421,10 @@ class OceanBaseOracleObjectListTest {
 
     private static String[] row(String... columns) {
         return columns;
+    }
+
+    private static String[] objectRow(String name, String type) {
+        return row(name, type, null);
     }
 
     private static void assertObjectOrder(String sql) {
@@ -474,7 +511,8 @@ class OceanBaseOracleObjectListTest {
                     int index = values[0] instanceof Integer position ? position - 1
                         : List.of("TABLE_OWNER", "TABLE_NAME", "DB_LINK").indexOf(values[0]);
                     if (index < 0) throw new AssertionError("Unexpected column: " + values[0]);
-                    yield index < rows[cursor[0]].length ? rows[cursor[0]][index] : null;
+                    if (index >= rows[cursor[0]].length) throw new SQLException("Invalid column index: " + (index + 1));
+                    yield rows[cursor[0]][index];
                 }
                 case "close" -> {
                     resultClosed = true;
