@@ -240,7 +240,8 @@ ALTER TRIGGER \"APP\".\"AUDIT\" DISABLE;";
     std::fs::write(fixture.control_path("table-ddl"), ddl).unwrap();
     assert_eq!(get_table_ddl_core(&fixture.state, "conn", "configured", "APP", "EVENTS", None).await.unwrap(), ddl);
     assert!(fixture.requests("execute_query").is_empty(), "DDL retrieval must not execute the exported script");
-    std::fs::write(fixture.control_path("table-ddl-error"), "Table DDL export incomplete: insufficient privileges").unwrap();
+    std::fs::write(fixture.control_path("table-ddl-error"), "Table DDL export incomplete: insufficient privileges")
+        .unwrap();
     let error = get_table_ddl_core(&fixture.state, "conn", "configured", "APP", "EVENTS", None).await.unwrap_err();
     assert!(error.contains("export incomplete"), "{error}");
     assert!(error.contains("insufficient privileges"), "{error}");

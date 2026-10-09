@@ -219,6 +219,8 @@ pub struct EditableStructureTrigger {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TriggerInfo {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     pub event: String,
     pub timing: String,
     #[serde(default)]
@@ -256,6 +258,8 @@ pub struct TableStructureSqlOptions {
     pub original_table_comment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mysql_engine: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mysql_auto_increment_value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transwarp_create: Option<TranswarpCreateTableOptions>,
     /// MySQL only: the table's current default collation

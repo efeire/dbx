@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
+import { triggerDisplayName, triggerIdentity } from "@/lib/table/triggerIdentity";
 import DatabaseActionsMenu from "@/components/objects/DatabaseActionsMenu.vue";
 import { useDatabaseBrowserMutation } from "@/lib/database/databaseBrowserActions";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
@@ -287,6 +288,7 @@ const tableTriggersLoaded = ref(false);
 const tableConstraints = ref<ConstraintInfo[]>([]);
 const tableConstraintsLoading = ref(false);
 const tableConstraintsLoaded = ref(false);
+const tableConstraintsError = ref("");
 const tablePartitions = ref<PgTablePartitioning | null>(null);
 const tablePartitionsLoading = ref(false);
 const tablePartitionsLoaded = ref(false);
@@ -306,6 +308,7 @@ const activeTableInfoLoading = computed(() => {
   if (tableInfoTab.value === "indexes") return tableIndexesLoading.value;
   if (tableInfoTab.value === "foreignKeys") return tableForeignKeysLoading.value;
   if (tableInfoTab.value === "partitions") return tablePartitionsLoading.value;
+  if (tableInfoTab.value === "constraints") return tableConstraintsLoading.value;
   return tableInfoTab.value === "triggers" && tableTriggersLoading.value;
 });
 const SIDE_PANEL_MIN_WIDTH = 280;
@@ -1222,6 +1225,7 @@ async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
   tableForeignKeys.value = [];
   tableTriggers.value = [];
   tableConstraints.value = [];
+  tableConstraintsError.value = "";
   tablePartitions.value = null;
   tablePartitionsLoaded.value = false;
   tablePartitionsLoading.value = false;
@@ -1460,6 +1464,7 @@ async function fetchTableConstraints(force = false) {
   if (!row || (tableConstraintsLoaded.value && !force)) return;
   const epoch = sidePanelGuard.capture();
   tableConstraintsLoading.value = true;
+  tableConstraintsError.value = "";
   let loadedSuccessfully = false;
   try {
     const request = tableMetadataRequest(row);
@@ -1470,7 +1475,7 @@ async function fetchTableConstraints(force = false) {
   } catch (error) {
     if (sidePanelGuard.isStale(epoch)) return;
     tableConstraints.value = [];
-    toast(translateBackendError(t, error), 5000);
+    tableConstraintsError.value = translateBackendError(t, error);
   } finally {
     if (sidePanelGuard.isFresh(epoch)) {
       tableConstraintsLoaded.value = loadedSuccessfully;
@@ -2854,7 +2859,7 @@ async function confirmPasteTable() {
           identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connection.id),
           ...dataCopyColumnOptions,
         });
-        const executed = await executeObjectBrowserSqlWithProductionGuard(dataSql, () => api.executeQuery(props.connection.id, props.database, dataSql, schema));
+        const executed = await executeObjectBrowserSqlWithProductionGuard(dataSql, () => api.executeQuery(props.connection.id, props.database, dataSql, schema, undefined, { timeoutSecs: 0 }));
         if (!executed) {
           pasteCancelled = true;
           break;
@@ -4454,6 +4459,9 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
             <div v-if="tableConstraintsLoading" class="h-full flex items-center justify-center">
               <Loader2 class="w-4 h-4 animate-spin text-muted-foreground" />
             </div>
+            <div v-else-if="tableConstraintsError" class="p-3 text-xs text-destructive">
+              {{ tableConstraintsError }}
+            </div>
             <div v-else-if="tableInfoSearchQuery && filteredTableConstraints.length === 0" class="p-6 text-center text-xs text-muted-foreground">
               {{ t("grid.tableInfoNoResults") }}
             </div>
@@ -4461,12 +4469,12 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               {{ t("grid.tableInfoEmpty") }}
             </div>
             <div v-else class="divide-y">
-              <div v-for="constraint in filteredTableConstraints" :key="constraint.name" class="p-3 text-xs" :class="constraint.enabled ? '' : 'opacity-60'">
+              <div v-for="constraint in filteredTableConstraints" :key="constraint.name" class="p-3 text-xs" :class="constraint.enabled === false ? 'opacity-60' : ''">
                 <div class="flex flex-wrap items-center gap-1.5">
                   <span class="font-medium truncate">{{ constraint.name }}</span>
                   <span class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ constraint.constraint_type }}</span>
-                  <span v-if="!constraint.enabled" class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t("grid.tableInfoConstraintDisabled") }}</span>
-                  <span v-else-if="!constraint.valid" class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t("grid.tableInfoConstraintNotValidated") }}</span>
+                  <span class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t(constraint.enabled === true ? "grid.tableInfoConstraintEnabled" : constraint.enabled === false ? "grid.tableInfoConstraintDisabled" : "grid.tableInfoConstraintEnabledUnknown") }}</span>
+                  <span class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t(constraint.valid === true ? "grid.tableInfoConstraintValidated" : constraint.valid === false ? "grid.tableInfoConstraintNotValidated" : "grid.tableInfoConstraintValidationUnknown") }}</span>
                 </div>
                 <div v-if="constraint.columns.length" class="mt-1 font-mono text-[11px] text-muted-foreground break-all">{{ constraint.columns.join(", ") }}</div>
                 <div v-if="constraint.ref_table" class="mt-1 font-mono text-[11px] text-muted-foreground break-all">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>
@@ -4485,8 +4493,8 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               {{ t("grid.tableInfoEmpty") }}
             </div>
             <div v-else class="divide-y">
-              <div v-for="trigger in filteredTableTriggers" :key="trigger.name" class="p-3 text-xs">
-                <div class="font-medium truncate">{{ trigger.name }}</div>
+              <div v-for="trigger in filteredTableTriggers" :key="triggerIdentity(trigger)" class="p-3 text-xs">
+                <div class="font-medium truncate">{{ triggerDisplayName(trigger) }}</div>
                 <div class="mt-1 text-[11px] text-muted-foreground">{{ trigger.timing }} {{ trigger.event }}</div>
               </div>
             </div>
