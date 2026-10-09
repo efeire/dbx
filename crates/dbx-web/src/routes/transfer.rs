@@ -356,6 +356,36 @@ pub async fn start_transfer(
             }
         }
 
+        // Overwrite clears each target right before copying it, parents first, which cannot
+        // clear a table another selected table references. Empty those children first now.
+        let overwrite_cleared = match transfer::clear_foreign_key_linked_overwrite_targets(
+            &app,
+            &req,
+            &tables,
+            target_db_type,
+            &target_pool_key,
+        )
+        .await
+        {
+            Ok(cleared) => cleared,
+            Err(e) => {
+                let progress = transfer::TransferProgress {
+                    transfer_id: req.transfer_id.clone(),
+                    table: "overwrite pre-pass".to_string(),
+                    table_index: 0,
+                    total_tables: tables.len(),
+                    rows_transferred: 0,
+                    total_rows: None,
+                    status: TransferStatus::Error,
+                    error: Some(e),
+                    terminal: true,
+                };
+                send_transfer_progress(&progress_channel, &progress);
+                finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
+                return;
+            }
+        };
+
         for (i, table) in tables.iter().enumerate() {
             if transfer::is_cancelled(&req.transfer_id).await {
                 let progress = transfer::TransferProgress {
@@ -398,6 +428,7 @@ pub async fn start_transfer(
                 &known_foreign_keys,
                 &mut pending_fk_alters,
                 backup_names.as_ref(),
+                overwrite_cleared.contains(table),
                 |progress| {
                     last_rows_transferred = progress.rows_transferred;
                     last_total_rows = progress.total_rows;
@@ -931,6 +962,13 @@ mod tests {
     async fn demo_mode_transfer_does_not_write_task_history() {
         let (mut state, dir) = test_web_state().await;
         Arc::get_mut(&mut state).unwrap().demo_mode = true;
+        let src = sqlite_config("src", &dir.join("src.db").to_string_lossy());
+        let dst = sqlite_config("dst", &dir.join("dst.db").to_string_lossy());
+        std::fs::write(dir.join("src.db"), b"").unwrap();
+        std::fs::write(dir.join("dst.db"), b"").unwrap();
+        std::fs::write(dir.join("main.db"), b"").unwrap();
+        state.app.configs.write().await.insert("src".to_string(), src);
+        state.app.configs.write().await.insert("dst".to_string(), dst);
         let req = transfer_request("src", "dst", &dir);
         let transfer_id = req.transfer_id.clone();
         let _ = start_transfer(State(state.clone()), Json(StartTransferRequest { request: req })).await.unwrap();
