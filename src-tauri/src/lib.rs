@@ -2079,6 +2079,7 @@ pub fn run() {
             commands::query::read_large_value_chunk,
             commands::query::release_large_value,
             commands::query::download_large_value,
+            commands::query::export_snapshot_result,
             commands::query::close_client_connection_session,
             commands::query::execute_batch,
             commands::query::execute_script,

@@ -732,6 +732,36 @@ pub async fn download_large_value(
     super::mongodb_import_export::export_file_response(file).await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotExportDownloadRequest {
+    pub request: dbx_core::query::snapshot_export::SnapshotExportRequest,
+    pub file_name: String,
+}
+
+pub async fn prepare_snapshot_export(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<SnapshotExportDownloadRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut temporary = tempfile::NamedTempFile::new().map_err(|error| AppError::from(error.to_string()))?;
+    let format = req.request.format.clone();
+    dbx_core::query::snapshot_export::write_snapshot_export(&state.app, req.request, temporary.as_file_mut()).await.map_err(AppError::from)?;
+    let (_, path) = temporary.keep().map_err(|error| AppError::from(error.to_string()))?;
+    let download_id = uuid::Uuid::new_v4().to_string();
+    state.export_files.write().await.insert(download_id.clone(), crate::state::WebExportFile {
+        file_path: path.to_string_lossy().into_owned(), download_filename: req.file_name, format,
+    });
+    let cleanup_state = state.clone();
+    let cleanup_id = download_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+        if let Some(file) = cleanup_state.export_files.write().await.remove(&cleanup_id) {
+            let _ = tokio::fs::remove_file(file.file_path).await;
+        }
+    });
+    Ok(Json(serde_json::json!({ "downloadId": download_id })))
+}
+
 pub async fn close_query_session(
     State(state): State<Arc<WebState>>,
     Json(req): Json<CloseSessionRequest>,

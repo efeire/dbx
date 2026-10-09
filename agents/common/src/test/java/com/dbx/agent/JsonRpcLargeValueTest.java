@@ -46,4 +46,27 @@ class JsonRpcLargeValueTest {
             JsonParser.parseString("{}").getAsJsonObject());
         assertEquals(List.of("invalidate", "commit"), calls);
     }
+
+    @Test
+    void invalidatesBeforeFailedWriteAndRollbackAndOnCancellation() throws Exception {
+        List<String> calls = new ArrayList<>();
+        DatabaseAgent agent = (DatabaseAgent) Proxy.newProxyInstance(DatabaseAgent.class.getClassLoader(),
+            new Class<?>[]{DatabaseAgent.class}, (object, method, args) -> {
+                if (method.getName().equals("supportsQueryTiming")) return false;
+                if (method.getName().equals("invalidateLargeValues")) { calls.add("invalidate"); return null; }
+                if (method.getName().equals("executeBatch")) { calls.add("write"); throw new java.sql.SQLException("concurrent row removed"); }
+                if (method.getName().equals("rollbackManualTransaction")) { calls.add("rollback"); return Map.of("ok", true); }
+                return null;
+            });
+        JsonRpcServer server = new JsonRpcServer(agent);
+        assertThrows(Exception.class, () -> server.dispatchForRuntime(AgentProtocol.METHOD_EXECUTE_BATCH,
+            JsonParser.parseString("{\"statements\":[\"UPDATE T SET C='full original value'\"]}").getAsJsonObject()));
+        assertEquals(List.of("invalidate", "write"), calls);
+        calls.clear();
+        server.dispatchForRuntime(AgentProtocol.METHOD_ROLLBACK_MANUAL_TRANSACTION, JsonParser.parseString("{}").getAsJsonObject());
+        assertEquals(List.of("invalidate", "rollback"), calls);
+        calls.clear();
+        server.cancelActiveStatements();
+        assertEquals(List.of("invalidate"), calls);
+    }
 }

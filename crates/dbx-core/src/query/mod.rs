@@ -7,6 +7,7 @@ pub mod plugin_data;
 pub mod plugin_plan;
 pub mod query_cancel;
 pub mod redis_ops;
+pub mod snapshot_export;
 mod sqlserver_agent_batch;
 pub mod sqlserver_manual_transaction;
 pub mod two_phase_commit;

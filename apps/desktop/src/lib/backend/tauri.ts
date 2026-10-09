@@ -2036,6 +2036,10 @@ export async function downloadLargeValue(request: import("./http").LargeValueReq
   await invoke("download_large_value", { request, filePath });
 }
 
+export async function exportSnapshotResult(request: import("./http").SnapshotExportRequest, filePath: string): Promise<void> {
+  await invoke("export_snapshot_result", { request, filePath });
+}
+
 export async function closeQuerySession(connectionId: string, database: string, sessionId: string, clientSessionId?: string, catalog?: string): Promise<boolean> {
   return invoke("close_query_session", {
     connectionId,
