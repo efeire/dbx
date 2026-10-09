@@ -11,6 +11,8 @@ pub struct OracleProgramContext {
     pub target_version: String,
     pub target_editions_disabled: bool,
     pub non_editioned_source_objects: Vec<(String, String)>,
+    pub target_dependencies: Vec<(String, String, String)>,
+    pub blocked_types: Vec<(String, String)>,
 }
 
 pub fn conversion_source(sql: &str, kind: &str, name: &str, source: DatabaseType, target: DatabaseType, context: &OracleProgramContext) -> Result<String, String> {
@@ -18,13 +20,13 @@ pub fn conversion_source(sql: &str, kind: &str, name: &str, source: DatabaseType
     if target == DatabaseType::Oracle && !context.target_editions_disabled {
         return Err("Oracle target schema edition status is enabled or unknown; conversion blocked".into());
     }
-    if source == DatabaseType::Oracle && matches!(kind, "TYPE" | "TYPE BODY")
+    if source == DatabaseType::Oracle
         && !context.non_editioned_source_objects.contains(&(name.to_string(), kind.to_string())) {
-        return Err("Oracle source TYPE edition state is unknown or editioned; conversion blocked".into());
+        return Err("Oracle source program edition state is unknown or editioned; conversion blocked".into());
     }
     let edition = Regex::new(r"(?is)^(\s*CREATE\s+(?:OR\s+REPLACE\s+)?)(?:NONEDITIONABLE|EDITIONABLE)\s+").unwrap();
     if edition.is_match(sql) {
-        if !matches!(kind, "TYPE" | "TYPE BODY") { return Err("Program edition conversion has not been confirmed".into()); }
+        if source != DatabaseType::Oracle { return Err("Source program edition conversion has not been confirmed".into()); }
         return Ok(edition.replace(sql, "${1}").to_string());
     }
     Ok(sql.to_string())
