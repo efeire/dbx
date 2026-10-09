@@ -55,7 +55,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
 import OraclePrimaryKeyEditor from "./OraclePrimaryKeyEditor.vue";
-import type { ConstraintChangeResult } from "@/types/constraintChange";
+import OracleForeignKeyEditor from "./OracleForeignKeyEditor.vue";
 import { useQueryStore } from "@/stores/queryStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { matchesShortcut } from "@/lib/editor/keyboardShortcuts";
@@ -4543,7 +4543,7 @@ async function confirmPrimaryKeyChange(sql: string): Promise<boolean> {
   });
 }
 
-async function primaryKeyChanged(result: ConstraintChangeResult) {
+async function primaryKeyChanged(result: { success: boolean }) {
   const match = { connectionId: props.connectionId, database: props.database, schema: metadataSchema.value, tableName: props.tableName };
   invalidateTableMetadataCache(match);
   await invalidateObjectMetadataCache(match);
@@ -6489,6 +6489,20 @@ watch(
             class="col-start-1 row-start-2 structure-card-scroller m-0 min-h-0 flex-1 overflow-auto p-[var(--structure-cell-px)]"
             @scroll.passive="onStructureContentScroll('foreignKeys', $event)"
           >
+            <OracleForeignKeyEditor
+              v-if="(databaseType === 'oracle' || databaseType === 'oceanbase-oracle') && !isCreateMode && !connection?.read_only"
+              :connection-id="connectionId"
+              :database="database"
+              :schema="metadataSchema"
+              :table-name="tableName"
+              :columns="columns.map((column) => column.name)"
+              :names="[...new Set(foreignKeys.map((key) => key.original?.name ?? key.name))]"
+              :oceanbase="databaseType === 'oceanbase-oracle'"
+              :disabled="saving || loading || foreignKeysLoading || hasPendingStructureChanges || ddlDirty"
+              :confirm="confirmPrimaryKeyChange"
+              @busy="saving = $event"
+              @changed="primaryKeyChanged"
+            />
             <div v-if="foreignKeysLoading" class="flex items-center justify-center gap-2 py-10 text-muted-foreground">
               <Loader2 class="h-4 w-4 animate-spin" />
               {{ t("common.loading") }}
