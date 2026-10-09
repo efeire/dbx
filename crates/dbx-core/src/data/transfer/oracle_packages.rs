@@ -703,7 +703,7 @@ async fn verify(
                     "line {}, column {}: {}",
                     row.first().map_or_else(|| "?".into(), |v| v.to_string()),
                     row.get(1).map_or_else(|| "?".into(), |v| v.to_string()),
-                    code.find(&text(row, 2)).map_or("compiler diagnostic", |m| m.as_str()).to_string()
+                    code.find(&text(row, 2)).map_or("compiler diagnostic", |m| m.as_str())
                 )
             })
             .collect::<Vec<_>>()
