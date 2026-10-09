@@ -4,7 +4,13 @@ import { createPinia, setActivePinia } from "pinia";
 import { createI18n } from "vue-i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/backend/api", () => ({ executeQuery: vi.fn().mockResolvedValue({ columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 }), cancelQuery: vi.fn().mockResolvedValue(true), listSchemas: vi.fn().mockResolvedValue([]), listDatabases: vi.fn().mockResolvedValue([]) }));
+vi.mock("@/lib/backend/api", () => ({
+  executeQuery: vi.fn().mockResolvedValue({ columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 }),
+  cancelQuery: vi.fn().mockResolvedValue(true),
+  listSchemas: vi.fn().mockResolvedValue([]),
+  listDatabases: vi.fn().mockResolvedValue([]),
+  checkConnectionHealth: vi.fn().mockResolvedValue(true),
+}));
 vi.mock("@/components/ui/button", () => ({ Button: { template: `<button><slot /></button>` } }));
 vi.mock("@/components/ui/searchable-select", () => ({ SearchableSelect: { template: `<div />` } }));
 vi.mock("@/components/ui/tooltip", () => ({ Tooltip: { template: `<span><slot /></span>` }, TooltipTrigger: { template: `<span><slot /></span>` }, TooltipContent: { template: `<span><slot /></span>` } }));
