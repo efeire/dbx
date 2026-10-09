@@ -1039,33 +1039,35 @@ mod tests {
         journal.observe_source_count(0, None);
         journal.observe_table_progress(0, 2);
         journal.finish_table(0, TaskItemStatus::Failed, None, None).await;
-        journal.record_object_outcome(&TransferObjectOutcome {
-            transferred: vec!["Package:P".into()],
-            skipped: Vec::new(),
-            failed: vec!["PackageBody:P".into()],
-            object_results: vec![
-                crate::transfer::TransferSchemaObjectResult {
-                    object_type: crate::transfer::TransferObjectKind::Package,
-                    name: "P".into(),
-                    schema: "main".into(),
-                    status: "transferred".into(),
-                    compile_status: Some("VALID".into()),
-                    source_verified: Some(true),
-                    error: None,
-                    recovery: None,
-                },
-                crate::transfer::TransferSchemaObjectResult {
-                    object_type: crate::transfer::TransferObjectKind::PackageBody,
-                    name: "P".into(),
-                    schema: "main".into(),
-                    status: "failed".into(),
-                    compile_status: Some("INVALID".into()),
-                    source_verified: Some(false),
-                    error: Some(driver_secret.into()),
-                    recovery: Some("Target definitions restored and verified".into()),
-                },
-            ],
-        }).await;
+        journal
+            .record_object_outcome(&TransferObjectOutcome {
+                transferred: vec!["Package:P".into()],
+                skipped: Vec::new(),
+                failed: vec!["PackageBody:P".into()],
+                object_results: vec![
+                    crate::transfer::TransferSchemaObjectResult {
+                        object_type: crate::transfer::TransferObjectKind::Package,
+                        name: "P".into(),
+                        schema: "main".into(),
+                        status: "transferred".into(),
+                        compile_status: Some("VALID".into()),
+                        source_verified: Some(true),
+                        error: None,
+                        recovery: None,
+                    },
+                    crate::transfer::TransferSchemaObjectResult {
+                        object_type: crate::transfer::TransferObjectKind::PackageBody,
+                        name: "P".into(),
+                        schema: "main".into(),
+                        status: "failed".into(),
+                        compile_status: Some("INVALID".into()),
+                        source_verified: Some(false),
+                        error: Some(driver_secret.into()),
+                        recovery: Some("Target definitions restored and verified".into()),
+                    },
+                ],
+            })
+            .await;
         journal
             .finish(&TransferProgress {
                 transfer_id: request.transfer_id.clone(),

@@ -270,7 +270,9 @@ async fn dependencies(
         let link = text(&row, 3);
         // The definition header moves into the selected target schema. Other schemas stay intact.
         let words = sql_words(&declaration(original, kind)?.2);
-        let explicit = words.windows(3).any(|part| identifier_word(&part[0]) == owner && part[1] == "." && identifier_word(&part[2]) == dependency);
+        let explicit = words.windows(3).any(|part| {
+            identifier_word(&part[0]) == owner && part[1] == "." && identifier_word(&part[2]) == dependency
+        });
         let target_owner = if owner == source_schema && !explicit { target_schema.clone() } else { owner };
         let planned = target_owner == target_schema
             && ((object_type == "PACKAGE" && selected.contains(&(TransferObjectKind::Package, dependency.clone())))
@@ -280,8 +282,8 @@ async fn dependencies(
         } else {
             None
         };
-        let available = link.is_empty()
-            && dependency_available(planned, status.as_deref(), request.object_conflict_policy);
+        let available =
+            link.is_empty() && dependency_available(planned, status.as_deref(), request.object_conflict_policy);
         result.push(TransferSchemaObjectDependency {
             owner: target_owner,
             name: dependency,
@@ -520,12 +522,18 @@ fn explicit_owner_reference(source: &str, schema: &str) -> bool {
 }
 
 fn identifier_word(word: &str) -> String {
-    if word.starts_with('"') { unquote(word) } else { word.to_string() }
+    if word.starts_with('"') {
+        unquote(word)
+    } else {
+        word.to_string()
+    }
 }
 
 fn validate_version_clauses(source: &str, database_type: DatabaseType, banner: &str) -> Result<(), String> {
     let version = Regex::new(r"\b(\d+)\.(\d+)").unwrap();
-    let captures = version.captures(banner).ok_or("Target database version could not be read; version-specific package syntax has not been checked")?;
+    let captures = version
+        .captures(banner)
+        .ok_or("Target database version could not be read; version-specific package syntax has not been checked")?;
     let major: u32 = captures[1].parse().map_err(|_| "Invalid target version")?;
     let minor: u32 = captures[2].parse().map_err(|_| "Invalid target version")?;
     let words = sql_words(source);
@@ -534,9 +542,13 @@ fn validate_version_clauses(source: &str, database_type: DatabaseType, banner: &
     let incompatible = if database_type == DatabaseType::OceanbaseOracle {
         edition || has("ACCESSIBLE") || has("SHARING")
     } else {
-        (edition && (major, minor) < (11, 2)) || (has("ACCESSIBLE") && major < 12) || (has("SHARING") && (major, minor) < (12, 2))
+        (edition && (major, minor) < (11, 2))
+            || (has("ACCESSIBLE") && major < 12)
+            || (has("SHARING") && (major, minor) < (12, 2))
     };
-    if incompatible { return Err("Package edition/accessibility/sharing syntax requires a reviewed target-version conversion".into()); }
+    if incompatible {
+        return Err("Package edition/accessibility/sharing syntax requires a reviewed target-version conversion".into());
+    }
     Ok(())
 }
 
@@ -759,8 +771,15 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
             if let Err(error) = written {
                 // Keep the failed definition's status, even if recovery restores a VALID one.
                 result.compile_status = object_status(
-                    state, target_pool, &item.target_schema, &item.name, dictionary_kind(item.object_type),
-                ).await.ok().flatten();
+                    state,
+                    target_pool,
+                    &item.target_schema,
+                    &item.name,
+                    dictionary_kind(item.object_type),
+                )
+                .await
+                .ok()
+                .flatten();
                 if error.contains("readback differs") || error.contains("signature differs") {
                     result.source_verified = Some(false);
                 }
@@ -789,11 +808,16 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
         if let Err(error) = execution {
             result.error = Some(error);
             if result.compile_status.is_none() {
-                result.compile_status =
-                object_status(state, target_pool, &item.target_schema, &item.name, dictionary_kind(item.object_type))
-                    .await
-                    .ok()
-                    .flatten();
+                result.compile_status = object_status(
+                    state,
+                    target_pool,
+                    &item.target_schema,
+                    &item.name,
+                    dictionary_kind(item.object_type),
+                )
+                .await
+                .ok()
+                .flatten();
             }
             failed.insert((
                 item.target_schema.clone(),
@@ -844,7 +868,9 @@ mod tests {
         assert_eq!(serde_json::to_value(&backup).unwrap(), before);
         assert!(guidance.contains("No automatic restoration was executed"));
         assert!(guidance.contains("Wait for pending DDL to finish and compare current source"));
-        assert!(guidance.contains("explicitly restoring the backup on connection target-connection in schema Mixed.Target"));
+        assert!(
+            guidance.contains("explicitly restoring the backup on connection target-connection in schema Mixed.Target")
+        );
         assert!(guidance.contains("VALID, ALL_ERRORS and full source"));
         assert!(guidance.contains("backup.json"));
         assert!(!guidance.contains("private"));
