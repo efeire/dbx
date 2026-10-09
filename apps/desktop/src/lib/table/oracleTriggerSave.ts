@@ -38,7 +38,7 @@ export async function saveOracleTriggerDefinition(options: {
     return { valid: row[0] === "VALID", enabled: row[1] === "ENABLED" };
   };
   const before = await readState();
-  if (await options.readSource() !== options.originalSource) throw new Error("Trigger definition changed since it was opened; reload before saving");
+  if ((await options.readSource()) !== options.originalSource) throw new Error("Trigger definition changed since it was opened; reload before saving");
   // Preserve the exact definition before any non-transactional DDL. The new
   // definition stays disabled until compilation and its target are confirmed.
   await options.preserveOriginal(options.originalSource, before.enabled);

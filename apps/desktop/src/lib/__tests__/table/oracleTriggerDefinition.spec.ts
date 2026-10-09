@@ -29,7 +29,7 @@ describe("Oracle complete trigger definition editing", () => {
 
   it("locates the body after an edition clause, ordering names and a balanced WHEN condition", () => {
     const prefix = "CREATE OR REPLACE TRIGGER APP.T BEFORE INSERT ON APP.DATA FOR EACH ROW FORWARD CROSSEDITION FOLLOWS APP.ENABLE ";
-    const body = 'WHEN (:NEW."BEGIN" = q\'[DISABLE (BEGIN)]\') BEGIN NULL; END;';
+    const body = "WHEN (:NEW.\"BEGIN\" = q'[DISABLE (BEGIN)]') BEGIN NULL; END;";
     expect(prepareDisabledOracleTriggerReplacement(prefix + body, { schema: "APP", name: "T" })).toBe(prefix + "DISABLE\n" + body);
   });
 
@@ -87,10 +87,8 @@ describe("Oracle complete trigger definition editing", () => {
   });
 
   it("requires complete source mode for compound and ordering clauses", () => {
-    for (const sql of [
-      "CREATE TRIGGER APP.T FOR INSERT ON APP.DATA COMPOUND TRIGGER BEFORE STATEMENT IS BEGIN NULL; END BEFORE STATEMENT; END;",
-      "CREATE TRIGGER APP.T AFTER INSERT ON APP.DATA FOR EACH ROW FOLLOWS APP.OTHER BEGIN NULL; END;",
-    ]) expect(parseOracleTriggerDefinition(sql).structured).toBe(false);
+    for (const sql of ["CREATE TRIGGER APP.T FOR INSERT ON APP.DATA COMPOUND TRIGGER BEFORE STATEMENT IS BEGIN NULL; END BEFORE STATEMENT; END;", "CREATE TRIGGER APP.T AFTER INSERT ON APP.DATA FOR EACH ROW FOLLOWS APP.OTHER BEGIN NULL; END;"])
+      expect(parseOracleTriggerDefinition(sql).structured).toBe(false);
   });
 
   it("rejects changing the selected identity and never emits DROP", () => {
@@ -98,7 +96,7 @@ describe("Oracle complete trigger definition editing", () => {
     const sql = prepareDisabledOracleTriggerReplacement(source, { schema: "APP", name: "Quoted Trigger" });
     expect(sql).toContain("FOR EACH ROW DISABLE");
     expect(sql).not.toContain("DROP TRIGGER");
-    expect(sql.endsWith("/" )).toBe(false);
+    expect(sql.endsWith("/")).toBe(false);
   });
 
   it("adds replacement and disabled state without rewriting a compound body", () => {
@@ -122,17 +120,12 @@ describe("Oracle complete trigger definition editing", () => {
     expect(() => prepareOracleTriggerReplacement(sql, { schema: "APP", name: "T" })).toThrow("different identity");
   });
 
-  it.each([
-    "ALTER TRIGGER APP.OTHER ENABLE;",
-    "ALTER TRIGGER APP.T COMPILE;",
-    "ALTER TRIGGER APP.T ENABLE; DROP TABLE APP.DATA;",
-    "DROP TABLE APP.DATA;",
-    "SELECT * FROM APP.DATA;",
-    "BEGIN DELETE FROM APP.DATA; END;",
-    "DECLARE v NUMBER; BEGIN DELETE FROM APP.DATA; END;",
-  ])("rejects an unsafe or unrelated trailing statement: %s", (tail) => {
-    expect(() => prepareOracleTriggerReplacement(`CREATE TRIGGER APP.T BEFORE INSERT ON APP.DATA BEGIN NULL; END;\n${tail}`, { schema: "APP", name: "T" })).toThrow();
-  });
+  it.each(["ALTER TRIGGER APP.OTHER ENABLE;", "ALTER TRIGGER APP.T COMPILE;", "ALTER TRIGGER APP.T ENABLE; DROP TABLE APP.DATA;", "DROP TABLE APP.DATA;", "SELECT * FROM APP.DATA;", "BEGIN DELETE FROM APP.DATA; END;", "DECLARE v NUMBER; BEGIN DELETE FROM APP.DATA; END;"])(
+    "rejects an unsafe or unrelated trailing statement: %s",
+    (tail) => {
+      expect(() => prepareOracleTriggerReplacement(`CREATE TRIGGER APP.T BEFORE INSERT ON APP.DATA BEGIN NULL; END;\n${tail}`, { schema: "APP", name: "T" })).toThrow();
+    },
+  );
 
   it("keeps nested blocks, local routines, CASE, IF and LOOP inside one trigger", () => {
     const sql = `CREATE TRIGGER APP.T BEFORE INSERT ON APP.DATA

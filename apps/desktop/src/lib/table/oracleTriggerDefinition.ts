@@ -4,7 +4,10 @@ interface Token {
   end: number;
   kind: "word" | "identifier" | "literal" | "symbol";
 }
-interface Span { start: number; end: number }
+interface Span {
+  start: number;
+  end: number;
+}
 
 export interface OracleTriggerFields {
   timing: string;
@@ -38,7 +41,9 @@ export function oracleTriggerOwner(trigger: { name: string; owner?: string | nul
   try {
     const definition = parseOracleTriggerDefinition(trigger.statement);
     return definition.name === trigger.name ? definition.schema : undefined;
-  } catch { return undefined; }
+  } catch {
+    return undefined;
+  }
 }
 
 // Keep source offsets, including comments and whitespace, so unchanged fields
@@ -47,12 +52,20 @@ function scan(source: string): Token[] {
   const tokens: Token[] = [];
   let i = 0;
   while (i < source.length) {
-    if (/\s/.test(source[i])) { i++; continue; }
-    if (source.startsWith("--", i)) { const end = source.indexOf("\n", i + 2); i = end < 0 ? source.length : end; continue; }
+    if (/\s/.test(source[i])) {
+      i++;
+      continue;
+    }
+    if (source.startsWith("--", i)) {
+      const end = source.indexOf("\n", i + 2);
+      i = end < 0 ? source.length : end;
+      continue;
+    }
     if (source.startsWith("/*", i)) {
       const end = source.indexOf("*/", i + 2);
       if (end < 0) throw new Error("Unclosed trigger comment");
-      i = end + 2; continue;
+      i = end + 2;
+      continue;
     }
     const start = i;
     const alternative = /^(?:nq|q)'/i.exec(source.slice(i));
@@ -70,8 +83,12 @@ function scan(source: string): Token[] {
       let closed = false;
       while (i < source.length) {
         if (source[i++] !== quote) continue;
-        if (source[i] === quote) { i++; continue; }
-        closed = true; break;
+        if (source[i] === quote) {
+          i++;
+          continue;
+        }
+        closed = true;
+        break;
       }
       if (!closed) throw new Error("Unclosed trigger quoted token");
       tokens.push({ text: source.slice(start, i), start, end: i, kind: quote === '"' ? "identifier" : "literal" });
@@ -96,7 +113,7 @@ function identifier(token: Token | undefined): string {
 }
 
 function definitionEnd(source: string, tokens: Token[], identity: { schema?: string; name: string }): number {
-  const alters = tokens.flatMap((token, index) => token.kind === "word" && token.text.toUpperCase() === "ALTER" ? [index] : []);
+  const alters = tokens.flatMap((token, index) => (token.kind === "word" && token.text.toUpperCase() === "ALTER" ? [index] : []));
   let end = source.length;
   if (alters.length) {
     if (alters.length !== 1) throw new Error("Only one matching trigger state clause may follow the definition");
@@ -105,7 +122,11 @@ function definitionEnd(source: string, tokens: Token[], identity: { schema?: str
     if (tokens[index]?.kind !== "word" || tokens[index++].text.toUpperCase() !== "TRIGGER") throw new Error("Only a matching ALTER TRIGGER state clause may follow the definition");
     let name = identifier(tokens[index++]);
     let schema: string | undefined;
-    if (tokens[index]?.text === ".") { index++; schema = name; name = identifier(tokens[index++]); }
+    if (tokens[index]?.text === ".") {
+      index++;
+      schema = name;
+      name = identifier(tokens[index++]);
+    }
     if (name !== identity.name || (schema !== undefined && identity.schema !== undefined && schema !== identity.schema)) throw new Error("Trailing trigger state clause has a different identity");
     const state = tokens[index++];
     if (state?.kind !== "word" || !["ENABLE", "DISABLE"].includes(state.text.toUpperCase())) throw new Error("Unsupported trailing trigger state clause");
@@ -122,7 +143,10 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
   const tokens = scan(source);
   let index = 0;
   const is = (word: string) => tokens[index]?.kind === "word" && tokens[index].text.toUpperCase() === word;
-  const requireWord = (word: string) => { if (!is(word)) throw new Error(`Expected ${word} in trigger definition`); return tokens[index++]; };
+  const requireWord = (word: string) => {
+    if (!is(word)) throw new Error(`Expected ${word} in trigger definition`);
+    return tokens[index++];
+  };
   const name = () => {
     const first = identifier(tokens[index++]);
     if (tokens[index]?.text !== ".") return { name: first, schema: undefined };
@@ -131,7 +155,11 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
   };
   const createEnd = requireWord("CREATE").end;
   let replace = false;
-  if (is("OR")) { index++; requireWord("REPLACE"); replace = true; }
+  if (is("OR")) {
+    index++;
+    requireWord("REPLACE");
+    replace = true;
+  }
   if (is("EDITIONABLE") || is("NONEDITIONABLE")) index++;
   requireWord("TRIGGER");
   const identityStart = tokens[index]?.start;
@@ -142,8 +170,10 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
   const timingStart = tokens[index]?.start;
   if (timingStart === undefined) return fallback("Missing trigger timing");
   if (is("BEFORE") || is("AFTER") || is("FOR")) index++;
-  else if (is("INSTEAD")) { index++; requireWord("OF"); }
-  else return fallback("Compound or special trigger: edit the complete source");
+  else if (is("INSTEAD")) {
+    index++;
+    requireWord("OF");
+  } else return fallback("Compound or special trigger: edit the complete source");
   const timingEnd = tokens[index - 1].end;
   const eventsStart = tokens[index]?.start;
   while (index < tokens.length && !is("ON")) {
@@ -157,13 +187,20 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
   index++;
   const nestedTarget = is("NESTED");
   try {
-    if (nestedTarget) { index++; requireWord("TABLE"); identifier(tokens[index++]); requireWord("OF"); }
+    if (nestedTarget) {
+      index++;
+      requireWord("TABLE");
+      identifier(tokens[index++]);
+      requireWord("OF");
+    }
     result.tableStart = tokens[index]?.start;
     const table = name();
     result.tableName = table.name;
     result.tableSchema = table.schema;
     result.tableEnd = tokens[index - 1].end;
-  } catch { return fallback("Special trigger target: edit the complete source"); }
+  } catch {
+    return fallback("Special trigger target: edit the complete source");
+  }
   if (nestedTarget) return fallback("Nested table trigger: edit the complete source");
   let referencingSpan: Span | undefined;
   let rowSpan: Span | undefined;
@@ -212,7 +249,14 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
     ...result,
     structured: true,
     fields: { timing: source.slice(timingStart, timingEnd), events: source.slice(eventsStart, eventsEnd), referencing, rowLevel: !!rowSpan, when, body: source.slice(bodyStart, bodyEnd) },
-    spans: { timing: { start: timingStart, end: timingEnd }, events: { start: eventsStart, end: eventsEnd }, referencing: referencingSpan ?? { start: rowSpan?.start ?? insertAt, end: rowSpan?.start ?? insertAt }, rowLevel: rowSpan ?? { start: insertAt, end: insertAt }, when: whenSpan ?? { start: bodyStart, end: bodyStart }, body: { start: bodyStart, end: bodyEnd } },
+    spans: {
+      timing: { start: timingStart, end: timingEnd },
+      events: { start: eventsStart, end: eventsEnd },
+      referencing: referencingSpan ?? { start: rowSpan?.start ?? insertAt, end: rowSpan?.start ?? insertAt },
+      rowLevel: rowSpan ?? { start: insertAt, end: insertAt },
+      when: whenSpan ?? { start: bodyStart, end: bodyStart },
+      body: { start: bodyStart, end: bodyEnd },
+    },
   };
 }
 
@@ -242,17 +286,41 @@ function triggerHeaderBoundary(tokens: Token[], tableEnd: number | undefined): {
   if (tableEnd === undefined) throw new Error("Cannot locate the trigger target safely");
   let index = tokens.findIndex((token) => token.start >= tableEnd);
   const is = (word: string) => tokens[index]?.kind === "word" && tokens[index].text.toUpperCase() === word;
-  const requireWord = (word: string) => { if (!is(word)) throw new Error(`Expected ${word} in trigger header`); index++; };
-  const name = () => { identifier(tokens[index++]); if (tokens[index]?.text === ".") { index++; identifier(tokens[index++]); } };
+  const requireWord = (word: string) => {
+    if (!is(word)) throw new Error(`Expected ${word} in trigger header`);
+    index++;
+  };
+  const name = () => {
+    identifier(tokens[index++]);
+    if (tokens[index]?.text === ".") {
+      index++;
+      identifier(tokens[index++]);
+    }
+  };
   if (is("REFERENCING")) {
     index++;
-    while (is("OLD") || is("NEW") || is("PARENT")) { index++; if (is("AS")) index++; identifier(tokens[index++]); }
+    while (is("OLD") || is("NEW") || is("PARENT")) {
+      index++;
+      if (is("AS")) index++;
+      identifier(tokens[index++]);
+    }
   }
-  if (is("FOR")) { index++; requireWord("EACH"); requireWord("ROW"); }
-  if (is("FORWARD") || is("REVERSE")) { index++; requireWord("CROSSEDITION"); }
+  if (is("FOR")) {
+    index++;
+    requireWord("EACH");
+    requireWord("ROW");
+  }
+  if (is("FORWARD") || is("REVERSE")) {
+    index++;
+    requireWord("CROSSEDITION");
+  }
   if (is("FOLLOWS") || is("PRECEDES")) {
-    index++; name();
-    while (tokens[index]?.text === ",") { index++; name(); }
+    index++;
+    name();
+    while (tokens[index]?.text === ",") {
+      index++;
+      name();
+    }
   }
   const state = is("ENABLE") || is("DISABLE") ? tokens[index++] : undefined;
   const insertion = tokens[index]?.start;
@@ -282,7 +350,7 @@ function requireSingleTriggerBody(tokens: Token[], body: number): void {
   let closed = false;
   for (let index = body + (compound ? 2 : 0); index < tokens.length; index++) {
     const token = tokens[index];
-    const top = () => stack.at(-1);
+    const top = () => stack[stack.length - 1];
     if (token.kind === "symbol" && token.text === ";") {
       if (top() === "ROUTINE_HEADER") stack.pop();
       if (closed && !stack.length) {
@@ -307,10 +375,11 @@ function requireSingleTriggerBody(tokens: Token[], body: number): void {
         if (terminator === "CASE") index++;
       } else if (["IF", "LOOP"].includes(terminator)) {
         if (top() !== terminator) throw new Error("Unbalanced trigger block");
-        stack.pop(); index++;
+        stack.pop();
+        index++;
       } else {
         // Compound declarations belong to the trigger, outside its timing sections.
-        if (top() === "DECLARATION" && stack.at(-2) === "COMPOUND") stack.pop();
+        if (top() === "DECLARATION" && stack[stack.length - 2] === "COMPOUND") stack.pop();
         if (!["BLOCK", "COMPOUND"].includes(top() ?? "")) throw new Error("Unbalanced trigger block");
         stack.pop();
       }

@@ -38,12 +38,17 @@ describe("Oracle trigger replacement stages", () => {
 
   it("preserves the old definition before DDL and restores enabled state only after VALID", async () => {
     const options = setup();
-    options.execute.mockResolvedValueOnce(state()).mockImplementationOnce(async (sql) => {
-      expect(options.preserveOriginal).toHaveBeenCalledWith(original, true);
-      expect(sql).toContain("DISABLE\nBEGIN");
-      expect(sql).not.toContain("DROP");
-      return empty;
-    }).mockResolvedValueOnce(state(true, false)).mockResolvedValueOnce(empty).mockResolvedValueOnce(state());
+    options.execute
+      .mockResolvedValueOnce(state())
+      .mockImplementationOnce(async (sql) => {
+        expect(options.preserveOriginal).toHaveBeenCalledWith(original, true);
+        expect(sql).toContain("DISABLE\nBEGIN");
+        expect(sql).not.toContain("DROP");
+        return empty;
+      })
+      .mockResolvedValueOnce(state(true, false))
+      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce(state());
     await saveOracleTriggerDefinition(options);
     expect(options.execute.mock.calls[3][0]).toBe('ALTER TRIGGER "APP"."T" ENABLE');
   });
@@ -57,7 +62,11 @@ describe("Oracle trigger replacement stages", () => {
 
   it("reports compilation errors and stops before ENABLE after an INVALID replacement", async () => {
     const options = setup();
-    options.execute.mockResolvedValueOnce(state()).mockResolvedValueOnce(empty).mockResolvedValueOnce(state(false, false)).mockResolvedValueOnce({ columns: [], rows: [[4, 9, "PLS-00201"]] } as QueryResult);
+    options.execute
+      .mockResolvedValueOnce(state())
+      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce(state(false, false))
+      .mockResolvedValueOnce({ columns: [], rows: [[4, 9, "PLS-00201"]] } as QueryResult);
     await expect(saveOracleTriggerDefinition(options)).rejects.toThrow("4:9 PLS-00201");
     expect(options.execute.mock.calls.every(([sql]) => !sql.startsWith("ALTER TRIGGER"))).toBe(true);
     expect(options.preserveOriginal).toHaveBeenCalledWith(original, true);

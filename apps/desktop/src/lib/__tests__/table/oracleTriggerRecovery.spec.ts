@@ -5,10 +5,15 @@ import { loadBrowserAppState, saveBrowserAppState } from "@/lib/backend/browserA
 const state = vi.hoisted(() => new Map<string, unknown>());
 vi.mock("@/lib/backend/browserAppStateStorage", () => ({
   loadBrowserAppState: vi.fn(async (key: string) => state.get(key) ?? null),
-  saveBrowserAppState: vi.fn(async (key: string, value: unknown) => { state.set(key, structuredClone(value)); }),
+  saveBrowserAppState: vi.fn(async (key: string, value: unknown) => {
+    state.set(key, structuredClone(value));
+  }),
 }));
 const scope = { connectionId: "ob", database: "APP", schema: "Mixed Owner", name: "Mixed Trigger" };
-beforeEach(() => { state.clear(); vi.clearAllMocks(); });
+beforeEach(() => {
+  state.clear();
+  vi.clearAllMocks();
+});
 
 describe("trigger recovery versions", () => {
   it("persists the verified table identity without substituting the trigger owner or rewriting source", async () => {
@@ -28,7 +33,10 @@ describe("trigger recovery versions", () => {
     const longSource = "BEGIN\n" + "-- original body\n".repeat(10000) + "END;";
     await Promise.all([preserveOracleTriggerRecovery(scope, longSource, false), preserveOracleTriggerRecovery(scope, "second definition", true)]);
     const entries = await loadOracleTriggerRecovery(scope);
-    expect(entries.map((entry) => [entry.source, entry.enabled])).toEqual([[longSource, false], ["second definition", true]]);
+    expect(entries.map((entry) => [entry.source, entry.enabled])).toEqual([
+      [longSource, false],
+      ["second definition", true],
+    ]);
     expect(entries[0].id).not.toBe(entries[1].id);
     expect(await loadOracleTriggerRecovery({ ...scope, schema: "MIXED OWNER" })).toEqual([]);
     expect(await loadOracleTriggerRecovery({ ...scope, connectionId: "other" })).toEqual([]);

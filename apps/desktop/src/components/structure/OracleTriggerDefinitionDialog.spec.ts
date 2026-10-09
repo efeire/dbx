@@ -11,10 +11,15 @@ import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 const storage = vi.hoisted(() => new Map<string, unknown>());
 vi.mock("@/lib/backend/browserAppStateStorage", () => ({
   loadBrowserAppState: vi.fn(async (key: string) => storage.get(key) ?? null),
-  saveBrowserAppState: vi.fn(async (key: string, value: unknown) => { storage.set(key, structuredClone(value)); }),
+  saveBrowserAppState: vi.fn(async (key: string, value: unknown) => {
+    storage.set(key, structuredClone(value));
+  }),
 }));
 vi.mock("@/lib/backend/api", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/backend/api")>(), getObjectSource: vi.fn(), executeQuery: vi.fn(), deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
+  ...(await importOriginal<typeof import("@/lib/backend/api")>()),
+  getObjectSource: vi.fn(),
+  executeQuery: vi.fn(),
+  deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
 }));
 const original = "CREATE OR REPLACE TRIGGER APP.T BEFORE INSERT ON APP.DATA FOR EACH ROW BEGIN NULL; END;";
 const mounted: App[] = [];
@@ -35,14 +40,18 @@ async function mountDialog() {
   const container = document.createElement("div");
   document.body.append(container);
   const app = createApp({ setup: () => () => h(OracleTriggerDefinitionDialog, { open: true, connectionId: "ob", database: database.value, schema: owner.value, name: "T", tableSchema: "APP", tableName: "DATA", onChanged: changed }) });
-  app.use(pinia); app.use(i18n); app.mount(container); mounted.push(app);
+  app.use(pinia);
+  app.use(i18n);
+  app.mount(container);
+  mounted.push(app);
   await vi.waitFor(() => expect(document.querySelectorAll("textarea").length).toBeGreaterThan(0));
   await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenCalled());
   await vi.waitFor(() => expect(document.querySelectorAll("input").length).toBeGreaterThan(1));
   return { changed, database, owner, safety: useProductionSafetyStore() };
 }
 beforeEach(() => {
-  storage.clear(); vi.clearAllMocks();
+  storage.clear();
+  vi.clearAllMocks();
   vi.mocked(api.getObjectSource).mockResolvedValue({ source: original } as any);
   vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [["VALID", "ENABLED", "APP", "DATA"]] } as any);
 });
@@ -66,7 +75,8 @@ describe("complete trigger definition dialog", () => {
       .mockResolvedValueOnce({ columns: [], rows: [["VALID", "DISABLED", "APP", "DATA"]] } as any)
       .mockResolvedValueOnce({ columns: [], rows: [] } as any)
       .mockResolvedValueOnce({ columns: [], rows: [["VALID", "ENABLED", "APP", "DATA"]] } as any);
-    click("structureEditor.triggerPreviewDefinition"); await nextTick();
+    click("structureEditor.triggerPreviewDefinition");
+    await nextTick();
     click("common.save");
     await vi.waitFor(() => expect(safety.pending).toBeDefined());
     safety.confirm();
@@ -83,11 +93,12 @@ describe("complete trigger definition dialog", () => {
 
   it("reloads the same object identity after a database change and clears stale source on failure", async () => {
     const { database } = await mountDialog();
-    const body = [...document.querySelectorAll("textarea")].at(-1)!;
+    const body = [...document.querySelectorAll("textarea")].slice(-1)[0]!;
     body.value = "BEGIN dbms_output.put_line('old database edit'); END;";
     body.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
-    click("structureEditor.triggerPreviewDefinition"); await nextTick();
+    click("structureEditor.triggerPreviewDefinition");
+    await nextTick();
     vi.mocked(api.getObjectSource).mockRejectedValueOnce(new Error("New database is unavailable"));
     database.value = "OTHER_DATABASE";
     await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenLastCalledWith("ob", "OTHER_DATABASE", "APP", "T", "TRIGGER"));
@@ -100,22 +111,26 @@ describe("complete trigger definition dialog", () => {
 
   it("preserves structured body edits when switching to source and back", async () => {
     await mountDialog();
-    const body = [...document.querySelectorAll("textarea")].at(-1)!;
+    const body = [...document.querySelectorAll("textarea")].slice(-1)[0]!;
     body.value = "BEGIN dbms_output.put_line(q'[O'Reilly]'); END;";
     body.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
-    click("structureEditor.triggerSourceMode"); await nextTick();
+    click("structureEditor.triggerSourceMode");
+    await nextTick();
     expect(document.querySelector("textarea")!.value).toContain("q'[O'Reilly]'");
-    click("structureEditor.triggerStructuredMode"); await nextTick();
-    expect([...document.querySelectorAll("textarea")].at(-1)!.value).toContain("q'[O'Reilly]'");
+    click("structureEditor.triggerStructuredMode");
+    await nextTick();
+    expect([...document.querySelectorAll("textarea")].slice(-1)[0]!.value).toContain("q'[O'Reilly]'");
   });
 
   it("does not write recovery material or execute SQL when production confirmation is cancelled", async () => {
     const { safety, changed } = await mountDialog();
-    click("structureEditor.triggerPreviewDefinition"); await nextTick();
+    click("structureEditor.triggerPreviewDefinition");
+    await nextTick();
     click("common.save");
     await vi.waitFor(() => expect(safety.pending).toBeDefined());
-    safety.cancel(); await nextTick();
+    safety.cancel();
+    await nextTick();
     expect(api.executeQuery).not.toHaveBeenCalled();
     expect(storage.size).toBe(0);
     expect(changed).not.toHaveBeenCalled();
@@ -123,13 +138,15 @@ describe("complete trigger definition dialog", () => {
 
   it("does not execute an old production confirmation after the database context changes", async () => {
     const { safety, database } = await mountDialog();
-    click("structureEditor.triggerPreviewDefinition"); await nextTick();
+    click("structureEditor.triggerPreviewDefinition");
+    await nextTick();
     click("common.save");
     await vi.waitFor(() => expect(safety.pending).toBeDefined());
     database.value = "OTHER_DATABASE";
     await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenLastCalledWith("ob", "OTHER_DATABASE", "APP", "T", "TRIGGER"));
     safety.confirm();
-    await nextTick(); await nextTick();
+    await nextTick();
+    await nextTick();
     expect(api.executeQuery).not.toHaveBeenCalled();
     expect(storage.size).toBe(0);
   });
@@ -141,14 +158,16 @@ describe("complete trigger definition dialog", () => {
       .mockResolvedValueOnce({ columns: [], rows: [] } as any)
       .mockResolvedValueOnce({ columns: [], rows: [["INVALID", "DISABLED", "APP", "DATA"]] } as any)
       .mockResolvedValueOnce({ columns: [], rows: [[3, 7, "PLS-00201"]] } as any);
-    click("structureEditor.triggerPreviewDefinition"); await nextTick();
+    click("structureEditor.triggerPreviewDefinition");
+    await nextTick();
     click("common.save");
     await vi.waitFor(() => expect(safety.pending).toBeDefined());
     safety.confirm();
     await vi.waitFor(() => expect(document.body.textContent).toContain("PLS-00201"));
     await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
     expect(storage.size).toBe(1);
-    click("structureEditor.triggerOriginalDefinition"); await nextTick();
+    click("structureEditor.triggerOriginalDefinition");
+    await nextTick();
     expect([...document.querySelectorAll("textarea")].some((element) => element.readOnly && element.value === original)).toBe(true);
     expect(api.executeQuery).toHaveBeenCalledTimes(4);
   });
