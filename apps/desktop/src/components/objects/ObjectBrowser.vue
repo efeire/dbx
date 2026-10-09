@@ -100,7 +100,7 @@ import {
 } from "@/lib/database/dbAdminSql";
 import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeOceanBaseRoutineRenameSteps, RoutineRenameStepError, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
-import { buildRenameObjectSql, supportsObjectRename } from "@/lib/table/objectRenameSql";
+import { buildRenameObjectSql, readOceanBaseViewRenameState, supportsObjectRename } from "@/lib/table/objectRenameSql";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
 import { generateDatabaseExportId } from "@/lib/export/databaseExport";
@@ -1616,7 +1616,7 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
   sourceContent.value = "";
   sourceError.value = "";
   sourceEditing.value = false;
-  sourceCanEdit.value = true;
+  sourceCanEdit.value = false;
   sourceEditableText.value = "";
   sourceDraft.value = "";
   sourceSaveError.value = "";
@@ -1807,6 +1807,8 @@ async function confirmRename() {
   const oldLegacyPinnedNodes = legacyPinnedTreeNodesForObjectBrowserRow(row);
   let renameApplied = false;
   const schema = row.schema || selectedSchema.value || props.database;
+  let renameRequestSent = false;
+  const sourceWasEditable = sourceRow.value?.id === row.id && sourceCanEdit.value;
   try {
     if (supportsSourceBackedRoutineRename(effectiveDatabaseType.value, row.type as ObjectSourceKind)) {
       const source = await api.getObjectSource(props.connection.id, props.database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined);
@@ -1836,7 +1838,10 @@ async function confirmRename() {
         oldName: row.name,
         newName,
       });
-      const executed = await executeObjectBrowserSqlWithProductionGuard(sql, () => api.executeQuery(props.connection.id, props.database, sql, schema));
+      const executed = await executeObjectBrowserSqlWithProductionGuard(sql, () => {
+        renameRequestSent = true;
+        return api.executeQuery(props.connection.id, props.database, sql, schema);
+      });
       if (!executed) return;
     }
     renameApplied = true;
@@ -1866,6 +1871,34 @@ async function confirmRename() {
       connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
     }
   } catch (e: any) {
+    if (renameRequestSent && !renameApplied && effectiveDatabaseType.value === "oceanbase-oracle" && row.type === "VIEW") {
+      const schema = row.schema || selectedSchema.value || props.database;
+      // Freeze saved identities before awaiting a readback of possibly committed DDL.
+      queryStore.invalidateRenamedViewTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: "VIEW" });
+      if (sourceRow.value?.id === row.id) {
+        sidePanelGuard.start();
+        sourceCanEdit.value = false;
+        sourceEditing.value = false;
+        sourceContent.value = sourceDraft.value;
+        sourceLoading.value = false;
+        sourceSaving.value = false;
+      }
+      invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
+      await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
+      const state = await readOceanBaseViewRenameState(props.connection.id, props.database, schema, row.name, newName);
+      if (state !== "unchanged") connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
+      if (state === "unchanged" && sourceRow.value?.id === row.id) {
+        sourceCanEdit.value = sourceWasEditable;
+        sourceEditing.value = sourceWasEditable;
+      }
+      if (state !== "unchanged") {
+        const message = t(state === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown");
+        if (sourceRow.value?.id === row.id) sourceSaveError.value = message;
+        renameError.value = `${e?.message || String(e)}\n${message}`;
+        await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
+        return;
+      }
+    }
     if (renameApplied) {
       // The database mutation succeeded even when metadata refresh did not;
       // remove the old pin instead of allowing it to revive later.
@@ -4489,6 +4522,9 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
             <Button variant="ghost" size="icon" class="h-5 w-5" @click="closeSource">
               <X class="h-3 w-3" />
             </Button>
+          </div>
+          <div v-if="!sourceCanEdit && sourceSaveError" class="shrink-0 whitespace-pre-wrap break-words border-b px-3 py-2 text-xs text-destructive">
+            {{ sourceSaveError }}
           </div>
           <div v-if="sourceLoading" class="flex flex-1 items-center justify-center">
             <Loader2 class="h-4 w-4 animate-spin text-muted-foreground" />
