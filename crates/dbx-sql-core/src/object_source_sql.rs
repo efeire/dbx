@@ -2639,6 +2639,51 @@ mod tests {
     }
 
     #[test]
+    fn oceanbase_routine_rename_never_drops_before_validation_grants_and_dependencies() {
+        for (object_type, keyword, body) in [
+            (ObjectSourceKind::Procedure, "PROCEDURE", "AS BEGIN NULL; END;"),
+            (ObjectSourceKind::Function, "FUNCTION", "RETURN NUMBER AS BEGIN RETURN 1; END;"),
+        ] {
+            let statements = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+                database_type: DatabaseType::OceanbaseOracle,
+                object_type,
+                schema: Some("APP".to_string()),
+                name: "OLD_ROUTINE".to_string(),
+                new_name: "NEW_ROUTINE".to_string(),
+                source: format!("CREATE OR REPLACE {keyword} APP.OLD_ROUTINE {body}"),
+            }).unwrap();
+            assert_eq!(statements.len(), 5);
+            assert!(statements[..4].iter().all(|sql| !sql.contains("EXECUTE IMMEDIATE 'DROP")));
+            assert!(statements[1].starts_with(&format!("CREATE  {keyword}")));
+            assert!(!statements[1].contains("OR REPLACE"));
+            assert!(statements[2].contains("STATUS = 'VALID'"));
+            assert!(statements[2].contains("SYS.ALL_ERRORS"));
+            assert!(statements[3].contains("WITH GRANT OPTION"));
+            let cleanup = &statements[4];
+            let drop_position = cleanup.find(&format!("EXECUTE IMMEDIATE 'DROP {keyword}")).unwrap();
+            for required in ["STATUS = 'VALID'", "SYS.DBA_DEPENDENCIES", "SYS.DBA_SYNONYMS", "RAISE_APPLICATION_ERROR(-20018", "RAISE_APPLICATION_ERROR(-20019", "RAISE_APPLICATION_ERROR(-20017"] {
+                assert!(cleanup.find(required).unwrap() < drop_position, "missing guard before DROP: {required}");
+            }
+        }
+    }
+
+    #[test]
+    fn oceanbase_routine_rename_quotes_identifiers_and_nested_metadata_literals() {
+        let statements = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+            database_type: DatabaseType::OceanbaseOracle,
+            object_type: ObjectSourceKind::Procedure,
+            schema: Some("O'Reilly".to_string()),
+            name: "Old \"Proc'".to_string(),
+            new_name: "New \"Proc'".to_string(),
+            source: "CREATE PROCEDURE \"O'Reilly\".\"Old \"\"Proc'\" AS BEGIN NULL; END;".to_string(),
+        }).unwrap();
+        assert!(statements[0].contains("OWNER = 'O''Reilly'"));
+        assert!(statements[1].contains("\"O'Reilly\".\"New \"\"Proc'\""));
+        assert!(statements[4].contains("REFERENCED_OWNER = ''O''''Reilly''"));
+        assert!(statements[4].contains("EXECUTE IMMEDIATE 'DROP PROCEDURE \"O''Reilly\".\"Old \"\"Proc''\"'"));
+    }
+
+    #[test]
     fn oracle_family_routine_rename_rewrites_source_and_drops_original() {
         let statements = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
             database_type: DatabaseType::Dameng,

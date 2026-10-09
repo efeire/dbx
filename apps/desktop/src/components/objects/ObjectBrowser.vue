@@ -1802,8 +1802,8 @@ async function confirmRename() {
   const oldPinnedNode = pinnedTreeNodeForObjectBrowserRow(row);
   const oldLegacyPinnedNodes = legacyPinnedTreeNodesForObjectBrowserRow(row);
   let renameApplied = false;
+  const schema = row.schema || selectedSchema.value || props.database;
   try {
-    const schema = row.schema || selectedSchema.value || props.database;
     if (supportsSourceBackedRoutineRename(effectiveDatabaseType.value, row.type as ObjectSourceKind)) {
       const source = await api.getObjectSource(props.connection.id, props.database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined);
       const statements = await buildRoutineRenameObjectSourceStatements({
@@ -1816,6 +1816,7 @@ async function confirmRename() {
       });
       const executed = await executeObjectBrowserSqlWithProductionGuard(statements.join(";\n"), async () => {
         if (effectiveDatabaseType.value === "oceanbase-oracle") {
+          queryStore.openSourceRecoverySnapshot({ connectionId: props.connection.id, database: props.database, schema, title: t("contextMenu.routineRenameRecoveryTitle", { name: row.name }), sql: source.source });
           await executeOceanBaseRoutineRenameSteps(statements, (sql) => api.executeQuery(props.connection.id, props.database, sql, schema));
         } else {
           for (const sql of statements) await api.executeQuery(props.connection.id, props.database, sql, schema);
@@ -1835,8 +1836,8 @@ async function confirmRename() {
       if (!executed) return;
     }
     renameApplied = true;
-    if (effectiveDatabaseType.value === "oceanbase-oracle" && row.type === "VIEW") {
-      queryStore.invalidateRenamedViewTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: "VIEW" });
+    if (effectiveDatabaseType.value === "oceanbase-oracle" && (row.type === "VIEW" || row.type === "PROCEDURE" || row.type === "FUNCTION")) {
+      queryStore.invalidateRenamedObjectTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: row.type });
       if (sourceRow.value?.id === row.id) closeSource();
       invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
       await Promise.all([row.name, newName].flatMap((tableName) => [
@@ -1872,6 +1873,20 @@ async function confirmRename() {
     renameError.value = e instanceof RoutineRenameStepError
       ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: row.name, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
       : e?.message || String(e);
+    if (e instanceof RoutineRenameStepError && e.step >= 2) {
+      // CREATE may have succeeded even if the response was lost. Refresh both
+      // identities without replacing the old pin or masking the original error.
+      if (e.step === 5 && (row.type === "PROCEDURE" || row.type === "FUNCTION")) {
+        queryStore.invalidateRenamedObjectTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: row.type });
+        if (sourceRow.value?.id === row.id) closeSource();
+      }
+      invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
+      await Promise.allSettled([row.name, newName].flatMap((tableName) => [
+        invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }),
+        invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName }),
+      ]));
+      await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
+    }
   }
 }
 
@@ -4596,6 +4611,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       <div class="grid gap-3">
         <Input v-model="renameInput" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" @keydown.enter.prevent="confirmRename" />
         <p v-if="effectiveDatabaseType === 'oceanbase-oracle' && renameTarget?.type === 'VIEW'" class="text-sm text-muted-foreground">{{ t("contextMenu.oceanbaseViewRenameWarning") }}</p>
+        <p v-if="effectiveDatabaseType === 'oceanbase-oracle' && (renameTarget?.type === 'PROCEDURE' || renameTarget?.type === 'FUNCTION')" class="text-sm text-muted-foreground">{{ t("contextMenu.oceanbaseRoutineRenameWarning") }}</p>
         <pre v-if="renamePreviewSqlText" class="max-h-32 min-w-0 max-w-full overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(renamePreviewSqlText)"></pre>
         <p v-if="renameError" class="min-w-0 max-w-full overflow-x-auto text-sm text-destructive">{{ renameError }}</p>
       </div>

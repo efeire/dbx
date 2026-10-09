@@ -10,6 +10,8 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/backend/api")>(),
   listPlugins: vi.fn().mockResolvedValue([]),
   buildRenameObjectSql: vi.fn().mockResolvedValue('RENAME "Old View" TO "New View"'),
+  getObjectSource: vi.fn().mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true }),
+  buildRoutineRenameObjectSourceStatements: vi.fn().mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]),
   executeQuery: vi.fn(),
 }));
 
@@ -17,6 +19,7 @@ import * as api from "@/lib/backend/api";
 import SidebarTreeRuntimeHost from "@/components/sidebar/SidebarTreeRuntimeHost.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
+import { useQueryStore } from "@/stores/queryStore";
 
 const mounted: App[] = [];
 const node: TreeNode = { id: "ob:APP:view:Old View", type: "view", label: "Old View", connectionId: "ob", database: "APP" };
@@ -28,36 +31,80 @@ interface RenameDialog {
   confirmRenameObject(): Promise<void>;
 }
 
-async function openRename() {
+async function openRename(target: TreeNode = node) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useConnectionStore();
   store.connections = [{ id: "ob", name: "OB", db_type: "oceanbase-oracle", host: "localhost", port: 2881, username: "APP", password: "", is_production: true }];
   vi.spyOn(store, "ensureConnected").mockResolvedValue(undefined);
   const replacePin = vi.spyOn(store, "replacePinnedTreeNode");
+  vi.spyOn(store, "refreshObjectListTreeNode").mockResolvedValue(undefined);
+  const queries = useQueryStore();
+  const sourceId = queries.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "APP", title: target.label, sql: "unsaved original definition", objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" } });
   const instance = ref<{ buildContextMenu(target: TreeNode): ContextMenuItem[] }>();
   let controller: RenameDialog | undefined;
   const container = document.createElement("div");
   document.body.append(container);
-  const app = createApp({ setup: () => () => h(SidebarTreeRuntimeHost, { ref: instance, node, depth: 0, "onOpen-dialog-controller": (value: RenameDialog) => { controller = value; } }) });
+  const app = createApp({ setup: () => () => h(SidebarTreeRuntimeHost, { ref: instance, node: target, depth: 0, "onOpen-dialog-controller": (value: RenameDialog) => { controller = value; } }) });
   app.use(pinia);
   app.use(i18n);
   app.mount(container);
   mounted.push(app);
   await nextTick();
-  const item = instance.value!.buildContextMenu(node).find((entry) => entry.label === i18n.global.t("contextMenu.renameObject"));
+  const item = instance.value!.buildContextMenu(target).find((entry) => entry.label === i18n.global.t("contextMenu.renameObject"));
   expect(item).toBeDefined();
   await item!.action?.();
   controller!.renameObjectName = "New View";
   await nextTick();
-  return { dialog: controller!, safety: useProductionSafetyStore(), replacePin };
+  return { dialog: controller!, safety: useProductionSafetyStore(), replacePin, queries, sourceId };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [] } as any);
+});
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
   document.body.innerHTML = "";
   vi.restoreAllMocks();
+});
+
+describe("OceanBase routine rename from the sidebar", () => {
+  const routine: TreeNode = { ...node, id: "ob:APP:procedure:Old View", type: "procedure" };
+
+  it("cancels without executing any stage or detaching the old source", async () => {
+    const { dialog, safety, queries, sourceId } = await openRename(routine);
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.cancel();
+    await execution;
+    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource?.name).toBe("Old View");
+  });
+
+  it.each([3, 4, 5])("stops at failed stage %i and preserves the original error and text", async (failedStep) => {
+    vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => {
+      if (sql === ["preflight", "create", "validate", "grants", "drop"][failedStep - 1]) throw new Error("routine-stage-error");
+      return { columns: [], rows: [] } as any;
+    });
+    const { dialog, safety, replacePin, queries, sourceId } = await openRename(routine);
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await execution;
+    expect(dialog.renameObjectError).toContain("routine-stage-error");
+    expect(dialog.showRenameObjectDialog).toBe(true);
+    expect(api.executeQuery).toHaveBeenCalledTimes(failedStep);
+    expect(replacePin).not.toHaveBeenCalled();
+    const source = queries.tabs.find((tab) => tab.id === sourceId)!;
+    expect(source.sql).toBe("unsaved original definition");
+    if (failedStep === 5) {
+      expect(source.sourceSnapshot).toBe(true);
+      expect(source.objectSource).toBeUndefined();
+    } else {
+      expect(source.objectSource?.name).toBe("Old View");
+    }
+  });
 });
 
 describe("OceanBase ordinary view rename", () => {
