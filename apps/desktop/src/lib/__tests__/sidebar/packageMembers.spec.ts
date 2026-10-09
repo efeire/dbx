@@ -17,10 +17,14 @@ function packageNode(): TreeNode {
 
 describe("package member tree", () => {
   it("preserves whitespace in OceanBase quoted member names", () => {
-    const nodes = buildPackageMemberNodes(packageNode(), [
-      { name: " RUN ", kind: "procedure", signature: "", routine_id: "APP:101:1" },
-      { name: " ", kind: "function", signature: null, routine_id: "APP:101:2" },
-    ], "oceanbase-oracle");
+    const nodes = buildPackageMemberNodes(
+      packageNode(),
+      [
+        { name: " RUN ", kind: "procedure", signature: "", routine_id: "APP:101:1" },
+        { name: " ", kind: "function", signature: null, routine_id: "APP:101:2" },
+      ],
+      "oceanbase-oracle",
+    );
     expect(nodes.map((node) => node.objectName)).toEqual([" RUN ", " "]);
     expect(nodes.map((node) => node.label)).toEqual([" RUN ", " "]);
   });
