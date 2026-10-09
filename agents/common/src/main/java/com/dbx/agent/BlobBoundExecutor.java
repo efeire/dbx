@@ -21,6 +21,7 @@ public final class BlobBoundExecutor {
     public interface PreparedStatementConfigurer {
         void configure(PreparedStatement statement) throws SQLException;
         default boolean isRollbackConfirmedBusinessError(SQLException error) { return false; }
+        default boolean isUnsupportedSavepointRelease(SQLException error) { return false; }
     }
 
     public static QueryResult execute(Connection conn, List<String> previews, List<BlobBoundStatement> statements,
@@ -53,7 +54,7 @@ public final class BlobBoundExecutor {
                 long affected = executeAll(conn, statements, schema, setSchemaSql, resetSchemaSql, timeoutSecs, operation, configurer);
                 operation.checkCancelled();
                 if (transaction) conn.commit();
-                if (savepoint != null) conn.releaseSavepoint(savepoint);
+                if (savepoint != null) releaseSavepoint(conn, savepoint, configurer);
                 finished = true;
                 return new QueryResult(Collections.emptyList(), Collections.emptyList(), affected,
                     System.currentTimeMillis() - start, false);
@@ -68,7 +69,7 @@ public final class BlobBoundExecutor {
                 if (savepoint != null) {
                     try { conn.rollback(savepoint); }
                     catch (Exception rollbackFailure) { throw rollbackUnconfirmed(conn, failure, rollbackFailure); }
-                    try { conn.releaseSavepoint(savepoint); }
+                    try { releaseSavepoint(conn, savepoint, configurer); }
                     catch (Exception releaseFailure) {
                         SQLTransientConnectionException unsafe = new SQLTransientConnectionException(
                             "BLOB savepoint cleanup failed after batch rollback; discard this connection and treat transaction state as unknown", "08007", releaseFailure);
@@ -108,6 +109,14 @@ public final class BlobBoundExecutor {
         unsafe.addSuppressed(rollbackFailure);
         try { conn.close(); } catch (Exception closeFailure) { unsafe.addSuppressed(closeFailure); }
         return unsafe;
+    }
+
+    private static void releaseSavepoint(Connection conn, Savepoint savepoint,
+        PreparedStatementConfigurer configurer) throws SQLException {
+        try { conn.releaseSavepoint(savepoint); }
+        catch (SQLException error) {
+            if (!configurer.isUnsupportedSavepointRelease(error)) throw error;
+        }
     }
 
     private static long executeAll(Connection conn, List<BlobBoundStatement> statements, String schema,

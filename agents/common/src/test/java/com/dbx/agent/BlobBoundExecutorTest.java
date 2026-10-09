@@ -109,6 +109,29 @@ class BlobBoundExecutorTest {
         }
     }
 
+    @Test void exactUnsupportedReleaseDoesNotCommitOrDiscardSuccessfulOrRolledBackManualBatch() {
+        for(boolean conflict : new boolean[]{false,true}) {
+            Fake jdbc=new Fake(); jdbc.autoCommit=false; jdbc.failRelease=true;
+            jdbc.releaseFailure=new java.sql.SQLException("releaseSavepoint is not supported","99999",17023);
+            if(conflict) { jdbc.failAt=2; jdbc.executionFailure=new java.sql.SQLTransientConnectionException("ORA-20001: stale", "HY000",20001); }
+            BlobBoundExecutor.PreparedStatementConfigurer configurer=new BlobBoundExecutor.PreparedStatementConfigurer() {
+                public void configure(PreparedStatement statement) { }
+                public boolean isRollbackConfirmedBusinessError(java.sql.SQLException error) { return error.getErrorCode()==20001; }
+                public boolean isUnsupportedSavepointRelease(java.sql.SQLException error) { return error.getErrorCode()==17023 && "99999".equals(error.getSQLState()); }
+            };
+            if(conflict) {
+                RuntimeException failure=assertThrows(RuntimeException.class,()->BlobBoundExecutor.execute(jdbc.connection(),
+                    Arrays.asList(PREVIEW,PREVIEW),Arrays.asList(bound(),bound()),null,s->s,()->null,7,false,configurer));
+                assertEquals("keep",AgentRpcError.toJson(failure,"execute_batch","test").getAsJsonObject("data").get("sessionDisposition").getAsString());
+                assertEquals(42,jdbc.value); assertEquals(1,jdbc.savepointRollbacks);
+            } else {
+                BlobBoundExecutor.execute(jdbc.connection(),Arrays.asList(PREVIEW),Arrays.asList(bound()),null,s->s,()->null,7,false,configurer);
+                assertEquals(43,jdbc.value); assertEquals(0,jdbc.savepointRollbacks);
+            }
+            assertEquals(0,jdbc.commits); assertFalse(jdbc.autoCommit); assertFalse(jdbc.connectionClosed);
+        }
+    }
+
     @Test void unsupportedSavepointFailsBeforeAnyWrite() {
         Fake jdbc = new Fake(); jdbc.autoCommit = false; jdbc.unsupportedSavepoint = true;
         assertThrows(RuntimeException.class, () -> run(jdbc, Arrays.asList(bound()), false));
@@ -196,6 +219,7 @@ class BlobBoundExecutorTest {
         int commits, rollbacks, savepointRollbacks, savepoints, releases, executions, closedStatements, cancels, timeout;
         String preparedSql;
         java.sql.SQLException executionFailure;
+        java.sql.SQLException releaseFailure;
         List<String> events = new ArrayList<>(), boundHex = new ArrayList<>();
         List<Long> lengths = new ArrayList<>(); List<InputStream> streams = new ArrayList<>();
         Connection connection() {
@@ -207,7 +231,7 @@ class BlobBoundExecutorTest {
                     case "setAutoCommit": if(failReset && (boolean)a[0])throw new java.sql.SQLException("reset failed"); autoCommit = (boolean)a[0]; return null;
                     case "getMetaData": return Proxy.newProxyInstance(DatabaseMetaData.class.getClassLoader(), new Class<?>[]{DatabaseMetaData.class}, (x,y,z) -> y.getName().equals("supportsTransactions") ? true : defaultValue(y.getReturnType()));
                     case "setSavepoint": if (unsupportedSavepoint) throw new java.sql.SQLFeatureNotSupportedException(); savepoints++; savedValue=value; return Proxy.newProxyInstance(Savepoint.class.getClassLoader(),new Class<?>[]{Savepoint.class},(x,y,z)->defaultValue(y.getReturnType()));
-                    case "releaseSavepoint": releases++; if(failRelease)throw new java.sql.SQLTransientConnectionException("release lost connection","08006"); return null;
+                    case "releaseSavepoint": releases++; if(failRelease)throw releaseFailure!=null?releaseFailure:new java.sql.SQLTransientConnectionException("release lost connection","08006"); return null;
                     case "commit": commits++; events.add("commit"); return null;
                     case "rollback": if(failRollback)throw new java.sql.SQLException("rollback lost connection","08006"); if (a == null || a.length == 0) rollbacks++; else {savepointRollbacks++;value=savedValue;} return null;
                     case "prepareCall": case "prepareStatement": preparedSql=(String)a[0]; return statement(m.getName().equals("prepareCall"));

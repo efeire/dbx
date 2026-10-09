@@ -21,6 +21,12 @@ final class OceanBaseLobStatements {
             }
             return true;
         }
+        @Override public boolean isUnsupportedSavepointRelease(SQLException error) {
+            // OB Oracle mode rejects release locally; the transaction end releases its savepoints.
+            return error.getErrorCode() == 17023 && "99999".equals(error.getSQLState())
+                && !(error instanceof java.sql.SQLTimeoutException)
+                && !(error instanceof java.sql.SQLRecoverableException);
+        }
     };
 
     static void configure(Statement statement) throws SQLException {

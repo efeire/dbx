@@ -31,6 +31,9 @@ class OceanBaseLobStatementTest {
         assertFalse(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLRecoverableException("lost", "HY000", 20001)));
         assertFalse(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLTimeoutException("timeout", "HY000", 20001)));
         assertFalse(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLTransientConnectionException("stale", "HY000", 20001, new SQLException("lost", "08006"))));
+        assertTrue(OceanBaseLobStatements.BINDING.isUnsupportedSavepointRelease(new SQLException("unsupported", "99999", 17023)));
+        assertFalse(OceanBaseLobStatements.BINDING.isUnsupportedSavepointRelease(new java.sql.SQLTransientConnectionException("lost", "08006", 17023)));
+        assertFalse(OceanBaseLobStatements.BINDING.isUnsupportedSavepointRelease(new java.sql.SQLTimeoutException("timeout", "99999", 17023)));
     }
     @Test
     void boundPreparedAndCallableInitializeNativeModeBeforeStreamBindingThroughPool() throws Exception {
