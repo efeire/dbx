@@ -15,6 +15,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 class OceanBaseLobValuesTest {
     @Test
+    void refusesNewLocatorsWhenRetainedPayloadBudgetIsFullAndRestoresCapacityOnRelease() throws Exception {
+        OceanBaseLobValues values = new OceanBaseLobValues((connection, locator, offset, limit) -> chunk("x".repeat(1000), offset, limit), ignored -> 40L * 1024 * 1024);
+        Fixture first = new Fixture();
+        var preview = (OceanBaseLobValues.Preview) values.preview(first.resultSet, 1, Types.CLOB, "CLOB");
+        Fixture second = new Fixture();
+        assertThrows(java.sql.SQLException.class, () -> values.preview(second.resultSet, 1, Types.CLOB, "CLOB"));
+        assertTrue(second.freed.get());
+        assertTrue(values.release(preview.ref()));
+        Fixture third = new Fixture();
+        assertNotNull(((OceanBaseLobValues.Preview) values.preview(third.resultSet, 1, Types.CLOB, "CLOB")).ref());
+        values.clear();
+        Fixture fourth = new Fixture();
+        assertNotNull(((OceanBaseLobValues.Preview) values.preview(fourth.resultSet, 1, Types.CLOB, "CLOB")).ref());
+        values.clear();
+    }
+    @Test
     void boundsPreviewAndReadsTheSameCapturedLocatorWithoutMaterializingItsStreams() throws Exception {
         String original = "中文😀".repeat(1000);
         List<Integer> amounts = new ArrayList<>();
