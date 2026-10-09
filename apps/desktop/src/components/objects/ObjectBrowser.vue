@@ -97,7 +97,9 @@ import {
   supportsDropTableCascade,
   supportsTruncateTableCascade,
   type TableAdminSqlOptions,
+  type DuplicateTableStructurePlan,
 } from "@/lib/database/dbAdminSql";
+import { confirmOceanbaseTableClone, executeOceanbaseTableClone, showOceanbaseTableCloneFailure, OceanbaseTableCloneError } from "@/lib/database/oceanbaseTableClone";
 import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildRenameObjectSql, supportsObjectRename } from "@/lib/table/objectRenameSql";
@@ -379,6 +381,7 @@ const emptyPreviewSql = ref("");
 const showDuplicateDialog = ref(false);
 const duplicateTarget = ref<ObjectBrowserRow | null>(null);
 const duplicateTableName = ref("");
+const duplicateTableSchema = ref("");
 const showProcedureExecutionConfirm = ref(false);
 const procedureExecutionTarget = ref<ObjectBrowserRow | null>(null);
 const selectedTableIds = ref<Set<string>>(new Set());
@@ -2624,10 +2627,11 @@ async function exportTableData(row: ObjectBrowserRow, format: "csv" | "xlsx" | "
 function requestDuplicateStructure(row: ObjectBrowserRow) {
   duplicateTarget.value = row;
   duplicateTableName.value = `${row.name}_copy`;
+  duplicateTableSchema.value = row.schema || selectedSchema.value || "";
   showDuplicateDialog.value = true;
 }
 
-async function buildDuplicateStructurePlan(sourceName: string, targetName: string, schema: string | undefined, tableComment?: string | null, sourceColumns?: ColumnInfo[]) {
+async function buildDuplicateStructurePlan(sourceName: string, targetName: string, schema: string | undefined, tableComment?: string | null, sourceColumns?: ColumnInfo[], targetSchema?: string) {
   return buildSharedDuplicateTableStructurePlan({
     connectionId: props.connection.id,
     database: props.database,
@@ -2638,11 +2642,13 @@ async function buildDuplicateStructurePlan(sourceName: string, targetName: strin
     targetName,
     tableComment,
     sourceColumns,
+    targetSchema,
     identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connection.id),
   });
 }
 
-function executeDuplicateStructurePlan(plan: { sql: string; executeAsScript: boolean }, schema: string | undefined) {
+function executeDuplicateStructurePlan(plan: DuplicateTableStructurePlan, schema: string | undefined) {
+  if (plan.oceanbaseClone) return executeOceanbaseTableClone(plan.oceanbaseClone, (sql) => api.executeQuery(props.connection.id, props.database, sql, plan.oceanbaseClone!.targetSchema));
   return plan.executeAsScript ? api.executeScript(props.connection.id, props.database, plan.sql, schema) : api.executeQuery(props.connection.id, props.database, plan.sql, schema);
 }
 
@@ -2653,13 +2659,15 @@ async function confirmDuplicateStructure() {
   showDuplicateDialog.value = false;
   try {
     const schema = row.schema || selectedSchema.value;
-    const plan = await buildDuplicateStructurePlan(row.name, newName, schema, row.comment);
+    const plan = await buildDuplicateStructurePlan(row.name, newName, schema, row.comment, undefined, effectiveDatabaseType.value === "oceanbase-oracle" ? duplicateTableSchema.value : undefined);
+    if (!confirmOceanbaseTableClone(plan, t)) return;
     const executed = await executeObjectBrowserSqlWithProductionGuard(plan.sql, () => executeDuplicateStructurePlan(plan, schema));
     if (!executed) return;
     toast(t("contextMenu.duplicateStructureSuccess", { name: newName }));
     await reload();
-    await connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema);
+    await connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, plan.oceanbaseClone?.targetSchema ?? schema);
   } catch (e: any) {
+    showOceanbaseTableCloneFailure(e);
     toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
   }
 }
@@ -2836,6 +2844,10 @@ async function confirmPasteTable() {
       if (mode === "structure-and-data" || mode === "structure-only") {
         const plan = await buildDuplicateStructurePlan(entry.sourceName, targetName, schema, entry.tableComment, sourceColumns);
         sourceColumns = plan.sourceColumns;
+        if (!confirmOceanbaseTableClone(plan, t)) {
+          pasteCancelled = true;
+          break;
+        }
         const executed = await executeObjectBrowserSqlWithProductionGuard(plan.sql, () => executeDuplicateStructurePlan(plan, schema));
         if (!executed) {
           pasteCancelled = true;
@@ -2868,6 +2880,8 @@ async function confirmPasteTable() {
       successCount++;
     } catch (e: any) {
       pasteFailCount++;
+      showOceanbaseTableCloneFailure(e);
+      if (e instanceof OceanbaseTableCloneError) hasMutatedTable = true;
       firstPasteError ??= e;
       console.error(`Failed to paste table "${entry.sourceName}" -> "${targetName}":`, e);
     }
@@ -4755,6 +4769,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       <DialogHeader>
         <DialogTitle>{{ t("contextMenu.duplicateNameTitle") }}</DialogTitle>
       </DialogHeader>
+      <Input v-if="effectiveDatabaseType === 'oceanbase-oracle'" v-model="duplicateTableSchema" :aria-label="t('contextMenu.oceanbaseCloneTargetSchema')" :placeholder="t('contextMenu.oceanbaseCloneTargetSchema')" />
       <Input v-model="duplicateTableName" :placeholder="t('contextMenu.duplicateNamePlaceholder')" @keydown.enter.prevent="confirmDuplicateStructure" />
       <DialogFooter>
         <Button variant="outline" @click="showDuplicateDialog = false">{{ t("dangerDialog.cancel") }}</Button>
