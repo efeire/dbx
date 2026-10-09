@@ -3272,15 +3272,186 @@ func TestGetObjectSourceRejectsMissingViewSource(t *testing.T) {
 	}
 }
 
-func TestOracleObjectIdentityNameCandidates(t *testing.T) {
-	if got := oracleObjectIdentityNameCandidates("MIXEDPROC"); len(got) != 1 || got[0] != "MIXEDPROC" {
-		t.Fatalf("uppercase identity should be single candidate, got %#v", got)
+func TestTriggerListAndObjectSourceKeepExactCatalogIdentity(t *testing.T) {
+	for _, identity := range []struct{ owner, table, name string }{
+		{"Mixed Owner", "Mixed Table", "Mixed Trigger"},
+		{" Owner With Spaces ", " Table With Spaces ", " Trigger With Spaces "},
+		{" UPPER ", " TABLE ", " AUDIT "},
+		{"  ", "  ", "  "},
+	} {
+		for _, objectType := range []string{"TRIGGER", "PROCEDURE", "FUNCTION", "VIEW", "SEQUENCE", "SYNONYM", "MATERIALIZED_VIEW"} {
+			t.Run(objectType+":"+identity.owner, func(t *testing.T) {
+				sourceStep := oracleViewSourceQueryStep{
+					queryContains: "DBMS_XMLGEN.CONVERT",
+					args:          []driver.Value{identity.owner, identity.name, objectType},
+					rows:          [][]driver.Value{{"BEGIN NULL; END;"}},
+				}
+				if objectType == "VIEW" {
+					sourceStep.queryContains = "FROM ALL_VIEWS"
+					sourceStep.args = []driver.Value{identity.owner, identity.name}
+				} else if objectType == "SEQUENCE" || objectType == "SYNONYM" || objectType == "MATERIALIZED_VIEW" {
+					sourceStep.queryContains = "DBMS_METADATA.GET_DDL(:1, :2, :3)"
+					sourceStep.args = []driver.Value{objectType, identity.name, identity.owner}
+				}
+				db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+					{
+						queryContains: "WHERE t.TABLE_OWNER = :1",
+						args:          []driver.Value{identity.owner, identity.table},
+						columns:       []string{"TRIGGER_NAME", "OWNER", "TRIGGERING_EVENT", "TRIGGER_TYPE", "DESCRIPTION", "LINE", "TEXT"},
+						rows:          [][]driver.Value{{identity.name, identity.owner, "INSERT", "AFTER", nil, nil, nil}},
+					},
+					sourceStep,
+				})
+				s := newServer()
+				s.db = db
+				triggers, err := s.listTriggers(identity.owner, identity.table)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(triggers) != 1 || triggers[0].Name != identity.name || triggers[0].Owner == nil || *triggers[0].Owner != identity.owner {
+					t.Fatalf("catalog identity changed: %#v", triggers)
+				}
+				result, err := s.getObjectSource(identity.owner, identity.name, objectType)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result["schema"] != identity.owner || result["name"] != identity.name || result["source"] != "BEGIN NULL; END;" {
+					t.Fatalf("source identity changed: %#v", result)
+				}
+				if scripted.next != len(scripted.steps) {
+					t.Fatal("missing expected exact-identity queries")
+				}
+			})
+		}
 	}
-	if got := oracleObjectIdentityNameCandidates("MiXeDProc"); len(got) != 2 || got[0] != "MiXeDProc" || got[1] != "MIXEDPROC" {
-		t.Fatalf("mixed-case identity should try exact then upper, got %#v", got)
+}
+
+func TestCatalogIdentityUsesExactSessionDefault(t *testing.T) {
+	for _, current := range []struct {
+		value string
+		err   error
+	}{
+		{" Current Owner ", nil}, {"", nil}, {"", errors.New("CURRENT_SCHEMA unavailable")},
+	} {
+		for _, method := range []string{"list", "source"} {
+			t.Run(method+":"+current.value+fmt.Sprint(current.err), func(t *testing.T) {
+				owner := current.value
+				steps := []oracleViewSourceQueryStep{{
+					queryContains: "SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')",
+					rows:          [][]driver.Value{{current.value}},
+					err:           current.err,
+				}}
+				if current.err != nil || current.value == "" {
+					owner = " Session User "
+					steps = append(steps, oracleViewSourceQueryStep{
+						queryContains: "SYS_CONTEXT('USERENV', 'SESSION_USER')",
+						rows:          [][]driver.Value{{owner}},
+					})
+				}
+				if method == "list" {
+					steps = append(steps, oracleViewSourceQueryStep{
+						queryContains: "WHERE t.TABLE_OWNER = :1",
+						args:          []driver.Value{owner, " T "},
+						columns:       []string{"TRIGGER_NAME", "OWNER", "TRIGGERING_EVENT", "TRIGGER_TYPE", "DESCRIPTION", "LINE", "TEXT"},
+					})
+				} else {
+					steps = append(steps, oracleViewSourceQueryStep{
+						queryContains: "DBMS_XMLGEN.CONVERT",
+						args:          []driver.Value{owner, " Audit ", "TRIGGER"},
+						rows:          [][]driver.Value{{"BEGIN NULL; END;"}},
+					})
+				}
+				db, scripted := openOracleViewSourceTestDB(t, steps)
+				s := newServer()
+				s.db = db
+				if method == "list" {
+					if _, err := s.listTriggers("", " T "); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					result, err := s.getObjectSource("", " Audit ", "TRIGGER")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if result["schema"] != owner {
+						t.Fatalf("default owner changed: %#v", result)
+					}
+				}
+				if scripted.next != len(scripted.steps) {
+					t.Fatal("missing expected session default query")
+				}
+			})
+		}
 	}
-	if got := oracleObjectIdentityNameCandidates("  "); got != nil {
-		t.Fatalf("blank name should yield no candidates, got %#v", got)
+}
+
+func TestObjectSourceDoesNotTryAnotherCatalogIdentity(t *testing.T) {
+	for _, objectType := range []string{"TRIGGER", "SEQUENCE"} {
+		step := oracleViewSourceQueryStep{
+			queryContains: "DBMS_XMLGEN.CONVERT",
+			args:          []driver.Value{" Mixed Owner ", " Audit ", objectType},
+			rows:          [][]driver.Value{{nil}},
+		}
+		if objectType == "SEQUENCE" {
+			step.queryContains = "DBMS_METADATA.GET_DDL(:1, :2, :3)"
+			step.args = []driver.Value{objectType, " Audit ", " Mixed Owner "}
+			step.err = errors.New("ORA-31603: exact object not found")
+		}
+		db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{step})
+		s := newServer()
+		s.db = db
+		result, err := s.getObjectSource(" Mixed Owner ", " Audit ", objectType)
+		if objectType == "TRIGGER" {
+			if err != nil || result["source"] != "" {
+				t.Fatalf("missing exact source: %#v, %v", result, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "exact object not found") {
+			t.Fatalf("metadata error must remain on the exact identity: %v", err)
+		}
+		if scripted.next != 1 {
+			t.Fatal("unexpected identity retry")
+		}
+	}
+}
+
+func TestLegacySchemaInputStillNormalizesUnquotedNames(t *testing.T) {
+	schema, err := resolveOracleSchema(" Mixed Owner ", nil, nil)
+	if err != nil || schema != "MIXED OWNER" {
+		t.Fatalf("legacy normalization changed: %q, %v", schema, err)
+	}
+}
+
+func TestQuotedSourceFallbackKeepsTheSameCatalogIdentity(t *testing.T) {
+	for _, objectType := range []string{"TRIGGER", "VIEW"} {
+		first := oracleViewSourceQueryStep{
+			queryContains: "DBMS_XMLGEN.CONVERT",
+			args:          []driver.Value{" Mixed Owner ", " Mixed Name ", objectType},
+			err:           errors.New("aggregation unavailable"),
+		}
+		second := oracleViewSourceQueryStep{
+			queryContains: "SELECT TEXT",
+			args:          first.args,
+			rows:          [][]driver.Value{{"BEGIN NULL; END;"}},
+		}
+		if objectType == "VIEW" {
+			first.queryContains = "FROM ALL_VIEWS"
+			first.args = []driver.Value{" Mixed Owner ", " Mixed Name "}
+			second.queryContains = "DBMS_METADATA.GET_DDL('VIEW'"
+			second.args = []driver.Value{" Mixed Name ", " Mixed Owner "}
+		}
+		db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{first, second})
+		s := newServer()
+		s.db = db
+		result, err := s.getObjectSource(" Mixed Owner ", " Mixed Name ", objectType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result["schema"] != " Mixed Owner " || result["name"] != " Mixed Name " || result["source"] != "BEGIN NULL; END;" {
+			t.Fatalf("fallback changed catalog identity: %#v", result)
+		}
+		if scripted.next != len(scripted.steps) {
+			t.Fatal("missing expected source fallback")
+		}
 	}
 }
 
