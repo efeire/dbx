@@ -3214,18 +3214,15 @@ pub async fn write_large_value_snapshot(
     loop {
         if is_canceled(&cancel) { return Err(canceled_error()); }
         let chunk = request_large_value_with_cancel(state, request.clone(), false, cancel.clone()).await?;
-        if chunk.get("status").and_then(|value| value.as_str()) != Some("ok") {
-            return Err("LOB snapshot expired; execute the query again".to_string());
-        }
-        let next = chunk.get("next_offset").and_then(|value| value.as_u64()).ok_or("Invalid LOB offset")?;
-        let eof = chunk.get("eof").and_then(|value| value.as_bool()).ok_or("Invalid LOB EOF")?;
-        let data = chunk.get("data").and_then(|value| value.as_str()).ok_or("Invalid LOB data")?;
-        if next < request.offset || (!eof && next == request.offset) { return Err("Invalid LOB offset".to_string()); }
+        if is_canceled(&cancel) { return Err(canceled_error()); }
+        let (data, next, eof, kind) = snapshot_export::checked_chunk(&chunk, request.offset)?;
+        if kind != "text" { return Err("CLOB download requires text chunks".to_string()); }
         output.write_all(data.as_bytes()).map_err(|error| error.to_string())?;
         written += data.len() as u64;
         if eof { break; }
         request.offset = next;
     }
+    if is_canceled(&cancel) { return Err(canceled_error()); }
     output.flush().map_err(|error| error.to_string())?;
     Ok(written)
 }

@@ -133,7 +133,7 @@ impl<R: Read> Read for CancelableReader<'_, R> {
     }
 }
 
-fn checked_chunk(chunk: &Value, offset: u64) -> Result<(&str, u64, bool, &str), String> {
+pub(super) fn checked_chunk(chunk: &Value, offset: u64) -> Result<(&str, u64, bool, &str), String> {
     if chunk.get("status").and_then(Value::as_str) != Some("ok") { return Err("LOB snapshot expired; execute the query again".into()); }
     let data = chunk.get("data").and_then(Value::as_str).ok_or("Invalid LOB data")?;
     let next = chunk.get("next_offset").and_then(Value::as_u64).ok_or("Invalid LOB offset")?;
