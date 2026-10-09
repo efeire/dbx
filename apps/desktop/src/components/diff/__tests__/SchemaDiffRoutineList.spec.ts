@@ -29,8 +29,18 @@ it("renders distinct package parts and trigger state, dependencies, and affected
   const view = vi.fn();
   const host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
-  app.use(createI18n({ legacy: false, locale: "en", messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}", routineIncomingDependencies: "Affected: {dependencies}" } } } }));
+  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, selectable: true, onToggleSelection: toggle, onViewDiff: view }) });
+  app.use(
+    createI18n({
+      legacy: false,
+      locale: "en",
+      messages: {
+        en: {
+          diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}", routineIncomingDependencies: "Affected: {dependencies}" },
+        },
+      },
+    }),
+  );
   app.mount(host);
   await nextTick();
   expect(host.textContent).toContain("PACKAGE SRC.SAME");
@@ -52,19 +62,48 @@ it("renders distinct package parts and trigger state, dependencies, and affected
 it("shows type table-column impact and unreadable metadata while keeping blocked bodies inspectable", async () => {
   const typeInfo = { pairingState: "available", dependencyState: "empty", incomingState: "denied", referencedColumns: [{ owner: "DST", tableName: "Orders", columnName: "payload" }], metadataMessage: "ALL_DEPENDENCIES permission denied" } as const;
   const source = { name: "Order.Type", function_type: "TYPE", data_type: "", arguments: "", definition: "CREATE TYPE OrderType AS OBJECT (id NUMBER);", schema: "SRC" };
-  const objects = convertToSchemaDiffObjects([], [
-    { name: source.name, type: "modified", source, target: { ...source, schema: "DST", pairedObjectPresent: true, typeInfo: { ...typeInfo, referencedColumns: [...typeInfo.referencedColumns] } } },
-    { name: source.name, type: "added", source: { ...source, function_type: "TYPE BODY" } },
-  ], [], [], [], undefined, [
-    { name: source.name, routineType: "TYPE", operation: "modified", dependencies: [], blockedReason: "Dependent table columns exist", incomingDependencies: [{ owner: "DST", name: "ReadOrders", objectType: "FUNCTION" }] },
-    { name: source.name, routineType: "TYPE BODY", operation: "added", dependencies: ["DST.Order.Type TYPE"] },
-  ]);
+  const objects = convertToSchemaDiffObjects(
+    [],
+    [
+      { name: source.name, type: "modified", source, target: { ...source, schema: "DST", pairedObjectPresent: true, typeInfo: { ...typeInfo, referencedColumns: [...typeInfo.referencedColumns] } } },
+      { name: source.name, type: "added", source: { ...source, function_type: "TYPE BODY" } },
+    ],
+    [],
+    [],
+    [],
+    undefined,
+    [
+      { name: source.name, routineType: "TYPE", operation: "modified", dependencies: [], blockedReason: "Dependent table columns exist", incomingDependencies: [{ owner: "DST", name: "ReadOrders", objectType: "FUNCTION" }] },
+      { name: source.name, routineType: "TYPE BODY", operation: "added", dependencies: ["DST.Order.Type TYPE"] },
+    ],
+  );
   const toggle = vi.fn();
   const view = vi.fn();
   const host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
-  app.use(createI18n({ legacy: false, locale: "en", messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}", routineIncomingDependencies: "Affected: {dependencies}", typeReferencedColumns: "Columns: {columns}", typeMetadataState: "Pair: {pairing}; outgoing: {outgoing}; incoming: {incoming}", typeReadState: { available: "Available", empty: "No visible rows", denied: "Permission denied" } } } } }));
+  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, selectable: true, onToggleSelection: toggle, onViewDiff: view }) });
+  app.use(
+    createI18n({
+      legacy: false,
+      locale: "en",
+      messages: {
+        en: {
+          diff: {
+            sourceObject: "Source",
+            targetObject: "Target",
+            routineDiffPoints: "Changes",
+            routineDiffStats: "{added}/{removed}/{modified}",
+            routinePlanBlocked: "Blocked: {reason}",
+            routineDependencies: "Dependencies: {dependencies}",
+            routineIncomingDependencies: "Affected: {dependencies}",
+            typeReferencedColumns: "Columns: {columns}",
+            typeMetadataState: "Pair: {pairing}; outgoing: {outgoing}; incoming: {incoming}",
+            typeReadState: { available: "Available", empty: "No visible rows", denied: "Permission denied" },
+          },
+        },
+      },
+    }),
+  );
   app.mount(host);
   await nextTick();
   expect(host.textContent).toContain("TYPE SRC.Order.Type");
@@ -91,8 +130,14 @@ it("shows both routine owners and dependencies while blocked rows remain inspect
   const view = vi.fn();
   const host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
-  app.use(createI18n({ legacy: false, locale: "en", messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", noDifferences: "No differences", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}" } } } }));
+  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, selectable: true, onToggleSelection: toggle, onViewDiff: view }) });
+  app.use(
+    createI18n({
+      legacy: false,
+      locale: "en",
+      messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", noDifferences: "No differences", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}" } } },
+    }),
+  );
   app.mount(host);
   await nextTick();
   expect(host.textContent).toContain("PROCEDURE SRC.P_SYNC");

@@ -703,7 +703,15 @@ function buildSequenceDdl(seq: SequenceInfo): string {
   return parts.join("\n");
 }
 
-export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiffs: FunctionDiff[] = [], sequenceDiffs: SequenceDiff[] = [], ruleDiffs: RuleDiff[] = [], ownerDiffs: OwnerDiff[] = [], renameCandidates?: RenameCandidate[], routineSteps: SchemaDiffRoutineStep[] = []): SchemaDiffObject[] {
+export function convertToSchemaDiffObjects(
+  tableDiffs: TableDiff[],
+  functionDiffs: FunctionDiff[] = [],
+  sequenceDiffs: SequenceDiff[] = [],
+  ruleDiffs: RuleDiff[] = [],
+  ownerDiffs: OwnerDiff[] = [],
+  renameCandidates?: RenameCandidate[],
+  routineSteps: SchemaDiffRoutineStep[] = [],
+): SchemaDiffObject[] {
   const objects: SchemaDiffObject[] = [];
 
   for (const diff of tableDiffs) {
@@ -808,7 +816,7 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
     const routineType = schemaDiffRoutineType(diff.source?.function_type || diff.target?.function_type);
     const trigger = diff.source?.trigger ?? diff.target?.trigger;
     const routineStep = routineSteps.find((step) => {
-      const tableOwner = trigger && trigger.tableOwner === diff.source?.schema ? step.targetSchema ?? trigger.tableOwner : trigger?.tableOwner;
+      const tableOwner = trigger && trigger.tableOwner === diff.source?.schema ? (step.targetSchema ?? trigger.tableOwner) : trigger?.tableOwner;
       return step.name === diff.name && step.routineType === routineType && step.trigger?.tableName === trigger?.tableName && step.trigger?.tableOwner === tableOwner;
     });
     objects.push({

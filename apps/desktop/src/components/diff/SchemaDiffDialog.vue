@@ -1034,7 +1034,16 @@ async function executeDeploySql() {
       }
       const reverse = expected.map((diff): FunctionDiff => ({ ...diff, type: diff.type === "added" ? "removed" : diff.type === "removed" ? "added" : "modified", source: diff.target, target: diff.source }));
       const options = normalizeSchemaDiffCompareOptions(activeConfig.value?.options, getDbType());
-      const plan = await api.generateSchemaSyncPlan({ diffs: [], functionDiffs: reverse, sequenceDiffs: [], ruleDiffs: [], ownerDiffs: [] }, { ...buildSchemaSyncPlanOptions(options), sourceDatabaseType: targetEngineDbType.value ?? getDbType(), sourceSchema: schema, targetSchema: schema, routineEndpoints: { sourceConnectionId: connectionId, sourceDatabase: database, targetConnectionId: connectionId, targetDatabase: database, recovery: true } });
+      const plan = await api.generateSchemaSyncPlan(
+        { diffs: [], functionDiffs: reverse, sequenceDiffs: [], ruleDiffs: [], ownerDiffs: [] },
+        {
+          ...buildSchemaSyncPlanOptions(options),
+          sourceDatabaseType: targetEngineDbType.value ?? getDbType(),
+          sourceSchema: schema,
+          targetSchema: schema,
+          routineEndpoints: { sourceConnectionId: connectionId, sourceDatabase: database, targetConnectionId: connectionId, targetDatabase: database, recovery: true },
+        },
+      );
       programSteps = plan.routineSteps ?? [];
     }
     if (expected.length > 0 && programSteps.length !== expected.length) throw new Error(t("diff.routinePlanBlocked", { reason: t("diff.noObjectsSelected") }));
@@ -1097,13 +1106,14 @@ async function handleSelectObject(reviewObject: SchemaDiffObject) {
 
   if (obj.objectKind !== "function") return;
 
-  const preferredKind: ObjectSourceKind = obj.routineType === "PACKAGE BODY" ? "PACKAGE_BODY" : obj.routineType === "TYPE BODY" ? "TYPE_BODY" : obj.routineType ?? "FUNCTION";
+  const preferredKind: ObjectSourceKind = obj.routineType === "PACKAGE BODY" ? "PACKAGE_BODY" : obj.routineType === "TYPE BODY" ? "TYPE_BODY" : (obj.routineType ?? "FUNCTION");
 
   async function fetchRoutineDdl(connectionId: string, database: string, schema: string, name: string, tableName?: string): Promise<string | undefined> {
     try {
-      const source = preferredKind === "PROCEDURE" || preferredKind === "FUNCTION"
-        ? (await loadObjectSourceWithRoutineFallback(api.getObjectSource, connectionId, database, schema, name, preferredKind, obj.arguments)).source
-        : await api.getObjectSource(connectionId, database, schema, name, preferredKind, obj.arguments, tableName);
+      const source =
+        preferredKind === "PROCEDURE" || preferredKind === "FUNCTION"
+          ? (await loadObjectSourceWithRoutineFallback(api.getObjectSource, connectionId, database, schema, name, preferredKind, obj.arguments)).source
+          : await api.getObjectSource(connectionId, database, schema, name, preferredKind, obj.arguments, tableName);
       return source?.source?.trim() ? source.source : undefined;
     } catch {
       return undefined;
@@ -1518,7 +1528,16 @@ const targetConnectionInfo = computed(() => {
               <Splitpanes horizontal class="min-h-0 flex-1" @resized="handleSplitpanesResized">
                 <Pane :size="splitpanesSize" min-size="20">
                   <div class="h-full overflow-auto">
-                    <SchemaDiffRoutineList :objects="routineDiffObjects" :source-schema="sourceSchema" :target-schema="targetSchema" :viewing-object-id="selectedRoutineObjectId" :selectable="canDeployRoutines" :empty-text="t('diff.noDifferences')" @toggle-selection="handleToggleObjectSelection" @view-diff="handleViewRoutineDiff" />
+                    <SchemaDiffRoutineList
+                      :objects="routineDiffObjects"
+                      :source-schema="sourceSchema"
+                      :target-schema="targetSchema"
+                      :viewing-object-id="selectedRoutineObjectId"
+                      :selectable="canDeployRoutines"
+                      :empty-text="t('diff.noDifferences')"
+                      @toggle-selection="handleToggleObjectSelection"
+                      @view-diff="handleViewRoutineDiff"
+                    />
                   </div>
                 </Pane>
                 <Pane :size="100 - splitpanesSize" min-size="20">
@@ -1705,7 +1724,9 @@ const targetConnectionInfo = computed(() => {
             </div>
             <div v-if="deployResult?.executedSteps?.length" class="mt-3 space-y-2 text-xs">
               <p class="font-medium">{{ t("diff.executedStatements") }}</p>
-              <ol class="max-h-40 list-inside list-decimal overflow-auto font-mono"><li v-for="(statement, index) in deployResult.executedSteps" :key="index" class="whitespace-pre-wrap">{{ statement }}</li></ol>
+              <ol class="max-h-40 list-inside list-decimal overflow-auto font-mono">
+                <li v-for="(statement, index) in deployResult.executedSteps" :key="index" class="whitespace-pre-wrap">{{ statement }}</li>
+              </ol>
             </div>
             <p v-if="isOracleRoutineTarget && !deployResult?.success" class="mt-3 text-xs text-amber-700 dark:text-amber-400">{{ t("diff.routineRecoveryHint") }}</p>
           </div>

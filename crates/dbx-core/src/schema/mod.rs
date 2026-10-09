@@ -1,6 +1,8 @@
-pub mod table_structure_sql;
 mod oracle_routines;
-pub use oracle_routines::{prepare_schema_diff_core, schema_diff_routine_context, validate_schema_diff_routines, RoutineValidation};
+pub mod table_structure_sql;
+pub use oracle_routines::{
+    prepare_schema_diff_core, schema_diff_routine_context, validate_schema_diff_routines, RoutineValidation,
+};
 pub mod oracle_types;
 
 pub use dbx_drivers::metadata::sqlite_ddl;
@@ -2153,9 +2155,7 @@ fn external_driver_statistics_query_plan(
     match dialect {
         ExternalDriverStatisticsDialect::Oracle => oracle_object_statistics_query_plan(schema),
         ExternalDriverStatisticsDialect::Dameng => dameng_object_statistics_query_plan(schema),
-        ExternalDriverStatisticsDialect::Kingbase => {
-            vec![("catalog", kingbase::object_statistics_sql(schema), true)]
-        }
+        ExternalDriverStatisticsDialect::Kingbase => kingbase::object_statistics_query_plan(schema),
     }
 }
 
@@ -3337,6 +3337,7 @@ mod tests {
             visible_schemas: None,
             show_system_schemas: false,
             sidebar_auto_load_all_tables: false,
+            show_database_links: None,
             attached_databases: Vec::new(),
             init_script: None,
             color: None,
@@ -4219,7 +4220,8 @@ done
         assert!(dameng.iter().all(|(_, _, accept_empty)| *accept_empty));
 
         let kingbase = external_driver_statistics_query_plan(ExternalDriverStatisticsDialect::Kingbase, "public");
-        assert_eq!(kingbase.len(), 1);
+        assert_eq!(kingbase.len(), 2);
+        assert!(kingbase[1].1.contains("current_setting('block_size')"));
         assert!(kingbase[0].1.contains("sys_catalog.sys_class"));
     }
 
@@ -6219,6 +6221,87 @@ done
     }
 
     #[tokio::test]
+    async fn kingbase_object_statistics_falls_back_when_size_function_is_missing() {
+        let mut queries = Vec::new();
+        let stats = super::object_statistics_from_query_plan(
+            "Kingbase",
+            "core's",
+            super::kingbase::object_statistics_query_plan("core's"),
+            |sql| {
+                queries.push(sql.clone());
+                async move {
+                    if sql.contains("sys_total_relation_size") {
+                        Err("kb: function sys_total_relation_size(oid) does not exist".to_string())
+                    } else {
+                        Ok(statistics_query_result(vec![vec![
+                            serde_json::json!("ceshi"),
+                            serde_json::json!("core's"),
+                            serde_json::json!(100),
+                            serde_json::json!(630784),
+                        ]]))
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(queries.len(), 2);
+        assert!(queries[1].contains("CAST(c.relpages AS BIGINT) * CAST(current_setting('block_size') AS BIGINT)"));
+        assert!(queries[1].contains("n.nspname = 'core''s'"));
+        assert_eq!(stats[0].name, "ceshi");
+        assert_eq!(stats[0].schema.as_deref(), Some("core's"));
+        assert_eq!(stats[0].total_bytes, Some(630784));
+        assert_eq!(stats[0].estimated_rows, Some(100));
+    }
+
+    #[tokio::test]
+    async fn kingbase_object_statistics_keeps_successful_size_results() {
+        for bytes in [None, Some(0), Some(8192)] {
+            let mut calls = 0;
+            let stats = super::object_statistics_from_query_plan(
+                "Kingbase",
+                "public",
+                super::kingbase::object_statistics_query_plan("public"),
+                |_| {
+                    calls += 1;
+                    let rows = bytes
+                        .map(|size| {
+                            vec![vec![
+                                serde_json::json!("ceshi"),
+                                serde_json::json!("public"),
+                                serde_json::json!(0),
+                                serde_json::json!(size),
+                            ]]
+                        })
+                        .unwrap_or_default();
+                    async move { Ok(statistics_query_result(rows)) }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(stats.first().and_then(|stat| stat.total_bytes), bytes);
+        }
+    }
+
+    #[tokio::test]
+    async fn kingbase_object_statistics_reports_error_when_both_queries_fail() {
+        let mut calls = 0;
+        let result = super::object_statistics_from_query_plan(
+            "Kingbase",
+            "public",
+            super::kingbase::object_statistics_query_plan("public"),
+            |_| {
+                calls += 1;
+                async { Err("permission denied".to_string()) }
+            },
+        )
+        .await;
+        assert_eq!(calls, 2);
+        assert_eq!(result.unwrap_err(), "permission denied");
+    }
+
+    #[tokio::test]
     async fn dameng_object_statistics_falls_back_to_rows_when_size_lookup_fails() {
         let sqls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded_sqls = sqls.clone();
@@ -7012,13 +7095,18 @@ async fn list_object_statistics_once(
             .await;
         }
         if db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::Kingbase) {
-            let sql = kingbase::object_statistics_sql(schema);
-            return agent_list_object_statistics(
-                client,
-                database,
+            let timeout_duration = agent_metadata_timeout(db_config.as_ref());
+            return object_statistics_from_query_plan(
+                "Kingbase",
                 schema,
-                sql,
-                agent_metadata_timeout(db_config.as_ref()),
+                kingbase::object_statistics_query_plan(schema),
+                |sql| {
+                    let client = client.clone();
+                    async move {
+                        let mut client = client.lock().await;
+                        agent_object_statistics_query(&mut client, database, schema, &sql, timeout_duration).await
+                    }
+                },
             )
             .await;
         }
@@ -8800,9 +8888,10 @@ pub async fn list_functions_core(
     database: &str,
     schema: &str,
 ) -> Result<Vec<db::FunctionInfo>, String> {
-    if connection_config(state, connection_id).await.is_some_and(|config| {
-        crate::schema_diff::is_oracle_routine_database(config.db_type)
-    }) {
+    if connection_config(state, connection_id)
+        .await
+        .is_some_and(|config| crate::schema_diff::is_oracle_routine_database(config.db_type))
+    {
         return oracle_routines::list_routines(state, connection_id, database, schema).await;
     }
     let postgres_functions = retry_metadata_connection(state, connection_id, Some(database), || async {
@@ -8922,7 +9011,11 @@ async fn load_function_info_via_object(
     };
 
     Some(db::FunctionInfo {
-        type_info: None, trigger: None, dependency_objects: Vec::new(), incoming_dependencies: Vec::new(), paired_object_present: None,
+        type_info: None,
+        trigger: None,
+        dependency_objects: Vec::new(),
+        incoming_dependencies: Vec::new(),
+        paired_object_present: None,
         schema: None,
         status: None,
         dependencies: Vec::new(),
@@ -10961,10 +11054,20 @@ async fn get_object_source_once(
             }
             first_string_cell(result?)?
         } else if let Some(client) = extract_pool!(pool_handle.as_ref(), Agent) {
-            if db_config.as_ref().is_some_and(|config| matches!(config.db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle))
+            if db_config
+                .as_ref()
+                .is_some_and(|config| matches!(config.db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle))
                 && matches!(object_type, db::ObjectSourceKind::Type | db::ObjectSourceKind::TypeBody)
             {
-                return oracle_types::source(client, database, schema, name, &object_type, agent_metadata_timeout(db_config.as_ref())).await;
+                return oracle_types::source(
+                    client,
+                    database,
+                    schema,
+                    name,
+                    &object_type,
+                    agent_metadata_timeout(db_config.as_ref()),
+                )
+                .await;
             } else if uses_oracle_metadata_object_source(db_config.as_ref(), &object_type) {
                 oracle_agent_object_source(
                     client,
@@ -12695,10 +12798,10 @@ mod ddl_tests {
                 match_type: None,
                 on_update: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
-                enabled: true,
-                valid: true,
+                deferrable: Some(false),
+                initially_deferred: Some(false),
+                enabled: Some(true),
+                valid: Some(true),
             },
             db::ConstraintInfo {
                 name: "uq_accounts_code".to_string(),
@@ -12711,10 +12814,10 @@ mod ddl_tests {
                 match_type: None,
                 on_update: None,
                 on_delete: None,
-                deferrable: true,
-                initially_deferred: true,
-                enabled: true,
-                valid: true,
+                deferrable: Some(true),
+                initially_deferred: Some(true),
+                enabled: Some(true),
+                valid: Some(true),
             },
         ];
 
@@ -13226,10 +13329,10 @@ mod ddl_tests {
             match_type: None,
             on_update: None,
             on_delete: None,
-            deferrable: false,
-            initially_deferred: false,
-            enabled: true,
-            valid: true,
+            deferrable: Some(false),
+            initially_deferred: Some(false),
+            enabled: Some(true),
+            valid: Some(true),
         }];
         let partition_info = db::postgres::PostgresTablePartitionInfo {
             is_partition: true,

@@ -1950,7 +1950,14 @@ defineExpose({
               </Button>
             </div>
             <ProductionWatermark v-if="activeProductionContext.active" />
-            <OracleTypeMetadataPanel v-if="activeTab.oracleTypeIdentity && activeTab.connectionId" :connection-id="activeTab.connectionId" :database="activeTab.database" :schema="activeTab.oracleTypeIdentity.schema" :name="activeTab.oracleTypeIdentity.name" :object-type="activeTab.oracleTypeIdentity.object_type" />
+            <OracleTypeMetadataPanel
+              v-if="activeTab.oracleTypeIdentity && activeTab.connectionId"
+              :connection-id="activeTab.connectionId"
+              :database="activeTab.database"
+              :schema="activeTab.oracleTypeIdentity.schema"
+              :name="activeTab.oracleTypeIdentity.name"
+              :object-type="activeTab.oracleTypeIdentity.object_type"
+            />
             <!-- issue #9035：源码 tab 先出现再加载。pending 期间不挂载编辑器
                  （还没有内容可编辑，也省下一次 Monaco 初始化），失败则就地重试。
                  issue #9387：DDL 新标签同样先出 tab 再加载，失败就地显示错误。 -->
@@ -2111,7 +2118,7 @@ defineExpose({
                     </div>
                   </div>
                 </div>
-                <div v-else-if="showResultRunSelector" class="min-w-0 flex-1">
+                <div v-else-if="showResultRunSelector" class="min-w-0" :class="{ 'flex-1': visibleResultItems.length === 0 }">
                   <DropdownMenu>
                     <DropdownMenuTrigger as-child>
                       <Button variant="ghost" size="sm" class="h-6 max-w-48 gap-1 px-2 text-xs">
@@ -2150,6 +2157,7 @@ defineExpose({
                   :can-export-xlsx="activeOutputView === 'result' && redisResultViewMode === 'grid' && !!activeTab.result && hasTabularResult && !activeElasticsearchJsonResponse"
                   :active-index="activeTab.activeResultIndex ?? 0"
                   :active="activeOutputView === 'result'"
+                  :display-mode="resultRunDisplayMode"
                   @select="selectResultItem"
                   @copy-sql="copySelectedResultSql"
                   @copy-query-sql="copySelectedResultQueries"
@@ -2361,7 +2369,7 @@ defineExpose({
                         <span>{{ t("grid.transposeMultiRowToggle") }}</span>
                       </div>
                       <LightTooltip :text="t('grid.transposeMultiRowHint')" side="left" :side-offset="6" :delay="0" :open-on-focus="false">
-                        <div class="grid w-32 grid-cols-2 rounded-md border bg-muted/40 p-0.5">
+                        <div class="grid min-w-40 grid-cols-2 rounded-md border bg-muted/40 p-0.5">
                           <button
                             type="button"
                             class="h-5 min-w-0 truncate whitespace-nowrap rounded-[5px] px-2 text-xs transition-colors"
@@ -3062,7 +3070,7 @@ defineExpose({
                   <span>{{ t("grid.transposeMultiRowToggle") }}</span>
                 </div>
                 <LightTooltip :text="t('grid.transposeMultiRowHint')" side="left" :side-offset="6" :delay="0" :open-on-focus="false">
-                  <div class="grid w-32 grid-cols-2 rounded-md border bg-muted/40 p-0.5">
+                  <div class="grid min-w-40 grid-cols-2 rounded-md border bg-muted/40 p-0.5">
                     <button
                       type="button"
                       class="h-5 min-w-0 truncate whitespace-nowrap rounded-[5px] px-2 text-xs transition-colors"

@@ -488,11 +488,17 @@ test.each([
   apiMock.listFunctions.mockResolvedValueOnce(programs).mockResolvedValueOnce([]);
   apiMock.prepareSchemaDiff.mockResolvedValue({ diffs: [], functionDiffs: [{ name: "P_SYNC", type: "added", source }], syncSql: "" });
   const tableListLoader = { load: vi.fn() };
-  const session = startSchemaDiffSession({ sourceConnectionId: "routine-source", sourceDatabase: "db", sourceSchema: "SRC", targetConnectionId: "routine-target", targetDatabase: "db", targetSchema: "DST", sourceDbType, targetDbType, options: { tables: false, functions: true }, ignoreComments: false, label: "routines" }, { tableListLoader });
+  const session = startSchemaDiffSession(
+    { sourceConnectionId: "routine-source", sourceDatabase: "db", sourceSchema: "SRC", targetConnectionId: "routine-target", targetDatabase: "db", targetSchema: "DST", sourceDbType, targetDbType, options: { tables: false, functions: true }, ignoreComments: false, label: "routines" },
+    { tableListLoader },
+  );
   await waitForSession(session);
   assert.equal(session.status, "completed");
   assert.equal(tableListLoader.load.mock.calls.length, 0);
-  assert.deepEqual(apiMock.listFunctions.mock.calls, [["routine-source", "db", "SRC"], ["routine-target", "db", "DST"]]);
+  assert.deepEqual(apiMock.listFunctions.mock.calls, [
+    ["routine-source", "db", "SRC"],
+    ["routine-target", "db", "DST"],
+  ]);
   const options = apiMock.prepareSchemaDiff.mock.calls[0]?.[0];
   assert.equal(options.sourceDatabaseType, sourceDbType);
   assert.equal(options.databaseType, targetDbType);
@@ -506,7 +512,22 @@ test.each([
 test("fails a routine compare on source read errors before generating a removal plan", async () => {
   vi.clearAllMocks();
   apiMock.listFunctions.mockRejectedValueOnce(new Error("SRC.P_SYNC: ORA-01031")).mockResolvedValueOnce([]);
-  const session = startSchemaDiffSession({ sourceConnectionId: "read-source", sourceDatabase: "db", sourceSchema: "SRC", targetConnectionId: "read-target", targetDatabase: "db", targetSchema: "DST", sourceDbType: "oracle", targetDbType: "oceanbase-oracle", options: { tables: false, functions: true }, ignoreComments: false, label: "read failure" }, { tableListLoader: { load: vi.fn() } });
+  const session = startSchemaDiffSession(
+    {
+      sourceConnectionId: "read-source",
+      sourceDatabase: "db",
+      sourceSchema: "SRC",
+      targetConnectionId: "read-target",
+      targetDatabase: "db",
+      targetSchema: "DST",
+      sourceDbType: "oracle",
+      targetDbType: "oceanbase-oracle",
+      options: { tables: false, functions: true },
+      ignoreComments: false,
+      label: "read failure",
+    },
+    { tableListLoader: { load: vi.fn() } },
+  );
   await waitForSession(session);
   assert.equal(session.status, "failed");
   assert.match(session.error ?? "", /ORA-01031/);
@@ -515,12 +536,28 @@ test("fails a routine compare on source read errors before generating a removal 
 
 test("passes only the selected type body and exact source to preparation without merging its specification", async () => {
   vi.clearAllMocks();
-  const source = { name: 'Dot.Type', function_type: "TYPE", data_type: "", arguments: "", schema: "SRC", definition: 'CREATE TYPE "Dot.Type" UNDER BaseType (first NUMBER, second VARCHAR2(20)) NOT FINAL;' };
+  const source = { name: "Dot.Type", function_type: "TYPE", data_type: "", arguments: "", schema: "SRC", definition: 'CREATE TYPE "Dot.Type" UNDER BaseType (first NUMBER, second VARCHAR2(20)) NOT FINAL;' };
   const body = { ...source, function_type: "TYPE BODY", definition: 'CREATE TYPE BODY "Dot.Type" AS MEMBER PROCEDURE run AS BEGIN NULL; END; END;' };
   const targetBody = { ...body, schema: "DST" };
   apiMock.listFunctions.mockResolvedValueOnce([source, body]).mockResolvedValueOnce([{ ...source, schema: "DST" }, targetBody]);
   apiMock.prepareSchemaDiff.mockResolvedValue({ diffs: [], functionDiffs: [], syncSql: "" });
-  const session = startSchemaDiffSession({ sourceConnectionId: "type-source", sourceDatabase: "db", sourceSchema: "SRC", targetConnectionId: "type-target", targetDatabase: "db", targetSchema: "DST", sourceDbType: "oracle", targetDbType: "oracle", selectedRoutines: ['TYPE BODY "Dot.Type"'], options: { tables: false, functions: true }, ignoreComments: false, label: "type body" }, { tableListLoader: { load: vi.fn() } });
+  const session = startSchemaDiffSession(
+    {
+      sourceConnectionId: "type-source",
+      sourceDatabase: "db",
+      sourceSchema: "SRC",
+      targetConnectionId: "type-target",
+      targetDatabase: "db",
+      targetSchema: "DST",
+      sourceDbType: "oracle",
+      targetDbType: "oracle",
+      selectedRoutines: ['TYPE BODY "Dot.Type"'],
+      options: { tables: false, functions: true },
+      ignoreComments: false,
+      label: "type body",
+    },
+    { tableListLoader: { load: vi.fn() } },
+  );
   await waitForSession(session);
   assert.equal(session.status, "completed");
   const payload = apiMock.prepareSchemaDiff.mock.calls[0]?.[0];

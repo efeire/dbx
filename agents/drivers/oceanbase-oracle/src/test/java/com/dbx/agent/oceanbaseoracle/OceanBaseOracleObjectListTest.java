@@ -24,6 +24,44 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OceanBaseOracleObjectListTest {
     @Test
+    void tableAndViewCommentsSurviveObjectListing() {
+        JdbcFixture jdbc = new JdbcFixture();
+        jdbc.rows(row("T", "TABLE", null, "订单备注"), row("V", "VIEW", null, "Customer view"),
+            row("EMPTY", "TABLE", null, ""), row("NO_COMMENT", "VIEW", null, null));
+
+        assertEquals(List.of(
+            new ObjectInfo("T", "TABLE", "APP", "订单备注"),
+            new ObjectInfo("V", "VIEW", "APP", "Customer view"),
+            new ObjectInfo("EMPTY", "TABLE", "APP", ""),
+            new ObjectInfo("NO_COMMENT", "VIEW", "APP", null)
+        ), jdbc.agent.listObjects("APP"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"订单", "Customer", "'", "%", "_", "\\"})
+    void commentOnlyMatchesAreBoundBeforePaging(String filter) {
+        JdbcFixture jdbc = new JdbcFixture();
+        JdbcCall call = jdbc.rows(row("Z_LATE", "TABLE", null, "prefix " + filter + " suffix"));
+        MetadataListConstraints constraints = constraints(filter, 1, 2, "TABLE");
+
+        assertEquals(List.of(new ObjectInfo("Z_LATE", "TABLE", "Mixed.Owner", "prefix " + filter + " suffix")),
+            jdbc.agent.listObjects("Mixed.Owner", constraints));
+
+        assertTrue(call.sql.contains("OR UPPER(c.COMMENTS) LIKE ? ESCAPE '\\'"), call.sql);
+        assertTrue(call.sql.indexOf("UPPER(c.COMMENTS)") < call.sql.indexOf("WHERE ROWNUM <= ?"), call.sql);
+        String pattern = switch (filter) {
+            case "订单" -> "%订%单%";
+            case "Customer" -> "%C%U%S%T%O%M%E%R%";
+            case "'" -> "%'%";
+            case "%" -> "%\\%%";
+            case "_" -> "%\\_%";
+            default -> "%\\\\%";
+        };
+        assertEquals(List.of("Mixed.Owner", "TABLE", pattern, pattern, 3, 2), call.args);
+        call.assertClosed();
+    }
+
+    @Test
     void defaultListsIncludeBothPackageTypesAndKeepExistingTypeOrder() {
         JdbcFixture jdbc = new JdbcFixture();
         for (int request = 0; request < 4; request++) {
@@ -105,7 +143,7 @@ class OceanBaseOracleObjectListTest {
             pages.addAll(jdbc.agent.listObjects("APP",
                 constraints("k_'%", 1, offset, "PACKAGE", "PACKAGE_BODY")));
 
-            assertEquals(List.of("APP", "PACKAGE", "PACKAGE BODY", "%K%\\_%'%\\%%", offset + 1, offset), call.args);
+            assertEquals(List.of("APP", "PACKAGE", "PACKAGE BODY", "%K%\\_%'%\\%%", "%K%\\_%'%\\%%", offset + 1, offset), call.args);
             assertTrue(call.sql.contains("UPPER(OBJECT_NAME) LIKE ? ESCAPE '\\'"), call.sql);
             assertTrue(call.sql.contains("ROWNUM <= ?"), call.sql);
             assertTrue(call.sql.contains("WHERE DBX_RN > ?"), call.sql);
@@ -272,7 +310,7 @@ class OceanBaseOracleObjectListTest {
     }
 
     private static String[] row(String... columns) {
-        return columns.length == 2 ? Arrays.copyOf(columns, 3) : columns;
+        return columns.length == 2 ? Arrays.copyOf(columns, 4) : columns;
     }
 
     @Test
@@ -287,7 +325,7 @@ class OceanBaseOracleObjectListTest {
         assertEquals(Boolean.FALSE, objects.get(1).getValid());
         assertNull(objects.get(2).getValid());
         assertTrue(call.sql.contains("t.PREDEFINED = 'NO'"));
-        assertTrue(call.sql.contains("NVL(GENERATED, 'N') = 'N'"));
+        assertTrue(call.sql.contains("NVL(o.GENERATED, 'N') = 'N'"));
     }
 
     @Test
@@ -391,7 +429,8 @@ class OceanBaseOracleObjectListTest {
                     }
                     yield cursor[0] < rows.length;
                 }
-                case "getString" -> rows[cursor[0]][(Integer) values[0] - 1];
+                case "getString" -> (Integer) values[0] <= rows[cursor[0]].length
+                    ? rows[cursor[0]][(Integer) values[0] - 1] : null;
                 case "close" -> {
                     resultClosed = true;
                     yield null;
