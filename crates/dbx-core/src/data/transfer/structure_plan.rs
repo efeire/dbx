@@ -543,6 +543,8 @@ fn preview_object_kind_label(kind: &TransferObjectKind) -> &'static str {
         TransferObjectKind::PackageBody => "Package bodies",
         TransferObjectKind::Synonym => "Private synonyms",
         TransferObjectKind::PublicSynonym => "Public synonyms",
+        TransferObjectKind::DbLink => "Private database links",
+        TransferObjectKind::PublicDbLink => "Public database links",
     }
 }
 

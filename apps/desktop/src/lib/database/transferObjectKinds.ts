@@ -48,6 +48,13 @@ export function isSameTransferFamily(a?: DatabaseType, b?: DatabaseType): boolea
   return !!fa && fa === fb;
 }
 
+/** Xugu's initial transfer implementation is deliberately limited to Xugu → Xugu. */
+export function isTransferPairSupported(source?: DatabaseType, target?: DatabaseType): boolean {
+  if (!source || !target) return true;
+  if (source === "xugu" || target === "xugu") return source === "xugu" && target === "xugu";
+  return true;
+}
+
 export function transferObjectKindsForDatabase(dbType?: DatabaseType): TransferObjectKind[] {
   if (dbType === "oracle" || dbType === "oceanbase-oracle") return [...ORACLE_KINDS, "PACKAGE", "PACKAGE_BODY", "SYNONYM", "PUBLIC_SYNONYM", "DB_LINK", "PUBLIC_DB_LINK"];
   switch (transferObjectFamily(dbType)) {
