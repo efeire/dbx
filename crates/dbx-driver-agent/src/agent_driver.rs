@@ -5834,7 +5834,8 @@ for line in sys.stdin:
         assert_eq!(AgentCapability::MongoFindCursor.as_str(), "mongo_find_cursor");
         assert_eq!(AgentCapability::MultiSession.as_str(), "multi_session");
         assert_eq!(AgentCapability::StructuredErrorV1.as_str(), "structured_error_v1");
-        assert_eq!(AgentCapability::ALL.len(), 28);
+        assert_eq!(AgentCapability::BlobBindStatementsV1.as_str(), "blob_bind_statements_v1");
+        assert_eq!(AgentCapability::ALL.len(), 29);
     }
 
     #[test]
