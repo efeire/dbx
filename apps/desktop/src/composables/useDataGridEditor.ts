@@ -131,6 +131,7 @@ export interface UseDataGridEditorOptions {
   manualTransactionSessionId?: ComputedRef<string | undefined>;
   ensureManualTransactionSession?: ComputedRef<(() => Promise<string>) | undefined>;
   onManualTransactionMutation?: () => void;
+  onSaveConflict?: (message: string) => void;
   sql: ComputedRef<string | undefined>;
   searchText: Ref<string>;
   whereFilterInput: Ref<string>;
@@ -1753,6 +1754,10 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     for (const group of groups) {
       const part = await api.prepareDataGridSave(group, saveDriverProfile());
       if (part.validationError) return part;
+      if (part.boundStatements?.length || prepared.boundStatements) {
+        prepared.boundStatements ??= prepared.statements.map((sql) => ({ previewSql: sql, sql, blobParameters: [] }));
+        prepared.boundStatements.push(...(part.boundStatements ?? part.statements.map((sql) => ({ previewSql: sql, sql, blobParameters: [] }))));
+      }
       prepared.statements.push(...part.statements);
       prepared.rollbackStatements.unshift(...part.rollbackStatements);
       prepared.keylessGuards!.push(...(part.keylessGuards ?? []));
@@ -2230,7 +2235,9 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     if (txnSessionId && hasBackendSaveTarget.value) {
       options.onManualTransactionMutation?.();
       try {
-        const results = await api.executeInManualTransaction(txnSessionId, stmts.join(";\n"), database.value ?? "", preparedSave?.executionSchema);
+        const results = preparedSave?.boundStatements?.length
+          ? await api.executeInManualTransaction(txnSessionId, stmts.join(";\n"), database.value ?? "", preparedSave?.executionSchema, undefined, undefined, undefined, undefined, undefined, undefined, undefined, preparedSave.boundStatements)
+          : await api.executeInManualTransaction(txnSessionId, stmts.join(";\n"), database.value ?? "", preparedSave?.executionSchema);
         apiResult = {
           affected_rows: results.reduce((total, result) => total + (result.affected_rows ?? 0), 0),
         };
@@ -2241,7 +2248,9 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
       }
     } else if (useTransaction.value && stmts.length > 1 && hasBackendSaveTarget.value) {
       try {
-        apiResult = await api.executeInTransaction(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema);
+        apiResult = preparedSave?.boundStatements?.length
+          ? await api.executeInTransaction(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema, undefined, preparedSave.boundStatements)
+          : await api.executeInTransaction(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema);
       } catch (e: any) {
         saveError.value = await recordFailedDataGridHistory(stmts, rollbackStmts, start, snapshot, e);
         await finishInterruptedSaveChanges(snapshot);
@@ -2249,7 +2258,9 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
       }
     } else if (hasBackendSaveTarget.value) {
       try {
-        apiResult = await api.executeBatch(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema);
+        apiResult = preparedSave?.boundStatements?.length
+          ? await api.executeBatch(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema, undefined, undefined, preparedSave.boundStatements)
+          : await api.executeBatch(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema);
       } catch (e: any) {
         saveError.value = await recordFailedDataGridHistory(stmts, rollbackStmts, start, snapshot, e);
         await finishInterruptedSaveChanges(snapshot);
@@ -2305,6 +2316,8 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     clearSavedPendingChanges(snapshot);
     if (!hasPendingChanges.value) exitTransaction();
     clearPendingChangeHistory();
+    // Notify before reload can replace the rows and clear their error state.
+    if (deleteConflict) options.onSaveConflict?.(deleteConflict);
     if (shouldReloadAfterSqlSave && !savedRowsRefreshed) {
       reloadCurrentData();
     }

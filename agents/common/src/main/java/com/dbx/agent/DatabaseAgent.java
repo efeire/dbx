@@ -14,6 +14,13 @@ public interface DatabaseAgent {
     /** Opt in to request-boundary timing, including pooled connection lifecycle. */
     default boolean supportsQueryTiming() { return false; }
 
+    default boolean supportsBlobBindStatements() { return false; }
+
+    default QueryResult executeBlobBoundStatements(List<String> previews, List<BlobBoundStatement> statements,
+        String schema, int timeoutSecs, boolean transaction) {
+        throw new UnsupportedOperationException("BLOB statement binding is not supported by this agent");
+    }
+
     /** A dedicated manual transaction must never migrate to a replacement connection. */
     default boolean permitsAutomaticReconnect() { return true; }
 

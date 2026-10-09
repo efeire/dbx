@@ -407,7 +407,21 @@ pub async fn execute_batch(
     schema: Option<String>,
     timeout_secs: Option<u64>,
     use_transaction: Option<bool>,
+    bound_statements: Option<Vec<db::BlobBoundStatement>>,
 ) -> Result<db::QueryResult, String> {
+    if let Some(bound) = bound_statements.as_ref() {
+        return dbx_core::query::execute_blob_bound_statements(
+            &state,
+            &connection_id,
+            &database,
+            &statements,
+            bound,
+            schema.as_deref(),
+            use_transaction == Some(true),
+            timeout_secs,
+        )
+        .await;
+    }
     dbx_core::query::execute_statements_with_transaction_option(
         &state,
         &connection_id,
@@ -455,7 +469,21 @@ pub async fn execute_in_transaction(
     statements: Vec<String>,
     schema: Option<String>,
     catalog: Option<String>,
+    bound_statements: Option<Vec<db::BlobBoundStatement>>,
 ) -> Result<db::QueryResult, String> {
+    if let Some(bound) = bound_statements.as_ref() {
+        return dbx_core::query::execute_blob_bound_statements(
+            &state,
+            &connection_id,
+            &database,
+            &statements,
+            bound,
+            schema.as_deref(),
+            true,
+            None,
+        )
+        .await;
+    }
     dbx_core::query::execute_statements_in_transaction(
         &state,
         &connection_id,
@@ -540,6 +568,7 @@ pub async fn execute_in_manual_transaction(
     classification_sql: Option<String>,
     execution_id: Option<String>,
     timeout_secs: Option<u64>,
+    bound_statements: Option<Vec<db::BlobBoundStatement>>,
 ) -> Result<Vec<dbx_core::query::ExecuteMultiResult>, ManualTransactionCommandError> {
     dbx_core::query::execute_in_manual_transaction_with_options(
         &state,
@@ -548,6 +577,7 @@ pub async fn execute_in_manual_transaction(
         &database,
         schema.as_deref(),
         dbx_core::query::ManualTransactionExecutionOptions {
+            bound_statements,
             max_rows,
             table_data_preview: table_data_preview.unwrap_or(false),
             page_size,

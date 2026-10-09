@@ -4732,6 +4732,53 @@ fn contains_standalone_concurrently_keyword(upper: &str) -> bool {
     false
 }
 
+pub async fn execute_blob_bound_statements(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    previews: &[String],
+    bound: &[dbx_types::types::BlobBoundStatement],
+    schema: Option<&str>,
+    use_transaction: bool,
+    timeout_secs: Option<u64>,
+) -> Result<db::QueryResult, String> {
+    dbx_types::types::validate_blob_bound_statements(previews, bound)?;
+    if connection_database_type(state, connection_id).await != Some(DatabaseType::OceanbaseOracle) {
+        return Err("Bound BLOB saves are only supported for OceanBase Oracle.".into());
+    }
+    let pool_key = if database.is_empty() {
+        connection_id.to_string()
+    } else {
+        state.get_or_create_pool(connection_id, Some(database)).await?
+    };
+    let sql = bound.iter().map(|statement| statement.sql.clone()).collect::<Vec<_>>();
+    check_read_only_for_connection_multi(state, &pool_key, &sql).await?;
+    let pool = state.pool_handle(&pool_key).await;
+    let Some(PoolKind::Agent(source_client)) = pool.as_ref() else {
+        return Err("Bound BLOB saves require an updated JDBC Agent.".into());
+    };
+    let mut client = source_client.lock().await;
+    let result = client
+        .execute_blob_bound_typed(
+            if database.is_empty() { None } else { Some(database) },
+            previews,
+            bound,
+            schema,
+            use_transaction,
+            resolve_query_timeout(timeout_secs),
+        )
+        .await;
+    drop(client);
+    match result {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            discard_agent_pool_after_typed_error(state, &pool_key, source_client, &error, RecoveryScope::UserOperation)
+                .await;
+            Err(error.into_legacy_string())
+        }
+    }
+}
+
 async fn execute_statements_inner(
     state: &AppState,
     connection_id: &str,
@@ -6310,6 +6357,7 @@ pub async fn execute_in_manual_transaction(
 
 #[derive(Clone, Debug, Default)]
 pub struct ManualTransactionExecutionOptions {
+    pub bound_statements: Option<Vec<dbx_types::types::BlobBoundStatement>>,
     pub max_rows: Option<usize>,
     pub table_data_preview: bool,
     pub execution_id: Option<String>,
@@ -6333,6 +6381,9 @@ pub async fn execute_in_manual_transaction_with_options(
     options: ManualTransactionExecutionOptions,
 ) -> Result<Vec<ExecuteMultiResult>, String> {
     if sqlserver_manual_transaction::is_session_id(txn_session_id) {
+        if options.bound_statements.is_some() {
+            return Err("Bound BLOB saves are only supported for OceanBase Oracle.".into());
+        }
         return sqlserver_manual_transaction::execute(state, txn_session_id, sql, database, schema, options).await;
     }
     const TXN_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(MANUAL_TRANSACTION_IDLE_TIMEOUT_SECS);
@@ -6348,16 +6399,28 @@ pub async fn execute_in_manual_transaction_with_options(
 
     let db_type = connection_database_type(state, &connection_id).await;
     let compatibility_mode = connection_sql_compatibility_mode(state, &pool_key, db_type).await;
-    let statements = db_type.map_or_else(
-        || split_sql_statements(sql),
-        |db_type| {
-            crate::sql::split_sql_statements_for_database_with_compatibility(
-                sql,
-                db_type,
-                compatibility_mode.as_deref(),
-            )
-        },
-    );
+    let statements = if let Some(bound) = options.bound_statements.as_ref() {
+        if db_type != Some(DatabaseType::OceanbaseOracle) {
+            return Err("Bound BLOB saves are only supported for OceanBase Oracle.".into());
+        }
+        let previews = bound.iter().map(|statement| statement.preview_sql.clone()).collect::<Vec<_>>();
+        if sql != previews.join(";\n") {
+            return Err("The reviewed SQL changed; regenerate the BLOB save preview before saving.".into());
+        }
+        dbx_types::types::validate_blob_bound_statements(&previews, bound)?;
+        previews
+    } else {
+        db_type.map_or_else(
+            || split_sql_statements(sql),
+            |db_type| {
+                crate::sql::split_sql_statements_for_database_with_compatibility(
+                    sql,
+                    db_type,
+                    compatibility_mode.as_deref(),
+                )
+            },
+        )
+    };
     if statements.is_empty() {
         // Sticky-dialect UX marker: the no-op is Core's decision that the script
         // (empty/whitespace/comments-only) has no statements, so the frontend
@@ -6391,6 +6454,26 @@ pub async fn execute_in_manual_transaction_with_options(
     // Read-only check while the session is still in the map. If this fails the
     // session remains intact.
     check_read_only_for_connection_multi(state, &pool_key, &statements).await?;
+    if let Some(bound) = options.bound_statements.as_ref() {
+        check_read_only_for_connection_multi(
+            state,
+            &pool_key,
+            &bound.iter().map(|statement| statement.sql.clone()).collect::<Vec<_>>(),
+        )
+        .await?;
+        let connection = state
+            .transaction_sessions
+            .read()
+            .await
+            .get(txn_session_id)
+            .map(|session| Arc::clone(&session.connection))
+            .ok_or(MANUAL_TRANSACTION_SESSION_NOT_FOUND_ERROR)?;
+        let connection = connection.lock().await;
+        if !matches!(&*connection, TxnConnection::Agent { client, .. } if client.supports_capability(crate::db::agent_driver::AgentCapability::BlobBindStatementsV1))
+        {
+            return Err("This Agent does not support bound BLOB saves; update the Agent before saving.".into());
+        }
+    }
 
     let classification: Vec<bool> =
         classify_manual_transaction_statements(db_type, statements.len(), options.classification_sql.as_deref());
@@ -6432,7 +6515,11 @@ pub async fn execute_in_manual_transaction_with_options(
     let mut results = Vec::with_capacity(statements.len());
 
     let mut conn = connection.lock().await;
+    let mut bound_failure_can_keep = false;
     for (i, statement) in statements.iter().enumerate() {
+        if options.bound_statements.is_some() && i > 0 {
+            break;
+        }
         let result = match &mut *conn {
             TxnConnection::SqlServer { .. } => {
                 return Err("SQL Server transaction must use its batch executor".to_string())
@@ -6449,18 +6536,39 @@ pub async fn execute_in_manual_transaction_with_options(
                 .await
             }
             TxnConnection::Agent { client, .. } => {
-                execute_manual_txn_agent_statement(
-                    client,
-                    db_type,
-                    statement,
-                    database,
-                    schema,
-                    row_limit,
-                    options.table_data_preview,
-                    options.page_size,
-                    options.result_session_id.as_deref(),
-                )
-                .await
+                if let Some(bound) = options.bound_statements.as_ref() {
+                    match client
+                        .execute_blob_bound_typed(
+                            if database.is_empty() { None } else { Some(database) },
+                            &statements,
+                            bound,
+                            schema,
+                            false,
+                            resolve_query_timeout(options.timeout_secs),
+                        )
+                        .await
+                    {
+                        Ok(result) => Ok(result),
+                        Err(error) => {
+                            bound_failure_can_keep = error.session_disposition()
+                                == Some(crate::db::agent_driver::AgentSessionDisposition::Keep);
+                            Err(error.into_legacy_string())
+                        }
+                    }
+                } else {
+                    execute_manual_txn_agent_statement(
+                        client,
+                        db_type,
+                        statement,
+                        database,
+                        schema,
+                        row_limit,
+                        options.table_data_preview,
+                        options.page_size,
+                        options.result_session_id.as_deref(),
+                    )
+                    .await
+                }
             }
             TxnConnection::ExternalDriver { session, config, .. } => {
                 execute_manual_txn_external_driver_statement(session, config, statement, database, schema, row_limit)
@@ -6479,6 +6587,13 @@ pub async fn execute_in_manual_transaction_with_options(
                 results.push(executed);
             }
             Err(e) => {
+                if bound_failure_can_keep {
+                    if let Some(session) = state.transaction_sessions.write().await.get_mut(txn_session_id) {
+                        session.busy = false;
+                        session.last_activity = std::time::Instant::now();
+                    }
+                    return Err(e);
+                }
                 // Statement failure ends the transaction. If another cleanup path
                 // already removed the session, it owns the final rollback.
                 let should_rollback = {
@@ -6489,7 +6604,11 @@ pub async fn execute_in_manual_transaction_with_options(
                     let _ = rollback_manual_txn_connection(&mut conn).await;
                     release_manual_txn_session_pool(state, &connection_id, &mut conn).await;
                 }
-                return Err(format!("Statement {} failed: {}. The manual transaction was rolled back.", i + 1, e));
+                return Err(if options.bound_statements.is_some() {
+                    format!("Bound BLOB save failed: {e}. The transaction session was discarded; the operation outcome may be unknown.")
+                } else {
+                    format!("Statement {} failed: {}. The manual transaction was rolled back.", i + 1, e)
+                });
             }
         }
     }

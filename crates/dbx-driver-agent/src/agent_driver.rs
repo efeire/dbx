@@ -1022,6 +1022,7 @@ impl AgentHandshake {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentCapability {
+    BlobBindStatementsV1,
     Connect,
     TestConnection,
     Metadata,
@@ -1130,7 +1131,7 @@ fn parse_agent_rpc_error_header(header: &str) -> (Option<i64>, String) {
 }
 
 impl AgentCapability {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Connect,
         Self::TestConnection,
         Self::Metadata,
@@ -1159,10 +1160,12 @@ impl AgentCapability {
         Self::MongoFindCursor,
         Self::MultiSession,
         Self::StructuredErrorV1,
+        Self::BlobBindStatementsV1,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::BlobBindStatementsV1 => "blob_bind_statements_v1",
             Self::Connect => "connect",
             Self::TestConnection => "test_connection",
             Self::Metadata => "metadata",
@@ -2894,6 +2897,32 @@ impl AgentDriverClient {
         .await
     }
 
+    pub async fn execute_blob_bound_typed<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        database: Option<&str>,
+        previews: &[String],
+        bound: &[dbx_types::types::BlobBoundStatement],
+        schema: Option<&str>,
+        use_transaction: bool,
+        timeout_duration: Option<Duration>,
+    ) -> Result<T, AgentCallError> {
+        dbx_types::types::validate_blob_bound_statements(previews, bound)?;
+        if !self.handshake.as_ref().is_some_and(|handshake| handshake.supports(AgentCapability::BlobBindStatementsV1)) {
+            return Err("This Agent does not support bound BLOB saves; update the Agent before saving.".into());
+        }
+        self.invalidate_cached_query();
+        let mut params = agent_transaction_params(database, previews, schema);
+        params["boundStatements"] = serde_json::to_value(bound).map_err(|error| error.to_string())?;
+        params["queryTimeoutSecs"] =
+            serde_json::json!(timeout_duration.map(|duration| duration.as_secs().max(1)).unwrap_or(30));
+        self.call_method_typed_with_timeout(
+            if use_transaction { AgentMethod::ExecuteTransaction } else { AgentMethod::ExecuteBatch },
+            params,
+            timeout_duration,
+        )
+        .await
+    }
+
     fn invalidate_cached_query(&mut self) {
         self.cached_query = None;
     }
@@ -3241,7 +3270,8 @@ pub fn is_unsupported_handshake_error(error: &str) -> bool {
 pub fn agent_supports_capability(handshake: Option<&AgentHandshake>, capability: AgentCapability) -> bool {
     if matches!(
         capability,
-        AgentCapability::Kv
+        AgentCapability::BlobBindStatementsV1
+            | AgentCapability::Kv
             | AgentCapability::KvTtl
             | AgentCapability::KvCas
             | AgentCapability::KvListValues
@@ -5731,8 +5761,51 @@ for line in sys.stdin:
         assert_eq!(handshake.capabilities, vec!["connect", "query", "metadata"]);
     }
 
+    #[tokio::test]
+    async fn bound_blob_execution_rejects_unsupported_agents_and_edited_previews_before_rpc() {
+        let mut client = AgentDriverClient::test_stub();
+        let previews = vec!["reviewed BLOB save".to_string()];
+        let bound = vec![dbx_types::types::BlobBoundStatement {
+            preview_sql: previews[0].clone(),
+            sql: "UPDATE t SET b=?".into(),
+            blob_parameters: vec!["00ff80".into()],
+        }];
+        let error =
+            client.execute_blob_bound_typed::<Value>(None, &previews, &bound, None, false, None).await.unwrap_err();
+        assert!(error.into_legacy_string().contains("does not support bound BLOB"));
+        assert_eq!(client.next_id, 0);
+        client.handshake = Some(AgentHandshake {
+            protocol_version: AGENT_PROTOCOL_VERSION,
+            agent_protocol_version: AGENT_PROTOCOL_VERSION,
+            capabilities: vec!["blob_bind_statements_v1".into()],
+        });
+        let error = client
+            .execute_blob_bound_typed::<Value>(None, &["edited SQL".into()], &bound, None, true, None)
+            .await
+            .unwrap_err();
+        assert!(error.into_legacy_string().contains("changed"));
+        assert_eq!(client.next_id, 0);
+    }
+
     #[test]
     fn defines_agent_protocol_capabilities() {
+        assert!(!agent_supports_capability(None, AgentCapability::BlobBindStatementsV1));
+        assert!(!agent_supports_capability(
+            Some(&AgentHandshake {
+                protocol_version: AGENT_PROTOCOL_VERSION,
+                agent_protocol_version: AGENT_PROTOCOL_VERSION,
+                capabilities: vec!["query".into()]
+            }),
+            AgentCapability::BlobBindStatementsV1
+        ));
+        assert!(agent_supports_capability(
+            Some(&AgentHandshake {
+                protocol_version: AGENT_PROTOCOL_VERSION,
+                agent_protocol_version: AGENT_PROTOCOL_VERSION,
+                capabilities: vec!["blob_bind_statements_v1".into()]
+            }),
+            AgentCapability::BlobBindStatementsV1
+        ));
         assert_eq!(AgentCapability::Connect.as_str(), "connect");
         assert_eq!(AgentCapability::TestConnection.as_str(), "test_connection");
         assert_eq!(AgentCapability::Metadata.as_str(), "metadata");
