@@ -3810,6 +3810,8 @@ export default withEnglishFallback({
     renameObjectNamePlaceholder: "新名稱",
     renameObjectSuccess: "已將「{oldName}」重新命名為「{newName}」",
     oceanbaseViewRenameWarning: "重新命名無法回復交易。現有授權隨檢視保留，相依物件可能失效，其原始碼不會自動改寫。跨擁有者操作需要直接授予 ALTER ANY TABLE 且檢視中繼資料可見；無法核驗僅透過角色取得的權限。",
+    viewRenameResponseLost: "重新命名回應遺失，字典讀回確認新名稱已存在且舊名稱不存在。舊原始碼僅保留為無法儲存的快照，請重新開啟新物件。",
+    viewRenameStateUnknown: "重新命名請求已送出，無法確認舊名與新名狀態。舊原始碼僅保留為無法儲存的快照，請恢復連線並重新讀取物件後再編輯。",
     renamedSourceSnapshot: "物件已重新命名。目前文字保留為唯讀快照；請重新開啟改名後的物件以編輯目前定義。",
     renameDatabase: "重新命名資料庫",
     renameDatabaseTitle: "重新命名資料庫",

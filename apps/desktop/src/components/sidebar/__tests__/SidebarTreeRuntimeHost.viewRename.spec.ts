@@ -17,6 +17,7 @@ import * as api from "@/lib/backend/api";
 import SidebarTreeRuntimeHost from "@/components/sidebar/SidebarTreeRuntimeHost.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
+import { useQueryStore } from "@/stores/queryStore";
 
 const mounted: App[] = [];
 const node: TreeNode = { id: "ob:APP:view:Old View", type: "view", label: "Old View", connectionId: "ob", database: "APP" };
@@ -35,6 +36,10 @@ async function openRename() {
   store.connections = [{ id: "ob", name: "OB", db_type: "oceanbase-oracle", host: "localhost", port: 2881, username: "APP", password: "", is_production: true }];
   vi.spyOn(store, "ensureConnected").mockResolvedValue(undefined);
   const replacePin = vi.spyOn(store, "replacePinnedTreeNode");
+  vi.spyOn(store, "refreshTreeNode").mockResolvedValue(undefined);
+  vi.spyOn(store, "refreshObjectListTreeNode").mockResolvedValue(undefined);
+  const queries = useQueryStore();
+  const sourceId = queries.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "APP", title: "Old View", sql: "CREATE VIEW old_view AS SELECT 2", objectSource: { schema: "APP", name: "Old View", objectType: "VIEW" } });
   const instance = ref<{ buildContextMenu(target: TreeNode): ContextMenuItem[] }>();
   let controller: RenameDialog | undefined;
   const container = document.createElement("div");
@@ -60,10 +65,13 @@ async function openRename() {
   await item!.action?.();
   controller!.renameObjectName = "New View";
   await nextTick();
-  return { dialog: controller!, safety: useProductionSafetyStore(), replacePin };
+  return { dialog: controller!, safety: useProductionSafetyStore(), replacePin, queries, sourceId };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [["Old View"]] } as any);
+});
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
   document.body.innerHTML = "";
@@ -93,6 +101,22 @@ describe("OceanBase ordinary view rename", () => {
     expect(dialog.renameObjectError).toContain("ORA-00955");
     expect(dialog.showRenameObjectDialog).toBe(true);
     expect(replacePin).not.toHaveBeenCalled();
-    expect(api.executeQuery).toHaveBeenCalledWith("ob", "APP", expect.any(String), "APP", undefined, expect.any(Object));
+    expect(api.executeQuery).toHaveBeenCalledWith("ob", "APP", expect.stringContaining("RENAME"), "APP", undefined, expect.any(Object));
+    expect(api.executeQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["renamed", "unknown"])("freezes the old source after a lost response with %s readback", async (outcome) => {
+    vi.mocked(api.executeQuery).mockRejectedValueOnce(new Error("response lost"));
+    if (outcome === "renamed") vi.mocked(api.executeQuery).mockResolvedValueOnce({ columns: [], rows: [["New View"]] } as any);
+    else vi.mocked(api.executeQuery).mockRejectedValueOnce(new Error("dictionary unavailable"));
+    const { dialog, safety, queries, sourceId, replacePin } = await openRename();
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await execution;
+    expect(dialog.renameObjectError).toContain(i18n.global.t(outcome === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown"));
+    expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "CREATE VIEW old_view AS SELECT 2" });
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
+    expect(replacePin).not.toHaveBeenCalled();
   });
 });
