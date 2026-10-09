@@ -14,7 +14,7 @@ export function requiresTransferSchemaObjectPlan(kind: TransferObjectKind): bool
   return kind === "PACKAGE" || kind === "PACKAGE_BODY" || kind === "SYNONYM" || kind === "PUBLIC_SYNONYM";
 }
 
-export function transferObjectMetadataTarget(kind: TransferObjectKind, schema: string): { objectType: string; schema: string } | undefined {
+export function transferObjectMetadataTarget(kind: TransferObjectKind, schema: string): { objectType: Exclude<TransferObjectKind, "PUBLIC_SYNONYM">; schema: string } | undefined {
   if (kind === "SYNONYM" && (schema === "PUBLIC" || schema === "__public")) return undefined;
   return kind === "PUBLIC_SYNONYM" ? { objectType: "SYNONYM", schema: "PUBLIC" } : { objectType: kind, schema };
 }
