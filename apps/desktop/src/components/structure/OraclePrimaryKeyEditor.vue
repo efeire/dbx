@@ -28,16 +28,31 @@ const error = ref("");
 let requestId = 0;
 const change = computed<PrimaryKeyChange>(() => ({ schema: props.schema, tableName: props.tableName, columns: [...selected.value], dropPreviousIndex: !props.oceanbase && dropPreviousIndex.value }));
 
-watch(() => [props.connectionId, props.database, props.schema, props.tableName, props.oceanbase], () => {
-  requestId++;
-  open.value = false;
-  busy.value = false;
+watch(
+  () => [props.connectionId, props.database, props.schema, props.tableName, props.oceanbase],
+  () => {
+    requestId++;
+    open.value = false;
+    busy.value = false;
+    plan.value = undefined;
+    result.value = undefined;
+    error.value = "";
+  },
+);
+watch(
+  selected,
+  () => {
+    plan.value = undefined;
+    result.value = undefined;
+    error.value = "";
+  },
+  { deep: true },
+);
+watch(dropPreviousIndex, () => {
   plan.value = undefined;
   result.value = undefined;
   error.value = "";
 });
-watch(selected, () => { plan.value = undefined; result.value = undefined; error.value = ""; }, { deep: true });
-watch(dropPreviousIndex, () => { plan.value = undefined; result.value = undefined; error.value = ""; });
 
 async function start() {
   if (props.disabled || busy.value) return;
@@ -137,9 +152,7 @@ function cancel() {
         <span>{{ t("constraintEditor.dropPreviousIndex") }}</span>
       </label>
       <fieldset :disabled="disabled || busy" class="flex flex-wrap gap-3">
-        <label v-for="column in columns" :key="column" class="flex items-center gap-1 font-mono">
-          <input type="checkbox" :checked="selected.includes(column)" @change="toggle(column)" />{{ column }}
-        </label>
+        <label v-for="column in columns" :key="column" class="flex items-center gap-1 font-mono"> <input type="checkbox" :checked="selected.includes(column)" @change="toggle(column)" />{{ column }} </label>
       </fieldset>
       <ol class="space-y-1">
         <li v-for="(column, index) in selected" :key="column" class="flex items-center gap-2">
@@ -151,7 +164,9 @@ function cancel() {
       <p v-if="error" role="alert" class="whitespace-pre-wrap text-destructive">{{ error }}</p>
       <div v-if="plan" class="space-y-2">
         <p class="font-medium">{{ t("constraintEditor.affectedObjects") }}</p>
-        <ul class="list-inside list-disc"><li v-for="item in plan.affectedObjects" :key="item">{{ item }}</li></ul>
+        <ul class="list-inside list-disc">
+          <li v-for="item in plan.affectedObjects" :key="item">{{ item }}</li>
+        </ul>
         <pre class="overflow-auto whitespace-pre-wrap rounded bg-muted p-2">{{ plan.statements.join(";\n") || t("constraintEditor.noChanges") }}</pre>
         <p class="text-muted-foreground">{{ t("constraintEditor.nonAtomic") }}</p>
       </div>
@@ -159,7 +174,8 @@ function cancel() {
         <p :class="result.success ? '' : 'text-destructive'">{{ t(result.success ? "constraintEditor.applied" : "constraintEditor.incomplete") }}</p>
         <div v-for="(step, index) in result.steps" :key="index" class="rounded border p-2">
           <p>{{ index + 1 }}. {{ t(step.success ? "constraintEditor.stepSucceeded" : "constraintEditor.stepFailed") }}</p>
-          <pre class="whitespace-pre-wrap">{{ step.sql }}</pre><p v-if="step.error" class="text-destructive">{{ step.error }}</p>
+          <pre class="whitespace-pre-wrap">{{ step.sql }}</pre>
+          <p v-if="step.error" class="text-destructive">{{ step.error }}</p>
         </div>
         <p v-if="result.refreshError" role="alert" class="text-destructive">{{ result.refreshError }}</p>
         <p v-else class="font-mono">{{ t("constraintEditor.currentPrimaryKey") }}: {{ result.currentConstraint ? `${result.currentConstraint.name} (${result.currentConstraint.columns.join(", ")})` : t("constraintEditor.none") }}</p>
