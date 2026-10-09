@@ -14061,6 +14061,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
                 target_table_name_case: TransferTableNameCase::Preserve,
                 quote_target_column_names: true,
                 ownership_policy: TransferOwnershipPolicy::Preserve,
+                object_conflict_policy: TransferObjectConflictPolicy::Skip,
                 batch_size: 1000,
                 table_filters: std::collections::HashMap::new(),
                 drop_target_before_create: false,
