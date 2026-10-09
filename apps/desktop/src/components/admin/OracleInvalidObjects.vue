@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { useConnectionStore } from "@/stores/connectionStore";
 import * as api from "@/lib/backend/api";
 import { uuid } from "@/lib/common/utils";
+import { formatError } from "@/lib/backend/errorUtils";
 import { executeWithProductionContextGuard } from "@/lib/database/productionExecutionGuard";
 import { useTabUiState } from "@/lib/tabs/tabUiState";
 import {
@@ -239,7 +240,7 @@ async function apply() {
           cancelled: () => cancellationRequested || !alive || epoch !== detailEpoch,
           execute: async (statement) => {
             const response = await query(statement);
-            if (response.execution_error) throw new Error(response.error?.message || String(response.rows[0]?.[0] ?? "Compile failed"));
+            if (response.execution_error) throw new Error(response.error ? formatError(response.error) : String(response.rows[0]?.[0] ?? "Compile failed"));
             return true;
           },
         }),

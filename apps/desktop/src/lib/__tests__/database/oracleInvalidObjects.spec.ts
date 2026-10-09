@@ -53,13 +53,29 @@ describe("Oracle invalid objects", () => {
     await expect(listOracleInvalidObjects(vi.fn().mockRejectedValue(new Error("ORA-01031")))).rejects.toThrow("ORA-01031");
   });
 
+  it("preserves structured backend error details when the metadata query fails", async () => {
+    const error = { version: 1 as const, code: "DBX-TEST", messageKey: "test", messageParams: {}, source: "test", operationOutcome: "not_started" as const, detail: "ORA-01031: insufficient privileges" };
+    await expect(listOracleInvalidObjects(vi.fn().mockResolvedValue(result([], [], { execution_error: true, error })))).rejects.toThrow(error.detail);
+  });
+
   it("keeps actual line numbers when OB returns multiline Chinese source in one cell", async () => {
     const query = vi.fn().mockResolvedValue(result(["LINE", "TEXT"], [[1, "TYPE BODY T AS\r\n-- 中文\r\nEND;\r\n"]]));
-    expect(await readOracleObjectSourceLines(query, target)).toEqual({ state: "available", rows: [{ line: 1, text: "TYPE BODY T AS" }, { line: 2, text: "-- 中文" }, { line: 3, text: "END;" }] });
+    expect(await readOracleObjectSourceLines(query, target)).toEqual({
+      state: "available",
+      rows: [
+        { line: 1, text: "TYPE BODY T AS" },
+        { line: 2, text: "-- 中文" },
+        { line: 3, text: "END;" },
+      ],
+    });
   });
 
   it("preserves source unavailability and error positions independently", async () => {
-    const query = vi.fn().mockResolvedValueOnce(object()).mockResolvedValueOnce(result(["SEQUENCE", "LINE", "POSITION", "TEXT", "ATTRIBUTE", "MESSAGE_NUMBER"], [[2, 3, 5, "第一行错误\n第二行说明", "ERROR", 6550]])).mockResolvedValueOnce(result(["LINE", "TEXT"], []));
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce(object())
+      .mockResolvedValueOnce(result(["SEQUENCE", "LINE", "POSITION", "TEXT", "ATTRIBUTE", "MESSAGE_NUMBER"], [[2, 3, 5, "第一行错误\n第二行说明", "ERROR", 6550]]))
+      .mockResolvedValueOnce(result(["LINE", "TEXT"], []));
     const inspection = await inspectOracleObject(query, target);
     expect(inspection.errors.rows[0]).toMatchObject({ sequence: 2, line: 3, position: 5, text: "第一行错误\n第二行说明" });
     expect(inspection.source.state).toBe("unavailable");
@@ -80,10 +96,12 @@ describe("Oracle invalid objects", () => {
   });
 
   it("does not send DDL after cancellation before execution", async () => {
-    const query = vi.fn(); const execute = vi.fn();
+    const query = vi.fn();
+    const execute = vi.fn();
     const value = await compileOracleObject({ databaseType: "oracle", target, query, execute, cancelled: () => true });
     expect(value.outcome).toBe("cancelled");
-    expect(query).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("does not present the preview status as a fresh read when the precheck fails", async () => {
@@ -110,15 +128,33 @@ describe("Oracle invalid objects", () => {
   });
 
   it("does not claim success when compile-error visibility is denied", async () => {
-    const query = vi.fn().mockResolvedValueOnce(object()).mockResolvedValueOnce(object({ status: "VALID" })).mockRejectedValueOnce(new Error("ORA-01031"));
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce(object())
+      .mockResolvedValueOnce(object({ status: "VALID" }))
+      .mockRejectedValueOnce(new Error("ORA-01031"));
     const value = await compileOracleObject({ databaseType: "oracle", target, query, execute: vi.fn().mockResolvedValue(true) });
-    expect(value.outcome).toBe("unknown"); expect(value.errors.state).toBe("denied");
+    expect(value.outcome).toBe("unknown");
+    expect(value.errors.state).toBe("denied");
   });
 
   it("records cancellation after dispatch without pretending that DDL was rolled back", async () => {
     let cancelled = false;
-    const query = vi.fn().mockResolvedValueOnce(object()).mockResolvedValueOnce(object({ status: "VALID" })).mockResolvedValueOnce(noErrors());
-    const value = await compileOracleObject({ databaseType: "oracle", target, query, cancelled: () => cancelled, execute: async () => { cancelled = true; return true; } });
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce(object())
+      .mockResolvedValueOnce(object({ status: "VALID" }))
+      .mockResolvedValueOnce(noErrors());
+    const value = await compileOracleObject({
+      databaseType: "oracle",
+      target,
+      query,
+      cancelled: () => cancelled,
+      execute: async () => {
+        cancelled = true;
+        return true;
+      },
+    });
     expect(value).toMatchObject({ outcome: "cancelled", statement_sent: true, object: { status: "VALID" } });
   });
 });

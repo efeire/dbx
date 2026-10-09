@@ -1951,7 +1951,14 @@ defineExpose({
               </Button>
             </div>
             <ProductionWatermark v-if="activeProductionContext.active" />
-            <OracleTypeMetadataPanel v-if="activeTab.oracleTypeIdentity && activeTab.connectionId" :connection-id="activeTab.connectionId" :database="activeTab.database" :schema="activeTab.oracleTypeIdentity.schema" :name="activeTab.oracleTypeIdentity.name" :object-type="activeTab.oracleTypeIdentity.object_type" />
+            <OracleTypeMetadataPanel
+              v-if="activeTab.oracleTypeIdentity && activeTab.connectionId"
+              :connection-id="activeTab.connectionId"
+              :database="activeTab.database"
+              :schema="activeTab.oracleTypeIdentity.schema"
+              :name="activeTab.oracleTypeIdentity.name"
+              :object-type="activeTab.oracleTypeIdentity.object_type"
+            />
             <!-- issue #9035：源码 tab 先出现再加载。pending 期间不挂载编辑器
                  （还没有内容可编辑，也省下一次 Monaco 初始化），失败则就地重试。
                  issue #9387：DDL 新标签同样先出 tab 再加载，失败就地显示错误。 -->
