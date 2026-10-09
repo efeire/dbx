@@ -141,6 +141,7 @@ const MySqlDashboard = defineAsyncComponent(() => import("@/components/admin/MyS
 const PostgresDashboard = defineAsyncComponent(() => import("@/components/admin/PostgresDashboard.vue"));
 const XuguServerDashboard = defineAsyncComponent(() => import("@/components/admin/XuguServerDashboard.vue"));
 const DamengJobAdmin = defineAsyncComponent(() => import("@/components/admin/DamengJobAdmin.vue"));
+const OracleJobAdmin = defineAsyncComponent(() => import("@/components/admin/OracleJobAdmin.vue"));
 
 const DamengUserAdmin = defineAsyncComponent(() => import("@/components/admin/DamengUserAdmin.vue"));
 const DamengRoleAdmin = defineAsyncComponent(() => import("@/components/admin/DamengRoleAdmin.vue"));
@@ -3540,6 +3541,10 @@ defineExpose({
       <div class="min-h-0 flex-1">
         <DoltVersionControl :key="activeTab.id" :connection-id="activeTab.connectionId" :database="activeTab.database" :initial-branch="activeTab.workspaceBranch" />
       </div>
+    </template>
+
+    <template v-else-if="activeTab.mode === 'oracle-jobs' && activeConnection">
+      <OracleJobAdmin :key="activeTab.id" :connection="activeConnection" :database="activeTab.database" />
     </template>
 
     <template v-else-if="activeTab.mode === 'dameng-jobs' && activeConnection">

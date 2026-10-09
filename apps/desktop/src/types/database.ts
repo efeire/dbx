@@ -2136,6 +2136,7 @@ export interface QueryTab {
     | "dameng-users"
     | "dameng-roles"
     | "dameng-jobs"
+    | "oracle-jobs"
     | "processlist"
     | "sqlserver-trace"
     | "mysql-dashboard"
