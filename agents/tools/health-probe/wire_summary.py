@@ -8,7 +8,7 @@ from pathlib import Path
 
 MYSQL_REQUESTS = {"mysql_query", "mysql_ping", "mysql_prepare", "mysql_execute", "mysql_fetch", "mysql_init_db", "mysql_quit", "mysql_long_data", "mysql_stmt_close", "mysql_other_command"}
 TTC_PREFIXES = {"ttc_ping_prefix", "ttc_oall8_prefix", "ttc_logoff_prefix", "ttc_other_function_prefix"}
-LIMITATIONS = {"mysql_tls_or_compressed_not_decoded", "tls_transport_not_decoded", "opaque_transport", "decode_invalid_length", "incomplete_frame", "tns_redirect", "tns_request_semantics_not_decoded", "tns_request_order_unknown", "mysql_request_order_unknown"}
+LIMITATIONS = {"mysql_tls_or_compressed_not_decoded", "mysql_ob20_not_decoded", "tls_transport_not_decoded", "opaque_transport", "decode_invalid_length", "incomplete_frame", "tns_redirect", "tns_request_semantics_not_decoded", "tns_request_order_unknown", "mysql_request_order_unknown"}
 TURNAROUNDS = {f"{name}_first_response" for name in MYSQL_REQUESTS | TTC_PREFIXES}
 SCENARIOS = {"connect", "cold_query", "warm_query", "idle_query", "invalid_hot", "invalid_expired", "reconnect", "after_reconnect", "cancel_race", "after_cancel", "disconnect", "after_explicit_reconnect"}
 

@@ -56,6 +56,23 @@ class WireTests(unittest.TestCase):
         self.assertNotIn("c2s:mysql_query", log.snapshot())
         self.assertEqual(log.snapshot()["c2s:mysql_tls_or_compressed_not_decoded"], 1)
 
+    def test_ob20_envelope_is_opaque_not_a_mysql_command(self):
+        output, log, decoder = self.fixture()
+        self.authenticate(decoder)
+        # OB Connector/J 2.4.18: 7-byte compression header, then magic 0x20AB/version20.
+        payload = b"\x00\x00\x00\xab\x20\x14\x00" + b"\x00" * 20 + b"private"
+        data = mysql(payload)
+        for chunk in (data[:2], data[2:10], data[10:]): decoder.feed("c2s", chunk)
+        decoder.feed("s2c", data)
+        self.assertEqual(log.snapshot().get("c2s:mysql_ob20_not_decoded"), 1)
+        self.assertNotIn("c2s:mysql_other_command", log.snapshot())
+        self.assertNotIn("private", output.getvalue())
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        sample = {"kind": "sample", "scenario": "cold_query", "started_utc_ns": events[0]["utc_ns"], "completed_utc_ns": events[-1]["utc_ns"]}
+        summary = correlate([sample], events)
+        self.assertEqual(summary["sample_windows"][0]["coverage"], "partial_or_opaque")
+        self.assertIn("mysql_ob20_not_decoded", summary["capture_limitations"])
+
     def test_tns_packet_count_does_not_claim_logical_query_count(self):
         output, log, decoder = self.fixture("tns")
         decoder.feed("c2s", tns(6, b"\x00\x00\x03\x93\x00private"))

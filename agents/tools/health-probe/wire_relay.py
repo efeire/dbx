@@ -101,6 +101,13 @@ class Decoder:
                     self.authenticated = True
                 return
             if side == "c2s" and sequence == 0 and prefix:
+                # Connector/J defaults to OB20: three uncompressed-length bytes
+                # precede little-endian magic 0x20AB and version20. Its envelope
+                # is not a MySQL command; retain metadata without guessing counts.
+                if len(prefix) >= 7 and prefix[3:7] == b"\xab\x20\x14\x00":
+                    self.opaque = True
+                    self.log.emit(self.connection, side, "mysql_ob20_not_decoded", size)
+                    return
                 category = self.MYSQL_COMMANDS.get(prefix[0], "mysql_other_command")
                 self.log.emit(self.connection, side, category, size)
                 if prefix[0] in (2, 3, 14, 22, 23, 28): self.mysql_pending.append((category, time.monotonic_ns()))

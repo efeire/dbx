@@ -1,6 +1,6 @@
 # 查询前健康探测验证（V06b / #11472）
 
-此目录是独立验证工具，不进入生产 Agent 包，不提供测试专用生产 API。源码与行为用例已编写，尚未编译或执行。未确认重复探测缺陷，生产健康检查逻辑保持原状。
+此目录是独立验证工具，不进入生产 Agent 包，不提供测试专用生产 API。Java 探针已窄编译并对 OceanBase 4.2.5.7 / Connector/J 2.4.18 进行只读实库采样；当前样本运行时有并行构建负载，不作为稳定性能结论。未确认生产重复探测缺陷，生产健康检查逻辑保持原状。
 
 ## 采样口径
 
@@ -56,7 +56,7 @@ java -cp "$probeClasses;$probeAgentJar" com.dbx.agent.HealthProbeOutcomeTest
 
 `wire_relay.py` 是绑定 127.0.0.1 的透明 TCP 中继，完整转发原字节，重组 TCP 分片后仅保存协议类别、帧长度、UTC/单调时间和首个响应时长；不保存 payload/SQL/账号/认证内容。不是生产服务，不进入产品包。连接握手、TLS/压缩、不完整帧、重定向和解码失败单独标注。
 
-OB JDBC 实际使用 MySQL 传输：认证成功后，sequence=0 的 COM_QUERY/COM_PING/COM_STMT_EXECUTE 等分别计数。这是该专用中继内实际命令数，独立于 JDBC 方法调用数；TLS/压缩时只记录 opaque transport，不伪造命令计数。首个响应时长包括中继、网络和服务器等待，并非纯数据库执行时间。
+OB JDBC 使用 MySQL 传输，但 Connector/J 2.4.18 默认启用 OB20 封装。中继遇到 OB20 的明确 magic/version 头时标记 `mysql_ob20_not_decoded` 并停止命令解码，汇总为 `partial_or_opaque`；不能把封装头当 MySQL 命令，也不能把空计数当零请求。普通未封装 MySQL 下，认证成功后 sequence=0 的 COM_QUERY/COM_PING/COM_STMT_EXECUTE 等分别计数。这是该专用中继内实际命令数，独立于 JDBC 方法调用数；TLS/压缩时同样只记录 opaque transport，不伪造命令计数。首个响应时长包括中继、网络和服务器等待，并非纯数据库执行时间。不为取数关闭生产协议或安全选项。
 
 ```powershell
 python agents/tools/health-probe/wire_relay.py mysql <专用OB主机> <端口> <新wire证据文件> --port 12983 --duration 600
@@ -90,6 +90,6 @@ Oracle 样本的 dispatch_ms 是含进程管道的 JSON-RPC 往返，Java 同名
 
 JDBC 计数不能证明真实网络请求数。现在已有上述真实传输观测入口，仍须在目标版本/权限/网络条件下实际运行并核对覆盖。TLS/压缩、Oracle 加密、跨帧 TTC 或重定向使逻辑请求数不可确认时保留未验证边界；不能用 JDBC/RPC/TNS DATA 数替代，不为普通查询新增 SQL_AUDIT 补查。
 
-Oracle Go/OCI 使用上述生产 Agent 入口独立测量；Java 工具不代表它。客户端 Tauri IPC/传输/渲染仍需真实桌面证据。现有网络失效/暂停/取消场景已编写但未执行；实际数据库不可达、真实探测阻塞与成功取消仍须核对结果。当前没有实库样本、性能结论、修复前后对比或 GUI 通过结论。
+Oracle Go/OCI 使用上述生产 Agent 入口独立测量；Java 工具不代表它，当前按既有决定暂缓。客户端 Tauri IPC/传输/渲染仍需真实桌面证据。当前 OB pooled/direct 各5组样本记录冷、热、空闲、关闭本工具物理连接后的失效、重连和取消竞态：所有成功查询返回1；窗口内失效明确报错，窗口后恢复；取消竞态均已完成且实际 cancel 调用为0，因此没有成功取消证据。数据与计时完整留证，但并行构建负载、OB20 未解码及桌面未验证使其不能支持稳定性能、完整请求数或全范围验收结论。真实网络不可达、探测阻塞、成功取消和恢复仍须继续核对；没有修改生产探测行为。
 
 若后续确认重复探测或阻塞缺陷，再为实际调用链写失败回归并做最小修复；保留失效检测和错误分类，经独立 Standards/Spec、固定 SHA CI 后交付。无缺陷时记录保留现状的证据，不为性能猜测修改生产行为。
