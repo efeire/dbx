@@ -99,7 +99,7 @@ import {
   type TableAdminSqlOptions,
 } from "@/lib/database/dbAdminSql";
 import { useToast } from "@/composables/useToast";
-import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
+import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeOceanBaseRoutineRenameSteps, RoutineRenameStepError, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildRenameObjectSql, supportsObjectRename } from "@/lib/table/objectRenameSql";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
@@ -1759,7 +1759,21 @@ async function refreshRenamePreviewSql() {
     return;
   }
   if (supportsSourceBackedRoutineRename(effectiveDatabaseType.value, row.type as ObjectSourceKind)) {
-    renamePreviewSqlText.value = `-- Recreate ${row.type} from source, then drop the original object.`;
+    if (effectiveDatabaseType.value !== "oceanbase-oracle") {
+      renamePreviewSqlText.value = `-- Recreate ${row.type} from source, then drop the original object.`;
+      return;
+    }
+    try {
+      const schema = row.schema || selectedSchema.value || props.database;
+      const source = await api.getObjectSource(props.connection.id, props.database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined);
+      const steps = await buildRoutineRenameObjectSourceStatements({ databaseType: "oceanbase-oracle", objectType: row.type as ObjectSourceKind, schema, name: row.name, newName, source: source.source });
+      if (requestId === renamePreviewRequestId) renamePreviewSqlText.value = steps.join("\n\n");
+    } catch (error: any) {
+      if (requestId === renamePreviewRequestId) {
+        renamePreviewSqlText.value = "";
+        renameError.value = error?.message || String(error);
+      }
+    }
     return;
   }
   try {
@@ -1801,8 +1815,10 @@ async function confirmRename() {
         source: source.source,
       });
       const executed = await executeObjectBrowserSqlWithProductionGuard(statements.join(";\n"), async () => {
-        for (const sql of statements) {
-          await api.executeQuery(props.connection.id, props.database, sql, schema);
+        if (effectiveDatabaseType.value === "oceanbase-oracle") {
+          await executeOceanBaseRoutineRenameSteps(statements, (sql) => api.executeQuery(props.connection.id, props.database, sql, schema));
+        } else {
+          for (const sql of statements) await api.executeQuery(props.connection.id, props.database, sql, schema);
         }
         return true;
       });
@@ -1844,7 +1860,9 @@ async function confirmRename() {
       // remove the old pin instead of allowing it to revive later.
       connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
     }
-    renameError.value = e?.message || String(e);
+    renameError.value = e instanceof RoutineRenameStepError
+      ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: row.name, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
+      : e?.message || String(e);
   }
 }
 

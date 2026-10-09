@@ -190,7 +190,7 @@ import {
   type TableChildObjectType,
 } from "@/lib/database/dbAdminSql";
 import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
-import { buildRoutineRenameObjectSourceStatements, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
+import { buildRoutineRenameObjectSourceStatements, executeOceanBaseRoutineRenameSteps, RoutineRenameStepError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildViewDdl } from "@/lib/table/viewDdl";
 import { formatSqlForDisplay, sqlFormatDialectForDbType } from "@/lib/sql/sqlFormatter";
 import { getTableStructureCapabilities } from "@/lib/table/tableStructureCapabilities";
@@ -3454,7 +3454,22 @@ async function refreshRenameObjectPreviewSql() {
     return;
   }
   if (supportsSourceBackedRoutineRename(currentDatabaseType(), objectType as any)) {
-    renameObjectPreviewSql.value = `-- Recreate ${objectType} from source, then drop the original object.`;
+    if (currentDatabaseType() !== "oceanbase-oracle") {
+      renameObjectPreviewSql.value = `-- Recreate ${objectType} from source, then drop the original object.`;
+      return;
+    }
+    try {
+      if (!node.connectionId || !node.database) return;
+      const schema = node.schema || node.database;
+      const source = await api.getObjectSource(node.connectionId, node.database, schema, node.objectName || node.label, objectType as any, node.signature);
+      const steps = await buildRoutineRenameObjectSourceStatements({ databaseType: "oceanbase-oracle", objectType: objectType as any, schema, name: node.objectName || node.label, newName, source: source.source });
+      if (requestId === renameObjectPreviewRequestId) renameObjectPreviewSql.value = steps.join("\n\n");
+    } catch (error: any) {
+      if (requestId === renameObjectPreviewRequestId) {
+        renameObjectPreviewSql.value = "";
+        renameObjectError.value = error?.message || String(error);
+      }
+    }
     return;
   }
   try {
@@ -3546,12 +3561,22 @@ async function confirmRenameObject() {
         databaseType: dbType!,
         objectType: objectType as any,
         schema,
-        name: node.label,
+        name: node.objectName || node.label,
         newName,
         source: source.source,
       });
-      for (const sql of statements) {
-        await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema });
+      if (dbType === "oceanbase-oracle") {
+        const config = connectionStore.getConfig(node.connectionId);
+        const timeoutSecs = queryTimeoutSecsForConnection(config, settingsStore.editorSettings.globalQueryTimeoutSecs);
+        const executed = await executeWithProductionSqlGuard({ connection: config, database: node.database, sql: statements.join("\n\n"), source: t("production.sourceSidebar"), execute: async () => {
+          await executeOceanBaseRoutineRenameSteps(statements, (sql) => api.executeQuery(node.connectionId!, node.database!, sql, schema, undefined, { timeoutSecs }));
+          return true;
+        } });
+        if (!executed) return;
+      } else {
+        for (const sql of statements) {
+          if (await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema }) === undefined) return;
+        }
       }
     } else {
       const sql = await buildRenameObjectSql({
@@ -3575,7 +3600,9 @@ async function confirmRenameObject() {
       // remove the old pin instead of allowing it to revive later.
       connectionStore.removePinnedTreeNodes([node]);
     }
-    renameObjectError.value = e?.message || String(e);
+    renameObjectError.value = e instanceof RoutineRenameStepError
+      ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: node.label, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
+      : e?.message || String(e);
   }
 }
 
