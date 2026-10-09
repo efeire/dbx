@@ -1036,8 +1036,35 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             } catch (RuntimeException | SQLException ignored) {
                 // Privilege metadata remains optional for users without access to grant views.
             }
-            return ddl;
+            return appendTableTriggers(ddl, owner, tableName);
         });
+    }
+
+    private String appendTableTriggers(String ddl, String tableOwner, String tableName) throws SQLException {
+        // ALL_TRIGGERS exposes triggers on accessible tables; trigger OWNER may differ from TABLE_OWNER.
+        String sql = "SELECT OWNER, TRIGGER_NAME, STATUS FROM ALL_TRIGGERS "
+            + "WHERE TABLE_OWNER = ? AND TABLE_NAME = ? ORDER BY OWNER, TRIGGER_NAME";
+        List<String[]> triggers = new ArrayList<>();
+        try {
+            try (var stmt = requireConnection().prepareStatement(sql)) {
+                stmt.setString(1, tableOwner);
+                stmt.setString(2, tableName);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) triggers.add(new String[]{rs.getString(1), rs.getString(2), rs.getString(3)});
+                }
+            }
+            StringBuilder script = new StringBuilder("-- Export scope: table, indexes, comments, grants when readable, and all visible table triggers (count: ")
+                .append(triggers.size()).append(").\n").append(ddl);
+            for (String[] trigger : triggers) {
+                ObjectSource source = getDictionaryFirstObjectSource(trigger[0], trigger[1], "TRIGGER");
+                script.append("\n\n").append(OceanBaseTriggerDdl.render(
+                    source.getSource(), trigger[0], trigger[1], tableOwner, tableName, trigger[2]));
+            }
+            return script.toString();
+        } catch (SQLException e) {
+            throw new SQLException("Table DDL export incomplete: unable to read complete trigger metadata/source for "
+                + quoteIdentifier(tableOwner) + "." + quoteIdentifier(tableName) + ": " + e.getMessage(), e);
+        }
     }
 
     private static String quoteIdentifier(String name) {
