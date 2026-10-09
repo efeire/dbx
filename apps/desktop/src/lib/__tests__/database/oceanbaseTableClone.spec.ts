@@ -42,6 +42,18 @@ beforeEach(() => {
 });
 
 describe("OceanBase Oracle structure clone", () => {
+  it("reads virtual-column identity from the OceanBase ALL_TAB_COLS dictionary", async () => {
+    const original = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args: Parameters<typeof original>) => {
+      if (args[2].includes("VIRTUAL_COLUMN") && args[2].includes("ALL_TAB_COLUMNS")) {
+        return { ...result(), execution_error: true, error: { detail: "ORA-00904: invalid identifier 'VIRTUAL_COLUMN'" } };
+      }
+      return original(...args);
+    });
+    const plan = await buildDuplicateTableStructurePlan(options);
+    expect(plan.oceanbaseClone?.targetName).toBe(options.targetName);
+    expect(api.executeQuery.mock.calls.find((call) => call[2].includes("VIRTUAL_COLUMN"))?.[2]).toContain("FROM SYS.ALL_TAB_COLS WHERE");
+  });
   it("carries FLOAT binary precision from metadata into the CREATE request", async () => {
     api.getColumns.mockResolvedValue([...columns, { name: "measurement", data_type: "FLOAT", numeric_precision: 24, numeric_scale: null, is_nullable: true, column_default: null, is_primary_key: false, extra: "" }]);
     const plan = await buildDuplicateTableStructurePlan(options);
