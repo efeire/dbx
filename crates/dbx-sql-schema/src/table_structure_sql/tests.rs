@@ -1494,13 +1494,24 @@ fn oracle_add_column_keeps_not_null_after_default() {
 
 #[test]
 fn oceanbase_clone_create_table_preserves_float_binary_precision() {
-    let mut measurement = column("MEASUREMENT");
-    measurement.data_type = "FLOAT(24)".to_string();
-    let options = structure_change_options(DatabaseType::OceanbaseOracle, Some("DBX_APP"), "CLONE_FLOAT", vec![measurement]);
-    let result = build_create_table_sql(options);
-    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.statements.len(), 1);
-    assert!(result.statements[0].contains("MEASUREMENT FLOAT(24)"), "{}", result.statements[0]);
+    for (source_type, expected_type) in [
+        ("FLOAT(24)", "FLOAT(24)"),
+        ("FLOAT", "FLOAT"),
+        ("INTEGER(11)", "INTEGER"),
+        ("BINARY_FLOAT(24)", "BINARY_FLOAT"),
+    ] {
+        let mut measurement = column("MEASUREMENT");
+        measurement.data_type = source_type.to_string();
+        let options =
+            structure_change_options(DatabaseType::OceanbaseOracle, Some("DBX_APP"), "CLONE_FLOAT", vec![measurement]);
+        let result = build_create_table_sql(options);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        assert_eq!(result.statements.len(), 1);
+        assert_eq!(
+            result.statements[0],
+            format!("CREATE TABLE \"DBX_APP\".\"CLONE_FLOAT\" (\n  \"MEASUREMENT\" {expected_type}\n);")
+        );
+    }
 }
 
 #[test]
