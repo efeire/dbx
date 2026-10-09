@@ -763,33 +763,11 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
                         backup_path.map_or(String::new(), |path| format!("Existing definitions backed up at {path}"))
                     ));
                 } else if let Some(path) = backup_path {
-                    let mut restored = true;
-                    for (kind, ddl) in &backup.definitions {
-                        if item.object_type == TransferObjectKind::PackageBody && kind == "PACKAGE" {
-                            continue;
-                        }
-                        let kind = if kind == "PACKAGE BODY" {
-                            TransferObjectKind::PackageBody
-                        } else {
-                            TransferObjectKind::Package
-                        };
-                        let ddl = map_header(ddl, kind, &item.name, &item.target_schema)?;
-                        if execute_on_pool(state, target_pool, &ddl).await.is_err() {
-                            restored = false;
-                            continue;
-                        }
-                        let recovery_item = TransferSchemaObjectItem { object_type: kind, ddl, ..item.clone() };
-                        if verify(state, request, target_pool, &recovery_item).await.is_err() {
-                            restored = false;
-                        }
-                    }
+                    // A failed response does not prove that the DDL stopped. Replaying the
+                    // backup could race with an unfinished write or overwrite a concurrent edit.
                     result.recovery = Some(format!(
-                        "{}; backup retained at {path}",
-                        if restored {
-                            "Target definitions restored and verified"
-                        } else {
-                            "Automatic restoration incomplete; manual recovery required"
-                        }
+                        "No automatic restoration was executed. Wait for pending DDL to finish and compare current source before explicitly restoring the backup on connection {} in schema {}; verify VALID, ALL_ERRORS and full source afterward. Backup retained at {path}",
+                        backup.connection_id, backup.schema
                     ));
                 } else {
                     result.recovery =
