@@ -261,7 +261,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 String.format(baseSql, placeholders(objectTypes.size())),
                 "OBJECT_NAME, TABLE_TYPE, COMMENTS",
                 "o.OBJECT_NAME",
-                "ORDER BY OBJECT_NAME",
+                "ORDER BY OBJECT_NAME, o.OBJECT_ID",
                 owner,
                 objectTypes,
                 constraints
@@ -298,13 +298,15 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 return List.of();
             }
             String baseSql = """
-                SELECT OBJECT_NAME, OBJECT_TYPE
-                FROM ALL_OBJECTS
-                WHERE OWNER = ? AND OBJECT_TYPE IN (%s)
+                SELECT o.OBJECT_NAME, o.OBJECT_TYPE, c.COMMENTS
+                FROM ALL_OBJECTS o
+                LEFT JOIN ALL_TAB_COMMENTS c ON c.OWNER = o.OWNER AND c.TABLE_NAME = o.OBJECT_NAME
+                    AND o.OBJECT_TYPE IN ('TABLE', 'VIEW')
+                WHERE o.OWNER = ? AND o.OBJECT_TYPE IN (%s)
                 """.stripIndent().trim();
             MetadataSql query = oceanBaseMetadataSql(
                 String.format(baseSql, placeholders(objectTypes.size())),
-                "OBJECT_NAME, OBJECT_TYPE",
+                "OBJECT_NAME, OBJECT_TYPE, COMMENTS",
                 "OBJECT_NAME",
                 """
                 ORDER BY CASE OBJECT_TYPE
@@ -316,7 +318,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                     WHEN 'PACKAGE BODY' THEN 5
                     WHEN 'SEQUENCE' THEN 6
                     ELSE 7
-                END, OBJECT_NAME
+                END, OBJECT_NAME, o.OBJECT_ID
                 """.stripIndent().trim(),
                 owner,
                 objectTypes,
@@ -324,17 +326,13 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             );
 
             List<ObjectInfo> result = new ArrayList<>();
-            String sql = query.sql;
-            if (constraints.hasLimit() || constraints.hasOffset()) {
-                sql += "\nORDER BY DBX_RN";
-            }
-            try (var stmt = requireConnection().prepareStatement(sql)) {
+            try (var stmt = requireConnection().prepareStatement(query.sql)) {
                 bind(stmt, query.args);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
                         String objectType = rs.getString(2);
                         result.add(new ObjectInfo(rs.getString(1),
-                            "PACKAGE BODY".equals(objectType) ? "PACKAGE_BODY" : objectType, owner, null));
+                            "PACKAGE BODY".equals(objectType) ? "PACKAGE_BODY" : objectType, owner, rs.getString(3)));
                     }
                 }
             }
@@ -680,8 +678,11 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         args.addAll(objectTypes);
         String sql = baseSql;
         if (constraints.hasFilter()) {
-            sql += " AND UPPER(" + nameColumn + ") LIKE ? ESCAPE '\\'";
-            args.add(constraints.fuzzyLikePattern().toUpperCase(Locale.ROOT));
+            sql += " AND (UPPER(" + nameColumn + ") LIKE ? ESCAPE '\\'"
+                + " OR UPPER(c.COMMENTS) LIKE ? ESCAPE '\\')";
+            String pattern = constraints.fuzzyLikePattern().toUpperCase(Locale.ROOT);
+            args.add(pattern);
+            args.add(pattern);
         }
         sql += "\n" + orderSql;
         if (constraints.hasLimit()) {
@@ -690,13 +691,16 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             sql = "SELECT " + selectList + "\nFROM (\n  SELECT DBX_Q.*, ROWNUM AS DBX_RN\n  FROM (\n"
                 + sql
                 + "\n  ) DBX_Q\n  WHERE ROWNUM <= ?\n)\nWHERE DBX_RN > ?";
-            args.add(offset + constraints.getLimit());
+            args.add((long) offset + constraints.getLimit());
             args.add(offset);
         } else if (constraints.hasOffset()) {
             sql = "SELECT " + selectList + "\nFROM (\n  SELECT DBX_Q.*, ROWNUM AS DBX_RN\n  FROM (\n"
                 + sql
                 + "\n  ) DBX_Q\n)\nWHERE DBX_RN > ?";
             args.add(constraints.getOffset());
+        }
+        if (constraints.hasLimit() || constraints.hasOffset()) {
+            sql += "\nORDER BY DBX_RN";
         }
         return new MetadataSql(sql, args);
     }
@@ -889,6 +893,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             Object arg = args.get(index);
             if (arg instanceof Integer) {
                 stmt.setInt(index + 1, (Integer) arg);
+            } else if (arg instanceof Long) {
+                stmt.setLong(index + 1, (Long) arg);
             } else {
                 stmt.setString(index + 1, String.valueOf(arg));
             }
@@ -1030,8 +1036,35 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             } catch (RuntimeException | SQLException ignored) {
                 // Privilege metadata remains optional for users without access to grant views.
             }
-            return ddl;
+            return appendTableTriggers(ddl, owner, tableName);
         });
+    }
+
+    private String appendTableTriggers(String ddl, String tableOwner, String tableName) throws SQLException {
+        // ALL_TRIGGERS exposes triggers on accessible tables; trigger OWNER may differ from TABLE_OWNER.
+        String sql = "SELECT OWNER, TRIGGER_NAME, STATUS FROM ALL_TRIGGERS "
+            + "WHERE TABLE_OWNER = ? AND TABLE_NAME = ? ORDER BY OWNER, TRIGGER_NAME";
+        List<String[]> triggers = new ArrayList<>();
+        try {
+            try (var stmt = requireConnection().prepareStatement(sql)) {
+                stmt.setString(1, tableOwner);
+                stmt.setString(2, tableName);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) triggers.add(new String[]{rs.getString(1), rs.getString(2), rs.getString(3)});
+                }
+            }
+            StringBuilder script = new StringBuilder("-- Export scope: table, indexes, comments, grants when readable, and all visible table triggers (count: ")
+                .append(triggers.size()).append(").\n").append(ddl);
+            for (String[] trigger : triggers) {
+                ObjectSource source = getDictionaryFirstObjectSource(trigger[0], trigger[1], "TRIGGER");
+                script.append("\n\n").append(OceanBaseTriggerDdl.render(
+                    source.getSource(), trigger[0], trigger[1], tableOwner, tableName, trigger[2]));
+            }
+            return script.toString();
+        } catch (SQLException e) {
+            throw new SQLException("Table DDL export incomplete: unable to read complete trigger metadata/source for "
+                + quoteIdentifier(tableOwner) + "." + quoteIdentifier(tableName) + ": " + e.getMessage(), e);
+        }
     }
 
     private static String quoteIdentifier(String name) {
@@ -1323,10 +1356,10 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             String owner = normalizeSchema(schema);
             String tableName = normalizeObjectName(table);
             String sql = """
-                SELECT TRIGGER_NAME, TRIGGERING_EVENT, TRIGGER_TYPE
+                SELECT TRIGGER_NAME, TRIGGERING_EVENT, TRIGGER_TYPE, OWNER
                 FROM ALL_TRIGGERS
-                WHERE OWNER = ? AND TABLE_NAME = ?
-                ORDER BY TRIGGER_NAME
+                WHERE TABLE_OWNER = ? AND TABLE_NAME = ?
+                ORDER BY OWNER, TRIGGER_NAME
                 """.stripIndent().trim();
 
             List<TriggerInfo> result = new ArrayList<>();
@@ -1335,7 +1368,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 stmt.setString(2, tableName);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
-                        result.add(new TriggerInfo(rs.getString(1), rs.getString(2), rs.getString(3)));
+                        result.add(new TriggerInfo(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)));
                     }
                 }
             }

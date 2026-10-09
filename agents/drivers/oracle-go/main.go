@@ -232,6 +232,7 @@ END, OBJECT_NAME`
 const oracleListObjectsSQL = oracleListObjectsBaseSQL + "\n" + oracleListObjectsOrderSQL
 const oracleListTriggersSQL = `
 SELECT t.TRIGGER_NAME,
+       t.OWNER,
        t.TRIGGERING_EVENT,
        t.TRIGGER_TYPE,
        t.DESCRIPTION,
@@ -242,10 +243,10 @@ LEFT JOIN ALL_SOURCE s
   ON s.OWNER = t.OWNER
  AND s.NAME = t.TRIGGER_NAME
  AND s.TYPE = 'TRIGGER'
-WHERE t.OWNER = :1
+WHERE t.TABLE_OWNER = :1
   AND t.TABLE_NAME = :2
   AND t.BASE_OBJECT_TYPE IN ('TABLE', 'VIEW')
-ORDER BY t.TRIGGER_NAME, s.LINE`
+ORDER BY t.OWNER, t.TRIGGER_NAME, s.LINE`
 
 type request struct {
 	ID     json.RawMessage            `json:"id"`
@@ -520,6 +521,7 @@ type foreignKeyInfo struct {
 
 type triggerInfo struct {
 	Name      string  `json:"name"`
+	Owner     *string `json:"owner,omitempty"`
 	Event     string  `json:"event"`
 	Timing    string  `json:"timing"`
 	Statement *string `json:"statement,omitempty"`
@@ -2924,6 +2926,7 @@ func (s *server) listTriggers(schema, table string) ([]triggerInfo, error) {
 	defer s.closeRows(rows)
 	var result []triggerInfo
 	var currentName string
+	var currentOwner string
 	var currentDescription string
 	var source strings.Builder
 	flush := func() {
@@ -2935,18 +2938,19 @@ func (s *server) listTriggers(schema, table string) ([]triggerInfo, error) {
 		}
 	}
 	for rows.Next() {
-		var name, event, timing string
+		var name, owner, event, timing string
 		var description, lineText sql.NullString
 		var line sql.NullInt64
-		if err := rows.Scan(&name, &event, &timing, &description, &line, &lineText); err != nil {
+		if err := rows.Scan(&name, &owner, &event, &timing, &description, &line, &lineText); err != nil {
 			return nil, err
 		}
-		if name != currentName {
+		if name != currentName || owner != currentOwner {
 			flush()
 			currentName = name
+			currentOwner = owner
 			currentDescription = description.String
 			source.Reset()
-			result = append(result, triggerInfo{Name: name, Event: event, Timing: timing})
+			result = append(result, triggerInfo{Name: name, Owner: &owner, Event: event, Timing: timing})
 		}
 		if line.Valid && lineText.Valid {
 			source.WriteString(lineText.String)

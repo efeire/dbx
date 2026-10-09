@@ -1109,8 +1109,8 @@ func TestListForeignKeysAndTriggersPreserveQuotedCloneTableName(t *testing.T) {
 		{
 			queryContains: "FROM ALL_TRIGGERS",
 			args:          []driver.Value{schema, table},
-			columns:       []string{"TRIGGER_NAME", "TRIGGERING_EVENT", "TRIGGER_TYPE", "DESCRIPTION", "LINE", "TEXT"},
-			rows:          [][]driver.Value{{"ORDERS_copy_TRG1", "INSERT", "BEFORE EACH ROW", nil, nil, nil}},
+			columns:       []string{"TRIGGER_NAME", "OWNER", "TRIGGERING_EVENT", "TRIGGER_TYPE", "DESCRIPTION", "LINE", "TEXT"},
+			rows:          [][]driver.Value{{"ORDERS_copy_TRG1", "HR", "INSERT", "BEFORE EACH ROW", nil, nil, nil}},
 		},
 	})
 	s := newServer()
@@ -2207,8 +2207,57 @@ func TestOracleListTriggersSQLLoadsSourceWithoutLongColumns(t *testing.T) {
 	if strings.Contains(sqlText, "TRIGGER_BODY") {
 		t.Fatalf("trigger listing should avoid Oracle LONG trigger bodies, got: %s", oracleListTriggersSQL)
 	}
-	if !strings.Contains(sqlText, "T.OWNER = :1") || !strings.Contains(sqlText, "T.TABLE_NAME = :2") {
+	if !strings.Contains(sqlText, "T.TABLE_OWNER = :1") || !strings.Contains(sqlText, "T.TABLE_NAME = :2") || strings.Contains(sqlText, "WHERE T.OWNER = :1") {
 		t.Fatalf("trigger listing should stay scoped to the selected schema and table, got: %s", oracleListTriggersSQL)
+	}
+}
+
+func TestListTriggersSeparatesOwnersAndSourceLines(t *testing.T) {
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{
+		queryContains: "WHERE t.TABLE_OWNER = :1",
+		args:          []driver.Value{"APP", "MixedTable"},
+		columns:       []string{"TRIGGER_NAME", "OWNER", "TRIGGERING_EVENT", "TRIGGER_TYPE", "DESCRIPTION", "LINE", "TEXT"},
+		rows: [][]driver.Value{
+			{"AUDIT", "A", "INSERT", "AFTER", nil, int64(1), "BEGIN\n"},
+			{"AUDIT", "A", "INSERT", "AFTER", nil, int64(2), "  a();\nEND;\n"},
+			{"AUDIT", "B", "UPDATE", "BEFORE", nil, int64(1), "BEGIN\n"},
+			{"AUDIT", "B", "UPDATE", "BEFORE", nil, int64(2), "  b();\nEND;\n"},
+		},
+	}})
+	s := newServer()
+	s.db = db
+	triggers, err := s.listTriggers("APP", "MixedTable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(triggers) != 2 {
+		t.Fatalf("expected two owner identities, got %#v", triggers)
+	}
+	for i, owner := range []string{"A", "B"} {
+		if triggers[i].Owner == nil || *triggers[i].Owner != owner || triggers[i].Name != "AUDIT" {
+			t.Fatalf("identity %d = %#v", i, triggers[i])
+		}
+	}
+	if triggers[0].Statement == nil || *triggers[0].Statement != "BEGIN\n  a();\nEND;" || triggers[1].Statement == nil || *triggers[1].Statement != "BEGIN\n  b();\nEND;" {
+		t.Fatalf("source lines crossed owner identities: %#v", triggers)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatal("missing expected list query")
+	}
+	if !strings.Contains(oracleListTriggersSQL, "s.OWNER = t.OWNER") || !strings.Contains(oracleListTriggersSQL, "ORDER BY t.OWNER, t.TRIGGER_NAME, s.LINE") {
+		t.Fatal("source joins and ordering must use the real trigger owner")
+	}
+}
+
+func TestTriggerInfoReadsLegacyAndNullOwner(t *testing.T) {
+	for _, payload := range []string{`{"name":"AUDIT","event":"INSERT","timing":"AFTER"}`, `{"name":"AUDIT","owner":null,"event":"INSERT","timing":"AFTER"}`} {
+		var trigger triggerInfo
+		if err := json.Unmarshal([]byte(payload), &trigger); err != nil {
+			t.Fatal(err)
+		}
+		if trigger.Owner != nil {
+			t.Fatalf("legacy owner must remain unknown: %#v", trigger)
+		}
 	}
 }
 
