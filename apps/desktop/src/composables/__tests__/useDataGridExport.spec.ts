@@ -191,21 +191,32 @@ describe("original LOB result exports", () => {
   });
   function snapshotState() {
     const original = {
-      columns: ["id", "name"], rows: [[1, "preview"]], column_types: ["NUMBER", "CLOB"],
+      columns: ["id", "name"],
+      rows: [[1, "preview"]],
+      column_types: ["NUMBER", "CLOB"],
       large_value_context: { connectionId: "original-connection", database: "original-database", clientSessionId: "original-session" },
       large_value_cells: [{ row_index: 0, column_index: 1, value_ref: "original-locator", value_kind: "text" }],
     } as QueryResult;
-    return { original, state: createExportState(editableTable, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "oracle", undefined, {
-      snapshotResult: computed(() => original), hasCompleteLocalResult: computed(() => true), completeLocalResult: computed(() => original),
-    }) };
+    return {
+      original,
+      state: createExportState(editableTable, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "oracle", undefined, {
+        snapshotResult: computed(() => original),
+        hasCompleteLocalResult: computed(() => true),
+        completeLocalResult: computed(() => original),
+      }),
+    };
   }
   it.each(["csv", "json"] as const)("streams export-all %s from captured locators without frontend hydration or requery", async (format) => {
     const { state } = snapshotState();
     await (format === "csv" ? state.exportCsv() : state.exportJson());
-    expect(exportSnapshotResult).toHaveBeenCalledWith(expect.objectContaining({
-      format, context: expect.objectContaining({ connectionId: "original-connection", clientSessionId: "original-session" }),
-      cells: [{ rowIndex: 0, columnIndex: 1, valueRef: "original-locator" }],
-    }), expect.any(String));
+    expect(exportSnapshotResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        format,
+        context: expect.objectContaining({ connectionId: "original-connection", clientSessionId: "original-session" }),
+        cells: [{ rowIndex: 0, columnIndex: 1, valueRef: "original-locator" }],
+      }),
+      expect.any(String),
+    );
     expect(readLargeValueChunk).not.toHaveBeenCalled();
     expect(exportQueryResultCsv).not.toHaveBeenCalled();
     expect(exportQueryResultJson).not.toHaveBeenCalled();
@@ -221,7 +232,10 @@ describe("original LOB result exports", () => {
   it("materializes export-all for bounded formats rather than passing preview rows", async () => {
     const { original } = snapshotState();
     const localState = createExportState(editableTable, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "oracle", undefined, {
-      context: computed(() => "results"), snapshotResult: computed(() => original), hasCompleteLocalResult: computed(() => true), completeLocalResult: computed(() => original),
+      context: computed(() => "results"),
+      snapshotResult: computed(() => original),
+      hasCompleteLocalResult: computed(() => true),
+      completeLocalResult: computed(() => original),
     });
     vi.mocked(readLargeValueChunk).mockResolvedValue({ status: "ok", data: "complete original text", next_offset: 22, eof: true, value_kind: "text" });
     await localState.exportMarkdown();

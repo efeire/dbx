@@ -9,12 +9,7 @@ interface SnapshotExportRow {
 }
 
 /** Projection uses source positions, never labels, so quoted and repeated names remain distinct. */
-export function snapshotExportSelection(
-  result: QueryResult,
-  columns: string[],
-  sourceColumns: number[],
-  items: SnapshotExportRow[],
-): Pick<SnapshotExportRequest, "columns" | "rows" | "cells" | "context"> | undefined {
+export function snapshotExportSelection(result: QueryResult, columns: string[], sourceColumns: number[], items: SnapshotExportRow[]): Pick<SnapshotExportRequest, "columns" | "rows" | "cells" | "context"> | undefined {
   const refs = new Map((result.large_value_cells ?? []).filter((cell) => cell.value_ref).map((cell) => [`${cell.row_index}:${cell.column_index}`, cell.value_ref!]));
   const cells: SnapshotExportRequest["cells"] = [];
   items.forEach((item, rowIndex) => {
@@ -31,11 +26,13 @@ export function snapshotExportSelection(
 }
 
 export function assertSnapshotXlsxCellLengths(rows: unknown[][]): void {
-  for (const row of rows) for (const value of row) {
-    if (typeof value !== "string") continue;
-    let count = 0;
-    for (const _character of value) if (++count > 32767) {
-      throw new Error("XLSX cannot preserve a LOB longer than 32,767 characters; use CSV/JSON or download the complete value");
+  for (const row of rows)
+    for (const value of row) {
+      if (typeof value !== "string") continue;
+      let count = 0;
+      for (const _character of value)
+        if (++count > 32767) {
+          throw new Error("XLSX cannot preserve a LOB longer than 32,767 characters; use CSV/JSON or download the complete value");
+        }
     }
-  }
 }

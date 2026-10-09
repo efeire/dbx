@@ -201,7 +201,10 @@ interface CopyInsertData {
 
 export function useDataGridExport(options: UseDataGridExportOptions) {
   let activeSnapshotCancel: (() => Promise<void>) | undefined;
-  if (getCurrentScope()) onScopeDispose(() => { void activeSnapshotCancel?.().catch(() => undefined); });
+  if (getCurrentScope())
+    onScopeDispose(() => {
+      void activeSnapshotCancel?.().catch(() => undefined);
+    });
   const { t } = useI18n();
   const { toast } = useToast();
   const tracker = useExportTracker();
@@ -943,7 +946,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     const originalConnectionId = connectionId.value;
     const originalDatabase = database.value;
     const isCurrent = () => options.snapshotResult?.value === original && connectionId.value === originalConnectionId && database.value === originalDatabase;
-    if (!original || full && rowIds === undefined && !hasCompleteLocalResult?.value) return false;
+    if (!original || (full && rowIds === undefined && !hasCompleteLocalResult?.value)) return false;
     const exportAll = full && rowIds === undefined && hasCompleteLocalResult?.value;
     const visibleIndexes = visibleColumnIndexesOption?.value ?? columns.value.map((_, index) => index);
     const indexes = columnIndexes?.filter((index) => index >= 0 && index < columns.value.length);
@@ -952,7 +955,8 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     const items = exportAll
       ? original.rows.map((row, sourceIndex) => ({ sourceIndex, data: sourceIndexes.map((index) => row[index]) }))
       : rowsToExport(rowIds).map((item) => ({
-          sourceIndex: item.sourceIndex, isNew: item.isNew,
+          sourceIndex: item.sourceIndex,
+          isNew: item.isNew,
           data: externalizeRows([item.data], indexes)[0]!,
           isDirtyCol: (indexes ?? columns.value.map((_, index) => index)).map((index) => item.isDirtyCol[index] ?? false),
         }));
@@ -968,20 +972,36 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     }
     if (!isCurrent()) throw new Error("LOB result context changed");
     const executionId = uuid();
-    const cancel = async () => { await api.cancelQuery(executionId); };
+    const cancel = async () => {
+      await api.cancelQuery(executionId);
+    };
     activeSnapshotCancel = cancel;
     const title = currentExportTitle();
     tracker.addTask(title, format, outputPath, executionId);
     tracker.registerTaskCancelHandler(executionId, cancel);
-    if (exportProgressState) exportProgressState.value = {
-      title: t("exportProgress.title"), tableName: title, format, rowsExported: 0, totalRows: selected.rows.length,
-      status: "Running", errorMessage: null, filePath: outputPath, startedAt: Date.now(), finishedAt: undefined,
-    };
+    if (exportProgressState)
+      exportProgressState.value = {
+        title: t("exportProgress.title"),
+        tableName: title,
+        format,
+        rowsExported: 0,
+        totalRows: selected.rows.length,
+        status: "Running",
+        errorMessage: null,
+        filePath: outputPath,
+        startedAt: Date.now(),
+        finishedAt: undefined,
+      };
     if (exportProgressDialog) exportProgressDialog.value = true;
     if (exportCanMinimize) exportCanMinimize.value = true;
     const previousCancel = exportCancelHandler?.value;
     if (exportCancelHandler) exportCancelHandler.value = cancel;
-    const stop = watch(() => [options.snapshotResult?.value, connectionId.value, database.value], () => { if (!isCurrent()) void cancel().catch(() => undefined); });
+    const stop = watch(
+      () => [options.snapshotResult?.value, connectionId.value, database.value],
+      () => {
+        if (!isCurrent()) void cancel().catch(() => undefined);
+      },
+    );
     try {
       await api.exportSnapshotResult({ ...selected, context: { ...selected.context, executionId }, format, quoteMode: useSettingsStore().editorSettings.csvQuoteMode, nullLiteral: csvNullLiteralForMode(useSettingsStore().editorSettings.csvNullMode) }, outputPath);
       if (!isCurrent()) throw new Error("LOB result context changed");
@@ -1454,13 +1474,13 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           const rows = await materializeSnapshotResultRows(sheet.result, () => sheet.result.rows === sourceRows);
           if (sheet.result.large_value_refs?.length || sheet.result.large_value_cells?.some((cell) => cell.value_ref)) assertSnapshotXlsxCellLengths(rows);
           worksheets.push({
-          sheetName: sheet.sheetName,
-          columns: sheet.result.columns,
-          columnTypes: sheet.result.column_types ?? [],
-          columnComments: buildXlsxHeaderOverrides(sheet.result.columns, commentsForExportColumns(sheet.result.columns), exportOptions.headerMode),
-          rows: formatTemporalRowsForExport(rows, sheet.result.column_types ?? [], exportPattern),
-          numericColumnRightAlign: rightAlign,
-          autoFilter: exportOptions.autoFilter,
+            sheetName: sheet.sheetName,
+            columns: sheet.result.columns,
+            columnTypes: sheet.result.column_types ?? [],
+            columnComments: buildXlsxHeaderOverrides(sheet.result.columns, commentsForExportColumns(sheet.result.columns), exportOptions.headerMode),
+            rows: formatTemporalRowsForExport(rows, sheet.result.column_types ?? [], exportPattern),
+            numericColumnRightAlign: rightAlign,
+            autoFilter: exportOptions.autoFilter,
           });
         }
         const sqlWorksheet = includeSqlSheet ? buildXlsxSqlWorksheet(sheets.map((sheet) => ({ resultName: sheet.sheetName, sql: sheet.sql || sheet.result.sourceStatement || "" }))) : undefined;
