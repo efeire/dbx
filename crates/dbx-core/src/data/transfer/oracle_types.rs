@@ -35,10 +35,7 @@ pub(super) async fn map_table_type_references(state: &AppState, request: &Transf
 }
 
 fn compatible_source(sql: &str, kind: TransferObjectKind, details: &OracleTypeDetails) -> Result<(), String> {
-    let dependencies = details.dependencies.rows.iter().map(|d| dbx_types::types::RoutineDependency {
-        owner: d.referenced_schema.clone().unwrap_or_default(), name: d.referenced_name.clone(), object_type: d.referenced_type.replace('_', " "),
-    }).collect::<Vec<_>>();
-    dbx_sql::oracle_program_compatibility::compatible_type_source(sql, dictionary_kind(kind), &dependencies)
+    dbx_sql::oracle_program_compatibility::compatible_type_source(sql, dictionary_kind(kind), &details.dependencies.rows)
 }
 fn source_kind(kind: TransferObjectKind) -> db::ObjectSourceKind { if kind == TransferObjectKind::TypeBody { db::ObjectSourceKind::TypeBody } else { db::ObjectSourceKind::Type } }
 fn selected(request: &TransferRequest) -> Vec<(TransferObjectKind, String)> {

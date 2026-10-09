@@ -1,7 +1,7 @@
 //! Pure fixed-version Oracle/OceanBase program compatibility and identity mapping.
 //! Shared by schema comparison and transfer; no connections or execution state.
 use crate::models::connection::DatabaseType;
-use crate::types::RoutineDependency;
+use dbx_types::oracle_types::OracleTypeDependency;
 use regex::Regex;
 use std::collections::HashSet;
 
@@ -107,7 +107,7 @@ pub fn map_unqualified_table(sql: &str, name: &str, target: &str, target_name: &
     Ok(mapped)
 }
 
-pub fn compatible_type_source(sql: &str, kind: &str, dependencies: &[RoutineDependency]) -> Result<(), String> {
+pub fn compatible_type_source(sql: &str, kind: &str, dependencies: &[OracleTypeDependency]) -> Result<(), String> {
     let tail = declaration_tail(sql, kind)?;
     let words = source_tokens(&tail).into_iter().map(|t| t.2).collect::<Vec<_>>();
     // These clauses carry identity, edition, inheritance or execution semantics that
@@ -131,7 +131,7 @@ pub fn compatible_type_source(sql: &str, kind: &str, dependencies: &[RoutineDepe
             let name = identifier_word(&token.2);
             if ["NUMBER", "VARCHAR2", "CHAR", "RAW", "ABS", "NVL", "COUNT", "SUM", "MIN", "MAX", "AVG", "IN", "VALUES", "IF", "WHILE"].contains(&name.as_str()) || methods.contains(&name) { continue; }
             let package = index.checked_sub(2).and_then(|i| if tokens[index - 1].2 == "." { Some(identifier_word(&tokens[i].2)) } else { None });
-            if dependencies.iter().any(|d| d.name == name || package.as_deref() == Some(d.name.as_str())) { continue; }
+            if dependencies.iter().any(|d| d.referenced_name == name || package.as_deref() == Some(d.referenced_name.as_str())) { continue; }
             return Err(format!("TYPE BODY conversion cannot confirm callable or declaration {name}"));
         }
     }
@@ -143,7 +143,7 @@ pub fn compatible_type_source(sql: &str, kind: &str, dependencies: &[RoutineDepe
         let collection = text.windows(2).any(|p| p == ["TABLE", "OF"]) || text.contains(&"VARRAY") || text.windows(2).any(|p| p == ["VARYING", "ARRAY"]);
         if !object && !collection { return Err("TYPE conversion supports complete AS OBJECT, nested TABLE OF or VARRAY definitions; incomplete and other type forms are not migrated".into()); }
         let primitive = ["NUMBER", "VARCHAR2", "CHAR", "DATE", "RAW"];
-        let user_type = |value: &str| dependencies.iter().any(|d| d.object_type == "TYPE" && d.name == identifier_word(value));
+        let user_type = |value: &str| dependencies.iter().any(|d| d.referenced_type == "TYPE" && d.referenced_name == identifier_word(value));
         let check_datatype = |part: &[&str]| -> Result<(), String> {
             let name = if part.get(1) == Some(&".") { part.get(2) } else { part.first() }.ok_or("Missing type attribute datatype")?;
             if primitive.contains(name) || user_type(name) { Ok(()) } else { Err(format!("TYPE conversion has no confirmed attribute/element datatype mapping for {name}")) }
@@ -226,6 +226,18 @@ mod tests {
         assert!(mapped.contains("-- SRC.T\n"));
         assert!(mapped.contains("q'[SRC.T O'Reilly]', nq'{SRC.T}'"));
         assert!(map_reference("FUNCTION f(SRC NUMBER) RETURN NUMBER IS BEGIN RETURN SRC.T; END;", "SRC", "T", "DST").is_err());
+    }
+
+    #[test]
+    fn type_conversion_uses_referenced_type_identity() {
+        let dependency = OracleTypeDependency {
+            schema: "APP".into(), name: "T".into(), object_type: "TYPE".into(),
+            referenced_schema: Some("APP".into()), referenced_name: "ELEMENT_T".into(),
+            referenced_type: "TYPE".into(), referenced_link: None, dependency_type: None,
+        };
+        let source = "CREATE TYPE T AS TABLE OF ELEMENT_T;";
+        assert!(compatible_type_source(source, "TYPE", &[]).is_err());
+        assert!(compatible_type_source(source, "TYPE", &[dependency]).is_ok());
     }
 
     #[test]
