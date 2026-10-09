@@ -28,6 +28,7 @@ import com.dbx.agent.QueryPageOptions;
 import com.dbx.agent.QueryPageResult;
 import com.dbx.agent.QueryResult;
 import com.dbx.agent.QueryTiming;
+import com.dbx.agent.SpatialColumn;
 import com.dbx.agent.TableInfo;
 import com.dbx.agent.TriggerInfo;
 
@@ -66,6 +67,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         "GGSYS", "FLOWS_FILES", "APEX_PUBLIC_USER", "GSMROOTUSER", "SYSRAC"
     );
     private boolean queryTimeoutChanged;
+    private final OceanBaseLobValues lobValues = new OceanBaseLobValues();
+    private boolean deferCharacterLobs;
 
     public static final JdbcAgentProfile OCEANBASE_ORACLE_PROFILE = new JdbcAgentProfile(
         "com.oceanbase.jdbc.Driver",
@@ -91,15 +94,32 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     @Override
     public QueryResult executeQuery(String sql, String schema, ExecuteQueryOptions options) {
         try (QueryTiming timing = QueryTiming.begin()) {
+            prepareLobExecution(sql, options.getDeferLobs());
             QueryResult result = super.executeQuery(sql, schema, options);
+            var marked = OceanBaseLobValues.mark(result.getColumns(), result.getColumn_types(), result.getRows());
+            if (marked != null) {
+                var spatialColumns = remapLobSpatialColumns(result.getSpatial_columns(), marked.columns());
+                var spatialValues = remapLobSpatialValues(result.getSpatial_values(), marked.columns());
+                result.setColumns(marked.columns());
+                result.setColumn_types(marked.types());
+                result.setRows(marked.rows());
+                result.setSpatial_columns(spatialColumns);
+                result.setSpatial_values(spatialValues);
+            }
             result.setQuery_timings_ms(timing.finish());
             return result;
+        } catch (RuntimeException error) {
+            lobValues.clear();
+            throw error;
+        } finally {
+            deferCharacterLobs = false;
         }
     }
 
     @Override
     public QueryPageResult executeQueryPage(String sql, String schema, QueryPageOptions options) {
         try (QueryTiming timing = QueryTiming.begin()) {
+            prepareLobExecution(sql, options.getDeferLobs());
             long prepareStarted = System.nanoTime();
             Connection connection = requireConnected();
             uncheckedVoid(() -> beforeQueryExecution(connection, options.getTimeoutSecs()));
@@ -107,8 +127,14 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             QueryPageResult result = JdbcExecutor.current().executeBoundedPage(
                 connection, sql, schema, this::setSchemaSQL, this::resetSchemaSQL, options, resultValueReader()
             );
+            markLobPage(result);
             result.setQuery_timings_ms(timing.finish());
             return result;
+        } catch (RuntimeException error) {
+            lobValues.clear();
+            throw error;
+        } finally {
+            deferCharacterLobs = false;
         }
     }
 
@@ -116,10 +142,101 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     public QueryPageResult fetchQueryPage(String sessionId, int pageSize) {
         try (QueryTiming timing = QueryTiming.begin()) {
             QueryPageResult result = super.fetchQueryPage(sessionId, pageSize);
+            markLobPage(result);
             result.setQuery_timings_ms(timing.finish());
             return result;
         }
     }
+
+    @Override
+    public QueryPageResult startTableRead(String sql, String schema, QueryPageOptions options) {
+        prepareLobExecution(sql, options.getDeferLobs());
+        try {
+            QueryPageResult result = super.startTableRead(sql, schema, options);
+            markLobPage(result);
+            return result;
+        } catch (RuntimeException error) {
+            lobValues.clear();
+            throw error;
+        } finally {
+            deferCharacterLobs = false;
+        }
+    }
+
+    @Override
+    public QueryPageResult fetchTableReadPage(String sessionId, int pageSize) {
+        QueryPageResult result = super.fetchTableReadPage(sessionId, pageSize);
+        markLobPage(result);
+        return result;
+    }
+
+    private static void markLobPage(QueryPageResult result) {
+        var marked = OceanBaseLobValues.mark(result.getColumns(), result.getColumn_types(), result.getRows());
+        if (marked == null) return;
+        var spatialColumns = remapLobSpatialColumns(result.getSpatial_columns(), marked.columns());
+        var spatialValues = remapLobSpatialValues(result.getSpatial_values(), marked.columns());
+        result.setColumns(marked.columns());
+        result.setColumn_types(marked.types());
+        result.setRows(marked.rows());
+        result.setSpatial_columns(spatialColumns);
+        result.setSpatial_values(spatialValues);
+    }
+
+    private static List<SpatialColumn> remapLobSpatialColumns(List<SpatialColumn> spatial, List<String> columns) {
+        List<Integer> retained = new ArrayList<>();
+        for (int index = 0; index < columns.size(); index++) {
+            if (!columns.get(index).startsWith(OceanBaseLobValues.MARKER_PREFIX)) retained.add(index);
+        }
+        List<SpatialColumn> remapped = new ArrayList<>();
+        for (SpatialColumn column : spatial) remapped.add(new SpatialColumn(retained.get(column.getColumn_index()), column.getSrid()));
+        return remapped;
+    }
+
+    private static List<List<Integer>> remapLobSpatialValues(List<List<Integer>> spatial, List<String> columns) {
+        List<List<Integer>> remapped = new ArrayList<>();
+        for (List<Integer> row : spatial) {
+            List<Integer> expanded = new ArrayList<>();
+            int sourceIndex = 0;
+            for (String column : columns) {
+                expanded.add(column.startsWith(OceanBaseLobValues.MARKER_PREFIX) ? null : row.get(sourceIndex++));
+            }
+            remapped.add(expanded);
+        }
+        return remapped;
+    }
+
+    private void prepareLobExecution(String sql, boolean requested) {
+        // Unproven statements may end the transaction or replace an object. Fail closed.
+        String leading = sql.replaceFirst("(?s)^(?:\\s|--[^\\r\\n]*(?:\\r?\\n|$)|/\\*.*?\\*/)*", "");
+        if (!leading.matches("(?is)^SELECT\\b.*")) lobValues.clear();
+        deferCharacterLobs = requested;
+    }
+
+    @Override
+    protected JdbcExecutor.ResultValueReader resultValueReader() {
+        if (!deferCharacterLobs) return super.resultValueReader();
+        return (JdbcExecutor.ColumnAwareResultValueReader) (rs, index, sqlType, typeName) -> {
+            Object preview = lobValues.preview(rs, index, sqlType, typeName);
+            return preview == null ? resultValue(rs, index, sqlType) : preview;
+        };
+    }
+
+    @Override
+    protected boolean hasRetainedResultResources() { return lobValues.hasValues(); }
+
+    @Override
+    protected void releaseRetainedResultResources() { lobValues.clear(); }
+
+    @Override
+    public void invalidateLargeValues() { lobValues.clear(); }
+
+    @Override
+    public Object readLargeValueChunk(String valueRef, long offset, int limit) {
+        return unchecked(() -> lobValues.fetch(requireConnected(), valueRef, offset, limit));
+    }
+
+    @Override
+    public boolean releaseLargeValue(String valueRef) { return lobValues.release(valueRef); }
 
     @Override
     protected String buildJdbcUrl(ConnectParams params) {

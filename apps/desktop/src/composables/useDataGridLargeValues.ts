@@ -5,6 +5,7 @@ import { buildDataGridContextFilterCondition } from "@/lib/dataGrid/dataGridSql"
 import { buildTableSelectSql } from "@/lib/table/tableSelectSql";
 import { shouldIncludeSyntheticRowId } from "@/lib/table/tableEditing";
 import { queryTimeoutSecsForConnection } from "@/lib/sql/queryTimeout";
+import { materializeLargeValueSnapshot } from "@/lib/dataGrid/largeValueSnapshot";
 import type { ColumnInfo, ConnectionConfig, DatabaseType, QueryResult } from "@/types/database";
 import type { DataGridRuntimeScope } from "@/lib/dataGrid/dataGridRuntime";
 import {
@@ -90,6 +91,13 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
   const LARGE_VALUE_FETCH_MAX_ROWS = 200;
   const LARGE_VALUE_FETCH_TARGET_BYTES = 64 * 1024 * 1024;
   const pendingLargeValueHydrations = createResultScopedPendingRequests<boolean>();
+  const snapshotExecutionIds = new Set<string>();
+  const cancelSnapshotReads = () => {
+    for (const executionId of snapshotExecutionIds) void api.cancelQuery(executionId).catch(() => {});
+    snapshotExecutionIds.clear();
+  };
+  watch(() => [options.result.value, options.connectionId.value, options.executionDatabase.value], cancelSnapshotReads);
+  options.runtimeScope.addCleanup(cancelSnapshotReads);
   const largeValueCellsByKey = computed(() => largeValueCellMap(options.result.value));
   type VisibleLargeValuePreviewRequest = {
     item: LargeValueRowItem;
@@ -119,7 +127,28 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
 
   function formatGridItemCell(item: LargeValueRowItem, columnIndex: number): string {
     void visibleLargeValuePreviewVersion.value;
-    return options.formatCellCached(visibleLargeValuePreviewValue(item, columnIndex, item.data[columnIndex] ?? null), columnIndex, largeValueOriginalBytes(item, columnIndex));
+    const text = options.formatCellCached(visibleLargeValuePreviewValue(item, columnIndex, item.data[columnIndex] ?? null), columnIndex, largeValueOriginalBytes(item, columnIndex));
+    return snapshotReference(item, columnIndex) ? options.translate("grid.largeValueSnapshotPreview", { value: text }) : text;
+  }
+
+  function snapshotReference(item: LargeValueRowItem | undefined, columnIndex: number): string | undefined {
+    if (!item || !isLargeValuePreview(item, columnIndex) || item.sourceIndex === undefined) return undefined;
+    return largeValueCellsByKey.value.get(largeValueCellKey(item.sourceIndex, columnIndex))?.value_ref;
+  }
+
+  async function downloadSnapshotCell(rowId: number, columnIndex: number, filePath: string): Promise<void> {
+    const sourceResult = options.result.value;
+    const ref = snapshotReference(options.getRowItem(rowId), columnIndex);
+    const context = sourceResult.large_value_context;
+    if (!ref || !context) throw new Error("LOB snapshot is unavailable");
+    const executionId = options.uuid();
+    snapshotExecutionIds.add(executionId);
+    try {
+      await api.downloadLargeValue({ ...context, valueRef: ref, executionId }, filePath);
+      if (options.result.value !== sourceResult) throw new Error("LOB result context changed");
+    } finally {
+      snapshotExecutionIds.delete(executionId);
+    }
   }
 
   function formatGridItemCellForConfirmation(item: LargeValueRowItem, columnIndex: number): string {
@@ -477,6 +506,12 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
   }
 
   async function resolveLargeValueCells(rowIds: number[], columnIndexes: number[]): Promise<ResolvedLargeValueCells> {
+    const sourceResult = options.result.value;
+    const connectionId = options.connectionId.value;
+    const executionDatabase = options.executionDatabase.value;
+    const operation = options.resultLifecycle.beginOperation();
+    const isCurrent = () => options.result.value === sourceResult && options.connectionId.value === connectionId
+      && options.executionDatabase.value === executionDatabase && options.resultLifecycle.isCurrent(operation);
     const resolved: ResolvedLargeValueCells = new Map();
     const requestedColumns = new Set(columnIndexes);
     const requestsByColumn = new Map<number, LargeValueCellRequest[]>();
@@ -487,6 +522,23 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
         if (!isLargeValuePreview(item, columnIndex)) continue;
         const metadata = largeValueCellsByKey.value.get(largeValueCellKey(item.sourceIndex, columnIndex));
         if (!metadata) continue;
+        if (metadata.value_ref) {
+          const context = sourceResult.large_value_context;
+          if (!context || context.connectionId !== connectionId || context.database !== executionDatabase) {
+            throw new Error("LOB result connection is unavailable; execute the query again");
+          }
+          const executionId = options.uuid();
+          snapshotExecutionIds.add(executionId);
+          try {
+            const value = await materializeLargeValueSnapshot({ ...context, valueRef: metadata.value_ref, executionId }, isCurrent);
+            const rowValues = resolved.get(item.id) ?? new Map<number, CellValue>();
+            rowValues.set(columnIndex, value);
+            resolved.set(item.id, rowValues);
+          } finally {
+            snapshotExecutionIds.delete(executionId);
+          }
+          continue;
+        }
         const requests = requestsByColumn.get(columnIndex) ?? [];
         requests.push({ item, sourceIndex: item.sourceIndex, columnIndex, originalBytes: metadata.original_bytes });
         requestsByColumn.set(columnIndex, requests);
@@ -507,6 +559,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     for (const [columnIndex, requests] of requestsByColumn) {
       for (const chunk of chunkLargeValueRequests(requests)) {
         await fetchLargeValueRequestChunk(columnIndex, chunk, primaryKeyIndexes, resolved);
+        if (!isCurrent()) throw new Error("LOB result context changed");
       }
     }
     return resolved;
@@ -557,6 +610,11 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
         const rows = sourceResult.rows.slice();
         rows[item.sourceIndex!] = row;
         sourceResult.rows = rows;
+        const snapshotRef = sourceResult.large_value_cells?.find((cell) => cell.row_index === item.sourceIndex && cell.column_index === columnIndex)?.value_ref;
+        if (snapshotRef && sourceResult.large_value_context) {
+          void api.releaseLargeValue({ ...sourceResult.large_value_context, valueRef: snapshotRef })
+            .catch((error) => options.appendDebugLog("warn", "[DBX][DataGrid:large-value] release failed", error));
+        }
         visibleLargeValuePreviewCaches.get(sourceResult)?.forget(item.sourceIndex!, columnIndex);
         sourceResult.large_value_cells = sourceResult.large_value_cells?.filter((cell) => cell.row_index !== item.sourceIndex || cell.column_index !== columnIndex);
         options.largeValueResolutionVersion.value += 1;
@@ -571,6 +629,8 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
   }
 
   return {
+    snapshotReference,
+    downloadSnapshotCell,
     isLargeValuePreview,
     largeValueOriginalBytes,
     formatGridItemCell,

@@ -13,6 +13,7 @@ import { useToast } from "@/composables/useToast";
 import { useExportTracker } from "@/composables/useExportTracker";
 import { clipboardCellValue, type CellValue } from "@/lib/dataGrid/cellValue";
 import { binaryCellClipboardText } from "@/lib/dataGrid/binaryCellDownload";
+import { materializeSnapshotResultRows } from "@/lib/dataGrid/largeValueSnapshot";
 import { tryStartExclusiveActivation, type ActionActivationGuard } from "@/lib/connection/actionActivation";
 import { clipboardLineEndings, copyToClipboard } from "@/lib/common/clipboard";
 import { clearDataGridClipboardCopy, rememberDataGridClipboardCopy } from "@/lib/dataGrid/dataGridClipboard";
@@ -1370,15 +1371,20 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
 
         const exportPattern = useSettingsStore().editorSettings.globalDateTimeExportFormat;
         const rightAlign = useSettingsStore().editorSettings.numericColumnRightAlign;
-        const worksheets = sheets.map((sheet) => ({
+        const worksheets = [];
+        for (const sheet of sheets) {
+          const sourceRows = sheet.result.rows;
+          const rows = await materializeSnapshotResultRows(sheet.result, () => sheet.result.rows === sourceRows);
+          worksheets.push({
           sheetName: sheet.sheetName,
           columns: sheet.result.columns,
           columnTypes: sheet.result.column_types ?? [],
           columnComments: buildXlsxHeaderOverrides(sheet.result.columns, commentsForExportColumns(sheet.result.columns), exportOptions.headerMode),
-          rows: formatTemporalRowsForExport(sheet.result.rows, sheet.result.column_types ?? [], exportPattern),
+          rows: formatTemporalRowsForExport(rows, sheet.result.column_types ?? [], exportPattern),
           numericColumnRightAlign: rightAlign,
           autoFilter: exportOptions.autoFilter,
-        }));
+          });
+        }
         const sqlWorksheet = includeSqlSheet ? buildXlsxSqlWorksheet(sheets.map((sheet) => ({ resultName: sheet.sheetName, sql: sheet.sql || sheet.result.sourceStatement || "" }))) : undefined;
         await api.exportQueryResultsXlsx(outputPath, sqlWorksheet ? [...worksheets, { ...sqlWorksheet, autoFilter: false }] : worksheets, exportOptions.autoFilter, exportPattern || undefined);
         notifyExportSuccess(outputPath);

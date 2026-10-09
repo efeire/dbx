@@ -847,7 +847,7 @@ function projectsAllColumnsForSource(analysis: EditableQueryInfo, sourceKey: str
 }
 
 function queryProjectsDeferredLob(databaseType: DatabaseType, analysis: EditableQueryInfo, sourceKey: string, columns: readonly { name: string; data_type: string }[]): boolean {
-  const deferredTypes = databaseType === "oracle" ? ORACLE_DEFERRED_LOB_TYPES : databaseType === "db2" ? DB2_DEFERRED_LOB_TYPES : undefined;
+  const deferredTypes = databaseType === "oracle" || databaseType === "oceanbase-oracle" ? ORACLE_DEFERRED_LOB_TYPES : databaseType === "db2" ? DB2_DEFERRED_LOB_TYPES : undefined;
   if (!deferredTypes) return false;
   const deferredColumns = new Set(
     columns
@@ -2063,6 +2063,7 @@ export const useQueryStore = defineStore("query", () => {
     if (!tab || !tab.resultRuns || runIndex < 0) return false;
 
     const removedRun = tab.resultRuns[runIndex];
+    if (removedRun) void releaseResultLargeValues(removedRun.result, ...(removedRun.results ?? []));
     if (removedRun?.resultSessionId) void closeResultRunSession(tab, removedRun);
     if (removedRun?.resultCacheKey) void deleteTabResultSnapshot(removedRun.resultCacheKey);
     if (removedRun) clearResultRunPayload(removedRun);
@@ -2092,6 +2093,7 @@ export const useQueryStore = defineStore("query", () => {
     if (!tab.result && !tab.results?.length && !tab.resultEvicted) return false;
 
     const closeSession = closeResultSession(tab);
+    await releaseResultLargeValues(tab.result, ...(tab.results ?? []));
     releaseTabResultObjectPayloads(tab);
     clearResultPayload(tab);
     await closeSession;
@@ -2109,8 +2111,10 @@ export const useQueryStore = defineStore("query", () => {
     const currentSessionId = tab.resultSessionId ?? tab.result?.session_id;
     if (currentSessionId) closedSessionIds.add(currentSessionId);
     const closeOperations = [closeResultSession(tab)];
+    closeOperations.push(releaseResultLargeValues(tab.result, ...(tab.results ?? [])));
 
     for (const run of resultRuns) {
+      closeOperations.push(releaseResultLargeValues(run.result, ...(run.results ?? [])));
       if (run.resultCacheKey) void deleteTabResultSnapshot(run.resultCacheKey);
       if (!run.resultSessionId || closedSessionIds.has(run.resultSessionId)) continue;
       closedSessionIds.add(run.resultSessionId);
@@ -2126,6 +2130,23 @@ export const useQueryStore = defineStore("query", () => {
 
   function nextResultRunSequence(tab: QueryTab): number {
     return (tab.resultRuns?.reduce((max, run) => Math.max(max, run.sequence), 0) ?? 0) + 1;
+  }
+
+  async function releaseResultLargeValues(...results: Array<QueryResult | undefined>) {
+    const released = new Set<string>();
+    for (const result of results) {
+      const context = result?.large_value_context;
+      if (!context) continue;
+      for (const cell of result.large_value_cells ?? []) {
+        if (!cell.value_ref || released.has(cell.value_ref)) continue;
+        released.add(cell.value_ref);
+        try {
+          await api.releaseLargeValue({ ...context, valueRef: cell.value_ref });
+        } catch (error) {
+          console.warn("[DBX][large-value:release:error]", error);
+        }
+      }
+    }
   }
 
   async function closeResultRunSession(tab: QueryTab, run: NonNullable<QueryTab["resultRuns"]>[number]) {
@@ -6388,8 +6409,8 @@ export const useQueryStore = defineStore("query", () => {
 
   function buildHiddenPrimaryKeyPreparation(tab: QueryTab, sql: string, databaseType: DatabaseType, loaded: LoadedEditableSource, primaryKeys: string[], declaredPrimaryKeys: string[], traceId: string, elapsed: () => string): EditableQueryExecutionPreparation {
     const metadataAnalysis = expandStarProjectionColumnsForSource(bindColumnsForSource(databaseType, loaded.analysis, loaded.source, loaded.tableMeta.columns), loaded.source, loaded.tableMeta.columns);
-    const stableLobSource = databaseType === "oracle" ? oracleRowIdIsSafeForQuery(tab, loaded) : databaseType === "db2";
-    const largeValuePreview = (databaseType === "oracle" || databaseType === "db2") && primaryKeys.length > 0 && stableLobSource && columnsAllowDeferredLobMarkers(loaded.tableMeta.columns) && queryProjectsDeferredLob(databaseType, metadataAnalysis, loaded.source.key, loaded.tableMeta.columns);
+    const stableLobSource = databaseType === "oracle" || databaseType === "oceanbase-oracle" ? oracleRowIdIsSafeForQuery(tab, loaded) : databaseType === "db2";
+    const largeValuePreview = (databaseType === "oracle" || databaseType === "oceanbase-oracle" || databaseType === "db2") && primaryKeys.length > 0 && stableLobSource && columnsAllowDeferredLobMarkers(loaded.tableMeta.columns) && queryProjectsDeferredLob(databaseType, metadataAnalysis, loaded.source.key, loaded.tableMeta.columns);
     const unchanged = { sql, metadataSql: sql, hiddenPrimaryKeys: [], largeValuePreview };
     const missingPrimaryKeys =
       declaredPrimaryKeys.length === 0
@@ -7962,6 +7983,12 @@ export const useQueryStore = defineStore("query", () => {
       // would return the first page again (#8993).
       const isOffsetJumpPage = typeof pageOffset === "number" && pageOffset > 0 && !options?.pagination?.sessionId;
       const frontendTimeoutSecs = frontendQueryTimeoutSecsForSql(sqlToExecute, effectiveDbType, queryTimeoutSecs, sqlStatementParameterOptions);
+      if (tab.mode === "data" && effectiveDbType === "oceanbase-oracle") {
+        const meta = tableMetaForDataTab(tab);
+        useLargeValuePreview = !!meta && /^(?:BASE )?TABLE$/i.test(meta.tableType ?? "")
+          && columnsAllowDeferredLobMarkers(meta.columns)
+          && meta.columns.some((column) => /^(N?CLOB|BLOB)$/i.test(column.data_type.trim()));
+      }
       const sourceLabelDatabase = targetDatabase || conn?.database;
       const executionClientSessionId = options?.pagination?.clientSessionId ?? (tab.mode === "query" || tab.mode === "data" ? tabClientSessionId(tab) : undefined);
       const currentBeforeDispatch = findExecutionTab(id);
@@ -8177,6 +8204,21 @@ export const useQueryStore = defineStore("query", () => {
       const responseResults = await withFrontendQueryTimeout(executionPromise, frontendTimeoutSecs, t("editor.queryTimeoutError", { seconds: frontendTimeoutSecs }), () => {
         void api.cancelQuery(executionId).catch((error) => queryExecutionLog("warn", "frontend-timeout:cancel-failed", { traceId, error }));
       });
+      for (const result of responseResults) {
+        if (effectiveDbType === "oceanbase-oracle" && !useLargeValuePreview && result.column_types?.some((type) => /^(N?CLOB|BLOB)$/i.test(type.trim()))) {
+          result.messages = [...(result.messages ?? []), {
+            severity: "INFO", code: "LOB_COMPLETE_READ_FALLBACK",
+            message: "LOB values were read completely because this result does not have a verified single-table preview source.",
+          }];
+        }
+        if (result.large_value_cells?.some((cell) => cell.value_ref)) {
+          result.large_value_context = {
+            connectionId: executionConnectionId, database: executionDatabase,
+            clientSessionId: executionClientSessionId, txnSessionId: tab.autoCommit === false ? tab.txnSessionId : undefined,
+            catalog: executionCatalog,
+          };
+        }
+      }
       if (findExecutionTab(id) !== tab || tab.executionId !== executionId || manualTransactionTargetEpoch(tab) !== executionTargetEpoch) return false;
       // A single result has an unambiguous request boundary. This includes fetch and
       // transport, but excludes SQL preparation and the grid's later render work.

@@ -204,6 +204,14 @@ public interface DatabaseAgent {
         return AgentExecutionContext.jdbcExecutor().closeQuerySession(sessionId);
     }
 
+    default Object readLargeValueChunk(String valueRef, long offset, int limit) {
+        throw new UnsupportedOperationException("LOB snapshot chunks are not supported by this agent");
+    }
+
+    default boolean releaseLargeValue(String valueRef) { return false; }
+
+    default void invalidateLargeValues() { }
+
     default QueryPageResult startTableRead(String sql, String schema, QueryPageOptions options) {
         Connection conn = getConnection();
         if (conn == null) {

@@ -482,10 +482,11 @@ struct ServerLargeValueMarker {
 }
 
 #[derive(Clone, Copy)]
-struct ServerLargeValueMarkerValue {
+struct ServerLargeValueMarkerValue<'a> {
     kind: ServerLargeValuePreviewKind,
     preview_size: usize,
     original_bytes: Option<usize>,
+    value_ref: Option<&'a str>,
 }
 
 /// Some PostgreSQL-compatible servers (for example KingbaseES instances with
@@ -527,7 +528,7 @@ fn server_large_value_alias(
     Some((source_index, Some(preview_kind), source_type))
 }
 
-fn server_large_value_marker(value: &serde_json::Value) -> Option<ServerLargeValueMarkerValue> {
+fn server_large_value_marker(value: &serde_json::Value) -> Option<ServerLargeValueMarkerValue<'_>> {
     let mut parts = value.as_str()?.split(':');
     let kind = parts.next()?;
     let preview_size = parts.next()?;
@@ -539,7 +540,10 @@ fn server_large_value_marker(value: &serde_json::Value) -> Option<ServerLargeVal
         _ => return None,
     };
     let original_bytes = parts.next().and_then(|value| value.parse::<usize>().ok());
-    Some(ServerLargeValueMarkerValue { kind, preview_size: preview_size.parse::<usize>().ok()?.max(1), original_bytes })
+    let value_ref = parts.next().filter(|value| !value.is_empty());
+    Some(ServerLargeValueMarkerValue {
+        kind, preview_size: preview_size.parse::<usize>().ok()?.max(1), original_bytes, value_ref,
+    })
 }
 
 fn truncate_server_large_value_preview(
@@ -629,18 +633,23 @@ fn extract_server_large_value_markers(result: &mut db::QueryResult) -> Vec<db::L
     }
     for (row_index, row) in result.rows.iter_mut().enumerate() {
         for marker in &markers {
-            let marker_value = row.get(marker.result_index).and_then(server_large_value_marker);
+            // Own the locator before mutating the preview in this row.
+            let value_ref = row.get(marker.result_index).and_then(server_large_value_marker)
+                .and_then(|value| value.value_ref).map(str::to_owned);
+            let marker_value = row.get(marker.result_index).and_then(server_large_value_marker)
+                .map(|value| (value.kind, value.preview_size, value.original_bytes));
             let source_result_index = marker.result_index.saturating_sub(1);
             if marker_value.is_some_and(|value| {
                 row.get_mut(source_result_index)
-                    .is_some_and(|source| truncate_server_large_value_preview(source, value.kind, value.preview_size))
+                    .is_some_and(|source| truncate_server_large_value_preview(source, value.0, value.1))
             }) {
                 large_value_cells.push(db::LargeValueCell {
                     row_index,
                     column_index: marker.source_index,
                     original_bytes: marker_value
-                        .and_then(|value| value.original_bytes)
+                        .and_then(|value| value.2)
                         .unwrap_or(SERVER_LARGE_VALUE_UNKNOWN_BYTES),
+                    value_ref,
                 });
             }
         }
@@ -3099,6 +3108,125 @@ fn parse_drop_database_target(sql: &str) -> Option<String> {
         return None;
     }
     parts[0].as_ident().map(|ident| ident.value.clone())
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LargeValueRequest {
+    pub connection_id: String,
+    pub database: String,
+    pub value_ref: String,
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default)]
+    pub limit: u32,
+    pub execution_id: Option<String>,
+    pub client_session_id: Option<String>,
+    pub catalog: Option<String>,
+    pub txn_session_id: Option<String>,
+}
+
+/// Fetches only the original captured locator; never retries by selecting the current row.
+pub async fn request_large_value(
+    state: &AppState,
+    request: LargeValueRequest,
+    release: bool,
+) -> Result<serde_json::Value, String> {
+    if request.value_ref.len() > 128 || (!release && (request.limit == 0 || request.limit > 4096)) {
+        return Err("Invalid LOB chunk request".to_string());
+    }
+    let registered = request.execution_id.as_ref().map(|id| state.running_queries.register_task(
+        id.clone(),
+        crate::query_cancel::RunningTaskMetadata::query(
+            request.connection_id.clone(), request.database.clone(), request.client_session_id.clone(),
+        ),
+    ));
+    let cancel_token = registered.as_ref().map(|task| task.token());
+    request_large_value_with_cancel(state, request, release, cancel_token).await
+}
+
+async fn request_large_value_with_cancel(
+    state: &AppState,
+    request: LargeValueRequest,
+    release: bool,
+    cancel_token: Option<CancellationToken>,
+) -> Result<serde_json::Value, String> {
+    let method = if release { "release_large_value" } else { "read_large_value_chunk" };
+    let params = serde_json::json!({ "valueRef": request.value_ref, "offset": request.offset, "limit": request.limit });
+    if let Some(txn_id) = request.txn_session_id.as_deref() {
+        let connection = {
+            let mut sessions = state.transaction_sessions.write().await;
+            let session = sessions.get_mut(txn_id).ok_or(MANUAL_TRANSACTION_SESSION_NOT_FOUND_ERROR)?;
+            if session.connection_id != request.connection_id || session.busy
+                || session.last_activity.elapsed().as_secs() >= MANUAL_TRANSACTION_IDLE_TIMEOUT_SECS {
+                return Err("LOB transaction context expired or busy".to_string());
+            }
+            session.last_activity = std::time::Instant::now();
+            Arc::clone(&session.connection)
+        };
+        let connection = connection.lock().await;
+        let TxnConnection::Agent { client, .. } = &*connection else {
+            return Err("LOB snapshot chunks require an agent transaction".to_string());
+        };
+        let result = client.lock().await.call_with_timeout_and_cancel(
+            method, params, Some(std::time::Duration::from_secs(30)), cancel_token,
+        ).await;
+        if !state.transaction_sessions.read().await.contains_key(txn_id) {
+            return Err("LOB transaction context expired".to_string());
+        }
+        return result;
+    }
+    let pool_database = query_pool_database(&request.database, request.catalog.as_deref());
+    let pool_key = state.get_or_create_pool_for_session(
+        &request.connection_id, pool_database, request.client_session_id.as_deref(),
+    ).await?;
+    let _activity = state.pool_activity_touch(pool_key.as_str());
+    let client = {
+        let handle = state.pool_handle(&pool_key).await;
+        let Some(PoolKind::Agent(client)) = handle.as_ref() else {
+            return Err("LOB snapshot chunks require an agent connection".to_string());
+        };
+        client.clone()
+    };
+    let mut client = client.lock().await;
+    client.call_with_timeout_and_cancel(
+        method, params,
+        Some(std::time::Duration::from_secs(30)), cancel_token,
+    ).await
+}
+
+pub async fn write_large_value_snapshot(
+    state: &AppState,
+    mut request: LargeValueRequest,
+    output: &mut std::fs::File,
+) -> Result<u64, String> {
+    use std::io::Write;
+    let registered = request.execution_id.as_ref().map(|id| state.running_queries.register_task(
+        id.clone(), crate::query_cancel::RunningTaskMetadata::query(
+            request.connection_id.clone(), request.database.clone(), request.client_session_id.clone(),
+        ),
+    ));
+    let cancel = registered.as_ref().map(|task| task.token());
+    request.offset = 0;
+    request.limit = 4096;
+    let mut written = 0;
+    loop {
+        if is_canceled(&cancel) { return Err(canceled_error()); }
+        let chunk = request_large_value_with_cancel(state, request.clone(), false, cancel.clone()).await?;
+        if chunk.get("status").and_then(|value| value.as_str()) != Some("ok") {
+            return Err("LOB snapshot expired; execute the query again".to_string());
+        }
+        let next = chunk.get("next_offset").and_then(|value| value.as_u64()).ok_or("Invalid LOB offset")?;
+        let eof = chunk.get("eof").and_then(|value| value.as_bool()).ok_or("Invalid LOB EOF")?;
+        let data = chunk.get("data").and_then(|value| value.as_str()).ok_or("Invalid LOB data")?;
+        if next < request.offset || (!eof && next == request.offset) { return Err("Invalid LOB offset".to_string()); }
+        output.write_all(data.as_bytes()).map_err(|error| error.to_string())?;
+        written += data.len() as u64;
+        if eof { break; }
+        request.offset = next;
+    }
+    output.flush().map_err(|error| error.to_string())?;
+    Ok(written)
 }
 
 pub async fn close_query_session(
@@ -9934,7 +10062,7 @@ for line in sys.stdin:
         let result = ExecuteMultiResult::success_with_index_and_large_values(
             empty_query_result(1),
             0,
-            vec![db::LargeValueCell { row_index: 2, column_index: 3, original_bytes: 65_536 }],
+            vec![db::LargeValueCell { row_index: 2, column_index: 3, original_bytes: 65_536, value_ref: None }],
             false,
         );
 
@@ -9948,28 +10076,28 @@ for line in sys.stdin:
     #[test]
     fn large_value_cell_merge_replaces_driver_entries_and_appends_server_entries() {
         let driver_cells = vec![
-            db::LargeValueCell { row_index: 1, column_index: 2, original_bytes: 10 },
-            db::LargeValueCell { row_index: 3, column_index: 4, original_bytes: 20 },
+            db::LargeValueCell { row_index: 1, column_index: 2, original_bytes: 10, value_ref: None },
+            db::LargeValueCell { row_index: 3, column_index: 4, original_bytes: 20, value_ref: None },
         ];
         let server_cells = vec![
-            db::LargeValueCell { row_index: 1, column_index: 2, original_bytes: 100 },
-            db::LargeValueCell { row_index: 5, column_index: 6, original_bytes: 200 },
+            db::LargeValueCell { row_index: 1, column_index: 2, original_bytes: 100, value_ref: None },
+            db::LargeValueCell { row_index: 5, column_index: 6, original_bytes: 200, value_ref: None },
         ];
 
         assert_eq!(
             merge_large_value_cells(driver_cells, server_cells),
             vec![
-                db::LargeValueCell { row_index: 1, column_index: 2, original_bytes: 100 },
-                db::LargeValueCell { row_index: 3, column_index: 4, original_bytes: 20 },
-                db::LargeValueCell { row_index: 5, column_index: 6, original_bytes: 200 },
+                db::LargeValueCell { row_index: 1, column_index: 2, original_bytes: 100, value_ref: None },
+                db::LargeValueCell { row_index: 3, column_index: 4, original_bytes: 20, value_ref: None },
+                db::LargeValueCell { row_index: 5, column_index: 6, original_bytes: 200, value_ref: None },
             ]
         );
     }
 
     #[test]
     fn large_value_cell_merge_preserves_single_source_inputs() {
-        let driver_cell = db::LargeValueCell { row_index: 1, column_index: 2, original_bytes: 10 };
-        let server_cell = db::LargeValueCell { row_index: 3, column_index: 4, original_bytes: 20 };
+        let driver_cell = db::LargeValueCell { row_index: 1, column_index: 2, original_bytes: 10, value_ref: None };
+        let server_cell = db::LargeValueCell { row_index: 3, column_index: 4, original_bytes: 20, value_ref: None };
 
         assert_eq!(merge_large_value_cells(vec![driver_cell.clone()], Vec::new()), vec![driver_cell]);
         assert_eq!(merge_large_value_cells(Vec::new(), vec![server_cell.clone()]), vec![server_cell]);
@@ -9979,10 +10107,10 @@ for line in sys.stdin:
     fn large_value_cell_merge_handles_large_disjoint_inputs() {
         const CELL_COUNT: usize = 100_000;
         let driver_cells = (0..CELL_COUNT)
-            .map(|row_index| db::LargeValueCell { row_index, column_index: 0, original_bytes: 10 })
+            .map(|row_index| db::LargeValueCell { row_index, column_index: 0, original_bytes: 10, value_ref: None })
             .collect();
         let server_cells = (0..CELL_COUNT)
-            .map(|row_index| db::LargeValueCell { row_index, column_index: 1, original_bytes: 20 })
+            .map(|row_index| db::LargeValueCell { row_index, column_index: 1, original_bytes: 20, value_ref: None })
             .collect();
 
         let merged = merge_large_value_cells(driver_cells, server_cells);
@@ -10308,6 +10436,33 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn original_lob_ref_survives_production_result_normalization_without_polluting_preview_values() {
+        let mut result = empty_query_result(0);
+        result.columns = vec!["Payload".to_string(), "__DBX_LARGE_VALUE_BYTES_C_0".to_string()];
+        result.column_types = vec!["CLOB".to_string(), "VARCHAR".to_string()];
+        result.rows = vec![
+            vec![serde_json::json!("原😀值"), serde_json::json!("D:1:unknown:original-ref")],
+            vec![serde_json::Value::Null, serde_json::Value::Null],
+            vec![serde_json::json!(""), serde_json::Value::Null],
+        ];
+        let normalized = ExecuteMultiResult::success_with_optional_server_large_values(result, true);
+        assert_eq!(normalized.result.columns, vec!["Payload"]);
+        assert_eq!(normalized.result.rows, vec![vec![serde_json::json!("原😀值")], vec![serde_json::Value::Null], vec![serde_json::json!("")]]);
+        assert_eq!(normalized.large_value_cells, vec![db::LargeValueCell {
+            row_index: 0, column_index: 0, original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
+            value_ref: Some("original-ref".to_string()),
+        }]);
+        let wire = serde_json::to_value(normalized).unwrap();
+        assert_eq!(wire["large_value_cells"][0]["value_ref"], "original-ref");
+        assert_eq!(wire["rows"][0][0], "原😀值");
+        let legacy: db::LargeValueCell = serde_json::from_value(serde_json::json!({
+            "row_index": 0, "column_index": 1, "original_bytes": 128,
+        })).unwrap();
+        assert_eq!(legacy.value_ref, None);
+        assert!(serde_json::to_value(legacy).unwrap().get("value_ref").is_none());
+    }
+
+    #[test]
     fn external_driver_preview_fallback_rewrites_generated_postgres_projections() {
         let sql = concat!(
             "SELECT \"id\", left(\"description\", 140) AS \"description\", ",
@@ -10464,8 +10619,7 @@ for line in sys.stdin:
             vec![db::LargeValueCell {
                 row_index: 0,
                 column_index: 1,
-                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
-            }]
+                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None }]
         );
 
         let options = QueryExecutionOptions { max_rows: Some(100), table_data_preview: true, ..Default::default() };
@@ -12199,8 +12353,7 @@ for line in sys.stdin:
             vec![db::LargeValueCell {
                 row_index: 0,
                 column_index: 1,
-                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
-            }]
+                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None }]
         );
     }
 
@@ -12266,8 +12419,8 @@ for line in sys.stdin:
         assert_eq!(
             cells,
             vec![
-                db::LargeValueCell { row_index: 0, column_index: 1, original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES },
-                db::LargeValueCell { row_index: 0, column_index: 2, original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES },
+                db::LargeValueCell { row_index: 0, column_index: 1, original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None },
+                db::LargeValueCell { row_index: 0, column_index: 2, original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None },
             ]
         );
     }
@@ -12324,7 +12477,7 @@ for line in sys.stdin:
             cells,
             [3, 7, 11]
                 .into_iter()
-                .map(|row_index| db::LargeValueCell { row_index, column_index: 0, original_bytes: 5 })
+                .map(|row_index| db::LargeValueCell { row_index, column_index: 0, original_bytes: 5, value_ref: None })
                 .collect::<Vec<_>>()
         );
     }
@@ -12427,7 +12580,7 @@ for line in sys.stdin:
                     .enumerate()
                     .filter_map(|(row_index, size)| size
                         .filter(|size| *size > preview_size)
-                        .map(|original_bytes| { db::LargeValueCell { row_index, column_index: 1, original_bytes } }))
+                        .map(|original_bytes| { db::LargeValueCell { row_index, column_index: 1, original_bytes, value_ref: None } }))
                     .collect::<Vec<_>>()
             );
         }
@@ -12471,8 +12624,7 @@ for line in sys.stdin:
             vec![db::LargeValueCell {
                 row_index: 0,
                 column_index: 1,
-                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
-            }]
+                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None }]
         );
     }
 
