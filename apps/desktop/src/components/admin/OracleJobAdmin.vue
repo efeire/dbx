@@ -44,6 +44,9 @@ const { t } = useI18n({
       effect: "Creating a job keeps it disabled. Enabling may allow it to run immediately when due. Schedule edits affect future runs. Running jobs follow database rules; no FORCE or STOP is sent. Multi-step changes are not transactional.",
       current: "Current definition and state",
       next: "Current next run",
+      scheduleImpact: "Requested schedule impact",
+      requestedNext: "Requested next run from engine evaluation",
+      evaluationAfter: "Database evaluation time",
       draft: "Requested definition",
       sensitive: "Action and argument values appear only in this explicit editor/review. They are not saved in tab recovery state.",
       sent: "Sent steps",
@@ -90,6 +93,9 @@ const { t } = useI18n({
       effect: "创建的作业保持禁用。启用后到期作业可能立即运行，计划修改影响后续运行。运行中的作业由数据库规则处理，不发送 FORCE 或 STOP。多步变更不是事务。",
       current: "当前定义与状态",
       next: "当前下次运行时间",
+      scheduleImpact: "请求计划的运行影响",
+      requestedNext: "引擎评估的新计划下次运行",
+      evaluationAfter: "数据库评估基准时间",
       draft: "请求的新定义",
       sensitive: "动作和参数只在此编辑及明确预览区展示，不写入标签恢复状态。",
       sent: "已发送步骤",
@@ -369,6 +375,12 @@ onBeforeUnmount(() => {
         <p>{{ change?.identity.owner }}.{{ change?.identity.name }} · {{ change?.action }}</p>
         <p>{{ t("effect") }}</p>
         <p>{{ t("next") }}: {{ display(preview?.before?.job?.NEXT_RUN_DATE) }}</p>
+        <section v-if="preview?.scheduleImpact" class="space-y-1 rounded border p-2" data-schedule-impact>
+          <h3>{{ t("scheduleImpact") }} · {{ preview.scheduleImpact.state }}</h3>
+          <p>{{ t("requestedNext") }}: {{ display(preview.scheduleImpact.requestedNextRun) }}</p>
+          <p>{{ t("evaluationAfter") }}: {{ display(preview.scheduleImpact.evaluationAfter) }}</p>
+          <p>{{ preview.scheduleImpact.reason }}</p>
+        </section>
         <h3>{{ t("draft") }}</h3>
         <pre class="whitespace-pre-wrap break-all">{{ display(change?.definition) }}</pre>
         <details>

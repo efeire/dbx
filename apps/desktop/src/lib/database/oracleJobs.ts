@@ -30,6 +30,16 @@ export interface OracleJobSection {
   error?: string;
 }
 export interface OracleJobsResponse {
+  scheduleImpact?: {
+    state: "evaluated" | "noFutureRun" | "unknown" | "unsupported";
+    previousNextRun: unknown;
+    requestedStartDate: string;
+    requestedEndDate: string;
+    requestedRepeatInterval: string;
+    requestedNextRun: string | null;
+    evaluationAfter: string | null;
+    reason: string;
+  } | null;
   capability?: { engine: string; version: string; canManage: boolean; jobTypes: string[] };
   scheduler?: OracleJobSection;
   legacy?: OracleJobSection | OracleJobRow | null;

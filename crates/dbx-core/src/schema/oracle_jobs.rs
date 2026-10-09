@@ -484,6 +484,105 @@ fn same_date(a: &str, b: &str) -> bool {
     }
 }
 
+fn calendar_evaluation_sql(def: &JobDefinition, after: &str) -> Result<String, String> {
+    let start = date_expression(&def.start_date, false)?;
+    let end = date_expression(&def.end_date, false)?;
+    let after = date_expression(after, false)?;
+    Ok(format!("WITH FUNCTION dbx_preview_next RETURN VARCHAR2 IS v_next TIMESTAMP WITH TIME ZONE; v_end TIMESTAMP WITH TIME ZONE := {end}; BEGIN SYS.DBMS_SCHEDULER.EVALUATE_CALENDAR_STRING(calendar_string => {}, start_date => {start}, return_date_after => {after}, next_run_date => v_next); IF v_end IS NOT NULL AND v_next > v_end THEN RETURN NULL; END IF; RETURN TO_CHAR(v_next, 'YYYY-MM-DD HH24:MI:SS TZH:TZM'); END; SELECT dbx_preview_next() AS NEXT_RUN_DATE FROM DUAL", literal(&def.repeat_interval)))
+}
+
+fn calendar_uses_named_schedule(value: &str) -> bool {
+    let mut builtin_frequency = false;
+    let named = value.split(';').filter_map(|part| part.split_once('=')).any(|(key, value)| {
+        let key = key.trim();
+        let builtin = ["YEARLY", "MONTHLY", "WEEKLY", "DAILY", "HOURLY", "MINUTELY", "SECONDLY"]
+            .iter()
+            .any(|frequency| value.trim().eq_ignore_ascii_case(frequency));
+        if key.eq_ignore_ascii_case("FREQ") && builtin {
+            builtin_frequency = true;
+        }
+        ["INCLUDE", "EXCLUDE", "INTERSECT"].iter().any(|name| key.eq_ignore_ascii_case(name))
+            || (key.eq_ignore_ascii_case("FREQ") && !builtin)
+    });
+    named || !builtin_frequency
+}
+
+fn schedule_date_order(def: &JobDefinition) -> Option<std::cmp::Ordering> {
+    let start = chrono::DateTime::parse_from_str(&def.start_date, "%Y-%m-%d %H:%M:%S %:z").ok()?;
+    let end = chrono::DateTime::parse_from_str(&def.end_date, "%Y-%m-%d %H:%M:%S %:z").ok()?;
+    Some(end.cmp(&start))
+}
+
+async fn schedule_impact(session: &mut Session<'_>, change: &JobChange, before: &Value) -> Value {
+    let Some(def) = change.definition.as_ref() else {
+        return Value::Null;
+    };
+    let mut impact = json!({"state":"unknown", "previousNextRun":before["job"]["NEXT_RUN_DATE"], "requestedStartDate":def.start_date, "requestedEndDate":def.end_date, "requestedRepeatInterval":def.repeat_interval, "requestedNextRun":null, "evaluationAfter":null, "reason":"Calendar evaluation is unavailable"});
+    if session.oceanbase {
+        impact["state"] = json!("unsupported");
+        impact["reason"] = json!("OceanBase 4.2.5 does not provide DBMS_SCHEDULER.EVALUATE_CALENDAR_STRING; the requested next run cannot be calculated. The current next run does not describe the new plan.");
+        return impact;
+    }
+    if def.start_date.is_empty() || def.repeat_interval.is_empty() {
+        impact["reason"] = json!("An explicit start date with offset and a calendar repeat interval are required for this preview evaluation. Engine defaults and one-time schedules are not inferred.");
+        return impact;
+    }
+    if calendar_uses_named_schedule(&def.repeat_interval) {
+        impact["reason"] = json!("Named schedule references cannot be evaluated in the job owner's context by this preview. The requested next run remains unknown; the original change preview is still available.");
+        return impact;
+    }
+    match schedule_date_order(def) {
+        Some(std::cmp::Ordering::Less) => {
+            impact["reason"] =
+                json!("The requested end date is before the start date; no valid next-run time is inferred.");
+            return impact;
+        }
+        Some(std::cmp::Ordering::Equal) => {
+            impact["state"] = json!("noFutureRun");
+            impact["reason"] = json!("Oracle does not run a job when its end date equals its start date.");
+            return impact;
+        }
+        _ => {}
+    }
+    // Calendar evaluation never receives job_action or arguments and never runs a job.
+    let evaluated = async {
+        let clock = session.query("SELECT TO_CHAR(SYSTIMESTAMP, 'YYYY-MM-DD HH24:MI:SS TZH:TZM') AS EVALUATION_AFTER FROM DUAL").await?;
+        if clock.len() != 1 {
+            return Err("The database evaluation time is unavailable".to_string());
+        }
+        let after = text(&clock[0], "EVALUATION_AFTER");
+        if after.is_empty() {
+            return Err("The database evaluation time is unavailable".to_string());
+        }
+        let sql = calendar_evaluation_sql(def, &after)?;
+        impact["evaluationAfter"] = json!(after);
+        let result = session.query(&sql).await?;
+        if result.len() != 1 || result[0].get("NEXT_RUN_DATE").is_none() {
+            return Err("The engine did not return a calendar evaluation".to_string());
+        }
+        let next = &result[0]["NEXT_RUN_DATE"];
+        if next.is_null() {
+            if def.end_date.is_empty() {
+                impact["reason"] = json!("The engine returned no next-run time; no execution time is inferred.");
+            } else {
+                impact["state"] = json!("noFutureRun");
+                impact["reason"] = json!("The evaluated calendar has no next run within the requested end date.");
+            }
+        } else if next.as_str().is_some_and(|value| chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S %:z").is_ok()) {
+            impact["state"] = json!("evaluated");
+            impact["requestedNextRun"] = next.clone();
+            impact["reason"] = json!("Engine calendar evaluation only; the job remains disabled until explicitly enabled. Actual execution depends on job state and database scheduling.");
+        } else {
+            return Err("The engine returned an unknown next-run time".to_string());
+        }
+        Ok::<(), String>(())
+    }.await;
+    if let Err(reason) = evaluated {
+        impact["reason"] = json!(reason);
+    }
+    impact
+}
+
 pub async fn oracle_jobs_core(
     state: &AppState,
     connection_id: &str,
@@ -551,8 +650,9 @@ pub async fn oracle_jobs_core(
             let current_revision = revision(change, &before);
             let plan = build_plan(change, &before, oceanbase)?;
             if request.operation == "preview" {
+                let schedule_impact = schedule_impact(&mut session, change, &before).await;
                 return Ok(
-                    json!({"revision":current_revision, "steps":plan.iter().map(|s| json!({"label":s.label,"sql":s.preview})).collect::<Vec<_>>(), "before":before}),
+                    json!({"revision":current_revision, "steps":plan.iter().map(|s| json!({"label":s.label,"sql":s.preview})).collect::<Vec<_>>(), "before":before, "scheduleImpact":schedule_impact}),
                 );
             }
             if request.revision.as_deref() != Some(&current_revision) {
@@ -596,6 +696,52 @@ pub async fn oracle_jobs_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preview_calendar_evaluation_has_no_job_action_arguments_or_mutations() {
+        let def = JobDefinition {
+            job_type: "STORED_PROCEDURE".into(),
+            job_action: "secret_action".into(),
+            arguments: vec!["secret_argument".into()],
+            start_date: "2026-10-11 09:00:00 +08:00".into(),
+            repeat_interval: "FREQ=DAILY".into(),
+            end_date: "2026-10-20 09:00:00 +08:00".into(),
+        };
+        let sql = calendar_evaluation_sql(&def, "2026-10-10 08:00:00 +08:00").unwrap();
+        assert!(sql.contains("SYS.DBMS_SCHEDULER.EVALUATE_CALENDAR_STRING"));
+        assert!(sql.contains("v_next > v_end"));
+        assert!(sql.contains("2026-10-10 08:00:00 +08:00"));
+        assert!(!sql.contains("secret_action"));
+        assert!(!sql.contains("secret_argument"));
+        for mutation in ["CREATE_JOB", "RUN_JOB", "ENABLE(", "SET_ATTRIBUTE", "COMMIT", "INSERT "] {
+            assert!(!sql.contains(mutation));
+        }
+        assert!(calendar_evaluation_sql(&def, "unknown database time").is_err());
+    }
+    #[test]
+    fn named_schedule_references_are_not_evaluated_in_the_actor_schema() {
+        for value in [
+            "S1,S2",
+            "Owner.Schedule",
+            "FREQ=Owner.Calendar",
+            "FREQ=DAILY; INCLUDE = Workdays",
+            "freq=weekly;exclude=Holidays",
+            "FREQ=DAILY;INTERSECT=Other",
+        ] {
+            assert!(calendar_uses_named_schedule(value));
+        }
+        assert!(!calendar_uses_named_schedule("freq = daily;byhour=9;BYMINUTE=30"));
+    }
+    #[test]
+    fn equal_start_end_instants_have_no_run_and_earlier_end_is_invalid() {
+        let mut def = create("STORED_PROCEDURE").definition.unwrap();
+        def.start_date = "2026-10-11 09:00:00 +08:00".into();
+        def.end_date = "2026-10-11 01:00:00 +00:00".into();
+        assert_eq!(schedule_date_order(&def), Some(std::cmp::Ordering::Equal));
+        def.end_date = "2026-10-11 00:59:59 +00:00".into();
+        assert_eq!(schedule_date_order(&def), Some(std::cmp::Ordering::Less));
+        def.end_date.clear();
+        assert_eq!(schedule_date_order(&def), None);
+    }
     fn create(job_type: &str) -> JobChange {
         JobChange {
             action: "create".into(),

@@ -83,6 +83,46 @@ afterEach(() => {
 });
 
 describe("OracleJobAdmin production component", () => {
+  it.each([
+    { state: "evaluated", requestedNextRun: "2026-10-11 09:00:00 +08:00", reason: "Engine calendar evaluation only" },
+    { state: "unsupported", requestedNextRun: null, reason: "Calendar evaluation is not supported by this engine" },
+    { state: "unknown", requestedNextRun: null, reason: "Calendar evaluation was denied; preview is still available" },
+  ])("shows requested schedule impact separately from the old next run ($state)", async (impact) => {
+    const original = mocks.oracleJobs.getMockImplementation()!;
+    mocks.oracleJobs.mockImplementation(async (...args) => {
+      const response = await original(...args);
+      if (args[2].operation !== "preview") return response;
+      return {
+        ...response,
+        before: { ...details, job: { ...details.job, NEXT_RUN_DATE: "2026-10-10 09:00:00 +08:00" } },
+        scheduleImpact: { ...impact, evaluationAfter: "2026-10-10 08:00:00 +08:00", requestedStartDate: "2026-10-11 09:00:00 +08:00", requestedEndDate: "", requestedRepeatInterval: "FREQ=DAILY" },
+      };
+    });
+    mount();
+    await settle();
+    await click("New disabled job");
+    for (const [label, value] of [
+      ["Exact owner", "TEST"],
+      ["Exact job name", "PLAN"],
+      ["Start date with offset", "2026-10-11 09:00:00 +08:00"],
+      ["Repeat interval", "FREQ=DAILY"],
+    ]) {
+      const input = root.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement;
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await settle();
+    await click("Preview definition");
+    const section = root.querySelector("[data-schedule-impact]");
+    expect(section?.textContent).toContain(impact.state);
+    expect(section?.textContent).toContain(impact.reason);
+    expect(root.querySelector('[role="dialog"]')?.textContent).toContain("2026-10-10 09:00:00 +08:00");
+    expect(section?.textContent).toContain(impact.requestedNextRun ?? "Unknown");
+    expect(section?.textContent).not.toContain("2026-10-10 09:00:00 +08:00");
+    expect(Array.from(root.querySelectorAll("button")).find((button) => button.textContent?.includes("Apply reviewed change"))?.disabled).toBe(false);
+    await click("Cancel");
+    expect(operations()).not.toContain("apply");
+  });
   it("only lists and reads when opened/refreshed and preserves exact job identity", async () => {
     mount();
     await settle();
