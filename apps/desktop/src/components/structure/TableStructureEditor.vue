@@ -4,6 +4,7 @@ import { keymap as codeMirrorKeymap } from "@codemirror/view";
 import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
 import StructureIndexColumnPicker from "./StructureIndexColumnPicker.vue";
+import OracleTriggerDefinitionDialog from "./OracleTriggerDefinitionDialog.vue";
 
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from "vue";
 import { uuid } from "@/lib/common/utils";
@@ -4803,6 +4804,17 @@ function canDropIndex(index: EditableStructureIndex): boolean {
 const canEditForeignKeys = computed(() => structureCapabilities.value.foreignKey);
 const canEditTriggers = computed(() => structureDialect.value === "mysql" || structureDialect.value === "oracle" || structureDialect.value === "sqlserver");
 const isOracleTriggerEditor = computed(() => structureDialect.value === "oracle");
+const triggerDefinitionOpen = ref(false);
+const triggerDefinitionName = ref("");
+const canEditFullTriggerDefinition = computed(() => databaseType.value === "oracle" || databaseType.value === "oceanbase-oracle");
+function openTriggerDefinition(trigger: EditableStructureTrigger) {
+  if (!trigger.original || trigger.markedForDrop || triggersLoading.value) return;
+  triggerDefinitionName.value = trigger.original.name;
+  triggerDefinitionOpen.value = true;
+}
+async function refreshAfterTriggerDefinitionSave() {
+  await loadStructure(true, visibleTableStructureRefreshScope("triggers"), false, { forceDdl: true, forceMetadata: true });
+}
 const isSqlServerTriggerEditor = computed(() => structureDialect.value === "sqlserver");
 
 function generatedForeignKeyName(column = ""): string {
@@ -6617,6 +6629,7 @@ watch(
                     <Trash2 :class="structureIconClass" />
                     {{ trigger.markedForDrop ? t("structureEditor.restore") : t("structureEditor.drop") }}
                   </Button>
+                  <Button v-if="trigger.original && canEditFullTriggerDefinition" variant="outline" size="sm" :disabled="trigger.markedForDrop || triggersLoading" @click.stop="openTriggerDefinition(trigger)">{{ t("structureEditor.editTriggerDefinition") }}</Button>
                   <Button v-else variant="ghost" size="sm" :class="structureToolbarButtonClass" @click.stop="removeNewTrigger(trigger)">
                     <X :class="structureIconClass" />
                     {{ t("structureEditor.remove") }}
@@ -7056,6 +7069,16 @@ watch(
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    <OracleTriggerDefinitionDialog
+      v-model:open="triggerDefinitionOpen"
+      :connection-id="connectionId"
+      :database="database"
+      :schema="metadataSchema || database"
+      :name="triggerDefinitionName"
+      :table-schema="metadataSchema || database"
+      :table-name="tableName || ''"
+      @changed="refreshAfterTriggerDefinitionSave"
+    />
   </div>
 </template>
 
