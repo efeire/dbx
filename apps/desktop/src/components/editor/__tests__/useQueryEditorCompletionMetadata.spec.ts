@@ -42,6 +42,17 @@ function createHarness(overrides: Partial<QueryEditorProps> = {}) {
 }
 
 describe("QueryEditor completion metadata ownership", () => {
+  it("keeps an OceanBase selected schema separate from an explicitly qualified synonym", async () => {
+    const { metadata, store } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", schema: "MixedOwner" });
+    store.listCompletionColumns.mockResolvedValue(columns);
+    await metadata.ensureColumnsForTable({ name: "Alias" });
+    expect(store.listCompletionColumns).toHaveBeenLastCalledWith("connection", "demo", "Alias", undefined,
+      expect.objectContaining({ currentSchema: "MixedOwner" }), undefined);
+    await metadata.ensureColumnsForTable({ name: "Alias", schema: "MixedOwner" });
+    expect(store.listCompletionColumns).toHaveBeenLastCalledWith("connection", "demo", "Alias", "MixedOwner",
+      expect.objectContaining({ currentSchema: "MixedOwner" }), undefined);
+  });
+
   it.each(["getEditorSqlCompletionContext", "getEditorSemanticModel"] as const)("keys %s by document, editor state, position and dialect", (method) => {
     const { metadata, props } = createHarness();
     const state = EditorState.create({ doc: props.modelValue });

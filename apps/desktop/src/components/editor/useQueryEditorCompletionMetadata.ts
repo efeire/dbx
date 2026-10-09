@@ -216,6 +216,7 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
       version: props.completionContextVersion,
       tableQuoted: reference?.nameQuoted,
       schemaQuoted: reference?.schemaQuoted,
+      ...(props.databaseType === "oceanbase-oracle" ? { currentSchema: props.schema } : {}),
     };
   }
 
@@ -249,6 +250,7 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
     const scopedDatabase = scope && scope.database !== props.database ? scope.database : undefined;
     const database = supportsDatabaseSchemaQualifierCompletion() ? (table.database ?? scopedDatabase) : undefined;
     const baseKey = schema ? `${database ? `${database}.` : ""}${schema}.${table.name}` : table.name;
+    if (props.databaseType === "oceanbase-oracle") return `${baseKey}:${table.schema ? "qualified" : "unqualified"}`;
     if (props.databaseType !== "postgres" || (!table.nameQuoted && !table.schemaQuoted)) return baseKey;
     return `${baseKey}:quoted:s=${table.schemaQuoted ? "1" : "0"}:t=${table.nameQuoted ? "1" : "0"}`;
   }
@@ -361,7 +363,7 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
     // unqualified table name. The query editor commonly has no schema selected
     // when the user is working from a database-level tab, so use the same
     // default as the table/DDL metadata paths instead of returning no columns.
-    const selectedSchema = table.schema ?? scope?.schema ?? props.schema;
+    const selectedSchema = props.databaseType === "oceanbase-oracle" ? table.schema : table.schema ?? scope?.schema ?? props.schema;
     const effectiveSchema = selectedSchema ?? (props.databaseType === "sqlserver" ? metadataSchemaForConnection(connectionStore.getConfig(props.connectionId ?? ""), currentDatabase, undefined) : undefined);
     if (supportsDatabaseSchemaQualifierCompletion() && table.database) {
       return { database: table.database, schema: effectiveSchema, catalog: table.catalog ?? props.catalog };
@@ -420,7 +422,7 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
     if (!props.connectionId || props.database == null) return false;
     const target = completionMetadataTarget(table, scope);
     if (!target) return false;
-    const localColumns = connectionStore.lookupLocalCompletionColumns(props.connectionId, target.database, table.name, target.schema, target.catalog, completionColumnRequestContext(reference));
+    const localColumns = props.databaseType === "oceanbase-oracle" && !table.schema ? [] : connectionStore.lookupLocalCompletionColumns(props.connectionId, target.database, table.name, target.schema, target.catalog, completionColumnRequestContext(reference));
     if (localColumns.length > 0) {
       cachedColumnsByTable.set(cacheKey, localColumns);
       loadedColumnsByTable.add(cacheKey.toLowerCase());
@@ -433,7 +435,7 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
     // local/remote table cache and retry with its schema before reporting that
     // star expansion is unavailable. This is especially important for aliased
     // sources because the alias itself must never be sent as the table name.
-    if (columns.length === 0 && !table.schema && !target.schema && !supportsDatabaseQualifierCompletion()) {
+    if (columns.length === 0 && props.databaseType !== "oceanbase-oracle" && !table.schema && !target.schema && !supportsDatabaseQualifierCompletion()) {
       const schemaCandidates: string[] = [];
       const seenSchemas = new Set<string>();
       const addSchema = (schema?: string | null) => {
