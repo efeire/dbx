@@ -141,6 +141,30 @@ describe("useDataGridLargeValues", () => {
     await expect(largeValues.prepareSaveBaseline({ dirtyRows: new Map([[0, new Map([[1, null]])]]), deletedRows: new Set() })).rejects.toThrow("connection is unavailable");
     expect(mocks.readLargeValueChunk).not.toHaveBeenCalled();
   });
+
+  it("preserves a concurrently hydrated cell when save baseline preparation finishes later", async () => {
+    const result = previewResult("CLOB", "first preview", 1);
+    result.value.columns.push("DOCUMENT");
+    result.value.column_types!.push("CLOB");
+    result.value.rows[0]!.push("second preview");
+    result.value.large_value_context = { connectionId: "oracle-1", database: "MAXIMO" };
+    result.value.large_value_cells = [
+      { row_index: 0, column_index: 1, original_bytes: 1, value_ref: "first-locator" },
+      { row_index: 0, column_index: 2, original_bytes: 1, value_ref: "second-locator" },
+    ];
+    result.value.large_value_refs = ["first-locator", "second-locator"];
+    let finishFirst!: (chunk: unknown) => void;
+    mocks.readLargeValueChunk.mockImplementation(({ valueRef }) => valueRef === "first-locator"
+      ? new Promise((resolve) => { finishFirst = resolve; })
+      : Promise.resolve({ status: "ok", data: "second complete", next_offset: 15, eof: true, value_kind: "text" }));
+    const { largeValues } = mountLargeValues("oracle", result);
+    const preparation = largeValues.prepareSaveBaseline({ dirtyRows: new Map([[0, new Map([[1, null]])]]), deletedRows: new Set() });
+    await expect(largeValues.hydrateLargeValueCell(1, 2)).resolves.toBe(true);
+    finishFirst({ status: "ok", data: "first complete", next_offset: 14, eof: true, value_kind: "text" });
+    await preparation;
+    expect(result.value.rows[0]).toEqual([1, "first complete", "second complete"]);
+    expect(result.value.large_value_cells).toEqual([]);
+  });
   it.each([
     ["postgres", 3],
     ["mysql", 1],
