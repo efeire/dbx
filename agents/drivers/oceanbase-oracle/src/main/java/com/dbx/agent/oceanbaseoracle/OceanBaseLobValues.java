@@ -148,7 +148,11 @@ final class OceanBaseLobValues {
         // OceanBase READ raises ORA-06502 for empty LOBs. Only zero is safe here:
         // JDBC CLOB length counts UTF-16 units while READ offsets count code points.
         if (locator.length() == 0) return new Chunk("ok", "", offset, true, "text");
-        try (CallableStatement call = connection.prepareCall("{call DBMS_LOB.READ(?, ?, ?, ?)}")) {
+        try (CallableStatement call = connection.prepareCall(
+            "DECLARE v_lob CLOB := ?; v_amount INTEGER := ?; v_offset INTEGER := ?; "
+            + "v_buffer VARCHAR2(32767); v_length INTEGER; BEGIN v_length := DBMS_LOB.GETLENGTH(v_lob); "
+            + "IF v_offset > v_length THEN v_amount := 0; ELSE DBMS_LOB.READ(v_lob,v_amount,v_offset,v_buffer); END IF; "
+            + "? := v_amount; ? := v_buffer; ? := v_length; END;")) {
             OceanBaseStatement vendor;
             try {
                 vendor = call instanceof OceanBaseStatement ? (OceanBaseStatement) call : call.unwrap(OceanBaseStatement.class);
@@ -161,19 +165,18 @@ final class OceanBaseLobValues {
             call.setClob(1, locator);
             call.setInt(2, limit);
             call.setLong(3, offset + 1);
-            call.registerOutParameter(2, Types.INTEGER);
-            call.registerOutParameter(4, Types.VARCHAR);
+            call.registerOutParameter(4, Types.INTEGER);
+            call.registerOutParameter(5, Types.VARCHAR);
+            call.registerOutParameter(6, Types.BIGINT);
             call.setQueryTimeout(20);
-            try {
-                JdbcExecutor.current().withActiveStatement(call, () -> { call.execute(); return null; });
-            } catch (SQLException error) {
-                // DBMS_LOB.READ signals an empty LOB or reading beyond its end with NO_DATA_FOUND.
-                if (error.getErrorCode() == 1403) return new Chunk("ok", "", offset, true, "text");
-                throw error;
-            }
-            int amount = call.getInt(2);
-            byte[] bytes = call.getBytes(4);
-            if (amount < 0 || amount > limit || bytes == null && amount != 0) {
+            JdbcExecutor.current().withActiveStatement(call, () -> { call.execute(); return null; });
+            int amount = call.getInt(4);
+            byte[] bytes = call.getBytes(5);
+            long serverLength = call.getLong(6);
+            long nextOffset = Math.addExact(offset, amount);
+            if (amount < 0 || amount > limit || serverLength < 0 || bytes == null && amount != 0
+                || offset < serverLength && (amount == 0 || nextOffset > serverLength)
+                || offset >= serverLength && amount != 0) {
                 throw new SQLException("Invalid OceanBase LOB chunk response");
             }
             String text;
@@ -185,7 +188,7 @@ final class OceanBaseLobValues {
                 throw new SQLException("Invalid UTF-8 in OceanBase LOB chunk", error);
             }
             if (text.codePointCount(0, text.length()) != amount) throw new SQLException("OceanBase LOB character count mismatch");
-            return new Chunk("ok", text, Math.addExact(offset, amount), amount < limit, "text");
+            return new Chunk("ok", text, nextOffset, nextOffset >= serverLength, "text");
         }
     }
 
