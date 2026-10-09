@@ -1,6 +1,7 @@
 pub mod table_structure_sql;
 mod oracle_security_write;
 pub mod oracle_user_admin;
+pub mod oracle_role_admin;
 
 pub use dbx_drivers::metadata::sqlite_ddl;
 

@@ -1237,6 +1237,10 @@ export async function oracleUserAdmin(connectionId: string, database: string, re
   return post("/api/oracle-user-admin", { connection_id: connectionId, database, request });
 }
 
+export async function oracleRoleAdmin(connectionId: string, database: string, request: import("@/lib/database/oracleRoleAdmin").OracleRoleRequest): Promise<import("@/lib/database/oracleRoleAdmin").OracleRoleResponse> {
+  return post("/api/oracle-role-admin", { connection_id: connectionId, database, request });
+}
+
 export async function getEventInfo(connectionId: string, database: string, schema: string, name: string): Promise<MysqlEventInfo> {
   return get(`/api/schema/event-info?${qs({ connection_id: connectionId, database, schema, table: name })}`);
 }
