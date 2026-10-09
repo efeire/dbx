@@ -4551,6 +4551,7 @@ export default withEnglishFallback({
     refreshDiscardConfirm: "L'aggiornamento eliminerà le modifiche non salvate al codice sorgente. Continuare?",
   },
   constraintEditor: {
+    oceanbasePrimaryKeyHint: "Seleziona le colonne in ordine; rimuovile tutte per eliminare la chiave. OceanBase ne gestisce l'archiviazione. Controlla DDL e dipendenze prima di applicare.",
     dropPreviousIndex: "Rimuovi il vecchio indice dopo il completamento. Viene rimossa anche la sua unicità; gli indici condivisi non possono essere rimossi.",
     editPrimaryKey: "Modifica chiave primaria",
     primaryKeyHint: "Seleziona le colonne in ordine. Rimuovile tutte per eliminare la chiave primaria. Gli indici esistenti vengono conservati.",

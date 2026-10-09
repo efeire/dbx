@@ -5274,6 +5274,7 @@ export default withEnglishFallback({
     sortBy: "排序方式",
   },
   constraintEditor: {
+    oceanbasePrimaryKeyHint: "按主键顺序选择列；清空全部列可删除主键。OceanBase 自行管理主键存储，执行前请确认 DDL 和依赖检查结果。",
     dropPreviousIndex: "成功后移除原支持索引，同时取消该索引施加的唯一性限制；仍被其他约束使用的索引不能移除。",
     editPrimaryKey: "编辑主键",
     primaryKeyHint: "按主键顺序选择列；清空全部列可删除主键。保留原支持索引。",

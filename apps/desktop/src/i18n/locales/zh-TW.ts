@@ -4303,6 +4303,7 @@ export default withEnglishFallback({
     refreshDiscardConfirm: "重新整理將捨棄未儲存的原始碼修改，是否繼續？",
   },
   constraintEditor: {
+    oceanbasePrimaryKeyHint: "依主鍵順序選擇欄位；清空全部欄位可刪除主鍵。OceanBase 自行管理主鍵儲存，執行前請確認 DDL 和相依檢查結果。",
     dropPreviousIndex: "成功後移除原支援索引，同時取消該索引的唯一性限制；其他約束仍使用的索引不能移除。",
     editPrimaryKey: "編輯主鍵",
     primaryKeyHint: "依主鍵順序選擇欄位；清空所有欄位可刪除主鍵。保留原支援索引。",

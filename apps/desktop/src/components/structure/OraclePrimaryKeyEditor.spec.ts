@@ -30,11 +30,11 @@ function button(label: string): HTMLButtonElement {
   return found!;
 }
 
-function mount(disabled = false) {
+function mount(disabled = false, oceanbase = false) {
   root = document.createElement("div");
   document.body.append(root);
   app = createApp(defineComponent({ setup: () => () => h(OraclePrimaryKeyEditor, {
-    connectionId: "oracle", database: "service", schema: "Owner", tableName: "T", columns: ["A", "B"], disabled, confirm, onChanged: changed,
+    connectionId: "oracle", database: "service", schema: "Owner", tableName: "T", columns: ["A", "B"], disabled, oceanbase, confirm, onChanged: changed,
   }) }));
   app.mount(root);
 }
@@ -62,6 +62,19 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); root?.remove(); });
 
 describe("Oracle primary-key editing", () => {
+  it("uses OceanBase guidance and hides Oracle-only index removal while preserving the common preview flow", async () => {
+    const oceanbasePlan = { ...plan, statements: ['ALTER TABLE "T" MODIFY PRIMARY KEY ("B", "A")'] };
+    mocks.previewPrimaryKeyChange.mockResolvedValue(oceanbasePlan);
+    mount(false, true);
+    await editComposite();
+    expect(root.querySelector('[data-index-disposition]')).toBeNull();
+    expect(root.textContent).toContain("constraintEditor.oceanbasePrimaryKeyHint");
+    expect(root.textContent).toContain(oceanbasePlan.statements[0]);
+    expect(mocks.previewPrimaryKeyChange).toHaveBeenCalledWith("oracle", "service", { schema: "Owner", tableName: "T", columns: ["B", "A"], dropPreviousIndex: false });
+    button("common.cancel").click();
+    await settle();
+    expect(mocks.applyPrimaryKeyChange).not.toHaveBeenCalled();
+  });
   it("preserves selected column order, previews real backend DDL, and cancel executes nothing", async () => {
     mount();
     await editComposite();

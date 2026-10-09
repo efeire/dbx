@@ -12,6 +12,7 @@ const props = defineProps<{
   tableName: string;
   columns: string[];
   disabled: boolean;
+  oceanbase?: boolean;
   confirm: (sql: string) => Promise<boolean>;
 }>();
 const emit = defineEmits<{ changed: [result: ConstraintChangeResult]; busy: [value: boolean] }>();
@@ -25,9 +26,9 @@ const plan = ref<ConstraintChangePreview>();
 const result = ref<ConstraintChangeResult>();
 const error = ref("");
 let requestId = 0;
-const change = computed<PrimaryKeyChange>(() => ({ schema: props.schema, tableName: props.tableName, columns: [...selected.value], dropPreviousIndex: dropPreviousIndex.value }));
+const change = computed<PrimaryKeyChange>(() => ({ schema: props.schema, tableName: props.tableName, columns: [...selected.value], dropPreviousIndex: !props.oceanbase && dropPreviousIndex.value }));
 
-watch(() => [props.connectionId, props.database, props.schema, props.tableName], () => {
+watch(() => [props.connectionId, props.database, props.schema, props.tableName, props.oceanbase], () => {
   requestId++;
   open.value = false;
   busy.value = false;
@@ -130,8 +131,8 @@ function cancel() {
   <div class="mb-3 rounded-md border p-3 text-sm">
     <Button v-if="!open" variant="outline" size="sm" :disabled="disabled || busy" @click="start">{{ t("constraintEditor.editPrimaryKey") }}</Button>
     <section v-else :aria-label="t('constraintEditor.editPrimaryKey')" class="space-y-3">
-      <p class="text-muted-foreground">{{ t("constraintEditor.primaryKeyHint") }}</p>
-      <label v-if="hasExistingKey" class="flex items-start gap-2">
+      <p class="text-muted-foreground">{{ t(oceanbase ? "constraintEditor.oceanbasePrimaryKeyHint" : "constraintEditor.primaryKeyHint") }}</p>
+      <label v-if="hasExistingKey && !oceanbase" class="flex items-start gap-2">
         <input v-model="dropPreviousIndex" type="checkbox" :disabled="disabled || busy" data-index-disposition />
         <span>{{ t("constraintEditor.dropPreviousIndex") }}</span>
       </label>
