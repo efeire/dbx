@@ -3,14 +3,15 @@ import { onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import * as api from "@/lib/backend/api";
+import { useQueryStore } from "@/stores/queryStore";
 import type { OracleTypeDetails } from "@/types/oracleTypes";
 
 const props = defineProps<{ connectionId: string; database: string; schema: string; name: string; objectType: "TYPE" | "TYPE_BODY" }>();
 const { t } = useI18n({
   useScope: "local",
   messages: {
-    en: { title: "Type metadata", status: "Status", pair: "Paired definition", dependencies: "Visible outgoing dependencies", grants: "Visible object grants", limited: "Current account visibility only. Grants do not include effective role inheritance.", refresh: "Refresh", cancel: "Cancel", cancelled: "Cancelled", grantable: "Grant option", available: "Available", empty: "No visible rows", unknown: "Unknown", unsupported: "Unsupported", denied: "Permission denied", error: "Read failed", loading: "Loading" },
-    "zh-CN": { title: "类型元数据", status: "状态", pair: "配对定义", dependencies: "当前可见的出向依赖", grants: "当前可见的对象授权", limited: "仅展示当前账号可见范围，授权未计算角色继承后的有效权限。", refresh: "刷新", cancel: "取消", cancelled: "已取消", grantable: "可转授", available: "可读取", empty: "无可见记录", unknown: "未知", unsupported: "不支持", denied: "无权限", error: "读取失败", loading: "加载中" },
+    en: { edit: "Edit definitions", title: "Type metadata", status: "Status", pair: "Paired definition", dependencies: "Visible outgoing dependencies", grants: "Visible object grants", limited: "Current account visibility only. Grants do not include effective role inheritance.", refresh: "Refresh", cancel: "Cancel", cancelled: "Cancelled", grantable: "Grant option", available: "Available", empty: "No visible rows", unknown: "Unknown", unsupported: "Unsupported", denied: "Permission denied", error: "Read failed", loading: "Loading" },
+    "zh-CN": { edit: "编辑定义", title: "类型元数据", status: "状态", pair: "配对定义", dependencies: "当前可见的出向依赖", grants: "当前可见的对象授权", limited: "仅展示当前账号可见范围，授权未计算角色继承后的有效权限。", refresh: "刷新", cancel: "取消", cancelled: "已取消", grantable: "可转授", available: "可读取", empty: "无可见记录", unknown: "未知", unsupported: "不支持", denied: "无权限", error: "读取失败", loading: "加载中" },
     "zh-TW": { title: "型別中繼資料", status: "狀態", pair: "配對定義", dependencies: "目前可見的向外相依關係", grants: "目前可見的物件授權", limited: "僅顯示目前帳號可見範圍，授權未計算角色繼承後的有效權限。", refresh: "重新整理", cancel: "取消", cancelled: "已取消", grantable: "可轉授", available: "可讀取", empty: "無可見記錄", unknown: "未知", unsupported: "不支援", denied: "無權限", error: "讀取失敗", loading: "載入中" },
     es: { title: "Metadatos del tipo", status: "Estado", pair: "Definición asociada", dependencies: "Dependencias salientes visibles", grants: "Permisos de objeto visibles", limited: "Solo se muestra lo visible para la cuenta actual. No se calculan los permisos heredados de roles.", refresh: "Actualizar", cancel: "Cancelar", cancelled: "Cancelado", grantable: "Opción de concesión", available: "Disponible", empty: "Sin registros visibles", unknown: "Desconocido", unsupported: "No compatible", denied: "Permiso denegado", error: "Error de lectura", loading: "Cargando" },
     it: { title: "Metadati del tipo", status: "Stato", pair: "Definizione associata", dependencies: "Dipendenze in uscita visibili", grants: "Privilegi oggetto visibili", limited: "Solo dati visibili all'account corrente. I privilegi ereditati dai ruoli non vengono calcolati.", refresh: "Aggiorna", cancel: "Annulla", cancelled: "Annullato", grantable: "Opzione di concessione", available: "Disponibile", empty: "Nessun record visibile", unknown: "Sconosciuto", unsupported: "Non supportato", denied: "Permesso negato", error: "Lettura non riuscita", loading: "Caricamento" },
@@ -63,6 +64,7 @@ onBeforeUnmount(() => cancel(false));
   <section class="max-h-64 shrink-0 overflow-auto border-b px-3 py-2 text-xs" data-oracle-type-metadata>
     <div class="flex items-center gap-2">
       <span class="flex-1 font-medium">{{ t("title") }}</span>
+      <Button variant="ghost" size="sm" class="h-6 text-xs" @click="useQueryStore().openOracleTypeEditor(connectionId, database, schema, name)">{{ t("edit") }}</Button>
       <Button v-if="loading" variant="ghost" size="sm" class="h-6 text-xs" @click="cancel()">{{ t("cancel") }}</Button>
       <Button v-else variant="ghost" size="sm" class="h-6 text-xs" @click="load">{{ t("refresh") }}</Button>
     </div>
