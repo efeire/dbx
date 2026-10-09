@@ -1901,6 +1901,14 @@ export async function buildCreatePartitionedTableSql(options: BuildCreatePartiti
   return post("/api/query/build-create-partitioned-table-sql", { options: options.options, partitioning: options.partitioning });
 }
 
+export async function previewPrimaryKeyChange(connectionId: string, database: string, change: import("@/types/constraintChange").PrimaryKeyChange): Promise<import("@/types/constraintChange").ConstraintChangePreview> {
+  return post("/api/query/preview-primary-key-change", { connectionId, database, change });
+}
+
+export async function applyPrimaryKeyChange(connectionId: string, database: string, change: import("@/types/constraintChange").PrimaryKeyChange, revision: string): Promise<import("@/types/constraintChange").ConstraintChangeResult> {
+  return post("/api/query/apply-primary-key-change", { connectionId, database, change, revision });
+}
+
 export async function previewSqliteTableStructureChange(connectionId: string, database: string, options: BuildTableStructureChangeSqlOptions): Promise<SqliteTableStructureChangePreview> {
   return post("/api/query/preview-sqlite-table-structure-change", {
     connectionId,
