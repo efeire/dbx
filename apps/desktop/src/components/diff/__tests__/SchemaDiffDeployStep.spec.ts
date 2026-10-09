@@ -19,9 +19,10 @@ afterEach(() => {
 
 it.each([true, false])("program preview readOnly=%s controls actual editor editing and emitted SQL", async (readOnly) => {
   const update = vi.fn();
+  const previewReadOnly = ref(readOnly);
   const host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(SchemaDiffDeployStep, { deploySql: "CREATE PACKAGE P AS END;", selectedObjects: [], targetConnectionId: "target", targetDatabase: "test", targetSchema: "DST", executing: false, readOnly, "onUpdate:deploySql": update }) });
+  app = createApp({ render: () => h(SchemaDiffDeployStep, { deploySql: "CREATE PACKAGE P AS END;", selectedObjects: [], targetConnectionId: "target", targetDatabase: "test", targetSchema: "DST", executing: false, readOnly: previewReadOnly.value, "onUpdate:deploySql": update }) });
   app.use(createI18n({ legacy: false, locale: "en", missingWarn: false, fallbackWarn: false, messages: { en: { diff: { routinePreviewReadOnly: "Program SQL is read-only" } } } }));
   app.mount(host);
   await vi.waitFor(() => expect(host.querySelector(".cm-editor")).not.toBeNull());
@@ -34,4 +35,7 @@ it.each([true, false])("program preview readOnly=%s controls actual editor editi
     expect(update).not.toHaveBeenCalled();
     expect(host.textContent).toContain("Program SQL is read-only");
   } else expect(update).toHaveBeenCalledWith("edited");
+  previewReadOnly.value = !readOnly;
+  await vi.waitFor(() => expect(editor.state.facet(EditorState.readOnly)).toBe(!readOnly));
+  expect(host.querySelector(".cm-content")!.getAttribute("contenteditable")).toBe(String(readOnly));
 });
