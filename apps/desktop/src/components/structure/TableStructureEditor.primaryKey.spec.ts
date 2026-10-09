@@ -212,9 +212,12 @@ vi.mock("@/components/ui/select", async () => {
         h("div", attrs, slots.default?.()),
   });
   const Select = defineComponent({
-    props: { disabled: Boolean }, emits: ["update:modelValue"],
+    props: { disabled: Boolean },
+    emits: ["update:modelValue"],
     setup(props, { emit, slots }) {
-      provide(selection, (value: string) => { if (!props.disabled) emit("update:modelValue", value); });
+      provide(selection, (value: string) => {
+        if (!props.disabled) emit("update:modelValue", value);
+      });
       return () => h("div", slots.default?.());
     },
   });
@@ -231,12 +234,12 @@ vi.mock("@/components/ui/select", async () => {
 vi.mock("@/stores/connectionStore", async () => {
   const { reactive } = await import("vue");
   mocks.connection = reactive(mocks.connection);
-  return ({
-  useConnectionStore: () => ({
-    ensureConnected: mocks.ensureConnected,
-    getConfig: (connectionId: string) => (connectionId === mocks.connection.id ? mocks.connection : undefined),
-  }),
-  });
+  return {
+    useConnectionStore: () => ({
+      ensureConnected: mocks.ensureConnected,
+      getConfig: (connectionId: string) => (connectionId === mocks.connection.id ? mocks.connection : undefined),
+    }),
+  };
 });
 vi.mock("@/stores/productionSafetyStore", () => ({ useProductionSafetyStore: () => ({ requestConfirmation: vi.fn() }) }));
 vi.mock("@/stores/queryStore", () => ({ useQueryStore: () => ({ tableStructureRefreshVersion: () => 0 }) }));
@@ -478,25 +481,34 @@ describe("TableStructureEditor primary key editing", () => {
     expect(root.querySelector('[data-select-option="BITMAP"]')).toBeNull();
     root.querySelector<HTMLButtonElement>('[data-select-option="FUNCTION-BASED NORMAL"]')!.click();
     await nextTick();
-    const input = root.querySelector<HTMLTextAreaElement>('[data-oceanbase-index-expressions] textarea')!;
+    const input = root.querySelector<HTMLTextAreaElement>("[data-oceanbase-index-expressions] textarea")!;
     expect(input.value).toBe('"Mixed""Column"');
     const expression = 'SUBSTR(\n"Mixed""Column", 1, 3)';
     input.value = expression;
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    await vi.waitFor(() => expect(mocks.buildTableStructureChangeSql).toHaveBeenLastCalledWith(expect.objectContaining({
-      databaseType: "oceanbase-oracle", databaseVersion: "4.2.5.7",
-      indexes: [expect.objectContaining({ indexType: "FUNCTION-BASED NORMAL", columns: [expression], isUnique: true })],
-    })));
+    await vi.waitFor(() =>
+      expect(mocks.buildTableStructureChangeSql).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          databaseType: "oceanbase-oracle",
+          databaseVersion: "4.2.5.7",
+          indexes: [expect.objectContaining({ indexType: "FUNCTION-BASED NORMAL", columns: [expression], isUnique: true })],
+        }),
+      ),
+    );
     expect(root.querySelector<HTMLButtonElement>('[data-select-option="NORMAL"]')!.disabled).toBe(true);
     mocks.connection.database_info.productVersion = undefined;
     await nextTick();
-    expect(root.querySelector('[data-oceanbase-index-expressions] textarea')).toBeNull();
+    expect(root.querySelector("[data-oceanbase-index-expressions] textarea")).toBeNull();
     expect(root.textContent).toContain(expression);
     expect(root.querySelector('[data-select-option="FUNCTION-BASED NORMAL"]')).toBeNull();
-    await vi.waitFor(() => expect(mocks.buildTableStructureChangeSql).toHaveBeenLastCalledWith(expect.objectContaining({
-      databaseVersion: undefined,
-      indexes: [expect.objectContaining({ indexType: "FUNCTION-BASED NORMAL", columns: [expression] })],
-    })));
+    await vi.waitFor(() =>
+      expect(mocks.buildTableStructureChangeSql).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          databaseVersion: undefined,
+          indexes: [expect.objectContaining({ indexType: "FUNCTION-BASED NORMAL", columns: [expression] })],
+        }),
+      ),
+    );
   });
 
   it.each([undefined, "4.3.5.1"])("limits unknown OceanBase version %s without changing native Oracle choices", async (version) => {

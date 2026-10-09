@@ -6,7 +6,15 @@ vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 
 vi.mock("@/components/ui/button", async () => {
   const { defineComponent, h } = await import("vue");
-  return { Button: defineComponent({ inheritAttrs: false, setup: (_, { attrs, slots }) => () => h("button", attrs, slots.default?.()) }) };
+  return {
+    Button: defineComponent({
+      inheritAttrs: false,
+      setup:
+        (_, { attrs, slots }) =>
+        () =>
+          h("button", attrs, slots.default?.()),
+    }),
+  };
 });
 let app: App | undefined;
 let root: HTMLElement;
@@ -14,12 +22,26 @@ async function render(terms: string[]) {
   const value = ref([...terms]);
   root = document.createElement("div");
   document.body.append(root);
-  app = createApp(defineComponent({ setup: () => () => h(OceanbaseIndexExpressions, { modelValue: value.value, "onUpdate:modelValue": (terms: string[]) => { value.value = terms; } }) }));
+  app = createApp(
+    defineComponent({
+      setup: () => () =>
+        h(OceanbaseIndexExpressions, {
+          modelValue: value.value,
+          "onUpdate:modelValue": (terms: string[]) => {
+            value.value = terms;
+          },
+        }),
+    }),
+  );
   app.mount(root);
   await nextTick();
   return value;
 }
-afterEach(() => { app?.unmount(); app = undefined; root?.remove(); });
+afterEach(() => {
+  app?.unmount();
+  app = undefined;
+  root?.remove();
+});
 describe("OceanBase index SQL terms", () => {
   it("keeps commas and newlines inside one expression", async () => {
     const value = await render(['"Name"']);
@@ -37,7 +59,7 @@ describe("OceanBase index SQL terms", () => {
     root.querySelector<HTMLButtonElement>('[aria-label="structureEditor.obIndexMoveDown"]')!.click();
     await nextTick();
     expect(value.value).toEqual([terms[1], terms[0]]);
-    expect([...root.querySelectorAll("textarea")].map(input => input.value)).toEqual(value.value);
+    expect([...root.querySelectorAll("textarea")].map((input) => input.value)).toEqual(value.value);
     expect(terms).toEqual(['LOWER("Name")', '"Second"']);
   });
   it("removes only the requested term", async () => {

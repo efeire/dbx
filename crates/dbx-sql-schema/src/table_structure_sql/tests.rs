@@ -62,6 +62,7 @@ fn structure_change_options(
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -353,6 +354,7 @@ fn index_change_options(
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -535,6 +537,7 @@ fn builds_mysql_column_and_index_changes() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -900,6 +903,7 @@ fn builds_xugu_type_change_with_native_syntax() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1169,6 +1173,7 @@ fn builds_mysql_unsigned_integer_column_with_length_before_attribute() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1209,6 +1214,7 @@ fn doris_table_editor_renames_column_without_mysql_change_syntax() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1274,6 +1280,7 @@ fn dameng_integer_column_omits_mysql_display_width() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1321,6 +1328,7 @@ fn builds_highgo_foreign_key_changes_with_postgres_syntax() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1399,6 +1407,7 @@ fn builds_informix_column_and_index_changes() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1460,6 +1469,7 @@ fn oracle_does_not_generate_drop_sql_for_all_columns() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1537,6 +1547,7 @@ fn oracle_create_table_places_default_before_not_null() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1608,6 +1619,7 @@ fn oracle_create_table_preserves_character_length_units() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1648,6 +1660,7 @@ fn oracle_create_table_uses_unquoted_identifiers_for_new_objects() {
         table_comment: Some("user table".to_string()),
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1689,6 +1702,7 @@ fn oracle_create_table_leaves_uppercase_regular_identifier_unquoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1729,6 +1743,7 @@ fn oracle_create_table_quotes_special_and_reserved_identifiers() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1772,6 +1787,7 @@ fn oracle_create_table_distinguishes_new_and_referenced_foreign_key_identifiers(
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1816,6 +1832,7 @@ fn oracle_create_table_extracts_single_line_trigger_source_into_the_body() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1852,6 +1869,7 @@ fn oracle_create_table_warns_instead_of_emitting_an_unparsed_trigger_declaration
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1892,6 +1910,7 @@ fn oracle_existing_quoted_identifiers_keep_exact_spelling() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -1929,6 +1948,7 @@ fn oracle_new_identifier_formatting_does_not_change_other_dialects() {
             table_comment: None,
             original_table_comment: None,
             mysql_engine: None,
+            mysql_auto_increment_value: None,
             transwarp_create: None,
             partitioned: false,
             foreign_table: false,
@@ -2028,6 +2048,7 @@ fn iris_drop_index_includes_table_name() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2074,6 +2095,7 @@ fn iris_ignores_comment_changes_but_keeps_supported_column_alters() {
         table_comment: Some("new table description".to_string()),
         original_table_comment: Some("old table description".to_string()),
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2161,6 +2183,7 @@ fn oracle_compatible_databases_keep_comment_on_sql() {
             table_comment: Some("new table description".to_string()),
             original_table_comment: Some("old table description".to_string()),
             mysql_engine: None,
+            mysql_auto_increment_value: None,
             transwarp_create: None,
             partitioned: false,
             foreign_table: false,
@@ -2200,6 +2223,7 @@ fn mysql_create_index_with_comment() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2238,6 +2262,7 @@ fn manticoresearch_builds_create_table_sql_only() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2286,6 +2311,7 @@ fn manticoresearch_builds_add_and_drop_column_sql() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2359,6 +2385,7 @@ fn gbase8a_uses_limited_mysql_ddl() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2434,6 +2461,7 @@ fn gbase8a_allows_mysql_style_column_reorder() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2480,6 +2508,7 @@ fn gbase8s_uses_informix_ddl_not_mysql() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2518,6 +2547,7 @@ fn gbase_without_driver_profile_still_uses_mysql_ddl() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2558,6 +2588,7 @@ fn manticoresearch_does_not_drop_id_column() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2631,6 +2662,7 @@ fn manticoresearch_warns_when_existing_column_properties_change() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2671,6 +2703,7 @@ fn manticoresearch_ignores_mysql_column_options() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2714,6 +2747,7 @@ fn manticoresearch_builds_text_column_properties() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2749,6 +2783,7 @@ fn manticoresearch_builds_json_secondary_index_property() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2780,6 +2815,7 @@ fn mysql_create_unique_index_with_comment_and_btree() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2813,6 +2849,7 @@ fn mysql_create_functional_index_preserves_key_part_syntax() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2846,6 +2883,7 @@ fn mysql_add_timestamp_column_drops_invalid_precision() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2879,6 +2917,7 @@ fn mysql_add_timestamp_column_preserves_valid_precision() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2919,6 +2958,7 @@ fn builds_postgres_create_table_with_comments_and_index() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -2956,6 +2996,7 @@ fn quotes_expression_like_new_index_columns_without_provenance() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3033,6 +3074,7 @@ fn create_table_trims_table_name_whitespace_for_all_statements() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3075,6 +3117,7 @@ fn warns_for_sqlite_unsafe_column_changes() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3123,6 +3166,7 @@ fn qualifies_attached_sqlite_table_and_index_changes() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3197,6 +3241,7 @@ fn builds_rqlite_changes_with_sqlite_dialect() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3232,6 +3277,7 @@ fn builds_kingbase_add_column_without_column_keyword() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3302,6 +3348,7 @@ fn builds_mysql_column_reorder_statements() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3363,6 +3410,7 @@ fn mysql_add_column_before_existing_column_does_not_reorder_shifted_column() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3431,6 +3479,7 @@ fn mysql_existing_column_reorder_does_not_reorder_columns_shifted_by_prior_move(
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3511,6 +3560,7 @@ fn mysql_moving_first_column_to_end_uses_single_reorder_statement() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3541,6 +3591,7 @@ fn builds_sql_server_quoted_column_and_index_statements() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3577,6 +3628,7 @@ fn sqlserver_strips_mysql_display_width_from_fixed_integer_types() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3607,6 +3659,7 @@ fn sqlserver_strips_scale_from_float() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3637,6 +3690,7 @@ fn sqlserver_preserves_float_mantissa_bits() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3692,6 +3746,7 @@ fn sqlserver_default_changes_drop_old_constraints_with_isolated_batches() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3914,6 +3969,7 @@ fn sqlserver_unchanged_foreign_key_does_not_warn_when_saving_other_changes() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3949,6 +4005,7 @@ fn sqlserver_add_column_with_identity() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -3985,6 +4042,7 @@ fn sqlserver_legacy_column_comment_change_uses_legacy_extended_properties() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4023,6 +4081,7 @@ fn dameng_add_column_with_identity() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4052,6 +4111,7 @@ fn dameng_uppercases_lowercase_column_type() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4088,6 +4148,7 @@ fn dameng_rejects_identity_on_incompatible_type() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4126,6 +4187,7 @@ fn sqlserver_rejects_identity_on_incompatible_type() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4167,6 +4229,7 @@ fn sqlserver_changed_foreign_key_still_warns_as_unsupported() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4213,6 +4276,7 @@ fn sqlserver_unchanged_identity_extra_does_not_mark_existing_column_changed() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4259,6 +4323,7 @@ fn dameng_unchanged_identity_extra_does_not_mark_existing_column_changed() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4518,6 +4583,7 @@ fn dameng_rejects_adding_second_identity_column() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4576,6 +4642,7 @@ fn sqlserver_existing_column_identity_change_warns_without_unchanged_foreign_key
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4613,6 +4680,7 @@ fn builds_duckdb_create_table_statements() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4739,6 +4807,7 @@ fn builds_clickhouse_nullable_comment_and_reorder_statements() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -4791,6 +4860,7 @@ fn builds_h2_schema_qualified_existing_column_statements() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -5841,6 +5911,7 @@ fn mysql_create_table_with_auto_increment() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -5874,6 +5945,7 @@ fn mysql_create_table_keeps_column_charset_collation_and_comment() {
         table_comment: Some("User accounts".to_string()),
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -5911,6 +5983,7 @@ fn mysql_compatible_databases_do_not_emit_mysql_column_charset_clauses() {
             table_comment: None,
             original_table_comment: None,
             mysql_engine: None,
+            mysql_auto_increment_value: None,
             transwarp_create: None,
             partitioned: false,
             foreign_table: false,
@@ -5945,6 +6018,7 @@ fn mysql_create_table_with_on_update_current_timestamp() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6111,6 +6185,7 @@ fn postgres_create_table_with_identity() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6147,6 +6222,7 @@ fn dameng_create_table_with_identity() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6179,6 +6255,7 @@ fn dameng_create_table_preserves_character_length_units() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6219,6 +6296,7 @@ fn dameng_alter_column_preserves_character_length_unit() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6260,6 +6338,7 @@ fn dameng_rejects_multiple_identity_columns() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6294,6 +6373,7 @@ fn dameng_rejects_zero_identity_increment() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6329,6 +6409,7 @@ fn sqlserver_create_table_with_identity() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6359,6 +6440,7 @@ fn mysql_quotes_datetime_literal_default() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6389,6 +6471,7 @@ fn mysql_does_not_quote_current_timestamp() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6420,6 +6503,7 @@ fn mysql_does_not_quote_temporal_function_with_parens() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6450,6 +6534,7 @@ fn mysql_date_literal_default_is_quoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6480,6 +6565,7 @@ fn mysql_time_literal_default_is_quoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6510,6 +6596,7 @@ fn non_temporal_types_are_not_quoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6644,6 +6731,7 @@ fn builds_mysql_foreign_key_changes() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6679,6 +6767,7 @@ fn builds_mysql_composite_foreign_key() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6717,6 +6806,7 @@ fn builds_oracle_foreign_key_with_supported_actions() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6759,6 +6849,7 @@ fn builds_oracle_foreign_key_replacement() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6800,6 +6891,7 @@ fn builds_mysql_trigger_changes() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6832,6 +6924,7 @@ fn builds_sqlserver_trigger_with_multiple_events() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6880,6 +6973,7 @@ fn rebuilds_changed_sqlserver_trigger_from_complete_metadata_source() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -6924,6 +7018,7 @@ fn sqlserver_trigger_edit_restores_disabled_state() {
         partitioned: false,
         foreign_table: false,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         database_version: None,
         is_gaussdb_m_mode: false,
@@ -6970,6 +7065,7 @@ fn unchanged_postgres_trigger_does_not_block_column_rename() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7005,6 +7101,7 @@ fn changed_postgres_trigger_remains_unsupported() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7045,6 +7142,7 @@ fn rejects_editing_existing_oracle_trigger_without_complete_source() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7074,6 +7172,7 @@ fn builds_oracle_statement_trigger_without_row_clause() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7115,6 +7214,7 @@ fn drops_existing_oracle_trigger_without_reconstructing_it() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7141,6 +7241,7 @@ fn rejects_unsupported_oracle_compound_trigger_shape() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7171,6 +7272,7 @@ fn mysql_varchar_default_is_quoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7202,6 +7304,7 @@ fn mysql_char_default_is_quoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7234,6 +7337,7 @@ fn mysql_text_default_is_quoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7264,6 +7368,7 @@ fn mysql_enum_default_is_quoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7294,6 +7399,7 @@ fn mysql_int_default_is_not_quoted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7434,6 +7540,7 @@ fn mysql_character_column_add_with_charset_collation() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7554,6 +7661,7 @@ fn mysql_numeric_column_omits_charset_collation_in_column_definition() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7602,6 +7710,7 @@ fn mysql_numeric_column_ignores_charset_collation_in_change_detection() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7645,6 +7754,7 @@ fn mysql_character_column_detects_charset_collation_change() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7693,6 +7803,7 @@ fn mysql_character_column_preserves_charset_collation_on_other_change() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7774,6 +7885,7 @@ fn mysql_inherited_column_charset_is_omitted_from_generated_ddl() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7823,6 +7935,7 @@ fn mysql_explicit_column_charset_survives_the_table_default_comparison() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7873,6 +7986,7 @@ fn mysql_inherited_column_charset_does_not_register_as_a_change() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7916,6 +8030,7 @@ fn mysql_collation_switched_away_from_the_table_default_is_emitted() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -7964,6 +8079,7 @@ fn mysql_column_charset_switched_to_the_table_default_drops_the_clause() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -8009,6 +8125,7 @@ fn mysql_column_charset_is_kept_when_the_table_default_is_unknown() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -8049,6 +8166,7 @@ fn mysql_create_table_omits_inherited_column_charset() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -8759,6 +8877,7 @@ fn mysql_create_table_with_generated_column() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         database_version: None,
@@ -8804,6 +8923,7 @@ fn oscar_create_table_with_primary_key_and_comments() {
         table_comment: Some("user table".to_string()),
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9004,6 +9124,7 @@ fn oscar_drop_index_with_schema_qualifier() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9030,6 +9151,7 @@ fn oscar_table_comment_uses_comment_on_table() {
         table_comment: Some("new comment".to_string()),
         original_table_comment: Some("old comment".to_string()),
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9118,6 +9240,7 @@ fn postgres_partitioned_parent_concurrent_request_rejected() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: true,
         foreign_table: false,
@@ -9154,6 +9277,7 @@ fn postgres_partitioned_parent_plain_index_unchanged() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: true,
         foreign_table: false,
@@ -9202,6 +9326,7 @@ fn postgres_create_table_partitioned_concurrent_request_rejected() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: true,
         foreign_table: false,
@@ -9334,6 +9459,7 @@ fn postgres_create_table_concurrent_index() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9455,6 +9581,7 @@ fn gaussdb_m_options(columns: Vec<EditableStructureColumn>) -> TableStructureSql
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9694,6 +9821,7 @@ fn gaussdb_m_rebuild_index_unchanged_type_does_not_rebuild() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9746,6 +9874,7 @@ fn mysql_create_table_nullable_timestamp_without_default_gets_explicit_null() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9780,6 +9909,7 @@ fn mysql_create_table_nullable_timestamp_with_default_still_gets_explicit_null()
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9812,6 +9942,7 @@ fn mysql_create_table_nullable_datetime_does_not_gain_null_keyword() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -9844,6 +9975,7 @@ fn mysql_add_column_nullable_timestamp_without_default_gets_explicit_null() {
         table_comment: None,
         original_table_comment: None,
         mysql_engine: None,
+        mysql_auto_increment_value: None,
         transwarp_create: None,
         partitioned: false,
         foreign_table: false,
@@ -10571,4 +10703,119 @@ fn mysql_literal_default_check_only_covers_defaults_the_draft_emits() {
         result.warnings,
         vec!["MySQL does not allow a literal default on text column \"note\". Remove the default, or on MySQL 8.0.13 or later use an expression default such as ('').".to_string()]
     );
+}
+
+#[test]
+fn mysql_create_table_start_value() {
+    let mut col = column("id");
+    col.data_type = "BIGINT".to_string();
+    col.is_primary_key = true;
+    col.is_nullable = false;
+    col.extra = Some(ColumnExtra { auto_increment: Some(true), ..Default::default() });
+    let mut options = structure_change_options(DatabaseType::Mysql, None, "users", vec![col]);
+    options.mysql_engine = Some("InnoDB".to_string());
+    options.table_comment = Some("example".to_string());
+    let default_result = build_create_table_sql(options.clone());
+    assert!(default_result.warnings.is_empty());
+    assert!(!default_result.statements[0].contains("AUTO_INCREMENT ="));
+    for value in ["1", "66", "9007199254740993", "18446744073709551615"] {
+        options.mysql_auto_increment_value = Some(value.to_string());
+        let result = build_create_table_sql(options.clone());
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        assert_eq!(result.statements.len(), 1);
+        assert!(result.statements[0].contains(&format!("ENGINE = InnoDB AUTO_INCREMENT = {value} COMMENT = 'example'")));
+    }
+    for value in ["", "0", "01", "-1", "1.5", "1e3", "18446744073709551616", "1; DROP TABLE users", " 66"] {
+        options.mysql_auto_increment_value = Some(value.to_string());
+        let result = build_create_table_sql(options.clone());
+        assert!(result.statements.is_empty(), "{value}");
+        assert!(!result.warnings.is_empty(), "{value}");
+    }
+    options.mysql_auto_increment_value = Some("66".to_string());
+    options.driver_profile = Some("tidb".to_string());
+    assert!(build_create_table_sql(options.clone()).statements.is_empty());
+    options.driver_profile = None;
+    options.columns[0].extra = None;
+    assert!(build_create_table_sql(options).statements.is_empty());
+}
+
+fn mysql_auto_increment_create_options() -> TableStructureSqlOptions {
+    let mut id = column("id");
+    id.data_type = "INT".to_string();
+    id.is_nullable = false;
+    id.extra = Some(ColumnExtra { auto_increment: Some(true), ..Default::default() });
+    let mut options = structure_change_options(DatabaseType::Mysql, None, "users", vec![id, column("name")]);
+    options.mysql_engine = Some("InnoDB".to_string());
+    options
+}
+
+#[test]
+fn mysql_create_auto_increment_requires_one_column_and_a_supporting_key() {
+    for start in [None, Some("6".to_string())] {
+        let mut options = mysql_auto_increment_create_options();
+        options.mysql_auto_increment_value = start;
+        let result = build_create_table_sql(options.clone());
+        assert!(result.statements.is_empty());
+        assert!(result.warnings.iter().any(|warning| warning.contains("supporting index")));
+        options.columns[0].is_primary_key = true;
+        assert!(build_create_table_sql(options.clone()).warnings.is_empty());
+        options.columns[1].extra = Some(ColumnExtra { auto_increment: Some(true), ..Default::default() });
+        let result = build_create_table_sql(options.clone());
+        assert!(result.statements.is_empty());
+        assert!(result.warnings.iter().any(|warning| warning.contains("only one")));
+        options.columns[1].marked_for_drop = true;
+        assert!(build_create_table_sql(options).warnings.is_empty());
+    }
+}
+
+#[test]
+fn mysql_create_auto_increment_inlines_ordinary_and_unique_supporting_indexes_once() {
+    for unique in [false, true] {
+        let mut options = mysql_auto_increment_create_options();
+        options.mysql_auto_increment_value = Some("6".to_string());
+        let mut supporting = index("key`id", &["id", "name"]);
+        supporting.is_unique = unique;
+        supporting.index_type = "BTREE".to_string();
+        supporting.comment = "id's sequence".to_string();
+        options.indexes = vec![supporting, index("name_lookup", &["name"])];
+        let result = build_create_table_sql(options);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        assert_eq!(result.statements.len(), 2);
+        let unique_prefix = if unique { "UNIQUE " } else { "" };
+        assert!(
+            result.statements[0].contains(&format!(
+                "{unique_prefix}INDEX `key``id` USING BTREE (`id`, `name`) COMMENT 'id''s sequence'"
+            )),
+            "{:?}",
+            result.statements
+        );
+        assert!(result.statements[0].contains("AUTO_INCREMENT = 6"));
+        assert!(result.statements[1].contains("name_lookup"));
+        assert!(!result.statements[1].contains("key``id"));
+    }
+}
+
+#[test]
+fn mysql_create_auto_increment_checks_key_order_and_ignores_dropped_or_unsuitable_indexes() {
+    let mut options = mysql_auto_increment_create_options();
+    options.indexes = vec![index("wrong_order", &["name", "id"])];
+    assert!(build_create_table_sql(options.clone()).statements.is_empty());
+    options.mysql_engine = Some("MyISAM".to_string());
+    assert!(build_create_table_sql(options.clone()).warnings.is_empty());
+    options.mysql_engine = None; // default InnoDB behavior
+    options.indexes[0].columns = vec!["id".to_string()];
+    options.indexes[0].marked_for_drop = true;
+    assert!(build_create_table_sql(options.clone()).statements.is_empty());
+    options.indexes[0].marked_for_drop = false;
+    for kind in ["FULLTEXT", "SPATIAL", "RTREE"] {
+        options.indexes[0].index_type = kind.to_string();
+        assert!(build_create_table_sql(options.clone()).statements.is_empty());
+    }
+    options.indexes.clear();
+    options.columns[0].is_primary_key = true;
+    options.columns[1].is_primary_key = true;
+    options.columns.swap(0, 1);
+    assert!(build_create_table_sql(options.clone()).statements.is_empty());
+    options.indexes.push(index("support", &["id"]));
+    assert!(build_create_table_sql(options).warnings.is_empty());
 }
