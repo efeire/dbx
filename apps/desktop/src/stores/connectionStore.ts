@@ -659,6 +659,7 @@ export const useConnectionStore = defineStore("connection", () => {
   } | null>(null);
   const sidebarLayout = ref<SidebarLayout>(emptyLayout());
   const tableVGroupLayouts = ref<Record<string, TableVGroupLayout>>({});
+  const lastDataGripFallbackUsernamesCount = ref(0);
   const dirtyTableVGroupScopeKeys = new Set<string>();
   let tableVGroupPersistTimer: ReturnType<typeof setTimeout> | null = null;
   const connectionGroupPaths = computed(() => buildConnectionGroupPathMap(sidebarLayout.value));
@@ -8376,19 +8377,22 @@ export const useConnectionStore = defineStore("connection", () => {
     const requestedSchema = schema?.trim() || currentSchema?.trim() || undefined;
     const sequenceOnly = objectKinds.length === 1 && objectKinds[0] === "sequence";
     const preferredSchema = oracleAssistant ? completionPreferredSchema(connectionId, currentSchema) : requestedSchema || (!sequenceOnly && databaseType === "postgres" ? "public" : databaseType === "mysql" ? database : undefined);
-    const response = await completionAssistantSearch({
-      connection_id: connectionId,
-      database,
-      schema: oracleAssistant ? (preferredSchema ?? null) : (requestedSchema ?? null),
-      object_kinds: objectKinds,
-      mask: filter.trim(),
-      case_sensitive: caseSensitive,
-      max_results: limit ?? 200,
-      global_search: globalSearch,
-      parent_schema: globalSearch || sequenceOnly ? null : (schema ?? null),
-      parent_name: parentName ?? null,
-      match_mode: matchMode,
-    }, requestRevision);
+    const response = await completionAssistantSearch(
+      {
+        connection_id: connectionId,
+        database,
+        schema: oracleAssistant ? (preferredSchema ?? null) : (requestedSchema ?? null),
+        object_kinds: objectKinds,
+        mask: filter.trim(),
+        case_sensitive: caseSensitive,
+        max_results: limit ?? 200,
+        global_search: globalSearch,
+        parent_schema: globalSearch || sequenceOnly ? null : (schema ?? null),
+        parent_name: parentName ?? null,
+        match_mode: matchMode,
+      },
+      requestRevision,
+    );
     if (databaseType === "oceanbase-oracle" && response.fallback_used) throw new Error("OceanBase agent does not support filtered routine completion");
     const objects = completionAssistantObjects(response.candidates, preferredSchema, oracleAssistant).map((object) => ({
       ...object,
@@ -9143,11 +9147,12 @@ export const useConnectionStore = defineStore("connection", () => {
     const cacheFilter = caseSensitive ? filter.trim() : normalizedFilter;
     const databaseType = getConfig(connectionId)?.db_type;
     const filteredRoutineAssistant = !!databaseType && FILTERED_ROUTINE_COMPLETION_DATABASES.has(databaseType) && (!!normalizedFilter || typeof limit === "number" || !!parentName || globalSearch);
-    const cacheKey = databaseType === "oceanbase-oracle" && filteredRoutineAssistant
-      ? `${connectionId}:${database}:${JSON.stringify([schema, parentName, cacheFilter, limit, globalSearch, currentSchema, [...objectKinds].sort(), caseSensitive])}`
-      : filteredRoutineAssistant
-      ? `${connectionId}:${database}:${schema ?? ""}:${parentName ?? ""}:${cacheFilter}:${limit ?? ""}:${globalSearch ? "global" : "scoped"}:${currentSchema ?? ""}:${[...objectKinds].sort().join(",")}:${caseSensitive ? "case-sensitive" : "case-insensitive"}`
-      : `${connectionId}:${database}:${schema ?? ""}`;
+    const cacheKey =
+      databaseType === "oceanbase-oracle" && filteredRoutineAssistant
+        ? `${connectionId}:${database}:${JSON.stringify([schema, parentName, cacheFilter, limit, globalSearch, currentSchema, [...objectKinds].sort(), caseSensitive])}`
+        : filteredRoutineAssistant
+          ? `${connectionId}:${database}:${schema ?? ""}:${parentName ?? ""}:${cacheFilter}:${limit ?? ""}:${globalSearch ? "global" : "scoped"}:${currentSchema ?? ""}:${[...objectKinds].sort().join(",")}:${caseSensitive ? "case-sensitive" : "case-insensitive"}`
+          : `${connectionId}:${database}:${schema ?? ""}`;
     if (!completionObjectsCache.value[cacheKey]) {
       const requestRevision = completionCacheRevision(connectionId, database);
       await withCompletionInFlight(
@@ -10013,12 +10018,22 @@ export const useConnectionStore = defineStore("connection", () => {
       if (picked.local) {
         dataSourcesLocal = await readTextFile(picked.local);
       } else {
-        console.warn("[DataGrip Import] dataSources.local.xml not selected; usernames will fall back to defaults");
+        try {
+          const siblingLocal = picked.dataSources.replace(/[^\\/]+$/, "dataSources.local.xml");
+          dataSourcesLocal = await readTextFile(siblingLocal);
+        } catch {
+          console.warn("[DataGrip Import] dataSources.local.xml not selected or readable; usernames will fall back to defaults");
+        }
       }
       if (picked.forest) {
         dbForestConfig = await readTextFile(picked.forest);
       } else {
-        console.warn("[DataGrip Import] db-forest-config.xml not selected; legacy group tree skipped");
+        try {
+          const siblingForest = picked.dataSources.replace(/[^\\/]+$/, "db-forest-config.xml");
+          dbForestConfig = await readTextFile(siblingForest);
+        } catch {
+          console.warn("[DataGrip Import] db-forest-config.xml not selected or readable; legacy group tree skipped");
+        }
       }
     } else {
       const files = await new Promise<FileList>((resolve, reject) => {
@@ -10121,6 +10136,7 @@ export const useConnectionStore = defineStore("connection", () => {
         };
         pendingDataGripPayload = payload;
         const result = parseDataGripImport(payload);
+        lastDataGripFallbackUsernamesCount.value = result.fallbackUsernamesCount || 0;
         return { connections: result.connections, layout: result.layout };
       }
       if (isDbeaverImportPayload(content)) {
@@ -10480,6 +10496,7 @@ export const useConnectionStore = defineStore("connection", () => {
     applyConnectionsImport,
     importConnectionsFromFile,
     applyDataGripKeychainPasswords,
+    lastDataGripFallbackUsernamesCount,
     applySidebarLayout,
     transferSource,
     schemaDiffSource,

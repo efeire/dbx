@@ -121,13 +121,11 @@ describe.each([false, true])("OceanBase standalone routine completion (semantic=
   });
 
   it.each([
-    ["CALL pkg.", "APP", "PKG", "CALL pkg.\"Do.Work\"()"],
+    ["CALL pkg.", "APP", "PKG", 'CALL pkg."Do.Work"()'],
     ['CALL "Mixed.Owner"."Mixed.Package".', "Mixed.Owner", "Mixed.Package", 'CALL "Mixed.Owner"."Mixed.Package"."Do.Work"()'],
   ])("loads package members for %s and inserts only the member", async (sql, owner, packageName, expected) => {
     const { provide, store, currentView } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", database: "OB", schema: "APP", modelValue: sql }, undefined, semanticCompletionEnabled);
-    store.listCompletionObjects.mockImplementation(async (...args: unknown[]) => args[5] === packageName
-      ? [{ name: "Do.Work", schema: owner, parentSchema: owner, parentName: packageName, type: "procedure", signature: "", routineId: "101:1" }]
-      : []);
+    store.listCompletionObjects.mockImplementation(async (...args: unknown[]) => (args[5] === packageName ? [{ name: "Do.Work", schema: owner, parentSchema: owner, parentName: packageName, type: "procedure", signature: "", routineId: "101:1" }] : []));
     const result = await provide();
     expect(store.listCompletionObjects).toHaveBeenCalledWith("connection", "OB", "", 100, owner, packageName, false, "APP", expect.any(Array), false);
     const option = result!.options.find((candidate) => candidate.label === "Do.Work")!;
@@ -152,7 +150,11 @@ describe.each([false, true])("OceanBase standalone routine completion (semantic=
   it("drops a routine response when the request is invalidated", async () => {
     const { provide, store, completion } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", database: "OB", schema: "APP", modelValue: "CALL P" }, undefined, semanticCompletionEnabled);
     let resolve!: (objects: SqlCompletionObject[]) => void;
-    store.listCompletionObjects.mockReturnValue(new Promise((done) => { resolve = done; }));
+    store.listCompletionObjects.mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
     const pending = provide();
     await vi.waitFor(() => expect(store.listCompletionObjects).toHaveBeenCalled());
     completion.invalidateRequests();

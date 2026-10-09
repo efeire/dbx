@@ -1605,7 +1605,9 @@ describe("connectionStore completion assistant", () => {
       candidates: [
         { name: "CALC", kind: "procedure", schema: "APP", data_type: "PROCEDURE" },
         { name: "Calc", kind: "function", schema: "APP", data_type: "FUNCTION" },
-      ], incomplete: false, fallback_used: false,
+      ],
+      incomplete: false,
+      fallback_used: false,
     });
     const listCompletionObjects = vi.fn();
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
@@ -1622,8 +1624,7 @@ describe("connectionStore completion assistant", () => {
   });
 
   it("retains OceanBase legacy-agent fallback without treating an empty search as unsupported", async () => {
-    const completionAssistantSearch = vi.fn().mockRejectedValueOnce(new Error("OceanBase agent does not support filtered routine completion"))
-      .mockResolvedValue({ candidates: [], incomplete: false, fallback_used: false });
+    const completionAssistantSearch = vi.fn().mockRejectedValueOnce(new Error("OceanBase agent does not support filtered routine completion")).mockResolvedValue({ candidates: [], incomplete: false, fallback_used: false });
     const listCompletionObjects = vi.fn().mockResolvedValue([{ name: "P", object_type: "PROCEDURE", schema: "APP" }]);
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
     vi.doMock("@/lib/backend/api", () => ({ checkConnectionHealth: vi.fn(), completionAssistantSearch, listCompletionObjects }));
@@ -1639,7 +1640,8 @@ describe("connectionStore completion assistant", () => {
   it("preserves OceanBase package overload identities and isolates quoted package caches", async () => {
     const completionAssistantSearch = vi.fn(async (request: { parent_name: string; parent_schema: string }) => ({
       candidates: [1, 2].map((id) => ({ name: "RUN", kind: "procedure", schema: request.parent_schema, parent_schema: request.parent_schema, parent_name: request.parent_name, routine_id: `${request.parent_name}:${id}`, signature: id === 1 ? "" : null })),
-      incomplete: false, fallback_used: false,
+      incomplete: false,
+      fallback_used: false,
     }));
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
     vi.doMock("@/lib/backend/api", () => ({ checkConnectionHealth: vi.fn(), completionAssistantSearch }));
@@ -1649,7 +1651,10 @@ describe("connectionStore completion assistant", () => {
     store.connectedIds.add("oceanbase-oracle-1");
     const upper = await store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "R", 20, "APP", "PKG");
     const mixed = await store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "R", 20, "APP", "Pkg");
-    expect(upper.map((object) => [object.routineId, object.signature])).toEqual([["PKG:1", ""], ["PKG:2", undefined]]);
+    expect(upper.map((object) => [object.routineId, object.signature])).toEqual([
+      ["PKG:1", ""],
+      ["PKG:2", undefined],
+    ]);
     expect(mixed.map((object) => object.routineId)).toEqual(["Pkg:1", "Pkg:2"]);
     expect(completionAssistantSearch).toHaveBeenCalledTimes(2);
     expect(await store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "R", 20, "APP", "PKG")).toEqual(upper);
@@ -1671,7 +1676,10 @@ describe("connectionStore completion assistant", () => {
 
   it("does not restore invalidated OceanBase routine results or their local index", async () => {
     const stale = deferred<{ candidates: Array<{ name: string; kind: string; schema: string }>; incomplete: boolean; fallback_used: boolean }>();
-    const completionAssistantSearch = vi.fn().mockReturnValueOnce(stale.promise).mockResolvedValue({ candidates: [{ name: "P_NEW", kind: "procedure", schema: "APP" }], incomplete: false, fallback_used: false });
+    const completionAssistantSearch = vi
+      .fn()
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue({ candidates: [{ name: "P_NEW", kind: "procedure", schema: "APP" }], incomplete: false, fallback_used: false });
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
     vi.doMock("@/lib/backend/api", () => ({ checkConnectionHealth: vi.fn(), completionAssistantSearch }));
     const { useConnectionStore } = await import("@/stores/connectionStore");

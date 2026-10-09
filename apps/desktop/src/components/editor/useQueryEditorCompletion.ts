@@ -844,6 +844,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           currentSchema: props.schema,
           keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
           functionCase: settingsStore.editorSettings.sqlFormatter.functionCase,
+          identifierCase: settingsStore.editorSettings.sqlFormatter.identifierCase,
           autoAliasTables: settingsStore.editorSettings.autoAliasTables,
           tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
           quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
@@ -908,6 +909,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           currentSchema: props.schema,
           keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
           functionCase: settingsStore.editorSettings.sqlFormatter.functionCase,
+          identifierCase: settingsStore.editorSettings.sqlFormatter.identifierCase,
           autoAliasTables: settingsStore.editorSettings.autoAliasTables,
           tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
           quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
@@ -1213,6 +1215,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       currentSchema: scope.schema,
       keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
       functionCase: settingsStore.editorSettings.sqlFormatter.functionCase,
+      identifierCase: settingsStore.editorSettings.sqlFormatter.identifierCase,
       autoAliasTables: settingsStore.editorSettings.autoAliasTables,
       tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
@@ -1405,7 +1408,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     if (!props.connectionId || props.database == null) return [];
     const objectKinds = completionObjectKindsForContext(completionContext);
     if (props.databaseType === "oceanbase-oracle") {
-      const parts = (completionContext.qualifierParts ?? completionContext.qualifier?.split(".") ?? []).map((part, index) => completionContext.qualifierQuoted?.[index] ? part.replaceAll('""', '"') : part.toUpperCase());
+      const parts = (completionContext.qualifierParts ?? completionContext.qualifier?.split(".") ?? []).map((part, index) => (completionContext.qualifierQuoted?.[index] ? part.replaceAll('""', '"') : part.toUpperCase()));
       const list = (schema: string | undefined, parentName?: string, globalSearch = false) =>
         connectionStore.listCompletionObjects(props.connectionId!, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES, schema, parentName, globalSearch, scope.schema, objectKinds, !!completionContext.prefixQuoted);
       if (parts.length === 0) return list(scope.schema, undefined, true);
@@ -1702,6 +1705,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       currentSchema: scope.schema,
       keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
       functionCase: settingsStore.editorSettings.sqlFormatter.functionCase,
+      identifierCase: settingsStore.editorSettings.sqlFormatter.identifierCase,
       autoAliasTables: settingsStore.editorSettings.autoAliasTables,
       tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
