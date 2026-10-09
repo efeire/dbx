@@ -5,7 +5,7 @@ import { Network } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ConnectionConfig } from "@/types/database";
-import { connectionIconType } from "@/lib/connection/connectionPresentation";
+import { connectionDriverLabel } from "@/lib/connection/connectionPresentation";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSessionBlockingMonitor } from "@/composables/useSessionBlockingMonitor";
 import { blockingPaths, type MonitorContext } from "@/lib/database/sessionBlockingMonitor";
@@ -16,7 +16,7 @@ const { t } = useI18n({ useScope: "local", fallbackLocale: "en-US", messages: se
 const open = ref(false);
 const connections = useConnectionStore();
 const context = computed<MonitorContext | null>(() => {
-  const engine = connectionIconType(props.connection);
+  const engine = props.connection.db_type;
   return open.value && connections.connectedIds.has(props.connection.id) && (engine === "oracle" || engine === "oceanbase-oracle") ? { connectionId: props.connection.id, database: props.database, engine } : null;
 });
 const monitor = useSessionBlockingMonitor(context);
@@ -38,6 +38,7 @@ const chains = computed(() => {
         ><DialogDescription>{{ t("description") }}</DialogDescription></DialogHeader
       >
       <div class="space-y-3 overflow-auto text-sm">
+        <p class="text-muted-foreground">{{ connection.db_type }} · {{ connection.driver_profile || connection.db_type }} · {{ connectionDriverLabel(connection) }}</p>
         <p>{{ t("scope") }}</p>
         <div class="flex flex-wrap items-center gap-3">
           <Button :disabled="!canRefresh" @click="monitor.refresh()">{{ t("refresh") }}</Button>
