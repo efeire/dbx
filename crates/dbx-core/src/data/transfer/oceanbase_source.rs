@@ -1,6 +1,6 @@
 use super::*;
 use sqlparser::dialect::OracleDialect;
-use sqlparser::tokenizer::{Token, TokenWithSpan, Tokenizer};
+use sqlparser::tokenizer::{Token, TokenWithSpan, Tokenizer, Whitespace};
 
 fn kind_for_source(kind: TransferObjectKind) -> Result<db::ObjectSourceKind, String> {
     use db::ObjectSourceKind as S;
@@ -39,6 +39,16 @@ pub(crate) async fn load(
     name: &str,
     kind: TransferObjectKind,
 ) -> Result<Vec<String>, String> {
+    load_with_owner(state, request, target_schema, name, kind).await.map(|(statements, _)| statements)
+}
+
+async fn load_with_owner(
+    state: &AppState,
+    request: &TransferRequest,
+    target_schema: &str,
+    name: &str,
+    kind: TransferObjectKind,
+) -> Result<(Vec<String>, String), String> {
     let source = crate::schema::get_object_source_core(
         state,
         &request.source_connection_id,
@@ -66,7 +76,7 @@ pub(crate) async fn load(
     } else {
         vec![]
     };
-    prepare(&source.source, owner, target_schema, name, kind, &columns)
+    Ok((prepare(&source.source, owner, target_schema, name, kind, &columns)?, owner.to_string()))
 }
 
 fn offset(source: &str, line: u64, column: u64) -> Result<usize, String> {
@@ -195,17 +205,161 @@ fn prepare(
 pub(super) async fn execute(
     state: &AppState,
     request: &TransferRequest,
+    source_pool_key: &str,
     target_pool_key: &str,
     target_schema: &str,
     name: &str,
     kind: TransferObjectKind,
 ) -> Result<(), String> {
-    let statements = load(state, request, target_schema, name, kind).await?;
+    let (statements, source_owner) = load_with_owner(state, request, target_schema, name, kind).await?;
+    let sequence = if kind == TransferObjectKind::Sequence {
+        Some(sequence_configuration(state, source_pool_key, &source_owner, name).await?)
+    } else {
+        None
+    };
     for (index, statement) in statements.iter().enumerate() {
         if is_cancelled(&request.transfer_id).await {
-            return Err("Cancelled".into());
+            return Err(format!("OceanBase {kind:?} {name}, cancelled before statement {}/{} after {index} completed DDL statements; target retained for inspection; no rollback was attempted", index + 1, statements.len()));
         }
         execute_on_pool(state, target_pool_key, statement).await.map_err(|error| format!("OceanBase {kind:?} {name}, statement {}/{} failed after {} completed DDL statements; no rollback was attempted: {error}", index + 1, statements.len(), index))?;
+    }
+    verify_target(state, request, target_pool_key, target_schema, name, kind, &statements, sequence.as_ref()).await
+        .map_err(|error| format!("OceanBase {kind:?} {name}, target verification failed after {} completed DDL statements; target retained for inspection; no rollback was attempted: {error}", statements.len()))
+}
+
+async fn complete_metadata(state: &AppState, pool: &str, sql: &str) -> Result<db::QueryResult, String> {
+    let result = execute_read_on_pool_with_max_rows(state, pool, sql, Some(i32::MAX as usize)).await?;
+    if result.truncated || result.has_more {
+        return Err("Target verification metadata is incomplete".into());
+    }
+    Ok(result)
+}
+
+async fn sequence_configuration(
+    state: &AppState,
+    pool: &str,
+    owner: &str,
+    name: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let result = complete_metadata(state, pool, &format!("SELECT MIN_VALUE, MAX_VALUE, INCREMENT_BY, CYCLE_FLAG, ORDER_FLAG, CACHE_SIZE FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER={} AND SEQUENCE_NAME={}", quote_string_literal(owner), quote_string_literal(name))).await?;
+    if result.rows.len() != 1 || result.rows[0].len() != 6 || result.rows[0].iter().any(serde_json::Value::is_null) {
+        return Err("Sequence static configuration is missing or incomplete".into());
+    }
+    Ok(result.rows[0].clone())
+}
+
+fn definition_tokens(statements: &[String]) -> Result<Vec<String>, String> {
+    let mut result = Vec::new();
+    for statement in statements {
+        let mut values = Tokenizer::new(&OracleDialect {}, statement)
+            .tokenize_with_location()
+            .map_err(|error| format!("Cannot tokenize target definition: {error}"))?
+            .into_iter()
+            .filter(|value| match &value.token {
+                Token::Whitespace(Whitespace::MultiLineComment(comment))
+                | Token::Whitespace(Whitespace::SingleLineComment { comment, .. }) => {
+                    comment.trim_start().starts_with('+')
+                }
+                Token::Whitespace(_) => false,
+                _ => true,
+            })
+            .collect::<Vec<_>>();
+        if word(values.first(), "CREATE") && word(values.get(1), "OR") && word(values.get(2), "REPLACE") {
+            values.drain(1..3);
+        }
+        while values.last().is_some_and(|value| matches!(value.token, Token::SemiColon | Token::Div)) {
+            values.pop();
+        }
+        result.extend(values.into_iter().map(|value| match value.token {
+            Token::Word(value) => {
+                if value.quote_style.is_some() {
+                    format!("quoted identifier:{}", value.value)
+                } else {
+                    format!("word:{}", value.value.to_uppercase())
+                }
+            }
+            value => format!("token:{value}"),
+        }));
+        result.push("statement boundary".into());
+    }
+    Ok(result)
+}
+
+async fn verify_target(
+    state: &AppState,
+    request: &TransferRequest,
+    pool: &str,
+    owner: &str,
+    name: &str,
+    kind: TransferObjectKind,
+    expected: &[String],
+    sequence: Option<&Vec<serde_json::Value>>,
+) -> Result<(), String> {
+    let dictionary_kind = match kind {
+        TransferObjectKind::MaterializedView => "MATERIALIZED VIEW",
+        TransferObjectKind::View => "VIEW",
+        TransferObjectKind::Procedure => "PROCEDURE",
+        TransferObjectKind::Function => "FUNCTION",
+        TransferObjectKind::Trigger => "TRIGGER",
+        TransferObjectKind::Sequence => "SEQUENCE",
+        _ => return Err("Unsupported verification kind".into()),
+    };
+    let identity = format!(
+        "OWNER={} AND OBJECT_NAME={} AND OBJECT_TYPE={}",
+        quote_string_literal(owner),
+        quote_string_literal(name),
+        quote_string_literal(dictionary_kind)
+    );
+    let objects = complete_metadata(
+        state,
+        pool,
+        &format!("SELECT OBJECT_NAME, OBJECT_TYPE, STATUS FROM ALL_OBJECTS WHERE {identity}"),
+    )
+    .await?;
+    if objects.rows.len() != 1
+        || objects.rows[0].first().and_then(serde_json::Value::as_str) != Some(name)
+        || objects.rows[0].get(1).and_then(serde_json::Value::as_str) != Some(dictionary_kind)
+    {
+        return Err("Target object identity is missing or ambiguous".into());
+    }
+    if matches!(kind, TransferObjectKind::Procedure | TransferObjectKind::Function | TransferObjectKind::Trigger) {
+        let errors = complete_metadata(state, pool, &format!("SELECT LINE, POSITION, TEXT FROM ALL_ERRORS WHERE OWNER={} AND NAME={} AND TYPE={} AND ATTRIBUTE='ERROR' ORDER BY SEQUENCE", quote_string_literal(owner), quote_string_literal(name), quote_string_literal(dictionary_kind))).await?;
+        verify_program_status(objects.rows[0].get(2).and_then(serde_json::Value::as_str), &errors.rows)?;
+    }
+    let actual = crate::schema::get_object_source_core(
+        state,
+        &request.target_connection_id,
+        &request.target_database,
+        owner,
+        name,
+        kind_for_source(kind)?,
+        None,
+        None,
+    )
+    .await?;
+    let columns = if kind == TransferObjectKind::View && view_body(&actual.source)? {
+        crate::schema::get_columns_core(state, &request.target_connection_id, &request.target_database, owner, name)
+            .await?
+            .into_iter()
+            .map(|column| column.name)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let actual = prepare(&actual.source, owner, owner, name, kind, &columns)?;
+    if let Some(expected_sequence) = sequence {
+        if &sequence_configuration(state, pool, owner, name).await? != expected_sequence {
+            return Err("Target sequence static configuration differs".into());
+        }
+    } else if definition_tokens(expected)? != definition_tokens(&actual)? {
+        return Err("Target complete definition differs from the planned source".into());
+    }
+    Ok(())
+}
+
+fn verify_program_status(status: Option<&str>, errors: &[Vec<serde_json::Value>]) -> Result<(), String> {
+    if status != Some("VALID") || !errors.is_empty() {
+        return Err("Target program is not VALID or has compiler errors".into());
     }
     Ok(())
 }
@@ -213,6 +367,50 @@ pub(super) async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_ddl_does_not_make_invalid_or_unreadable_program_successful() {
+        assert!(verify_program_status(Some("VALID"), &[]).is_ok());
+        assert!(verify_program_status(Some("INVALID"), &[]).is_err());
+        assert!(verify_program_status(None, &[]).is_err());
+        assert!(verify_program_status(Some("VALID"), &[vec![serde_json::json!("compiler error")]]).is_err());
+    }
+
+    #[test]
+    fn complete_definition_comparison_preserves_literals_operators_and_trigger_state() {
+        let original = vec!["CREATE PROCEDURE \"P\" AS BEGIN X := 8 / 2; END;".into()];
+        let readback = vec!["create or replace procedure \"P\" as begin x := 8 / 2; end;".into()];
+        assert_eq!(definition_tokens(&original).unwrap(), definition_tokens(&readback).unwrap());
+        for changed in [
+            "CREATE PROCEDURE \"P\" AS BEGIN X := 8 * 2; END;",
+            "CREATE PROCEDURE \"P\" AS BEGIN X := 8 / 3; END;",
+            "CREATE PROCEDURE \"P\" AS BEGIN X := 'secret'; END;",
+        ] {
+            assert_ne!(definition_tokens(&original).unwrap(), definition_tokens(&[changed.into()]).unwrap());
+        }
+        let enabled =
+            vec!["CREATE TRIGGER T BEFORE INSERT ON A BEGIN NULL; END;".into(), "ALTER TRIGGER T ENABLE;".into()];
+        let disabled = vec![enabled[0].clone(), "ALTER TRIGGER T DISABLE;".into()];
+        assert_ne!(definition_tokens(&enabled).unwrap(), definition_tokens(&disabled).unwrap());
+        for keyword in ["NULL", "SYSDATE"] {
+            assert_ne!(
+                definition_tokens(&[format!("CREATE VIEW V AS SELECT \"{keyword}\" FROM T")]).unwrap(),
+                definition_tokens(&[format!("CREATE VIEW V AS SELECT {keyword} FROM T")]).unwrap()
+            );
+        }
+        let hinted = vec!["CREATE VIEW V AS SELECT /*+ NO_MERGE */ A FROM T".into()];
+        for changed in [
+            "CREATE VIEW V AS SELECT A FROM T",
+            "CREATE VIEW V AS SELECT /*+ MERGE */ A FROM T",
+            "CREATE VIEW V AS SELECT --+ MERGE\n A FROM T",
+        ] {
+            assert_ne!(definition_tokens(&hinted).unwrap(), definition_tokens(&[changed.into()]).unwrap());
+        }
+        assert_ne!(
+            definition_tokens(&["CREATE VIEW V AS SELECT 'a' FROM DUAL".into()]).unwrap(),
+            definition_tokens(&["CREATE VIEW V AS SELECT 'A' FROM DUAL".into()]).unwrap()
+        );
+    }
 
     #[test]
     fn view_dictionary_body_preserves_column_aliases_and_quoted_owner() {

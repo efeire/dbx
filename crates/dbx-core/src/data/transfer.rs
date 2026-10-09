@@ -8689,14 +8689,24 @@ where
                 continue;
             }
             if oceanbase_source {
-                match oceanbase_source::execute(state, request, target_pool_key, &target_schema, &name, kind).await {
+                match oceanbase_source::execute(
+                    state,
+                    request,
+                    source_pool_key,
+                    target_pool_key,
+                    &target_schema,
+                    &name,
+                    kind,
+                )
+                .await
+                {
                     Ok(()) => {
                         outcome.transferred.push(format!("{kind:?}:{name}"));
                         progress(&mut outcome, TransferStatus::Running, None);
                     }
                     Err(error) => {
                         if is_cancelled(&request.transfer_id).await {
-                            return Err("Cancelled".into());
+                            return Err(error);
                         }
                         outcome.failed.push(format!("{kind:?}:{name}"));
                         progress(&mut outcome, TransferStatus::Error, Some(error));
