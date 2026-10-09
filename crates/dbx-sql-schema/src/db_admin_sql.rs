@@ -652,7 +652,7 @@ fn supports_vacuum_table(database_type: Option<DatabaseType>) -> bool {
     )
 }
 
-pub fn build_mysql_auto_increment_sql(options: MysqlAutoIncrementSqlOptions) -> Result<String, String> {
+pub(crate) fn validate_mysql_auto_increment_options(options: &MysqlAutoIncrementSqlOptions) -> Result<(), String> {
     let profile = options.driver_profile.as_deref().map(str::trim).unwrap_or_default();
     if options.database_type != Some(DatabaseType::Mysql)
         || (!profile.is_empty() && !profile.eq_ignore_ascii_case("mysql"))
@@ -668,6 +668,13 @@ pub fn build_mysql_auto_increment_sql(options: MysqlAutoIncrementSqlOptions) -> 
     {
         return Err("AUTO_INCREMENT must be a decimal integer from 1 to 18446744073709551615.".to_string());
     }
+
+    Ok(())
+}
+
+pub fn build_mysql_auto_increment_sql(options: MysqlAutoIncrementSqlOptions) -> Result<String, String> {
+    validate_mysql_auto_increment_options(&options)?;
+    let value = &options.value;
 
     let table = if options.schema.as_deref().is_some_and(|schema| !schema.is_empty()) {
         format!(
@@ -3142,6 +3149,7 @@ mod tests {
                 table_comment: None,
                 original_table_comment: None,
                 mysql_engine: None,
+                mysql_auto_increment_value: None,
                 transwarp_create: None,
                 partitioned: false,
                 foreign_table: false,
@@ -3395,13 +3403,13 @@ mod tests {
     #[test]
     fn oceanbase_view_rename_uses_current_schema_rename_syntax() {
         let sql = build_rename_object_sql(RenameObjectSqlOptions {
-                database_type: Some(DatabaseType::OceanbaseOracle),
-                object_type: DatabaseObjectType::View,
-                schema: Some("App'Owner".to_string()),
-                old_name: "Old 'View".to_string(),
-                new_name: "New \"View\"".to_string(),
-            })
-            .unwrap();
+            database_type: Some(DatabaseType::OceanbaseOracle),
+            object_type: DatabaseObjectType::View,
+            schema: Some("App'Owner".to_string()),
+            old_name: "Old 'View".to_string(),
+            new_name: "New \"View\"".to_string(),
+        })
+        .unwrap();
         assert!(sql.starts_with("DECLARE\n"));
         assert!(sql.contains("SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') <> 'App''Owner'"));
         assert!(sql.contains("EXECUTE IMMEDIATE 'RENAME \"Old ''View\" TO \"New \"\"View\"\"\"'"));

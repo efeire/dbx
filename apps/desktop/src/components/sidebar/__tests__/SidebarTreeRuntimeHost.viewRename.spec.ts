@@ -7,7 +7,7 @@ import type { ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import type { TreeNode } from "@/types/database";
 
 vi.mock("@/lib/backend/api", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/backend/api")>(),
+  ...(await importOriginal<typeof import("@/lib/backend/api")>()),
   listPlugins: vi.fn().mockResolvedValue([]),
   buildRenameObjectSql: vi.fn().mockResolvedValue('RENAME "Old View" TO "New View"'),
   getObjectSource: vi.fn().mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true }),
@@ -40,12 +40,29 @@ async function openRename(target: TreeNode = node) {
   const replacePin = vi.spyOn(store, "replacePinnedTreeNode");
   vi.spyOn(store, "refreshObjectListTreeNode").mockResolvedValue(undefined);
   const queries = useQueryStore();
-  const sourceId = queries.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "APP", title: target.label, sql: "unsaved original definition", objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" } });
+  const sourceId = queries.openObjectSourceTab({
+    connectionId: "ob",
+    database: "APP",
+    schema: "APP",
+    title: target.label,
+    sql: "unsaved original definition",
+    objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" },
+  });
   const instance = ref<{ buildContextMenu(target: TreeNode): ContextMenuItem[] }>();
   let controller: RenameDialog | undefined;
   const container = document.createElement("div");
   document.body.append(container);
-  const app = createApp({ setup: () => () => h(SidebarTreeRuntimeHost, { ref: instance, node: target, depth: 0, "onOpen-dialog-controller": (value: RenameDialog) => { controller = value; } }) });
+  const app = createApp({
+    setup: () => () =>
+      h(SidebarTreeRuntimeHost, {
+        ref: instance,
+        node: target,
+        depth: 0,
+        "onOpen-dialog-controller": (value: RenameDialog) => {
+          controller = value;
+        },
+      }),
+  });
   app.use(pinia);
   app.use(i18n);
   app.mount(container);
