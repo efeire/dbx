@@ -3085,6 +3085,7 @@ export default withEnglishFallback({
     copied: "Скопировано",
     copyFailed: "Не удалось скопировать: {message}",
     estimatedTime: "Оценочное время",
+    estimatedTitle: "Оценочный план выполнения",
     title: "План выполнения",
     standardTable: "Таблица",
     tree: "Дерево",
@@ -3122,7 +3123,7 @@ export default withEnglishFallback({
     catOther: "Прочее",
     unsupported: "План выполнения пока не поддерживается для этой базы данных",
     emptySql: "Нет SQL для анализа плана",
-    unsafe: "Эта первая версия анализирует только операторы SELECT / WITH / TABLE / VALUES",
+    unsafe: "Невозможно безопасно получить план этого SQL. Используйте один поддерживаемый оператор.",
   },
   profile: {
     title: "Профиль",

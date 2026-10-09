@@ -2734,6 +2734,7 @@ export default withEnglishFallback({
     copied: "Kopyalandı",
     copyFailed: "Kopyalama alınmadı: {message}",
     estimatedTime: "Təxmini vaxt",
+    estimatedTitle: "Təxmini icra planı",
     title: "İcra planı",
     standardTable: "Cədvəl",
     tree: "Ağac",
@@ -2770,7 +2771,7 @@ export default withEnglishFallback({
     catOther: "Digər",
     unsupported: "Bu verilənlər bazası üçün icra planı hələ dəstəklənmir",
     emptySql: "İzah ediləcək SQL yoxdur",
-    unsafe: "Bu ilk versiya yalnız SELECT / WITH / TABLE / VALUES əmrlərini izah edir",
+    unsafe: "Bu SQL üçün planı təhlükəsiz almaq mümkün deyil. Dəstəklənən tək əmrdən istifadə edin.",
   },
   profile: {
     title: "Profil",

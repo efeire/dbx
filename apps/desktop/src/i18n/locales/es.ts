@@ -3130,6 +3130,7 @@ export default withEnglishFallback({
     copied: "Copiado",
     copyFailed: "Error al copiar: {message}",
     estimatedTime: "Tiempo estimado",
+    estimatedTitle: "Plan de ejecución estimado",
     title: "Plan de ejecución",
     standardTable: "Tabla",
     tree: "Árbol",
@@ -3167,7 +3168,7 @@ export default withEnglishFallback({
     catOther: "Otro",
     unsupported: "El plan de ejecución aún no está disponible para esta base de datos",
     emptySql: "No hay SQL para analizar",
-    unsafe: "Esta versión solo analiza sentencias SELECT / WITH / TABLE / VALUES",
+    unsafe: "No se puede analizar este SQL de forma segura. Use una sola sentencia compatible.",
   },
   profile: {
     title: "Perfil",

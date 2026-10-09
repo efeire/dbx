@@ -3228,6 +3228,7 @@ export default {
     copied: "Copied",
     copyFailed: "Copy failed: {message}",
     estimatedTime: "Estimated time",
+    estimatedTitle: "Estimated execution plan",
     title: "Explain Plan",
     standardTable: "Table",
     tree: "Tree",
@@ -3265,7 +3266,7 @@ export default {
     catOther: "Other",
     unsupported: "Explain plan is not supported for this database yet",
     emptySql: "No SQL to explain",
-    unsafe: "This first version only explains SELECT / WITH / TABLE / VALUES statements",
+    unsafe: "This SQL cannot be explained safely. Use a single supported statement.",
   },
   profile: {
     title: "Profile",
