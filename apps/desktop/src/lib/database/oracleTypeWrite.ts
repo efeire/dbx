@@ -4,13 +4,46 @@ import type { SqlSemanticToken } from "@/lib/sql/semantic/types";
 import type { DatabaseType, QueryResult } from "@/types/database";
 
 export type TypePart = "TYPE" | "TYPE_BODY";
-export interface TypeTarget { schema: string; name: string }
-export interface TypeDefinition { kind: TypePart; source: string; status: string | null; objectId: string; lastDdl: string }
-export interface TypeReference { owner: string; name: string; kind: string; detail: string }
-export interface TypeSnapshot { definitions: TypeDefinition[]; references: TypeReference[] }
-export interface TypeWriteStep { kind: TypePart; sql: string; action: "create" | "replace" | "drop" }
-export interface TypeWritePlan { target: TypeTarget; engine: DatabaseType; before: TypeSnapshot; steps: TypeWriteStep[] }
-export interface TypeWriteResult { state: "complete" | "invalid" | "failed" | "changed" | "cancelled"; sent: TypeWriteStep[]; before: TypeSnapshot; after?: TypeSnapshot; errors: Record<string, unknown>[]; message?: string }
+export interface TypeTarget {
+  schema: string;
+  name: string;
+}
+export interface TypeDefinition {
+  kind: TypePart;
+  source: string;
+  status: string | null;
+  objectId: string;
+  lastDdl: string;
+}
+export interface TypeReference {
+  owner: string;
+  name: string;
+  kind: string;
+  detail: string;
+}
+export interface TypeSnapshot {
+  definitions: TypeDefinition[];
+  references: TypeReference[];
+}
+export interface TypeWriteStep {
+  kind: TypePart;
+  sql: string;
+  action: "create" | "replace" | "drop";
+}
+export interface TypeWritePlan {
+  target: TypeTarget;
+  engine: DatabaseType;
+  before: TypeSnapshot;
+  steps: TypeWriteStep[];
+}
+export interface TypeWriteResult {
+  state: "complete" | "invalid" | "failed" | "changed" | "cancelled";
+  sent: TypeWriteStep[];
+  before: TypeSnapshot;
+  after?: TypeSnapshot;
+  errors: Record<string, unknown>[];
+  message?: string;
+}
 export interface TypeWriteIO {
   query: (sql: string) => Promise<QueryResult>;
   source: (kind: TypePart) => Promise<string>;
@@ -21,7 +54,7 @@ export interface TypeWriteIO {
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const identifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
 const qualified = (target: TypeTarget) => `${identifier(target.schema)}.${identifier(target.name)}`;
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 function dictionaryRows(result: QueryResult): Record<string, unknown>[] {
   if (result.execution_error) throw new Error(result.error?.message || String(result.rows[0]?.[0] ?? "Dictionary query failed"));
@@ -44,7 +77,13 @@ export function typeDefinitionSql(source: string, target: TypeTarget, kind: Type
   const tokens = tokenizeSqlSemantic(sql, "oracle").filter((token) => token.kind !== "comment");
   if (tokens.some((token) => token.closed === false)) throw new Error("A quoted value in the definition is not closed.");
   let index = 0;
-  const accept = (word: string) => { if (tokens[index]?.kind === "word" && tokens[index].normalized === word) { index++; return true; } return false; };
+  const accept = (word: string) => {
+    if (tokens[index]?.kind === "word" && tokens[index].normalized === word) {
+      index++;
+      return true;
+    }
+    return false;
+  };
   if (!accept("create")) throw new Error("The definition must begin with CREATE TYPE.");
   if (accept("or") && !accept("replace")) throw new Error("Expected OR REPLACE.");
   if (!accept("type")) throw new Error("Only CREATE TYPE and CREATE TYPE BODY are supported here.");
@@ -67,9 +106,12 @@ export function typeDefinitionSql(source: string, target: TypeTarget, kind: Type
 
 export async function readTypeWriteSnapshot(io: Pick<TypeWriteIO, "query" | "source">, target: TypeTarget): Promise<TypeSnapshot> {
   if (!target.schema || !target.name) throw new Error("An exact owner and name are required.");
-  const owner = literal(target.schema), name = literal(target.name);
+  const owner = literal(target.schema),
+    name = literal(target.name);
   // DBA scope is intentional: ALL_* alone cannot prove that hidden cross-owner dependents do not exist.
-  const objects = dictionaryRows(await io.query(`SELECT OBJECT_TYPE, STATUS, TO_CHAR(OBJECT_ID) AS OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS LAST_DDL_TIME FROM DBA_OBJECTS WHERE OWNER = ${owner} AND OBJECT_NAME = ${name} AND OBJECT_TYPE IN ('TYPE', 'TYPE BODY') ORDER BY OBJECT_TYPE`));
+  const objects = dictionaryRows(
+    await io.query(`SELECT OBJECT_TYPE, STATUS, TO_CHAR(OBJECT_ID) AS OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS LAST_DDL_TIME FROM DBA_OBJECTS WHERE OWNER = ${owner} AND OBJECT_NAME = ${name} AND OBJECT_TYPE IN ('TYPE', 'TYPE BODY') ORDER BY OBJECT_TYPE`),
+  );
   const definitions: TypeDefinition[] = [];
   for (const row of objects) {
     const kind = row.OBJECT_TYPE === "TYPE" ? "TYPE" : row.OBJECT_TYPE === "TYPE BODY" ? "TYPE_BODY" : null;
@@ -135,12 +177,17 @@ export async function executeTypeWritePlan(io: TypeWriteIO, plan: TypeWritePlan)
       try {
         const response = await io.execute(step.sql);
         if (response.execution_error) executionError = response.error?.message || String(response.rows[0]?.[0] ?? "Type DDL failed");
-      } catch (error) { executionError = errorText(error); }
+      } catch (error) {
+        executionError = errorText(error);
+      }
       // Sent DDL is not transactional. Read back even after a cancellation or execution failure.
       try {
         result.after = await readTypeWriteSnapshot(io, plan.target);
         result.errors = dictionaryRows(await io.query(`SELECT OWNER, NAME, TYPE, SEQUENCE, LINE, POSITION, TEXT, ATTRIBUTE FROM ALL_ERRORS WHERE OWNER = ${literal(plan.target.schema)} AND NAME = ${literal(plan.target.name)} AND TYPE IN ('TYPE', 'TYPE BODY') ORDER BY TYPE, SEQUENCE`));
-      } catch (error) { result.message = [executionError, errorText(error)].filter(Boolean).join("\n"); return result; }
+      } catch (error) {
+        result.message = [executionError, errorText(error)].filter(Boolean).join("\n");
+        return result;
+      }
       if (executionError) return { ...result, message: executionError };
       if (io.cancelled?.()) return { ...result, state: "cancelled" };
       const actual = result.after.definitions.find((item) => item.kind === step.kind);
@@ -148,11 +195,18 @@ export async function executeTypeWritePlan(io: TypeWriteIO, plan: TypeWritePlan)
         if (actual || (step.kind === "TYPE" && result.after.definitions.length)) return { ...result, message: "The object is still present after DROP." };
       } else {
         if (!actual || actual.status !== "VALID" || result.errors.some((row) => row.TYPE === step.kind.replaceAll("_", " ") && row.ATTRIBUTE !== "WARNING")) return { ...result, state: "invalid", message: "The saved definition was not confirmed VALID." };
-        const semanticDefinition = (source: string) => JSON.stringify(tokenizeSqlSemantic(typeDefinitionSql(source, plan.target, step.kind, false), "oracle").filter((token) => token.kind !== "comment").map((token) => token.kind === "word" ? token.normalized : token.text));
+        const semanticDefinition = (source: string) =>
+          JSON.stringify(
+            tokenizeSqlSemantic(typeDefinitionSql(source, plan.target, step.kind, false), "oracle")
+              .filter((token) => token.kind !== "comment")
+              .map((token) => (token.kind === "word" ? token.normalized : token.text)),
+          );
         if (semanticDefinition(actual.source) !== semanticDefinition(step.sql)) return { ...result, state: "changed", message: "The readback definition differs from the sent definition. Remaining steps were not sent." };
       }
     }
     if (result.after?.definitions.some((item) => item.status !== "VALID") || result.errors.some((row) => row.ATTRIBUTE !== "WARNING")) return { ...result, state: "invalid", message: "The specification and body were not both confirmed VALID." };
     return { ...result, state: "complete" };
-  } catch (error) { return { ...result, message: errorText(error) }; }
+  } catch (error) {
+    return { ...result, message: errorText(error) };
+  }
 }

@@ -2961,7 +2961,15 @@ export const useQueryStore = defineStore("query", () => {
    * 用户看到的是点击后毫无反应。
    */
   function openObjectSourceTabPending(options: OpenPendingObjectSourceTabOptions): string {
-    const typeTab = tabs.value.find((tab) => tab.connectionId === options.connectionId && tab.database === options.database && (tab.catalog || "") === (options.catalog || "") && tab.oracleTypeIdentity?.schema === (options.schema || options.database) && tab.oracleTypeIdentity.name === options.request.name && tab.oracleTypeIdentity.object_type === options.request.objectType);
+    const typeTab = tabs.value.find(
+      (tab) =>
+        tab.connectionId === options.connectionId &&
+        tab.database === options.database &&
+        (tab.catalog || "") === (options.catalog || "") &&
+        tab.oracleTypeIdentity?.schema === (options.schema || options.database) &&
+        tab.oracleTypeIdentity.name === options.request.name &&
+        tab.oracleTypeIdentity.object_type === options.request.objectType,
+    );
     if (typeTab) {
       switchTab(typeTab.id);
       if (!isTabDirty(typeTab)) refreshObjectSourceTab(typeTab.id);
@@ -3067,7 +3075,13 @@ export const useQueryStore = defineStore("query", () => {
     const tab = tabs.value.find((candidate) => candidate.id === id);
     if (!tab) return false;
     if (tab.sourceLoad && !tab.sourceLoad.error) return true;
-    const request = tab.sourceLoad?.request ? { ...tab.sourceLoad.request } : tab.objectSource ? { name: tab.objectSource.name, objectType: tab.objectSource.objectType, signature: tab.objectSource.signature } : tab.oracleTypeIdentity ? { name: tab.oracleTypeIdentity.name, objectType: tab.oracleTypeIdentity.object_type } : null;
+    const request = tab.sourceLoad?.request
+      ? { ...tab.sourceLoad.request }
+      : tab.objectSource
+        ? { name: tab.objectSource.name, objectType: tab.objectSource.objectType, signature: tab.objectSource.signature }
+        : tab.oracleTypeIdentity
+          ? { name: tab.oracleTypeIdentity.name, objectType: tab.oracleTypeIdentity.object_type }
+          : null;
     if (!request) return false;
     sourceRevalidateInFlight.delete(id);
     tab.sourceLoad = {
@@ -3694,8 +3708,22 @@ export const useQueryStore = defineStore("query", () => {
 
   function openOracleTypeEditor(connectionId: string, database: string, schema = "", name = "") {
     const existing = tabs.value.find((tab) => tab.mode === "oracle-type-editor" && tab.connectionId === connectionId && tab.database === database && (tab.oracleTypeIdentity?.schema ?? "") === schema && (tab.oracleTypeIdentity?.name ?? "") === name);
-    if (existing) { switchTab(existing.id); return existing.id; }
-    return registerOpenTab({ id: uuid(), title: name ? `${t("tree.types")} - ${name}` : t("tree.types"), connectionId, database, sql: "", isExecuting: false, isCancelling: false, isExplaining: false, mode: "oracle-type-editor", oracleTypeIdentity: schema && name ? { schema, name, object_type: "TYPE" } : undefined });
+    if (existing) {
+      switchTab(existing.id);
+      return existing.id;
+    }
+    return registerOpenTab({
+      id: uuid(),
+      title: name ? `${t("tree.types")} - ${name}` : t("tree.types"),
+      connectionId,
+      database,
+      sql: "",
+      isExecuting: false,
+      isCancelling: false,
+      isExplaining: false,
+      mode: "oracle-type-editor",
+      oracleTypeIdentity: schema && name ? { schema, name, object_type: "TYPE" } : undefined,
+    });
   }
 
   function openDamengUsers(connectionId: string) {

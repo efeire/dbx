@@ -13,9 +13,17 @@ function ioFor(snapshot: TypeSnapshot) {
   const current = structuredClone(snapshot);
   const io: TypeWriteIO = {
     query: vi.fn(async (sql: string) => {
-      if (sql.includes("FROM DBA_OBJECTS")) return result(["OBJECT_TYPE", "STATUS", "OBJECT_ID", "LAST_DDL_TIME"], current.definitions.map((item) => [item.kind.replaceAll("_", " "), item.status, item.objectId, item.lastDdl]));
+      if (sql.includes("FROM DBA_OBJECTS"))
+        return result(
+          ["OBJECT_TYPE", "STATUS", "OBJECT_ID", "LAST_DDL_TIME"],
+          current.definitions.map((item) => [item.kind.replaceAll("_", " "), item.status, item.objectId, item.lastDdl]),
+        );
       if (sql.includes("FROM ALL_ERRORS")) return result(["TYPE", "SEQUENCE", "LINE", "POSITION", "TEXT", "ATTRIBUTE"], []);
-      if (sql.includes("FROM DBA_DEPENDENCIES")) return result(["OWNER", "NAME", "KIND", "DETAIL"], current.references.map((item) => [item.owner, item.name, item.kind, item.detail]));
+      if (sql.includes("FROM DBA_DEPENDENCIES"))
+        return result(
+          ["OWNER", "NAME", "KIND", "DETAIL"],
+          current.references.map((item) => [item.owner, item.name, item.kind, item.detail]),
+        );
       return result([], []);
     }),
     source: vi.fn(async (kind) => current.definitions.find((item) => item.kind === kind)?.source ?? ""),
@@ -35,13 +43,7 @@ describe("Oracle type write planning", () => {
     const source = body.replace("RETURN 1", "RETURN LENGTH(q'[; CREATE TYPE OTHER AS OBJECT(x NUMBER);]')");
     expect(typeDefinitionSql(source, target, "TYPE_BODY", true)).toContain("RETURN LENGTH(q'[");
   });
-  it.each([
-    spec.replace('"T.中文"', '"OTHER"'),
-    spec.replace('"Owner.""Q"', '"OtherOwner"'),
-    spec.replace(" AS OBJECT", " FORCE AS OBJECT"),
-    `${spec}\nDROP TABLE IMPORTANT;`,
-    "CREATE TABLE T (x NUMBER)",
-  ])("rejects a mismatched, forced or unrelated definition before dispatch", (source) => {
+  it.each([spec.replace('"T.中文"', '"OTHER"'), spec.replace('"Owner.""Q"', '"OtherOwner"'), spec.replace(" AS OBJECT", " FORCE AS OBJECT"), `${spec}\nDROP TABLE IMPORTANT;`, "CREATE TABLE T (x NUMBER)"])("rejects a mismatched, forced or unrelated definition before dispatch", (source) => {
     expect(() => typeDefinitionSql(source, target, "TYPE", true)).toThrow();
   });
   it("orders the specification before the body", () => {
@@ -52,7 +54,8 @@ describe("Oracle type write planning", () => {
   it("does not replace an unchanged specification while changing its body", () => {
     const before = { definitions: [definition(), definition({ kind: "TYPE_BODY", source: body, objectId: "2" })], references: [{ owner: "APP", name: "DATA", kind: "TABLE COLUMN", detail: "VALUE" }] };
     const plan = prepareTypeWritePlan("oracle", target, before, { TYPE: spec, TYPE_BODY: body.replace("RETURN 1", "RETURN 2") });
-    expect(plan.steps).toHaveLength(1); expect(plan.steps[0].kind).toBe("TYPE_BODY");
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0].kind).toBe("TYPE_BODY");
   });
   it.each(["TABLE COLUMN", "COLLECTION", "SUBTYPE", "PROCEDURE"])("blocks a specification replacement or drop with %s references", (kind) => {
     const before = { definitions: [definition()], references: [{ owner: "OTHER", name: "DEPENDENT", kind, detail: "X" }] };
@@ -89,30 +92,45 @@ describe("Oracle type write execution", () => {
       return result([], []);
     });
     const actual = await executeTypeWritePlan(io, plan);
-    expect(actual.state).toBe("complete"); expect(actual.sent.map((step) => step.kind)).toEqual(["TYPE", "TYPE_BODY"]);
+    expect(actual.state).toBe("complete");
+    expect(actual.sent.map((step) => step.kind)).toEqual(["TYPE", "TYPE_BODY"]);
     expect(actual.after?.definitions).toHaveLength(2);
   });
   it("stops after an INVALID specification and keeps the sent statement", async () => {
     const plan = prepareTypeWritePlan("oracle", target, empty(), { TYPE: spec, TYPE_BODY: body });
     const { io, current } = ioFor(empty());
-    vi.mocked(io.execute).mockImplementation(async () => { current.definitions.push(definition({ status: "INVALID" })); return result([], []); });
+    vi.mocked(io.execute).mockImplementation(async () => {
+      current.definitions.push(definition({ status: "INVALID" }));
+      return result([], []);
+    });
     const actual = await executeTypeWritePlan(io, plan);
-    expect(actual.state).toBe("invalid"); expect(actual.sent).toHaveLength(1); expect(io.execute).toHaveBeenCalledTimes(1);
+    expect(actual.state).toBe("invalid");
+    expect(actual.sent).toHaveLength(1);
+    expect(io.execute).toHaveBeenCalledTimes(1);
   });
   it("stops when a VALID readback belongs to a different definition", async () => {
     const plan = prepareTypeWritePlan("oracle", target, empty(), { TYPE: spec, TYPE_BODY: body });
     const { io, current } = ioFor(empty());
-    vi.mocked(io.execute).mockImplementation(async () => { current.definitions.push(definition({ source: spec.replace("20", "80") })); return result([], []); });
+    vi.mocked(io.execute).mockImplementation(async () => {
+      current.definitions.push(definition({ source: spec.replace("20", "80") }));
+      return result([], []);
+    });
     const actual = await executeTypeWritePlan(io, plan);
-    expect(actual.state).toBe("changed"); expect(actual.sent).toHaveLength(1); expect(io.execute).toHaveBeenCalledTimes(1);
+    expect(actual.state).toBe("changed");
+    expect(actual.sent).toHaveLength(1);
+    expect(io.execute).toHaveBeenCalledTimes(1);
   });
   it.each(["TYPE", "TYPE_BODY"] as const)("reads back the absence after deleting %s", async (kind) => {
     const before = { definitions: [definition(), definition({ kind: "TYPE_BODY", source: body, objectId: "2" })], references: [] };
     const plan = prepareTypeWritePlan("oracle", target, before, {}, kind);
     const { io, current } = ioFor(before);
-    vi.mocked(io.execute).mockImplementation(async () => { current.definitions = kind === "TYPE" ? [] : current.definitions.filter((item) => item.kind !== kind); return result([], []); });
+    vi.mocked(io.execute).mockImplementation(async () => {
+      current.definitions = kind === "TYPE" ? [] : current.definitions.filter((item) => item.kind !== kind);
+      return result([], []);
+    });
     const actual = await executeTypeWritePlan(io, plan);
-    expect(actual.state).toBe("complete"); expect(actual.sent[0].action).toBe("drop");
+    expect(actual.state).toBe("complete");
+    expect(actual.sent[0].action).toBe("drop");
     expect(actual.after?.definitions.some((item) => item.kind === kind)).toBe(false);
   });
   it("keeps original definitions and attempts readback after a failed DDL", async () => {
@@ -125,8 +143,10 @@ describe("Oracle type write execution", () => {
     expect(actual.sent).toHaveLength(1);
   });
   it("does not send a write when cancelled before dispatch", async () => {
-    const { io } = ioFor(empty()); io.cancelled = () => true;
+    const { io } = ioFor(empty());
+    io.cancelled = () => true;
     const actual = await executeTypeWritePlan(io, prepareTypeWritePlan("oracle", target, empty(), { TYPE: spec }));
-    expect(actual.state).toBe("cancelled"); expect(io.execute).not.toHaveBeenCalled();
+    expect(actual.state).toBe("cancelled");
+    expect(io.execute).not.toHaveBeenCalled();
   });
 });
