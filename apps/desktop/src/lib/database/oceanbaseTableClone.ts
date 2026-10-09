@@ -25,7 +25,7 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
   let sourceSchema = options.schema || "";
   const query = async (sql: string) => {
     const result = await api.executeQuery(options.connectionId, options.database, sql, sourceSchema, undefined, { catalog: options.catalog, maxRows: 10001 });
-    if (result.execution_error) throw new Error(result.error?.message || "Unable to read clone metadata.");
+    if (result.execution_error) throw new Error(result.error?.detail || "Unable to read clone metadata.");
     if (result.rows.length >= 10001 || result.has_more) throw new Error("Clone metadata was truncated. No DDL was executed.");
     return result.rows;
   };
@@ -54,11 +54,20 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
   }
   const target = `${ident(targetSchema)}.${ident(options.targetName)}`;
   const result = await api.buildCreateTableSql({
-    databaseType: "oceanbase-oracle", schema: targetSchema, tableName: options.targetName,
+    databaseType: "oceanbase-oracle",
+    schema: targetSchema,
+    tableName: options.targetName,
     columns: createColumnDrafts(columns, "oceanbase-oracle").map((column, index) => ({
-      ...column, id: `clone:column:${index}`, original: undefined, originalPosition: undefined, isPrimaryKey: false, comment: "",
+      ...column,
+      id: `clone:column:${index}`,
+      original: undefined,
+      originalPosition: undefined,
+      isPrimaryKey: false,
+      comment: "",
     })),
-    indexes: [], foreignKeys: [], triggers: [],
+    indexes: [],
+    foreignKeys: [],
+    triggers: [],
   });
   if (result.warnings.length || result.statements.length !== 1) throw new Error(result.warnings.join("\n") || "Unable to generate complete OceanBase Oracle table columns.");
   const steps: OceanbaseTableClone["steps"] = [{ label: `TABLE ${target}`, sql: result.statements[0]! }];
@@ -106,10 +115,16 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
 
 export function confirmOceanbaseTableClone(plan: DuplicateTableStructurePlan, t: (key: string, values?: Record<string, string>) => string): boolean {
   const clone = plan.oceanbaseClone;
-  return !clone || window.confirm(t("contextMenu.oceanbaseClonePreview", {
-    target: `${ident(clone.targetSchema)}.${ident(clone.targetName)}`,
-    copied: clone.copied.join("\n"), excluded: clone.excluded.join("\n") || "—",
-  }));
+  return (
+    !clone ||
+    window.confirm(
+      t("contextMenu.oceanbaseClonePreview", {
+        target: `${ident(clone.targetSchema)}.${ident(clone.targetName)}`,
+        copied: clone.copied.join("\n"),
+        excluded: clone.excluded.join("\n") || "—",
+      }),
+    )
+  );
 }
 
 export class OceanbaseTableCloneError extends Error {}
@@ -121,12 +136,14 @@ export async function executeOceanbaseTableClone(clone: OceanbaseTableClone, exe
   for (const step of clone.steps) {
     try {
       result = await execute(step.sql.replace(/;\s*$/, ""));
-      if (result.execution_error) throw new Error(result.error?.message || "DDL execution failed");
+      if (result.execution_error) throw new Error(result.error?.detail || "DDL execution failed");
       completed.push(step.label);
     } catch (error) {
       const target = `${ident(clone.targetSchema)}.${ident(clone.targetName)}`;
       const recovery = completed.length ? `To discard this clone after checking its contents, run manually:\nDROP TABLE ${target};` : "Creation was not confirmed. Inspect the target and server error before retrying; do not delete an existing table.";
-      throw new OceanbaseTableCloneError(`Clone stopped at ${step.label}: ${error instanceof Error ? error.message : String(error)}\n\nCompleted (committed):\n${completed.join("\n") || "None confirmed"}\n\nNo automatic rollback was attempted. The failed statement may have reached the server; inspect ${target} before retrying. ${recovery}\n\nFailed SQL:\n${step.sql}`);
+      throw new OceanbaseTableCloneError(
+        `Clone stopped at ${step.label}: ${error instanceof Error ? error.message : String(error)}\n\nCompleted (committed):\n${completed.join("\n") || "None confirmed"}\n\nNo automatic rollback was attempted. The failed statement may have reached the server; inspect ${target} before retrying. ${recovery}\n\nFailed SQL:\n${step.sql}`,
+      );
     }
   }
   return result!;

@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnInfo, QueryResult } from "@/types/database";
 
@@ -6,7 +7,7 @@ vi.mock("@/lib/backend/api", () => api);
 import { buildDuplicateTableStructurePlan } from "@/lib/database/dbAdminSql";
 import { confirmOceanbaseTableClone, executeOceanbaseTableClone, OceanbaseTableCloneError } from "@/lib/database/oceanbaseTableClone";
 
-const result = (rows: unknown[][] = []): QueryResult => ({ columns: [], rows, affected_rows: 0, execution_time_ms: 0 } as QueryResult);
+const result = (rows: unknown[][] = []): QueryResult => ({ columns: [], rows, affected_rows: 0, execution_time_ms: 0 }) as QueryResult;
 const options = { connectionId: "c", database: "db", databaseType: "oceanbase-oracle" as const, schema: "Source's Schema", sourceName: "Order", targetSchema: "Target Schema", targetName: 'New"Table' };
 const columns: ColumnInfo[] = [
   { name: "a", data_type: "VARCHAR2(12 BYTE)", is_nullable: false, column_default: "'a''b'", is_primary_key: true, extra: "", comment: " first 'comment' " },
@@ -17,13 +18,24 @@ const columns: ColumnInfo[] = [
 beforeEach(() => {
   vi.resetAllMocks();
   api.getColumns.mockResolvedValue(columns);
-  api.listConstraints.mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["b", "a"], enabled: true, valid: true }, { name: "FK_SOURCE", constraint_type: "FOREIGN KEY", columns: ["a"] }]);
-  api.listIndexes.mockResolvedValue([{ name: "PK_SOURCE", columns: ["b", "a"], is_primary: true }, { name: "IX_SOURCE", columns: ['Mixed"Case', "b"], index_type: "NORMAL", is_unique: false }, { name: "IX_EXPR", columns: ["SYS_NC1"], index_type: "FUNCTION-BASED NORMAL" }]);
+  api.listConstraints.mockResolvedValue([
+    { name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["b", "a"], enabled: true, valid: true },
+    { name: "FK_SOURCE", constraint_type: "FOREIGN KEY", columns: ["a"] },
+  ]);
+  api.listIndexes.mockResolvedValue([
+    { name: "PK_SOURCE", columns: ["b", "a"], is_primary: true },
+    { name: "IX_SOURCE", columns: ['Mixed"Case', "b"], index_type: "NORMAL", is_unique: false },
+    { name: "IX_EXPR", columns: ["SYS_NC1"], index_type: "FUNCTION-BASED NORMAL" },
+  ]);
   api.listTriggers.mockResolvedValue([{ name: "TRG_SOURCE" }]);
   api.executeQuery.mockImplementation(async (_connection, _database, sql: string) => {
     if (sql.includes("SYS_CONTEXT")) return result([[options.schema]]);
     if (sql.includes("ALL_TAB_COMMENTS")) return result([[" table's comment "]]);
-    if (sql.includes("ALL_IND_COLUMNS")) return result([["IX_SOURCE", 'Mixed"Case', 1, "DESC"], ["IX_SOURCE", "b", 2, "ASC"]]);
+    if (sql.includes("ALL_IND_COLUMNS"))
+      return result([
+        ["IX_SOURCE", 'Mixed"Case', 1, "DESC"],
+        ["IX_SOURCE", "b", 2, "ASC"],
+      ]);
     return result();
   });
   api.buildCreateTableSql.mockResolvedValue({ statements: ['CREATE TABLE "Target Schema"."New""Table" ("a" VARCHAR2(12 BYTE) NOT NULL, "b" NUMBER(8,-2) NOT NULL, "Mixed""Case" VARCHAR2(7 CHAR));'], warnings: [] });
@@ -35,7 +47,9 @@ describe("OceanBase Oracle structure clone", () => {
     expect(api.buildCreateTableSql).toHaveBeenCalledWith(expect.objectContaining({ databaseType: "oceanbase-oracle", schema: options.targetSchema, tableName: options.targetName, indexes: [], foreignKeys: [], triggers: [] }));
     const drafts = api.buildCreateTableSql.mock.calls[0]![0].columns;
     expect(drafts.map((column: any) => [column.dataType, column.isNullable, column.defaultValue, column.isPrimaryKey])).toEqual([
-      ["VARCHAR2(12 BYTE)", false, "'a''b'", false], ["NUMBER(8,-2)", false, "-100", false], ["VARCHAR2(7 CHAR)", true, "", false],
+      ["VARCHAR2(12 BYTE)", false, "'a''b'", false],
+      ["NUMBER(8,-2)", false, "-100", false],
+      ["VARCHAR2(7 CHAR)", true, "", false],
     ]);
     expect(plan.sql).toContain('ADD PRIMARY KEY ("b", "a")');
     expect(plan.sql).toContain('("Mixed""Case" DESC, "b" ASC)');
@@ -60,7 +74,11 @@ describe("OceanBase Oracle structure clone", () => {
       if (failure === "permission denied") throw new Error("ORA-01031: insufficient privileges");
       if (failure === "missing table" && sql.includes("ALL_TAB_COMMENTS")) return result();
       if (failure === "target conflict" && sql.includes("ROWNUM <= 1")) return result([[options.targetName]]);
-      if (failure === "missing index direction" && sql.includes("ALL_IND_COLUMNS")) return result([["IX_SOURCE", 'Mixed"Case', 1, null], ["IX_SOURCE", "b", 2, "ASC"]]);
+      if (failure === "missing index direction" && sql.includes("ALL_IND_COLUMNS"))
+        return result([
+          ["IX_SOURCE", 'Mixed"Case', 1, null],
+          ["IX_SOURCE", "b", 2, "ASC"],
+        ]);
       if (failure === "truncated dictionary") return { ...result(), has_more: true };
       return original(...args);
     });
@@ -75,12 +93,13 @@ describe("OceanBase Oracle structure clone", () => {
 
   it("requires confirmation of the exact target and exclusions before dispatch", async () => {
     const plan = await buildDuplicateTableStructurePlan(options);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const confirm = vi.fn().mockReturnValue(false);
+    vi.stubGlobal("confirm", confirm);
     const t = vi.fn((_key: string, values?: Record<string, string>) => JSON.stringify(values));
     expect(confirmOceanbaseTableClone(plan, t)).toBe(false);
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Target Schema'));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Target Schema"));
     expect(t).toHaveBeenCalledWith("contextMenu.oceanbaseClonePreview", expect.objectContaining({ excluded: expect.stringContaining("TRG_SOURCE") }));
-    confirm.mockRestore();
+    vi.unstubAllGlobals();
   });
 
   it("stops after a partial DDL failure and reports committed objects plus manual recovery", async () => {
@@ -97,10 +116,17 @@ describe("OceanBase Oracle structure clone", () => {
 
   it("does not recommend deleting an existing target when CREATE fails or is unconfirmed", async () => {
     const plan = await buildDuplicateTableStructurePlan(options);
-    const execute = vi.fn().mockResolvedValue({ ...result(), execution_error: true, error: { message: "ORA-00955: name is already used" } });
+    const execute = vi.fn().mockResolvedValue({ ...result(), execution_error: true, error: { detail: "ORA-00955: name is already used" } });
     const error = await executeOceanbaseTableClone(plan.oceanbaseClone!, execute).catch((error) => error);
+    expect(error.message).toContain("ORA-00955: name is already used");
     expect(error.message).toContain("None confirmed");
     expect(error.message).not.toContain("DROP TABLE");
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves backend metadata error details before generating DDL", async () => {
+    api.executeQuery.mockResolvedValue({ ...result(), execution_error: true, error: { detail: "ORA-01031: metadata permission" } });
+    await expect(buildDuplicateTableStructurePlan(options)).rejects.toThrow("ORA-01031: metadata permission");
+    expect(api.buildCreateTableSql).not.toHaveBeenCalled();
   });
 });
