@@ -1693,7 +1693,17 @@ async function saveConfigTask() {
     </DialogContent>
   </Dialog>
 
-  <DangerConfirmDialog v-model:open="showSqlPreviewConfirm" :sql="confirmationSql" :title="confirmationTitle" :message="confirmationDangerMessage" :details-text="confirmationDetails" :confirm-label="t('transfer.start')" :confirm-disabled="confirmationPreview?.schemaObjects?.canExecute === false || confirmationPreview?.schemaObjects?.items.some((item) => item.action === 'blocked')" :close-on-confirm="false" @confirm="resolveStartDecision(true)" />
+  <DangerConfirmDialog
+    v-model:open="showSqlPreviewConfirm"
+    :sql="confirmationSql"
+    :title="confirmationTitle"
+    :message="confirmationDangerMessage"
+    :details-text="confirmationDetails"
+    :confirm-label="t('transfer.start')"
+    :confirm-disabled="confirmationPreview?.schemaObjects?.canExecute === false || confirmationPreview?.schemaObjects?.items.some((item) => item.action === 'blocked')"
+    :close-on-confirm="false"
+    @confirm="resolveStartDecision(true)"
+  />
 
   <Dialog v-model:open="ownershipDialogOpen">
     <DialogContent class="sm:max-w-[520px]" @interact-outside.prevent>

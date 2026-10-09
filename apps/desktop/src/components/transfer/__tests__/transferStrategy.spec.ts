@@ -96,7 +96,8 @@ describe("transfer submission", () => {
     const execute = vi.fn();
     const confirm = vi.fn().mockResolvedValue(true);
     const plan: TransferOwnershipPreview = {
-      missingOwners: [], targetOwner: "TARGET",
+      missingOwners: [],
+      targetOwner: "TARGET",
       schemaObjects: { canExecute: true, items: [{ objectType: "PACKAGE", name: "Keep Case", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "replace", ddl: 'CREATE OR REPLACE PACKAGE "TARGET"."Keep Case" AS PROCEDURE p; END;', dependencies: [], warnings: [], errors: [] }] },
     };
     const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm, execute });
@@ -119,7 +120,14 @@ describe("transfer submission", () => {
   it("shows blocked package dependencies but cannot execute even if confirmation returns true", async () => {
     const execute = vi.fn();
     const confirm = vi.fn().mockResolvedValue(true);
-    const plan: TransferOwnershipPreview = { missingOwners: [], targetOwner: "TARGET", schemaObjects: { canExecute: false, items: [{ objectType: "PACKAGE_BODY", name: "P", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "blocked", ddl: "", dependencies: [{ owner: "TARGET", name: "P", objectType: "PACKAGE", available: false }], warnings: [], errors: ["Package specification missing"] }] } };
+    const plan: TransferOwnershipPreview = {
+      missingOwners: [],
+      targetOwner: "TARGET",
+      schemaObjects: {
+        canExecute: false,
+        items: [{ objectType: "PACKAGE_BODY", name: "P", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "blocked", ddl: "", dependencies: [{ owner: "TARGET", name: "P", objectType: "PACKAGE", available: false }], warnings: [], errors: ["Package specification missing"] }],
+      },
+    };
     const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm, execute });
     await expect(submission.start(request({ tables: [], objects: [{ objectType: "PACKAGE_BODY", names: ["P"] }], dropTargetBeforeCreate: false }))).resolves.toBe(false);
     expect(confirm).toHaveBeenCalledWith(expect.anything(), plan);
