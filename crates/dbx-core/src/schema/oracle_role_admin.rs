@@ -1,5 +1,6 @@
 use super::oracle_security_write::{
-    fingerprint, identifier, known_version, literal, password, safe_error, text, SecuritySession,
+    effective_system_privilege, fingerprint, identifier, known_version, literal, password, safe_error, text,
+    SecuritySession,
 };
 use super::{agent_metadata_timeout, connection_config, lock_metadata_mutex_with_timeout};
 use crate::connection::{AppState, PoolKind, METADATA_POOL_ACQUIRE_TIMEOUT};
@@ -77,11 +78,6 @@ async fn snapshot(session: &mut SecuritySession<'_>, change: &RoleChange) -> Res
         .map(|row| text(row, "ACTOR"))
         .filter(|value| !value.is_empty())
         .ok_or("Current user is unavailable")?;
-    let grant_any = session
-        .query("SELECT PRIVILEGE FROM SESSION_PRIVS WHERE PRIVILEGE = 'GRANT ANY OBJECT PRIVILEGE'")
-        .await?
-        .len()
-        == 1;
     let system = session.query(&format!("SELECT GRANTEE, PRIVILEGE, ADMIN_OPTION FROM DBA_SYS_PRIVS WHERE GRANTEE IN ({scope}) ORDER BY GRANTEE, PRIVILEGE")).await?;
     let mut object = Value::Null;
     let mut columns = Vec::new();
@@ -117,6 +113,17 @@ async fn snapshot(session: &mut SecuritySession<'_>, change: &RoleChange) -> Res
         session.query(&format!("SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, ROLE FROM DBA_CODE_ROLE_PRIVS WHERE ROLE = {} ORDER BY OWNER, OBJECT_NAME, OBJECT_TYPE",literal(&change.principal))).await?
     } else {
         Vec::new()
+    };
+    let grant_any = if change.action == "revoke"
+        && change.kind.as_deref() == Some("object")
+        && change.grantor.as_deref().is_some_and(|grantor| grantor != actor)
+        && change.grantor == change.owner
+    {
+        let mut role_scope: BTreeSet<String> = roles.iter().map(|row| text(row, "ROLE")).collect();
+        role_scope.extend([actor.clone(), "PUBLIC".into()]);
+        effective_system_privilege(session, &actor, "GRANT ANY OBJECT PRIVILEGE", &role_scope).await
+    } else {
+        json!({"state":"notRequired","reason":"This operation does not delegate an object-owner grant revocation"})
     };
     Ok(
         json!({"actor":actor,"grantAnyObject":grant_any,"principalExists":principal_exists,"principalUsers":users,"roles":roles,"roleGrants":graph,"systemGrants":system,"objectGrants":objects,"columnGrants":column_grants,"object":object,"columns":columns,"scope":names,"dependencies":dependencies,"programRoles":program_roles}),
@@ -266,10 +273,15 @@ fn plan(change: &RoleChange, before: &Value, secret: Option<&str>) -> Result<Rol
                     .grantor
                     .as_deref()
                     .ok_or("Select the exact direct grantor before revoking an object privilege")?;
-                if grantor != text(before, "actor")
-                    && !(before["grantAnyObject"] == true && Some(grantor) == change.owner.as_deref())
-                {
-                    return Err("The current session cannot target that grantor; use the grantor or authorized object-owner context".into());
+                if grantor != text(before, "actor") {
+                    if Some(grantor) != change.owner.as_deref() {
+                        return Err("The REVOKE cannot target the selected grantor; delegated revocation only targets the object-owner grant".into());
+                    }
+                    match before["grantAnyObject"]["state"].as_str() {
+                        Some("present") => {}
+                        Some("absent") => return Err("The current session does not have GRANT ANY OBJECT PRIVILEGE to revoke the object-owner grant".into()),
+                        _ => return Err("Cannot confirm the current session's GRANT ANY OBJECT PRIVILEGE; inspect the permission evidence and prepare a fresh preview".into()),
+                    }
                 }
             }
             let column = if let Some(column) = &change.column {
@@ -367,11 +379,19 @@ pub async fn oracle_role_admin_core(
         .and_then(|info| info.product_version)
         .unwrap_or_default();
     let mut session = SecuritySession { client: &mut client, database, timeout, oceanbase };
-    let before = snapshot(&mut session, &request.change).await?;
+    execute_role_request(&mut session, request, &version).await
+}
+
+async fn execute_role_request(
+    session: &mut SecuritySession<'_>,
+    request: OracleRoleRequest,
+    version: &str,
+) -> Result<Value, String> {
+    let before = snapshot(session, &request.change).await?;
     if request.operation == "read" {
         return Ok(json!({"snapshot":before,"sources":sources(&request.change,&before)?}));
     }
-    if !known_version(&version, oceanbase) {
+    if !known_version(version, session.oceanbase) {
         return Err("This version is not enabled for role mutations".into());
     }
     let needs_password = matches!(request.change.action.as_str(), "createRole" | "alterRole")
@@ -396,7 +416,7 @@ pub async fn oracle_role_admin_core(
         return Err("Grant state changed; prepare a fresh preview".into());
     }
     let execution = session.query(&step.sql).await;
-    let after = snapshot(&mut session, &request.change).await;
+    let after = snapshot(session, &request.change).await;
     let outcome = match &after {
         Err(_) => "unverified",
         Ok(_) if execution.is_err() => "failed",
@@ -413,6 +433,9 @@ pub async fn oracle_role_admin_core(
         json!({"outcome":outcome,"sentSteps":[request.change.action],"completedSteps":if execution.is_ok() {vec![request.change.action.clone()]} else {Vec::new()},"before":before,"after":after.as_ref().ok(),"remainingSources":after.as_ref().ok().and_then(|value|sources(&request.change,value).ok()),"error":execution.err(),"readbackError":after.as_ref().err(),"authenticationVerified":false,"recoveryHint":"Refresh before further changes. Sent DDL is not rolled back. Recreating a deleted role does not automatically restore its memberships or grants."}),
     )
 }
+
+#[cfg(test)]
+mod agent_tests;
 
 #[cfg(test)]
 mod tests {

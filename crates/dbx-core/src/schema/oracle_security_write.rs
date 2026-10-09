@@ -3,6 +3,7 @@
 use crate::db::{agent_driver::AgentDriverClient, QueryResult};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 pub(super) fn literal(value: &str) -> String {
@@ -74,6 +75,65 @@ impl SecuritySession<'_> {
                 )
             })
             .collect())
+    }
+}
+
+/// Evidence for the executing session, not a claim based on DEFAULT_ROLE or role grants alone.
+pub(super) async fn effective_system_privilege(
+    session: &mut SecuritySession<'_>,
+    actor: &str,
+    privilege: &str,
+    role_scope: &BTreeSet<String>,
+) -> Value {
+    if !session.oceanbase {
+        let sql = format!("SELECT PRIVILEGE FROM SYS.SESSION_PRIVS WHERE PRIVILEGE = {}", literal(privilege));
+        return match session.query(&sql).await {
+            Ok(rows) if rows.is_empty() => json!({"state":"absent","source":"SYS.SESSION_PRIVS"}),
+            Ok(rows) if rows.iter().all(|row| text(row, "PRIVILEGE") == privilege) => {
+                json!({"state":"present","source":"SYS.SESSION_PRIVS"})
+            }
+            Ok(_) => {
+                json!({"state":"unknown","source":"SYS.SESSION_PRIVS","reason":"Unexpected session privilege response"})
+            }
+            Err(reason) => json!({"state":"unknown","source":"SYS.SESSION_PRIVS","reason":reason}),
+        };
+    }
+
+    // USER_SYS_PRIVS confirms direct grants independently of role visibility.
+    // OB 4.2.5 role dictionaries cannot establish the executing session's enabled roles.
+    let direct_sql = format!(
+        "SELECT USERNAME, PRIVILEGE FROM SYS.USER_SYS_PRIVS WHERE USERNAME = {} AND PRIVILEGE = {}",
+        literal(actor),
+        literal(privilege)
+    );
+    let direct_unknown = match session.query(&direct_sql).await {
+        Ok(rows) if rows.is_empty() => None,
+        Ok(rows) if rows.iter().all(|row| text(row, "USERNAME") == actor && text(row, "PRIVILEGE") == privilege) => {
+            return json!({"state":"present","source":"SYS.USER_SYS_PRIVS/direct","grantee":actor});
+        }
+        Ok(_) => Some("Unexpected direct privilege response".to_string()),
+        Err(reason) => Some(reason),
+    };
+    if role_scope.iter().any(String::is_empty) || !role_scope.contains(actor) || !role_scope.contains("PUBLIC") {
+        return json!({"state":"unknown","source":"SYS.DBA_SYS_PRIVS","reason":"Complete privilege grantee scope is unavailable"});
+    }
+    let scope = role_scope.iter().map(|name| literal(name)).collect::<Vec<_>>().join(", ");
+    let sql = format!("SELECT GRANTEE, PRIVILEGE FROM SYS.DBA_SYS_PRIVS WHERE GRANTEE IN ({scope}) AND PRIVILEGE = {} ORDER BY GRANTEE", literal(privilege));
+    let rows = match session.query(&sql).await {
+        Ok(rows) => rows,
+        Err(reason) => return json!({"state":"unknown","source":"SYS.DBA_SYS_PRIVS","reason":reason}),
+    };
+    if rows.iter().any(|row| text(row, "PRIVILEGE") != privilege || !role_scope.contains(&text(row, "GRANTEE"))) {
+        return json!({"state":"unknown","source":"SYS.DBA_SYS_PRIVS","reason":"Unexpected privilege grantee or value"});
+    }
+    if rows.iter().any(|row| text(row, "GRANTEE") == actor) {
+        return json!({"state":"present","source":"SYS.DBA_SYS_PRIVS/direct","grantee":actor});
+    }
+    let roles: BTreeSet<String> = rows.iter().map(|row| text(row, "GRANTEE")).collect();
+    if roles.is_empty() && direct_unknown.is_none() {
+        json!({"state":"absent","source":"SYS.USER_SYS_PRIVS/SYS.DBA_SYS_PRIVS"})
+    } else {
+        json!({"state":"unknown","source":"SYS.USER_SYS_PRIVS/SYS.DBA_SYS_PRIVS","roleCandidates":roles,"directUnknown":direct_unknown,"reason":"Cannot confirm effective session privilege from role grant metadata"})
     }
 }
 
