@@ -1,8 +1,9 @@
 import { onScopeDispose, ref, shallowRef, watch, type Ref } from "vue";
-import { createRuntimeDiagnostics, diagnosticErrorStatus, type DiagnosticContext, type DiagnosticStatus, type OracleDiagnosticTarget, type RuntimeDiagnosticRecord } from "@/lib/database/runtimeDiagnostics";
+import type { AuditWindow } from "@/lib/database/oceanbaseRuntimeDiagnostics";
+import { createRuntimeDiagnostics, diagnosticErrorStatus, type DiagnosticContext, type DiagnosticStatus, type DiagnosticTarget, type RuntimeDiagnosticRecord } from "@/lib/database/runtimeDiagnostics";
 
 export function useRuntimeDiagnostics(context: Readonly<Ref<DiagnosticContext | null>>, service = createRuntimeDiagnostics()) {
-  const targets = shallowRef<OracleDiagnosticTarget[]>([]);
+  const targets = shallowRef<DiagnosticTarget[]>([]);
   const records = shallowRef<RuntimeDiagnosticRecord[]>([]);
   const pending = ref(false);
   const error = ref<DiagnosticStatus | "save_failed" | null>(null);
@@ -50,16 +51,16 @@ export function useRuntimeDiagnostics(context: Readonly<Ref<DiagnosticContext | 
       }
     }
   }
-  async function find(sqlId: string) {
+  async function find(sqlId: string, window?: AuditWindow) {
     await run(async (snapshot, signal, current) => {
-      const found = await service.findTargets(snapshot, sqlId.trim(), signal);
+      const found = await service.findTargets(snapshot, sqlId.trim(), signal, window);
       if (current()) {
         targets.value = found;
         if (!found.length) error.value = "target_not_found";
       }
     });
   }
-  async function collect(target: OracleDiagnosticTarget) {
+  async function collect(target: DiagnosticTarget) {
     await run(async (snapshot, signal, current) => {
       const record = await service.collect(snapshot, target, signal);
       if (!current()) return;
