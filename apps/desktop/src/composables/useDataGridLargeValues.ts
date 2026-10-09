@@ -80,6 +80,7 @@ export interface UseDataGridLargeValuesOptions {
 }
 
 type ResolvedLargeValueCells = Map<number, Map<number, CellValue>>;
+const materializedSnapshotBytes = new WeakMap<QueryResult, Map<string, number>>();
 type LargeValueCellRequest = {
   item: LargeValueRowItem;
   sourceIndex: number;
@@ -513,6 +514,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     const isCurrent = () => options.result.value === sourceResult && options.connectionId.value === connectionId
       && options.executionDatabase.value === executionDatabase && options.resultLifecycle.isCurrent(operation);
     const resolved: ResolvedLargeValueCells = new Map();
+    let snapshotBytes = 0;
     const requestedColumns = new Set(columnIndexes);
     const requestsByColumn = new Map<number, LargeValueCellRequest[]>();
     for (const rowId of new Set(rowIds)) {
@@ -531,6 +533,8 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
           snapshotExecutionIds.add(executionId);
           try {
             const value = await materializeLargeValueSnapshot({ ...context, valueRef: metadata.value_ref, executionId }, isCurrent);
+            snapshotBytes += new TextEncoder().encode(value).length;
+            if (snapshotBytes > 64 * 1024 * 1024) throw new Error("LOB selection exceeds the 64 MiB view/copy limit; use CSV/JSON export or download individual complete values");
             const rowValues = resolved.get(item.id) ?? new Map<number, CellValue>();
             rowValues.set(columnIndex, value);
             resolved.set(item.id, rowValues);
@@ -598,6 +602,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     if (!isLargeValuePreview(item, columnIndex) || item?.sourceIndex === undefined) return true;
     const sourceResult = options.result.value;
     const hydrationKey = largeValueCellKey(item.sourceIndex, columnIndex);
+    const ownsSnapshot = !!largeValueCellsByKey.value.get(hydrationKey)?.value_ref;
     const operation = options.resultLifecycle.beginOperation();
     return pendingLargeValueHydrations.run(hydrationKey, sourceResult, async () => {
       try {
@@ -605,6 +610,14 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
         if (!options.resultLifecycle.isCurrent(operation) || options.result.value !== sourceResult) return false;
         const value = resolved.get(rowId)?.get(columnIndex);
         if (value === undefined && !resolved.get(rowId)?.has(columnIndex)) return false;
+        if (ownsSnapshot && typeof value === "string") {
+          const sizes = materializedSnapshotBytes.get(sourceResult) ?? new Map<string, number>();
+          const bytes = new TextEncoder().encode(value).length;
+          const total = [...sizes.values()].reduce((sum, size) => sum + size, 0) - (sizes.get(hydrationKey) ?? 0) + bytes;
+          if (total > 64 * 1024 * 1024) throw new Error("LOB result exceeds the 64 MiB view/edit limit; use CSV/JSON export or download individual complete values");
+          sizes.set(hydrationKey, bytes);
+          materializedSnapshotBytes.set(sourceResult, sizes);
+        }
         const row = [...(sourceResult.rows[item.sourceIndex!] ?? [])];
         row[columnIndex] = value ?? null;
         const rows = sourceResult.rows.slice();

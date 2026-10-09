@@ -916,6 +916,7 @@ async fn serve() -> Result<(), String> {
         .route("/query/large-value/chunk", post(routes::query::read_large_value_chunk))
         .route("/query/large-value/release", post(routes::query::release_large_value))
         .route("/query/large-value/download", post(routes::query::prepare_large_value_download))
+        .route("/query/large-value/export", post(routes::query::prepare_snapshot_export))
         .route("/query/large-value/download/{id}", get(routes::query::download_large_value))
         .route("/query/close-client-session", post(routes::query::close_client_connection_session))
         .route("/export/query-result-json", post(routes::text_export::export_query_result_json))

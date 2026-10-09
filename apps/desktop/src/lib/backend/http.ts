@@ -1625,6 +1625,25 @@ export async function downloadLargeValue(request: LargeValueRequest, filePath: s
   anchor.click();
 }
 
+export interface SnapshotExportRequest {
+  context: LargeValueRequest;
+  format: "csv" | "json";
+  columns: string[];
+  rows: unknown[][];
+  cells: Array<{ rowIndex: number; columnIndex: number; valueRef: string }>;
+  quoteMode?: "all" | "necessary";
+  nullLiteral?: string | null;
+}
+
+export async function exportSnapshotResult(request: SnapshotExportRequest, filePath: string): Promise<void> {
+  const fileName = filePath.split(/[\\/]/).pop() || `result.${request.format}`;
+  const prepared = await post<{ downloadId: string }>("/api/query/large-value/export", { request, fileName });
+  const anchor = document.createElement("a");
+  anchor.href = apiUrl(`/api/query/large-value/download/${encodeURIComponent(prepared.downloadId)}`);
+  anchor.download = fileName;
+  anchor.click();
+}
+
 export async function closeQuerySession(connectionId: string, database: string, sessionId: string, clientSessionId?: string, catalog?: string): Promise<boolean> {
   return post("/api/query/close-session", {
     connectionId,

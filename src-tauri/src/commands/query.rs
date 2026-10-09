@@ -376,6 +376,20 @@ pub async fn close_client_connection_session(
     state.close_client_session_pool(&connection_id, database, &client_session_id).await
 }
 
+#[tauri::command]
+pub async fn export_snapshot_result(
+    state: State<'_, Arc<AppState>>,
+    request: dbx_core::query::snapshot_export::SnapshotExportRequest,
+    file_path: String,
+) -> Result<(), String> {
+    let path = std::path::Path::new(&file_path);
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    dbx_core::query::snapshot_export::write_snapshot_export(&state, request, temporary.as_file_mut()).await?;
+    temporary.persist(path).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn query_session_database<'a>(database: &'a str, catalog: Option<&str>) -> Option<&'a str> {
     if database.trim().is_empty() || catalog.is_some() {
         None

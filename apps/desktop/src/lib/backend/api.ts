@@ -284,6 +284,7 @@ export const closeQuerySession = forward("closeQuerySession");
 export const readLargeValueChunk = forward("readLargeValueChunk");
 export const releaseLargeValue = forward("releaseLargeValue");
 export const downloadLargeValue = forward("downloadLargeValue");
+export const exportSnapshotResult = forward("exportSnapshotResult");
 export const closeClientConnectionSession = forward("closeClientConnectionSession");
 export const analyzeSqlReferences = forward("analyzeSqlReferences");
 export const findStatementAtCursor = forward("findStatementAtCursor");

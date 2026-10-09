@@ -8663,6 +8663,7 @@ const {
   queryResultExportRequest: props.queryResultExportRequest,
   hasCompleteLocalResult,
   completeLocalResult: computed(() => (hasCompleteLocalResult.value ? props.result : undefined)),
+  snapshotResult: computed(() => props.result),
   allExportResults: computed(() => props.allExportResults),
   currentResultLabel: computed(() => props.result.sourceLabel),
   exportFileBaseName: computed(() => props.exportFileBaseName),
