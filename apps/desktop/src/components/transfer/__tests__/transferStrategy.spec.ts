@@ -91,6 +91,16 @@ describe("transfer strategies", () => {
 });
 
 describe("transfer submission", () => {
+  it("reviews type prerequisites before referencing table DDL and deferred bodies after programs", () => {
+    const common = { sourceSchema: "SOURCE", targetSchema: "TARGET", action: "create" as const, dependencies: [], warnings: [], errors: [] };
+    const plan: TransferOwnershipPreview = { missingOwners: [], targetOwner: "TARGET", structure: { sql: 'CREATE TABLE "TARGET"."PAYLOAD" (value "TARGET"."T");', tables: [], operations: [] }, schemaObjects: { canExecute: true, items: [
+      { ...common, objectType: "DB_LINK", name: "L", ddl: "-- Create DBLink L using supplied credentials" },
+      { ...common, objectType: "TYPE", name: "T", executionPhase: "beforeTables", ddl: 'CREATE TYPE "TARGET"."T" AS OBJECT (n NUMBER);' },
+      { ...common, objectType: "PACKAGE", name: "P", ddl: 'CREATE PACKAGE "TARGET"."P" AS PROCEDURE p; END;' },
+      { ...common, objectType: "TYPE_BODY", name: "T", executionPhase: "afterObjects", ddl: 'CREATE TYPE BODY "TARGET"."T" AS MEMBER PROCEDURE p IS BEGIN "TARGET"."P".p; END; END;' },
+    ] } };
+    expect(transferPreviewSql(plan)).toBe([plan.schemaObjects!.items[0]!.ddl, plan.schemaObjects!.items[1]!.ddl, plan.structure!.sql, plan.schemaObjects!.items[2]!.ddl, plan.schemaObjects!.items[3]!.ddl].join("\n\n"));
+  });
   it("cannot dispatch a DBLink with missing credentials even if a confirmation accepts it", async () => {
     const execute = vi.fn();
     const plan: TransferOwnershipPreview = { missingOwners: [], targetOwner: "TARGET", schemaObjects: { canExecute: true, items: [{ objectType: "DB_LINK", name: "L", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "create", ddl: "-- Create DBLink L using credentials supplied for this run", credentialRequired: true, dependencies: [], warnings: [], errors: [] }] } };

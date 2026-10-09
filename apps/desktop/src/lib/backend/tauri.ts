@@ -5714,6 +5714,7 @@ export interface TransferSchemaObjectPlan {
   warnings: string[];
   errors: string[];
   credentialRequired?: boolean;
+  executionPhase?: "beforeTables" | "afterObjects";
 }
 
 export interface TransferSchemaObjectPreview {

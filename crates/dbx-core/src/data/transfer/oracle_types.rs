@@ -7,6 +7,164 @@ use std::io::Write;
 fn is_type(kind: TransferObjectKind) -> bool { matches!(kind, TransferObjectKind::Type | TransferObjectKind::TypeBody) }
 fn dictionary_kind(kind: TransferObjectKind) -> &'static str { if kind == TransferObjectKind::TypeBody { "TYPE BODY" } else { "TYPE" } }
 fn api_kind(kind: TransferObjectKind) -> &'static str { if kind == TransferObjectKind::TypeBody { "TYPE_BODY" } else { "TYPE" } }
+fn dependency_kind_for(kind: &str) -> Option<TransferObjectKind> {
+    match kind.replace(' ', "_").as_str() { "TYPE" => Some(TransferObjectKind::Type), "TYPE_BODY" => Some(TransferObjectKind::TypeBody), _ => None }
+}
+
+// Positions are retained so dependency-qualified identifiers can be mapped without
+// changing strings, q/nq literals, comments or unrelated schema references.
+fn source_tokens(sql: &str) -> Vec<(usize, usize, String)> {
+    let chars: Vec<_> = sql.char_indices().collect();
+    let mut result = Vec::new(); let mut i = 0;
+    while i < chars.len() {
+        let start = i; let ch = chars[i].1;
+        let at = |n: usize| chars.get(n).map(|(_, c)| *c);
+        if ch.is_whitespace() { i += 1; continue; }
+        if ch == '-' && at(i + 1) == Some('-') { while i < chars.len() && at(i) != Some('\n') { i += 1; } continue; }
+        if ch == '/' && at(i + 1) == Some('*') { i += 2; while i + 1 < chars.len() && !(at(i) == Some('*') && at(i + 1) == Some('/')) { i += 1; } i = (i + 2).min(chars.len()); continue; }
+        let q = if matches!(ch, 'n' | 'N') && matches!(at(i + 1), Some('q' | 'Q')) { i + 1 } else { i };
+        if matches!(at(q), Some('q' | 'Q')) && at(q + 1) == Some('\'') && at(q + 2).is_some() {
+            let closer = match at(q + 2).unwrap() { '[' => ']', '{' => '}', '(' => ')', '<' => '>', c => c };
+            i = q + 3; while i + 1 < chars.len() && !(at(i) == Some(closer) && at(i + 1) == Some('\'')) { i += 1; } i = (i + 2).min(chars.len());
+        } else if ch == '\'' || ch == '"' {
+            i += 1;
+            while i < chars.len() { if at(i) == Some(ch) { i += 1; if at(i) == Some(ch) { i += 1; } else { break; } } else { i += 1; } }
+        } else if ch.is_alphanumeric() || ch == '_' {
+            i += 1; while i < chars.len() && (chars[i].1.is_alphanumeric() || "_$#".contains(chars[i].1)) { i += 1; }
+        } else { i += 1; }
+        let from = chars[start].0; let to = chars.get(i).map_or(sql.len(), |c| c.0);
+        let raw = &sql[from..to];
+        let word = if raw.starts_with('"') { raw.to_string() } else if ch == '\'' || q != start || (matches!(ch, 'q' | 'Q') && at(start + 1) == Some('\'')) { "<literal>".into() } else { raw.to_ascii_uppercase() };
+        result.push((from, to, word));
+    }
+    result
+}
+pub(super) fn map_reference(sql: &str, owner: &str, name: &str, target: &str) -> Result<String, String> {
+    map_reference_as(sql, owner, name, target, name)
+}
+fn map_reference_as(sql: &str, owner: &str, name: &str, target: &str, target_name: &str) -> Result<String, String> {
+    let tokens = source_tokens(sql);
+    if !tokens.windows(3).any(|p| oracle_packages::identifier_word(&p[0].2) == owner && p[1].2 == "." && oracle_packages::identifier_word(&p[2].2) == name) { return Ok(sql.to_string()); }
+    // A parameter, attribute, variable or SQL alias can shadow a schema identifier.
+    // Do not infer that its field access is a schema-qualified dependency.
+    if tokens.iter().enumerate().any(|(i, t)| {
+        oracle_packages::identifier_word(&t.2) == owner
+            && tokens.get(i + 1).is_some_and(|next| next.2 != "." && next.2 != ":" && next.2 != "(" && next.2 != ")" && next.2 != "," && next.2 != ";")
+            && i.checked_sub(1).is_some_and(|p| matches!(tokens[p].2.as_str(), "(" | "," | ";" | "IS" | "AS" | "DECLARE") || (p > 0 && matches!(tokens[p - 1].2.as_str(), "FROM" | "JOIN")))
+    }) { return Err(format!("Ambiguous schema reference: local binding shadows {owner}; automatic owner mapping is blocked")); }
+    let mut mapped = sql.to_string();
+    for part in tokens.windows(3).rev() {
+        if oracle_packages::identifier_word(&part[0].2) == owner && part[1].2 == "." && oracle_packages::identifier_word(&part[2].2) == name {
+            if target_name != name { mapped.replace_range(part[2].0..part[2].1, &format!("\"{}\"", target_name.replace('"', "\"\""))); }
+            mapped.replace_range(part[0].0..part[0].1, &format!("\"{}\"", target.replace('"', "\"\"")));
+        }
+    }
+    Ok(mapped)
+}
+fn map_unqualified_table(sql: &str, name: &str, target: &str, target_name: &str) -> Result<String, String> {
+    if name == target_name { return Ok(sql.to_string()); }
+    let tokens = source_tokens(sql);
+    if tokens.iter().any(|t| t.2 == "WITH") { return Err("Renamed table references with WITH scopes require an explicit mapping; transfer blocked".into()); }
+    let mut mapped = sql.to_string();
+    for (index, token) in tokens.iter().enumerate().rev() {
+        if oracle_packages::identifier_word(&token.2) == name && index > 0
+            && matches!(tokens[index - 1].2.as_str(), "FROM" | "JOIN" | "INTO" | "UPDATE")
+            && tokens.get(index + 1).is_none_or(|t| t.2 != ".") {
+            mapped.replace_range(token.0..token.1, &format!("\"{}\".\"{}\"", target.replace('"', "\"\""), target_name.replace('"', "\"\"")));
+        }
+    }
+    Ok(mapped)
+}
+pub(super) async fn map_table_type_references(state: &AppState, request: &TransferRequest, pool: &str, table: &str, ddl: String) -> Result<String, String> {
+    if !has_selection(request) { return Ok(ddl); }
+    let owner = resolve_oracle_schema(&request.source_schema, &request.source_database);
+    let target = resolve_oracle_schema(&request.target_schema, &request.target_database);
+    let rows = metadata(state, pool, &format!("SELECT DATA_TYPE_OWNER, DATA_TYPE FROM ALL_TAB_COLUMNS WHERE OWNER={} AND TABLE_NAME={} AND DATA_TYPE_OWNER IS NOT NULL", quote_string_literal(&owner), quote_string_literal(table))).await?.rows;
+    let mut mapped = ddl;
+    for row in rows {
+        let type_owner = text(&row, 0)?; let name = text(&row, 1)?;
+        if type_owner == owner && selected(request).contains(&(TransferObjectKind::Type, name.clone())) {
+            mapped = map_reference(&mapped, &owner, &name, &target)?;
+        }
+    }
+    Ok(mapped)
+}
+
+fn compatible_source(sql: &str, kind: TransferObjectKind, details: &OracleTypeDetails) -> Result<(), String> {
+    let (_, _, tail) = oracle_packages::declaration(sql, kind)?;
+    let words = oracle_packages::sql_words(sql);
+    // These clauses carry identity, edition, inheritance or execution semantics that
+    // the fixed 19c/21c ↔ 4.2.5 conversion profile does not translate.
+    for keyword in ["OID", "UNDER", "FINAL", "INSTANTIABLE", "OVERRIDING", "MAP", "AUTHID", "EDITIONABLE", "NONEDITIONABLE", "SHARING", "ACCESSIBLE", "OPAQUE", "EXTERNAL", "LIBRARY", "LANGUAGE", "PRAGMA", "PIPELINED", "PARALLEL_ENABLE", "RESULT_CACHE", "SQL_MACRO", "XMLTYPE", "JSON", "BFILE", "NCLOB", "UROWID", "ROWID", "PERSISTABLE", "COLLATION"] {
+        if words.iter().any(|word| word == keyword) { return Err(format!("TYPE conversion does not support or confirm {keyword} semantics between Oracle 19c/21c and OceanBase 4.2.5")); }
+    }
+    if kind == TransferObjectKind::TypeBody {
+        for keyword in ["BULK", "FORALL", "EXECUTE", "IMMEDIATE", "OPEN", "CURSOR", "RECORD", "REF", "SQLERRM", "SQLCODE", "RAISE_APPLICATION_ERROR", "DETERMINISTIC", "NOCOPY", "SUBTYPE", "GOTO", "CONNECT", "MODEL", "MATCH_RECOGNIZE", "MERGE", "RETURNING", "PIVOT", "UNPIVOT", "SAMPLE", "VERSIONS", "PARTITION", "ROWTYPE", "TYPE", "LONG", "BLOB", "CLOB", "TIMESTAMP", "INTERVAL", "BINARY_FLOAT", "BINARY_DOUBLE", "NCHAR", "NVARCHAR2"] {
+            if words.iter().any(|word| word == keyword) { return Err(format!("TYPE BODY conversion has no confirmed mapping for {keyword}")); }
+        }
+        let tokens = source_tokens(&tail);
+        for (index, _) in tokens.iter().enumerate().filter(|(_, t)| t.2 == "STATIC") {
+            let end = tokens[index + 1..].iter().position(|t| matches!(t.2.as_str(), "MEMBER" | "STATIC")).map_or(tokens.len(), |offset| index + 1 + offset);
+            if tokens[index + 1..end].iter().any(|t| t.2 == "SELF") { return Err("STATIC TYPE methods cannot use implicit SELF".into()); }
+        }
+        if tokens.windows(2).any(|p| p[0].2 == "=" && p[1].2 == ">") { return Err("Named-argument TYPE BODY conversion is not in the confirmed positional-call profile".into()); }
+        let methods: HashSet<_> = tokens.windows(2).filter(|p| matches!(p[0].2.as_str(), "FUNCTION" | "PROCEDURE")).map(|p| oracle_packages::identifier_word(&p[1].2)).collect();
+        for (index, token) in tokens.iter().enumerate() {
+            if tokens.get(index + 1).map(|t| t.2.as_str()) != Some("(") { continue; }
+            let name = oracle_packages::identifier_word(&token.2);
+            if ["NUMBER", "VARCHAR2", "CHAR", "RAW", "ABS", "NVL", "COUNT", "SUM", "MIN", "MAX", "AVG", "IN", "VALUES", "IF", "WHILE"].contains(&name.as_str()) || methods.contains(&name) { continue; }
+            let package = index.checked_sub(2).and_then(|i| if tokens[index - 1].2 == "." { Some(oracle_packages::identifier_word(&tokens[i].2)) } else { None });
+            if details.dependencies.rows.iter().any(|d| d.referenced_name == name || package.as_deref() == Some(d.referenced_name.as_str())) { continue; }
+            return Err(format!("TYPE BODY conversion cannot confirm callable or declaration {name}"));
+        }
+    }
+    if kind == TransferObjectKind::Type {
+        if words.iter().any(|w| w == "ORDER" || w == "REF" || w == "INDEX") { return Err("ORDER methods, REF attributes and associative-array TYPE conversion are outside the confirmed profile".into()); }
+        let tokens = source_tokens(&tail);
+        let text: Vec<_> = tokens.iter().map(|t| t.2.as_str()).collect();
+        let object = text.windows(2).any(|p| p == ["AS", "OBJECT"] || p == ["IS", "OBJECT"]);
+        let collection = text.windows(2).any(|p| p == ["TABLE", "OF"]) || text.contains(&"VARRAY") || text.windows(2).any(|p| p == ["VARYING", "ARRAY"]);
+        if !object && !collection { return Err("TYPE conversion supports complete AS OBJECT, nested TABLE OF or VARRAY definitions; incomplete and other type forms are not migrated".into()); }
+        let primitive = ["NUMBER", "VARCHAR2", "CHAR", "DATE", "RAW"];
+        let user_type = |value: &str| details.dependencies.rows.iter().any(|d| d.referenced_type == "TYPE" && d.referenced_name == oracle_packages::identifier_word(value));
+        let check_datatype = |part: &[&str]| -> Result<(), String> {
+            let name = if part.get(1) == Some(&".") { part.get(2) } else { part.first() }.ok_or("Missing type attribute datatype")?;
+            if primitive.contains(name) || user_type(name) { Ok(()) } else { Err(format!("TYPE conversion has no confirmed attribute/element datatype mapping for {name}")) }
+        };
+        if object {
+            let open = text.iter().position(|t| *t == "(").ok_or("Missing OBJECT attribute list")?;
+            let mut depth = 0; let mut start = open + 1;
+            for index in open + 1..text.len() {
+                match text[index] { "(" => depth += 1, ")" if depth > 0 => depth -= 1, "," | ")" if depth == 0 => {
+                    let part = &text[start..index];
+                    if !part.is_empty() && !matches!(part[0], "MEMBER" | "STATIC" | "CONSTRUCTOR") { check_datatype(&part[1..])?; }
+                    if matches!(part.first(), Some(&"MEMBER") | Some(&"STATIC")) {
+                        if let Some(returned) = part.iter().position(|word| *word == "RETURN") { check_datatype(&part[returned + 1..])?; }
+                        if let Some(open) = part.iter().position(|word| *word == "(") {
+                            let mut depth = 0; let mut from = open + 1;
+                            for i in open + 1..part.len() {
+                                match part[i] { "(" => depth += 1, ")" if depth > 0 => depth -= 1, "," | ")" if depth == 0 => {
+                                    let parameter = &part[from..i];
+                                    if !parameter.is_empty() {
+                                        let mut datatype = 1; while parameter.get(datatype).is_some_and(|w| matches!(*w, "IN" | "OUT")) { datatype += 1; }
+                                        check_datatype(&parameter[datatype..])?;
+                                    }
+                                    from = i + 1; if part[i] == ")" { break; }
+                                }, _ => () }
+                            }
+                        }
+                    }
+                    if part.first() == Some(&"CONSTRUCTOR") { return Err("User-defined CONSTRUCTOR conversion is not in the confirmed profile".into()); }
+                    start = index + 1; if text[index] == ")" { break; }
+                }, _ => () }
+            }
+        } else {
+            let of = text.iter().position(|t| *t == "OF").ok_or("Missing collection element datatype")?;
+            check_datatype(&text[of + 1..])?;
+        }
+    }
+    Ok(())
+}
 fn source_kind(kind: TransferObjectKind) -> db::ObjectSourceKind { if kind == TransferObjectKind::TypeBody { db::ObjectSourceKind::TypeBody } else { db::ObjectSourceKind::Type } }
 fn selected(request: &TransferRequest) -> Vec<(TransferObjectKind, String)> {
     let mut result = Vec::new();
@@ -14,6 +172,32 @@ fn selected(request: &TransferRequest) -> Vec<(TransferObjectKind, String)> {
         if is_type(selection.object_type) { for name in &selection.names { let key = (selection.object_type, name.clone()); if !result.contains(&key) { result.push(key); } } }
     }
     result
+}
+pub(super) fn has_selection(request: &TransferRequest) -> bool {
+    request.content != TransferContent::DataOnly && !selected(request).is_empty()
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Phase { BeforeTables, AfterObjects }
+fn after_objects(item: &TransferSchemaObjectItem, request: &TransferRequest) -> bool {
+    item.object_type == TransferObjectKind::TypeBody && item.dependencies.iter().any(|d| {
+        !d.object_type.starts_with("INCOMING ") && d.owner == item.target_schema
+            && ((d.object_type == "TABLE" && request.tables.iter().any(|table| request.target_table_name(table) == d.name))
+                || request.object_selection_mode().selections().iter().any(|s| {
+                    !is_type(s.object_type) && format!("{:?}", s.object_type).to_ascii_uppercase() == d.object_type.replace(['_', ' '], "") && s.names.contains(&d.name)
+                }))
+    })
+}
+fn late_bodies(plan: &[Planned], request: &TransferRequest) -> HashSet<String> {
+    let mut late: HashSet<_> = plan.iter().filter(|p| after_objects(&p.item, request)).map(|p| p.item.name.clone()).collect();
+    loop {
+        let before = late.len();
+        for entry in plan.iter().filter(|p| p.item.object_type == TransferObjectKind::TypeBody) {
+            if entry.item.dependencies.iter().any(|d| d.owner == entry.item.target_schema && d.object_type.replace(' ', "_") == "TYPE_BODY" && late.contains(&d.name)) {
+                late.insert(entry.item.name.clone());
+            }
+        }
+        if before == late.len() { return late; }
+    }
 }
 fn text(row: &[serde_json::Value], index: usize) -> Result<String, String> {
     row.get(index).and_then(|v| v.as_str()).map(str::to_string).ok_or_else(|| "Type dictionary returned incomplete metadata".into())
@@ -36,7 +220,11 @@ async fn details(state: &AppState, connection: &str, database: &str, owner: &str
 }
 fn readable(state: &OracleMetadataReadState) -> bool { matches!(state, OracleMetadataReadState::Available | OracleMetadataReadState::Empty) }
 fn require_details(value: &OracleTypeDetails) -> Result<(), String> {
-    if value.status.as_deref() != Some("VALID") || !readable(&value.pairing_state) || !readable(&value.dependencies.state) {
+    if value.status.as_deref() != Some("VALID") { return Err("Source TYPE/BODY is not VALID".into()); }
+    require_metadata(value)
+}
+fn require_metadata(value: &OracleTypeDetails) -> Result<(), String> {
+    if !readable(&value.pairing_state) || !readable(&value.dependencies.state) {
         return Err("Type status, pairing or dependencies are invalid, unknown, denied or unsupported".into());
     }
     if let Some(pair) = &value.paired_object {
@@ -44,8 +232,15 @@ fn require_details(value: &OracleTypeDetails) -> Result<(), String> {
     } else if value.identity.object_type == "TYPE_BODY" { return Err("TYPE BODY has no visible paired TYPE".into()); }
     Ok(())
 }
-async fn user_type(state: &AppState, pool: &str, owner: &str, name: &str) -> Result<String, String> {
-    let rows = metadata(state, pool, &format!("SELECT T.TYPECODE FROM ALL_TYPES T JOIN ALL_OBJECTS O ON O.OWNER=T.OWNER AND O.OBJECT_NAME=T.TYPE_NAME AND O.OBJECT_TYPE='TYPE' WHERE T.OWNER={} AND T.TYPE_NAME={} AND T.PREDEFINED='NO' AND O.GENERATED='N' AND O.ORACLE_MAINTAINED='N'", quote_string_literal(owner), quote_string_literal(name))).await?.rows;
+async fn user_type(state: &AppState, pool: &str, connection: &str, database: &str, owner: &str, name: &str) -> Result<String, String> {
+    // E09a owns the user/maintained-schema inventory filter. In OB 4.2.5
+    // ORACLE_MAINTAINED is NULL, so '= N' is not a valid cross-engine filter.
+    let kinds = vec!["TYPE".to_string()];
+    let inventory = crate::schema::list_objects_core(state, connection, database, owner, None, None, None, Some(&kinds), None).await?;
+    if inventory.iter().filter(|o| o.name == name && o.object_type == "TYPE" && o.schema.as_deref() == Some(owner)).count() != 1 {
+        return Err("Selected object is not a visible E09a user TYPE with exact owner/name identity".into());
+    }
+    let rows = metadata(state, pool, &format!("SELECT T.TYPECODE FROM ALL_TYPES T JOIN ALL_OBJECTS O ON O.OWNER=T.OWNER AND O.OBJECT_NAME=T.TYPE_NAME AND O.OBJECT_TYPE='TYPE' WHERE T.OWNER={} AND T.TYPE_NAME={} AND T.PREDEFINED='NO' AND O.GENERATED='N'", quote_string_literal(owner), quote_string_literal(name))).await?.rows;
     if rows.len() != 1 { return Err("Selected object is not a visible, non-generated user type".into()); }
     let code = text(&rows[0], 0)?;
     if !matches!(code.as_str(), "OBJECT" | "COLLECTION") { return Err(format!("Unsupported user type category: {code}")); }
@@ -57,18 +252,27 @@ async fn object_status(state: &AppState, pool: &str, owner: &str, name: &str, ki
     rows.first().map(|row| text(row, 0)).transpose()
 }
 fn supported_version(kind: &DatabaseType, banner: &str) -> Result<String, String> {
-    let pattern = if *kind == DatabaseType::Oracle { r"Oracle Database (19c|21c|23ai|23c)\b" } else { r"(?i)\b(4\.2\.5)(?:\.|\b)" };
+    let pattern = if *kind == DatabaseType::Oracle { r"Oracle Database (19c|21c|23ai|23c)\b" } else { r"\A\s*(4\.2\.5)(?:\.[0-9]+)*(?:\s.*)?\z" };
     Regex::new(pattern).unwrap().captures(banner).and_then(|c| c.get(1)).map(|c| c.as_str().to_ascii_lowercase()).ok_or_else(|| "Target/source type support is unknown for this version".into())
 }
-async fn check_engines(state: &AppState, request: &TransferRequest, source: &str, target: &str) -> Result<(), String> {
+fn conversion_profile(source_type: &DatabaseType, source_banner: &str, target_type: &DatabaseType, target_banner: &str) -> Result<bool, String> {
+    if !matches!(source_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) || !matches!(target_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) { return Err("TYPE migration requires Oracle or OceanBase Oracle endpoints".into()); }
+    let from = supported_version(source_type, source_banner)?;
+    let to = supported_version(target_type, target_banner)?;
+    let conversion = source_type != target_type || from != to;
+    if conversion && [from.as_str(), to.as_str()].iter().any(|v| matches!(*v, "23ai" | "23c")) {
+        return Err("Oracle 23 TYPE conversion lacks fixed-version documentation; only Oracle 19c/21c and OceanBase 4.2.5 conversion profiles are confirmed".into());
+    }
+    Ok(conversion)
+}
+async fn check_engines(state: &AppState, request: &TransferRequest, source: &str, target: &str) -> Result<bool, String> {
     let source_type = get_db_type(state, &request.source_connection_id).await?;
     let target_type = get_db_type(state, &request.target_connection_id).await?;
-    if !matches!(source_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) || source_type != target_type { return Err("Cross-engine Oracle/OceanBase type compatibility requires a reviewed conversion; transfer blocked".into()); }
-    let sql = if source_type == DatabaseType::Oracle { "SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle Database%'" } else { "SELECT VERSION() FROM DUAL" };
-    let source_version = metadata(state, source, sql).await?.rows.first().map(|r| text(r, 0)).transpose()?.ok_or("Source version is unknown")?;
-    let target_version = metadata(state, target, sql).await?.rows.first().map(|r| text(r, 0)).transpose()?.ok_or("Target version is unknown")?;
-    if supported_version(&source_type, &source_version)? != supported_version(&target_type, &target_version)? { return Err("Cross-version type compatibility is unverified; transfer blocked".into()); }
-    Ok(())
+    if !matches!(source_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) || !matches!(target_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) { return Err("TYPE migration requires Oracle or OceanBase Oracle endpoints".into()); }
+    let sql = |kind: &DatabaseType| if *kind == DatabaseType::Oracle { "SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle Database%'" } else { "SELECT OB_VERSION() FROM DUAL" };
+    let source_version = metadata(state, source, sql(&source_type)).await?.rows.first().map(|r| text(r, 0)).transpose()?.ok_or("Source version is unknown")?;
+    let target_version = metadata(state, target, sql(&target_type)).await?.rows.first().map(|r| text(r, 0)).transpose()?.ok_or("Target version is unknown")?;
+    conversion_profile(&source_type, &source_version, &target_type, &target_version)
 }
 
 /// A fully visible target inventory is required before replacing a type. ALL_* alone
@@ -90,11 +294,33 @@ fn replacement_allowed(incoming: &[TransferSchemaObjectDependency], owner: &str,
     }
     Ok(())
 }
-fn needs_type_before_tables(request: &TransferRequest, incoming: &[TransferSchemaObjectDependency], source_owner: &str, kind: TransferObjectKind, target_status: Option<&str>) -> bool {
-    kind == TransferObjectKind::Type && request.create_table && (target_status != Some("VALID") || request.object_conflict_policy == TransferObjectConflictPolicy::Replace) && incoming.iter().any(|dependency| {
+fn selected_incoming_tables(request: &TransferRequest, incoming: &[TransferSchemaObjectDependency], source_owner: &str) -> bool {
+    request.create_table && incoming.iter().any(|dependency| {
         dependency.owner == source_owner && request.tables.contains(&dependency.name)
             && (dependency.object_type == "INCOMING TABLE" || dependency.object_type == "INCOMING OBJECT TABLE" || dependency.object_type.starts_with("INCOMING TABLE COLUMN "))
     })
+}
+async fn ensure_selected_table_types(state: &AppState, request: &TransferRequest, source_pool: &str, target_pool: &str) -> Result<(), String> {
+    if !request.create_table { return Ok(()); }
+    let source_owner = resolve_oracle_schema(&request.source_schema, &request.source_database);
+    let target_owner = resolve_oracle_schema(&request.target_schema, &request.target_database);
+    let source_type = get_db_type(state, &request.source_connection_id).await?;
+    let target_type = get_db_type(state, &request.target_connection_id).await?;
+    for table in &request.tables {
+        let mut sql = format!("SELECT DATA_TYPE_OWNER, DATA_TYPE FROM ALL_TAB_COLUMNS WHERE OWNER={} AND TABLE_NAME={} AND DATA_TYPE_OWNER IS NOT NULL", quote_string_literal(&source_owner), quote_string_literal(table));
+        if source_type == DatabaseType::Oracle { sql.push_str(&format!(" UNION SELECT TABLE_TYPE_OWNER, TABLE_TYPE FROM ALL_OBJECT_TABLES WHERE OWNER={} AND TABLE_NAME={}", quote_string_literal(&source_owner), quote_string_literal(table))); }
+        for row in metadata(state, source_pool, &sql).await?.rows {
+            let owner = text(&row, 0)?; let name = text(&row, 1)?;
+            if matches!(owner.as_str(), "SYS" | "SYSTEM") { continue; }
+            if target_type == DatabaseType::OceanbaseOracle { return Err(format!("Table {table} stores user TYPE {owner}.{name}: OceanBase 4.2.5 does not support user-defined table columns/object tables")); }
+            let mapped_owner = if owner == source_owner { target_owner.clone() } else { owner };
+            let planned = mapped_owner == target_owner && selected(request).contains(&(TransferObjectKind::Type, name.clone()));
+            if !planned && object_status(state, target_pool, &mapped_owner, &name, "TYPE").await?.as_deref() != Some("VALID") {
+                return Err(format!("Table {table} requires unselected or invalid target TYPE {mapped_owner}.{name}; select its supported definition explicitly or provide a VALID target dependency"));
+            }
+        }
+    }
+    Ok(())
 }
 #[derive(Clone)]
 struct Planned { item: TransferSchemaObjectItem, original: Option<String>, original_body: Option<String> }
@@ -111,34 +337,75 @@ fn order_plan(items: &mut Vec<Planned>) {
         }
     }
 }
-async fn build_plan(state: &AppState, request: &TransferRequest, source_pool: &str, target_pool: &str) -> Result<Vec<Planned>, String> {
+async fn build_plan(state: &AppState, request: &TransferRequest, source_pool: &str, target_pool: &str, phase: Option<Phase>) -> Result<Vec<Planned>, String> {
     let selection = selected(request);
     let source_owner = resolve_oracle_schema(&request.source_schema, &request.source_database);
     let target_owner = resolve_oracle_schema(&request.target_schema, &request.target_database);
-    let engine_check = check_engines(state, request, source_pool, target_pool).await;
+    let mut engine_check = check_engines(state, request, source_pool, target_pool).await;
+    if engine_check.is_ok() && phase != Some(Phase::AfterObjects) {
+        if let Err(error) = ensure_selected_table_types(state, request, source_pool, target_pool).await { engine_check = Err(error); }
+    }
     let mut plan = Vec::new();
     for (kind, name) in &selection {
-        let mut entry = Planned { item: TransferSchemaObjectItem { credential_required: None, object_type: *kind, name: name.clone(), source_schema: source_owner.clone(), target_schema: target_owner.clone(), action: "create".into(), ddl: String::new(), dependencies: Vec::new(), warnings: vec!["Source incoming dependencies are limited to the current account's visibility. Explicit owner references in the body are preserved. Grants are not copied.".into()], errors: Vec::new() }, original: None, original_body: None };
+        // Specifications already ran before tables. Replanning them after tables would
+        // mistake newly-created table dependencies for pre-existing replacement impact.
+        if phase == Some(Phase::AfterObjects) && *kind == TransferObjectKind::Type { continue; }
+        let mut entry = Planned { item: TransferSchemaObjectItem { execution_phase: None, credential_required: None, object_type: *kind, name: name.clone(), source_schema: source_owner.clone(), target_schema: target_owner.clone(), action: "create".into(), ddl: String::new(), dependencies: Vec::new(), warnings: vec!["Source incoming dependencies are limited to the current account's visibility. Explicit owner references in the body are preserved. Grants are not copied.".into()], errors: Vec::new() }, original: None, original_body: None };
         let preparation: Result<(), String> = async {
-            engine_check.clone()?;
+            let conversion = engine_check.clone()?;
             if request.source_connection_id == request.target_connection_id && source_owner == target_owner { return Err("Source and target type identities must differ".into()); }
-            user_type(state, source_pool, &source_owner, name).await?;
+            user_type(state, source_pool, &request.source_connection_id, &request.source_database, &source_owner, name).await?;
             let source_details = details(state, &request.source_connection_id, &request.source_database, &source_owner, name, *kind).await?;
             if *kind == TransferObjectKind::TypeBody && source_details.paired_object.is_none() { return Err("Selected TYPE BODY has no visible paired TYPE specification".into()); }
             let original = source(state, &request.source_connection_id, &request.source_database, &source_owner, name, *kind).await?;
-            entry.item.ddl = oracle_packages::map_header(&original, *kind, name, &target_owner)?;
+            let mut converted = original.clone();
+            if conversion {
+                if get_db_type(state, &request.source_connection_id).await? == DatabaseType::Oracle {
+                    let rows = metadata(state, source_pool, &format!("SELECT OBJECT_TYPE, EDITION_NAME FROM ALL_OBJECTS WHERE OWNER={} AND OBJECT_NAME={} AND OBJECT_TYPE IN ('TYPE','TYPE BODY')", quote_string_literal(&source_owner), quote_string_literal(name))).await?.rows;
+                    let expected = if source_details.paired_object.is_some() { 2 } else { 1 };
+                    if rows.len() != expected || rows.iter().any(|row| !row.get(1).is_some_and(serde_json::Value::is_null)) { return Err("Edition-specific or unreadable TYPE/specification/body identity cannot be converted".into()); }
+                }
+                if get_db_type(state, &request.target_connection_id).await? == DatabaseType::Oracle {
+                    let rows = metadata(state, target_pool, &format!("SELECT EDITIONS_ENABLED FROM ALL_USERS WHERE USERNAME={}", quote_string_literal(&target_owner))).await?.rows;
+                    if rows.len() != 1 || text(&rows[0], 0)? != "N" { return Err("TYPE conversion to an edition-enabled or unknown Oracle target schema is not confirmed".into()); }
+                }
+                let (prefix, _, _) = oracle_packages::declaration(&original, *kind)?;
+                let edition = Regex::new(r"(?is)(CREATE\s+(?:OR\s+REPLACE\s+)?)(?:NON)?EDITIONABLE(\s+TYPE(?:\s+BODY)?\s*)$").unwrap();
+                if edition.is_match(&prefix) {
+                    if get_db_type(state, &request.source_connection_id).await? != DatabaseType::Oracle { return Err("OceanBase editionability syntax is not a confirmed conversion input".into()); }
+                    converted.replace_range(..prefix.len(), &edition.replace(&prefix, "$1$2"));
+                    entry.item.warnings.push("Removed declaration editionability for the current noneditioned source instance (EDITION_NAME is NULL). Future edition capability is not preserved; edition-specific objects are blocked.".into());
+                }
+                compatible_source(&converted, *kind, &source_details)?;
+            }
+            entry.item.ddl = oracle_packages::map_header(&converted, *kind, name, &target_owner)?;
             let words = oracle_packages::sql_words(&oracle_packages::declaration(&original, *kind)?.2);
             for dependency in source_details.dependencies.rows {
                 if dependency.referenced_link.as_deref().is_some_and(|link| !link.is_empty()) { return Err("Remote type dependencies cannot be verified for migration".into()); }
                 let owner = dependency.referenced_schema.ok_or("Type dependency owner is unknown")?;
                 let explicit = words.windows(3).any(|part| oracle_packages::identifier_word(&part[0]) == owner && part[1] == "." && oracle_packages::identifier_word(&part[2]) == dependency.referenced_name);
-                let mapped_owner = if owner == source_owner && !explicit { target_owner.clone() } else { owner };
+                let mapped_name = if owner == source_owner && dependency.referenced_type == "TABLE" && request.tables.contains(&dependency.referenced_name) {
+                    request.target_table_name(&dependency.referenced_name)
+                } else { dependency.referenced_name.clone() };
+                let local_selected = owner == source_owner && (dependency_kind_for(&dependency.referenced_type).is_some_and(|dependency_kind| selection.contains(&(dependency_kind, dependency.referenced_name.clone()))
+                    || (*kind == TransferObjectKind::TypeBody && dependency_kind == TransferObjectKind::Type && dependency.referenced_name == *name))
+                    || request.tables.contains(&dependency.referenced_name)
+                    || request.object_selection_mode().selections().iter().any(|s| format!("{:?}", s.object_type).to_ascii_uppercase() == dependency.referenced_type.replace(['_', ' '], "") && s.names.contains(&dependency.referenced_name)));
+                if explicit && local_selected {
+                    entry.item.ddl = map_reference_as(&entry.item.ddl, &source_owner, &dependency.referenced_name, &target_owner, &mapped_name)?;
+                }
+                if local_selected && dependency.referenced_type == "TABLE" {
+                    entry.item.ddl = map_unqualified_table(&entry.item.ddl, &dependency.referenced_name, &target_owner, &mapped_name)?;
+                }
+                let mapped_owner = if owner == source_owner && (!explicit || local_selected) { target_owner.clone() } else { owner };
                 let dependency_kind = match dependency.referenced_type.as_str() { "TYPE" => Some(TransferObjectKind::Type), "TYPE_BODY" => Some(TransferObjectKind::TypeBody), _ => None };
-                let planned = mapped_owner == target_owner && dependency_kind.is_some_and(|kind| selection.contains(&(kind, dependency.referenced_name.clone())));
+                let planned = mapped_owner == target_owner && (dependency_kind.is_some_and(|kind| selection.contains(&(kind, dependency.referenced_name.clone())))
+                    || (*kind == TransferObjectKind::TypeBody && ((dependency.referenced_type == "TABLE" && request.tables.contains(&dependency.referenced_name))
+                        || request.object_selection_mode().selections().iter().any(|s| !is_type(s.object_type) && format!("{:?}", s.object_type).to_ascii_uppercase() == dependency.referenced_type.replace(['_', ' '], "") && s.names.contains(&dependency.referenced_name)))));
                 // Dictionary self references do not form a migration edge.
                 if mapped_owner == target_owner && dependency.referenced_name == *name && dependency_kind == Some(*kind) { continue; }
-                let available = planned || object_status(state, target_pool, &mapped_owner, &dependency.referenced_name, &dependency.referenced_type).await?.as_deref() == Some("VALID");
-                entry.item.dependencies.push(TransferSchemaObjectDependency { owner: mapped_owner, name: dependency.referenced_name, object_type: dependency.referenced_type, available });
+                let available = planned || object_status(state, target_pool, &mapped_owner, &mapped_name, &dependency.referenced_type).await?.as_deref() == Some("VALID");
+                entry.item.dependencies.push(TransferSchemaObjectDependency { owner: mapped_owner, name: mapped_name, object_type: dependency.referenced_type.replace(' ', "_"), available });
             }
             if *kind == TransferObjectKind::TypeBody && !entry.item.dependencies.iter().any(|d| d.owner == target_owner && d.name == *name && d.object_type == "TYPE") {
                 let available = selection.contains(&(TransferObjectKind::Type, name.clone())) || object_status(state, target_pool, &target_owner, name, "TYPE").await?.as_deref() == Some("VALID");
@@ -150,14 +417,16 @@ async fn build_plan(state: &AppState, request: &TransferRequest, source_pool: &s
             let namespace = metadata(state, target_pool, &format!("SELECT OBJECT_TYPE FROM ALL_OBJECTS WHERE OWNER={} AND OBJECT_NAME={} AND OBJECT_TYPE IN ('TABLE','VIEW','MATERIALIZED VIEW','SEQUENCE','PROCEDURE','FUNCTION','PACKAGE','TYPE','TYPE BODY','SYNONYM')", quote_string_literal(&target_owner), quote_string_literal(name))).await?;
             if namespace.rows.iter().any(|r| text(r, 0).is_ok_and(|kind| kind != "TYPE" && kind != "TYPE BODY")) { return Err("Target type name conflicts with another schema object".into()); }
             let existing = object_status(state, target_pool, &target_owner, name, dictionary_kind(*kind)).await?;
-            if needs_type_before_tables(request, &entry.item.dependencies, &source_owner, *kind, existing.as_deref()) {
-                return Err("Selected tables reference this new/invalid/replaced target TYPE. Tables currently run before schema objects; migrate the TYPE in a separate explicit run first".into());
+            if selected_incoming_tables(request, &entry.item.dependencies, &source_owner)
+                && get_db_type(state, &request.target_connection_id).await? == DatabaseType::OceanbaseOracle {
+                return Err("OceanBase 4.2.5 user-defined types cannot be stored as table columns or object tables; selected referencing table structure is unsupported".into());
             }
             if existing.is_some() {
-                user_type(state, target_pool, &target_owner, name).await?;
+                user_type(state, target_pool, &request.target_connection_id, &request.target_database, &target_owner, name).await?;
                 if request.object_conflict_policy == TransferObjectConflictPolicy::Skip { entry.item.action = "skip".into(); return Ok(()); }
                 entry.item.action = "replace".into();
-                let target_details = details(state, &request.target_connection_id, &request.target_database, &target_owner, name, *kind).await?;
+                let target_details = crate::schema::oracle_types::get_oracle_type_details_core(state, &request.target_connection_id, &request.target_database, &target_owner, name, api_kind(*kind)).await?;
+                require_metadata(&target_details)?;
                 if !readable(&target_details.grants.state) { return Err("Target grants are unknown; safe replacement cannot be prepared".into()); }
                 let dependents = incoming(state, target_pool, &target_owner, name, true).await?;
                 replacement_allowed(&dependents, &target_owner, name, *kind, &selection)?;
@@ -186,11 +455,25 @@ async fn build_plan(state: &AppState, request: &TransferRequest, source_pool: &s
         }
     }
     order_plan(&mut plan);
+    let late = late_bodies(&plan, request);
+    for entry in &mut plan {
+        let deferred = late.contains(&entry.item.name) && entry.item.object_type == TransferObjectKind::TypeBody;
+        entry.item.execution_phase = Some(if deferred { "afterObjects" } else { "beforeTables" }.into());
+        entry.item.warnings.push(if deferred {
+            "Execution phase: after the selected tables and programs this TYPE BODY depends on."
+        } else { "Execution phase: before selected table DDL/data and dependent programs." }.into());
+    }
     Ok(plan)
+}
+pub(super) fn order_preview_phases(plan: &mut TransferSchemaObjectPlan, request: &TransferRequest) {
+    let types: Vec<_> = plan.items.iter().filter(|i| is_type(i.object_type)).map(|i| Planned { item: i.clone(), original: None, original_body: None }).collect();
+    let late = late_bodies(&types, request);
+    let (mut before, after): (Vec<_>, Vec<_>) = std::mem::take(&mut plan.items).into_iter().partition(|i| i.object_type != TransferObjectKind::TypeBody || !late.contains(&i.name));
+    before.extend(after); plan.items = before;
 }
 pub(super) async fn preview(state: &AppState, request: &TransferRequest, source: &str, target: &str) -> Result<Option<TransferSchemaObjectPlan>, String> {
     if request.content == TransferContent::DataOnly || selected(request).is_empty() { return Ok(None); }
-    let items: Vec<_> = build_plan(state, request, source, target).await?.into_iter().map(|p| p.item).collect();
+    let items: Vec<_> = build_plan(state, request, source, target, None).await?.into_iter().map(|p| p.item).collect();
     Ok(Some(TransferSchemaObjectPlan { can_execute: items.iter().all(|p| p.action != "blocked"), items }))
 }
 pub(super) async fn ensure_ready(state: &AppState, request: &TransferRequest, source: &str, target: &str) -> Result<(), String> {
@@ -218,13 +501,16 @@ async fn verify(state: &AppState, request: &TransferRequest, pool: &str, item: &
     }
     Ok(())
 }
-pub(super) async fn execute<F: FnMut(TransferProgress)>(state: &AppState, request: &TransferRequest, source_pool: &str, target_pool: &str, progress: &mut F) -> Result<TransferObjectOutcome, String> {
+pub(super) async fn execute<F: FnMut(TransferProgress)>(state: &AppState, request: &TransferRequest, source_pool: &str, target_pool: &str, phase: Phase, progress: &mut F) -> Result<TransferObjectOutcome, String> {
     if request.content == TransferContent::DataOnly || selected(request).is_empty() { return Ok(TransferObjectOutcome::default()); }
-    let plan = build_plan(state, request, source_pool, target_pool).await?;
+    let plan = build_plan(state, request, source_pool, target_pool, Some(phase)).await?;
     let blocked = plan.iter().any(|p| p.item.action == "blocked");
+    let late = late_bodies(&plan, request);
     let mut failed = HashSet::new(); let mut outcome = TransferObjectOutcome::default();
     for entry in plan {
         let item = &entry.item;
+        let deferred = item.object_type == TransferObjectKind::TypeBody && late.contains(&item.name);
+        if deferred != (phase == Phase::AfterObjects) { continue; }
         let mut result = TransferSchemaObjectResult { object_type: item.object_type, name: item.name.clone(), schema: item.target_schema.clone(), status: "failed".into(), compile_status: None, source_verified: None, error: None, recovery: None };
         let operation: Result<(), String> = async {
             if blocked { return Err(if item.errors.is_empty() { "Type plan is incomplete; no type DDL executed".into() } else { item.errors.join("; ") }); }
@@ -271,7 +557,7 @@ mod tests {
     use super::*;
     use crate::schema::oracle_types::{OracleMetadataSection, OracleTypeIdentity};
     fn item(kind: TransferObjectKind, name: &str) -> Planned {
-        Planned { item: TransferSchemaObjectItem { credential_required: None, object_type: kind, name: name.into(), source_schema: "SRC".into(), target_schema: "DST".into(), action: "create".into(), ddl: String::new(), dependencies: Vec::new(), warnings: Vec::new(), errors: Vec::new() }, original: None, original_body: None }
+        Planned { item: TransferSchemaObjectItem { execution_phase: None, credential_required: None, object_type: kind, name: name.into(), source_schema: "SRC".into(), target_schema: "DST".into(), action: "create".into(), ddl: String::new(), dependencies: Vec::new(), warnings: Vec::new(), errors: Vec::new() }, original: None, original_body: None }
     }
     fn dependency(kind: &str, name: &str) -> TransferSchemaObjectDependency {
         TransferSchemaObjectDependency { owner: "DST".into(), name: name.into(), object_type: kind.into(), available: true }
@@ -313,13 +599,69 @@ mod tests {
         assert!(replacement_allowed(&[body], "DST", "T", TransferObjectKind::Type, &[(TransferObjectKind::TypeBody, "T".into())]).is_ok());
     }
     #[test]
-    fn selected_tables_cannot_precede_a_new_type() {
+    fn incoming_table_selection_is_classified_without_a_separate_type_run() {
         let request: TransferRequest = serde_json::from_value(serde_json::json!({"transferId":"t","sourceConnectionId":"s","sourceDatabase":"SRC","sourceSchema":"SRC","targetConnectionId":"t","targetDatabase":"DST","targetSchema":"DST","tables":["PAYLOAD"],"createTable":true,"batchSize":10})).unwrap();
         let incoming = vec![TransferSchemaObjectDependency { owner: "SRC".into(), name: "PAYLOAD".into(), object_type: "INCOMING TABLE COLUMN VALUE".into(), available: true }];
-        assert!(needs_type_before_tables(&request, &incoming, "SRC", TransferObjectKind::Type, None));
-        assert!(needs_type_before_tables(&request, &incoming, "SRC", TransferObjectKind::Type, Some("INVALID")));
-        assert!(!needs_type_before_tables(&request, &incoming, "SRC", TransferObjectKind::Type, Some("VALID")));
-        assert!(!needs_type_before_tables(&request, &incoming, "SRC", TransferObjectKind::TypeBody, None));
+        assert!(selected_incoming_tables(&request, &incoming, "SRC"));
+        assert!(!selected_incoming_tables(&request, &incoming, "OTHER"));
+        let mut data_only = request.clone(); data_only.create_table = false;
+        assert!(!selected_incoming_tables(&data_only, &incoming, "SRC"));
+    }
+    fn type_details(kind: &str) -> OracleTypeDetails {
+        OracleTypeDetails { identity: OracleTypeIdentity { schema: "SRC".into(), name: "T".into(), object_type: kind.into() }, status: Some("VALID".into()), paired_object: None, pairing_state: OracleMetadataReadState::Empty, dependencies: OracleMetadataSection { state: OracleMetadataReadState::Empty, rows: Vec::new(), message: None }, grants: OracleMetadataSection { state: OracleMetadataReadState::Empty, rows: Vec::new(), message: None } }
+    }
+    #[test]
+    fn both_engine_directions_use_the_confirmed_conversion_profile() {
+        for oracle in ["Oracle Database 19c Enterprise Edition", "Oracle Database 21c Enterprise Edition"] {
+            assert_eq!(conversion_profile(&DatabaseType::Oracle, oracle, &DatabaseType::OceanbaseOracle, "4.2.5.6").unwrap(), true);
+            assert_eq!(conversion_profile(&DatabaseType::OceanbaseOracle, "4.2.5.6", &DatabaseType::Oracle, oracle).unwrap(), true);
+        }
+        assert!(conversion_profile(&DatabaseType::Oracle, "Oracle Database 23ai", &DatabaseType::OceanbaseOracle, "4.2.5").unwrap_err().contains("fixed-version"));
+        assert!(conversion_profile(&DatabaseType::Oracle, "Oracle Database 19c", &DatabaseType::OceanbaseOracle, "4.3.0").is_err());
+    }
+    #[test]
+    fn converts_common_object_collection_and_method_forms_with_exact_rejections() {
+        let details = type_details("TYPE");
+        for sql in [
+            "CREATE TYPE T AS OBJECT (age NUMBER(10,2), label VARCHAR2(30 CHAR), MEMBER FUNCTION get_age RETURN NUMBER, STATIC PROCEDURE p(n IN NUMBER));",
+            "CREATE TYPE T AS TABLE OF NUMBER;",
+            "CREATE TYPE T AS VARRAY(10) OF VARCHAR2(30);",
+        ] { assert!(compatible_source(sql, TransferObjectKind::Type, &details).is_ok(), "{sql}"); }
+        for sql in ["CREATE TYPE T UNDER B (x NUMBER);", "CREATE TYPE T AS OBJECT (x NUMBER) NOT FINAL;", "CREATE TYPE T OID '123' AS OBJECT (x NUMBER);", "CREATE TYPE T AS OBJECT (x BFILE);", "CREATE TYPE T AS OBJECT (x TIMESTAMP);"] {
+            assert!(compatible_source(sql, TransferObjectKind::Type, &details).is_err(), "{sql}");
+        }
+        let body = "CREATE TYPE BODY T AS MEMBER FUNCTION age RETURN NUMBER IS n NUMBER; BEGIN SELECT NVL(age,0) INTO n FROM EMP WHERE id=SELF.id; IF n < 0 THEN n := ABS(n); END IF; RETURN n; EXCEPTION WHEN NO_DATA_FOUND THEN RETURN 0; END; END;";
+        assert!(compatible_source(body, TransferObjectKind::TypeBody, &details).is_ok());
+        assert!(compatible_source(&body.replace("ABS(n)", "unknown_call(n)"), TransferObjectKind::TypeBody, &details).unwrap_err().contains("UNKNOWN_CALL"));
+        assert!(compatible_source("CREATE TYPE BODY T AS STATIC FUNCTION f RETURN NUMBER IS BEGIN RETURN SELF.age; END; END;", TransferObjectKind::TypeBody, &details).is_err());
+    }
+    #[test]
+    fn maps_only_confirmed_qualified_identifiers_outside_literals_and_comments() {
+        let sql = r#"SRC."a.b" -- SRC."a.b"
+/* SRC."a.b" */ 'SRC."a.b"' q'[SRC."a.b"]' nq'{SRC."a.b"}' OTHER."a.b" + "SRC"."a.b""#;
+        let mapped = map_reference(sql, "SRC", "a.b", "Target Owner").unwrap();
+        assert!(mapped.starts_with("\"Target Owner\".\"a.b\" -- SRC.\"a.b\""));
+        assert!(mapped.contains("/* SRC.\"a.b\" */ 'SRC.\"a.b\"' q'[SRC.\"a.b\"]' nq'{SRC.\"a.b\"}' OTHER.\"a.b\""));
+        assert!(mapped.ends_with("\"Target Owner\".\"a.b\""));
+        assert_eq!(map_reference_as("SELECT value FROM SRC.PAYLOAD", "SRC", "PAYLOAD", "DST", "payload").unwrap(), "SELECT value FROM \"DST\".\"payload\"");
+        assert_eq!(map_unqualified_table("SELECT value INTO n FROM PAYLOAD WHERE note='FROM PAYLOAD'", "PAYLOAD", "DST", "payload").unwrap(), "SELECT value INTO n FROM \"DST\".\"payload\" WHERE note='FROM PAYLOAD'");
+        assert!(map_reference("CREATE TYPE BODY T AS MEMBER FUNCTION f(SRC T) RETURN NUMBER IS BEGIN RETURN SRC.T; END; END;", "SRC", "T", "DST").unwrap_err().contains("shadows"));
+    }
+    #[test]
+    fn type_specs_and_independent_bodies_precede_tables_but_dependent_bodies_follow_programs() {
+        let request: TransferRequest = serde_json::from_value(serde_json::json!({"transferId":"t","sourceConnectionId":"s","sourceDatabase":"SRC","targetConnectionId":"t","targetDatabase":"DST","tables":["PAYLOAD"],"createTable":true,"batchSize":10,"objects":[{"objectType":"PACKAGE","names":["P"]}]})).unwrap();
+        let spec = item(TransferObjectKind::Type, "T");
+        let independent = item(TransferObjectKind::TypeBody, "B");
+        let mut dependent = item(TransferObjectKind::TypeBody, "T");
+        dependent.item.dependencies.extend([dependency("TABLE", "PAYLOAD"), dependency("PACKAGE", "P"), dependency("TYPE", "T")]);
+        let mut follower = item(TransferObjectKind::TypeBody, "C"); follower.item.dependencies.push(dependency("TYPE_BODY", "T"));
+        let planned = vec![spec, independent, dependent, follower];
+        let late = late_bodies(&planned, &request);
+        assert_eq!(late, HashSet::from(["T".to_string(), "C".to_string()]));
+        let mut preview = TransferSchemaObjectPlan { can_execute: true, items: planned.into_iter().map(|p| p.item).collect() };
+        preview.items.push(item(TransferObjectKind::Package, "P").item);
+        order_preview_phases(&mut preview, &request);
+        assert_eq!(preview.items.iter().map(|i| (i.object_type, i.name.as_str())).collect::<Vec<_>>(), vec![(TransferObjectKind::Type, "T"), (TransferObjectKind::TypeBody, "B"), (TransferObjectKind::Package, "P"), (TransferObjectKind::TypeBody, "T"), (TransferObjectKind::TypeBody, "C")]);
     }
     #[test]
     fn unknown_or_denied_metadata_cannot_mean_no_dependencies() {
@@ -335,7 +677,17 @@ mod tests {
     fn version_support_does_not_assume_unknown_releases() {
         assert_eq!(supported_version(&DatabaseType::Oracle, "Oracle Database 19c Enterprise Edition").unwrap(), "19c");
         assert!(supported_version(&DatabaseType::Oracle, "Oracle Database 11g").is_err());
-        assert!(supported_version(&DatabaseType::OceanbaseOracle, "OceanBase 4.2.5.6").is_ok());
+        assert!(supported_version(&DatabaseType::OceanbaseOracle, "4.2.5.6").is_ok());
         assert!(supported_version(&DatabaseType::OceanbaseOracle, "OceanBase 4.3.0").is_err());
+        assert!(supported_version(&DatabaseType::OceanbaseOracle, "5.7.25-OceanBase-v4.2.5.0").is_err());
+        assert!(supported_version(&DatabaseType::OceanbaseOracle, "3.4.2.5.0").is_err());
+    }
+    #[test]
+    fn invalidated_target_body_metadata_can_be_backed_up_but_invalid_source_is_rejected() {
+        let mut target = type_details("TYPE"); target.status = Some("INVALID".into());
+        assert!(require_metadata(&target).is_ok());
+        assert!(require_details(&target).is_err());
+        target.dependencies.state = OracleMetadataReadState::Denied;
+        assert!(require_metadata(&target).is_err());
     }
 }

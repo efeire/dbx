@@ -24,6 +24,8 @@ pub struct TransferSchemaObjectDependency {
 #[serde(rename_all = "camelCase")]
 pub struct TransferSchemaObjectItem {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_required: Option<bool>,
     pub object_type: TransferObjectKind,
     pub name: String,
@@ -256,6 +258,7 @@ async fn dependencies(
     name: &str,
     selected: &[(TransferObjectKind, String)],
     original: &str,
+    ddl: &mut String,
 ) -> Result<Vec<TransferSchemaObjectDependency>, String> {
     let source_schema = resolve_oracle_schema(&request.source_schema, &request.source_database);
     let target_schema = resolve_oracle_schema(&request.target_schema, &request.target_database);
@@ -275,7 +278,9 @@ async fn dependencies(
         // The definition header moves into the selected target schema. Other schemas stay intact.
         let words = sql_words(&declaration(original, kind)?.2);
         let explicit = words.windows(3).any(|part| identifier_word(&part[0]) == owner && part[1] == "." && identifier_word(&part[2]) == dependency);
-        let target_owner = if owner == source_schema && !explicit { target_schema.clone() } else { owner };
+        let selected_type = owner == source_schema && object_type == "TYPE" && request.object_selection_mode().selections().iter().any(|selection| selection.object_type == TransferObjectKind::Type && selection.names.contains(&dependency));
+        if selected_type { *ddl = oracle_types::map_reference(ddl, &source_schema, &dependency, &target_schema)?; }
+        let target_owner = if owner == source_schema && (!explicit || selected_type) { target_schema.clone() } else { owner };
         let planned = target_owner == target_schema
             && ((object_type == "PACKAGE" && selected.contains(&(TransferObjectKind::Package, dependency.clone())))
                 || (object_type == "TYPE" && request.object_selection_mode().selections().iter().any(|selection| selection.object_type == TransferObjectKind::Type && selection.names.contains(&dependency)))
@@ -358,7 +363,7 @@ async fn build_plan(
     let mut items = Vec::new();
     for (kind, name) in &selections {
         let mut item = TransferSchemaObjectItem {
-            credential_required: None,
+            execution_phase: None, credential_required: None,
             object_type: *kind,
             name: name.clone(),
             source_schema: source_schema.clone(),
@@ -375,11 +380,8 @@ async fn build_plan(
             let original = source(state, &request.source_connection_id, &request.source_database, &source_schema, name, *kind).await?;
             if object_status(state, source_pool, &source_schema, name, dictionary_kind(*kind)).await?.as_deref() != Some("VALID") { return Err("The source package is not VALID".into()); }
             item.ddl = map_header(&original, *kind, name, &target_schema)?;
-            // Only the header is rewritten. An explicit reference to the old owner must be
-            // reviewed rather than silently rebound to another object in the target schema.
-            if source_schema != target_schema && explicit_owner_reference(&original, &source_schema) {
-                item.warnings.push("Explicit source-schema references are preserved; their referenced objects must remain available on the target connection.".into());
-            }
+            // Unselected explicit references retain their owners. Selected TYPE references
+            // are rebound below only after the dictionary confirms their dependency identity.
             if source_type != target_type {
                 item.warnings.push(format!("Cross-engine transfer: {source_type:?} to {target_type:?}; compilation and source/signature readback are required."));
             }
@@ -387,7 +389,10 @@ async fn build_plan(
             let banner = version.rows.first().map(|r| text(r, 0)).unwrap_or_default();
             validate_version_clauses(&original, target_type, &banner)?;
             item.warnings.push(format!("Target version: {banner}"));
-            item.dependencies = dependencies(state, request, source_pool, target_pool, *kind, name, &selections, &original).await?;
+            item.dependencies = dependencies(state, request, source_pool, target_pool, *kind, name, &selections, &original, &mut item.ddl).await?;
+            if source_schema != target_schema && explicit_owner_reference(&item.ddl, &source_schema) {
+                item.warnings.push("Unselected explicit source-schema references are preserved; their referenced objects must remain available on the target connection.".into());
+            }
             for dependency in &item.dependencies {
                 if dependency.owner == item.target_schema
                     && dependency.name == item.name
@@ -892,7 +897,7 @@ mod tests {
 
     fn plan_item(kind: TransferObjectKind, name: &str, dependencies: &[&str]) -> TransferSchemaObjectItem {
         TransferSchemaObjectItem {
-            credential_required: None,
+            execution_phase: None, credential_required: None,
             object_type: kind,
             name: name.into(),
             source_schema: "S".into(),
