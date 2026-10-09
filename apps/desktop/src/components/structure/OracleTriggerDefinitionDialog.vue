@@ -34,21 +34,27 @@ let loadEpoch = 0;
 
 const currentSource = computed(() => mode.value === "structured" && definition.value && fields.value ? updateOracleTriggerDefinition(definition.value, fields.value) : source.value);
 
-watch(() => [props.open, props.name, props.schema, props.connectionId], async () => {
+watch(() => [props.open, props.name, props.schema, props.connectionId, props.database, props.tableSchema, props.tableName], async () => {
   const epoch = ++loadEpoch;
   if (!props.open) return;
+  const scope = { connectionId: props.connectionId, database: props.database, schema: props.schema, name: props.name };
   loading.value = true;
   error.value = "";
   preview.value = "";
   definition.value = undefined;
   fields.value = undefined;
+  source.value = "";
+  original.value = "";
+  recovery.value = [];
+  recoveryId.value = "";
+  recoveryOpen.value = false;
   mode.value = "source";
   try {
-    const history = await loadOracleTriggerRecovery(props);
+    const history = await loadOracleTriggerRecovery(scope);
     if (epoch !== loadEpoch) return;
     recovery.value = history;
     recoveryId.value = history.at(-1)?.id ?? "";
-    const result = await api.getObjectSource(props.connectionId, props.database, props.schema, props.name, "TRIGGER");
+    const result = await api.getObjectSource(scope.connectionId, scope.database, scope.schema, scope.name, "TRIGGER");
     if (epoch !== loadEpoch) return;
     source.value = result.source;
     original.value = result.source;
@@ -87,6 +93,7 @@ async function save() {
   let mutationStarted = false;
   const scope = { connectionId: props.connectionId, database: props.database, schema: props.schema, name: props.name, tableSchema: props.tableSchema, tableName: props.tableName };
   const originalSource = original.value;
+  const saveEpoch = loadEpoch;
   try {
     const candidate = currentSource.value;
     const sql = prepareDisabledOracleTriggerReplacement(candidate, scope);
@@ -95,24 +102,27 @@ async function save() {
       connection: connections.getConfig(scope.connectionId), database: scope.database, sql,
       source: t("structureEditor.editTriggerDefinition"),
       execute: async () => {
+        if (saveEpoch !== loadEpoch) return false;
         await saveOracleTriggerDefinition({
           ...scope, source: candidate, originalSource,
           execute: (statement) => api.executeQuery(scope.connectionId, scope.database, statement, scope.schema),
           readSource: async () => (await api.getObjectSource(scope.connectionId, scope.database, scope.schema, scope.name, "TRIGGER")).source,
           preserveOriginal: async (text, enabled) => {
             const entry = await preserveOracleTriggerRecovery(scope, text, enabled);
-            recovery.value = [...recovery.value, entry];
-            recoveryId.value = entry.id;
+            if (saveEpoch === loadEpoch) {
+              recovery.value = [...recovery.value, entry];
+              recoveryId.value = entry.id;
+            }
           },
           onMutationStarted: () => { mutationStarted = true; },
         });
         return true;
       },
     });
-    if (!executed) return;
+    if (!executed || saveEpoch !== loadEpoch) return;
     emit("saved");
     emit("update:open", false);
-  } catch (e) { error.value = e instanceof Error ? e.message : String(e); }
+  } catch (e) { if (saveEpoch === loadEpoch) error.value = e instanceof Error ? e.message : String(e); }
   finally {
     if (mutationStarted) {
       await Promise.allSettled([

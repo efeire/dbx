@@ -220,6 +220,57 @@ export function updateOracleTriggerDefinition(definition: OracleTriggerDefinitio
   return source;
 }
 
+function requireSingleTriggerBody(tokens: Token[]): void {
+  const body = tokens.findIndex((token) => token.kind === "word" && ["COMPOUND", "DECLARE", "BEGIN", "CALL"].includes(token.text.toUpperCase()));
+  if (body < 0) throw new Error("Cannot locate the trigger body safely");
+  if (tokens[body].text.toUpperCase() === "CALL") {
+    const end = tokens.findIndex((token, index) => index >= body && token.text === ";" && token.kind === "symbol");
+    if (end >= 0 && end !== tokens.length - 1) throw new Error("Additional statements follow the trigger call");
+    return;
+  }
+  const compound = tokens[body].text.toUpperCase() === "COMPOUND";
+  const stack: string[] = compound ? ["COMPOUND", "DECLARATION"] : [];
+  let closed = false;
+  for (let index = body + (compound ? 2 : 0); index < tokens.length; index++) {
+    const token = tokens[index];
+    const top = () => stack.at(-1);
+    if (token.kind === "symbol" && token.text === ";") {
+      if (top() === "ROUTINE_HEADER") stack.pop();
+      if (closed && !stack.length) {
+        if (index !== tokens.length - 1) throw new Error("Additional statements follow the trigger body");
+        return;
+      }
+    }
+    if (token.kind !== "word") continue;
+    const word = token.text.toUpperCase();
+    if (word === "DECLARE") stack.push("DECLARATION");
+    else if (["PROCEDURE", "FUNCTION"].includes(word) && ["DECLARATION", "ROUTINE"].includes(top() ?? "")) stack.push("ROUTINE_HEADER");
+    else if (["IS", "AS"].includes(word) && top() === "ROUTINE_HEADER") stack[stack.length - 1] = "ROUTINE";
+    else if (word === "BEGIN") {
+      if (["DECLARATION", "ROUTINE"].includes(top() ?? "")) stack[stack.length - 1] = "BLOCK";
+      else stack.push("BLOCK");
+    } else if (["IF", "LOOP", "CASE"].includes(word)) stack.push(word);
+    else if (word === "END") {
+      const next = tokens[index + 1];
+      const terminator = next?.kind === "word" ? next.text.toUpperCase() : "";
+      if (top() === "CASE") {
+        stack.pop();
+        if (terminator === "CASE") index++;
+      } else if (["IF", "LOOP"].includes(terminator)) {
+        if (top() !== terminator) throw new Error("Unbalanced trigger block");
+        stack.pop(); index++;
+      } else {
+        // Compound declarations belong to the trigger, outside its timing sections.
+        if (top() === "DECLARATION" && stack.at(-2) === "COMPOUND") stack.pop();
+        if (!["BLOCK", "COMPOUND"].includes(top() ?? "")) throw new Error("Unbalanced trigger block");
+        stack.pop();
+      }
+      closed = true;
+    }
+  }
+  throw new Error("Trigger body must end with a complete END statement");
+}
+
 export function prepareOracleTriggerReplacement(source: string, expected: { schema: string; name: string }): string {
   const definition = parseOracleTriggerDefinition(source);
   if (definition.name !== expected.name || (definition.schema ?? expected.schema) !== expected.schema) throw new Error("Trigger identity differs from the selected object");
@@ -228,23 +279,7 @@ export function prepareOracleTriggerReplacement(source: string, expected: { sche
   const singleDefinition = source.slice(0, end);
   const definitionTokens = tokens.filter((token) => token.start < end);
   if (definitionTokens.slice(1).some((token) => token.kind === "word" && ["DROP", "CREATE", "ALTER"].includes(token.text.toUpperCase()))) throw new Error("Additional DDL cannot be saved with a trigger definition");
-  let finalEnd = -1;
-  definitionTokens.forEach((token, index) => { if (token.kind === "word" && token.text.toUpperCase() === "END") finalEnd = index; });
-  if (finalEnd >= 0) {
-    let tail = finalEnd + 1;
-    if (definitionTokens[tail]?.kind === "identifier" || definitionTokens[tail]?.kind === "word") tail++;
-    if (definitionTokens[tail]?.text === ";") tail++;
-    if (tail !== definitionTokens.length) throw new Error("Additional statements follow the trigger body");
-  } else if (definition.spans?.body) {
-    let depth = 0;
-    const body = definitionTokens.filter((token) => token.start >= definition.spans!.body.start);
-    for (let index = 0; index < body.length; index++) {
-      const token = body[index];
-      if (token.text === "(" && token.kind === "symbol") depth++;
-      if (token.text === ")" && token.kind === "symbol") depth--;
-      if (token.text === ";" && token.kind === "symbol" && depth === 0 && index !== body.length - 1) throw new Error("Additional statements follow the trigger call");
-    }
-  }
+  requireSingleTriggerBody(definitionTokens);
   return definition.replace ? singleDefinition : singleDefinition.slice(0, definition.createEnd) + " OR REPLACE" + singleDefinition.slice(definition.createEnd);
 }
 

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { createApp, h, nextTick, type App } from "vue";
+import { createApp, h, nextTick, ref, type App } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -30,14 +30,15 @@ async function mountDialog() {
   const connection = { id: "ob", name: "OB", db_type: "oceanbase-oracle" as const, host: "localhost", port: 2881, username: "APP", password: "", is_production: true };
   useConnectionStore().connections = [connection];
   const changed = vi.fn();
+  const database = ref("APP");
   const container = document.createElement("div");
   document.body.append(container);
-  const app = createApp({ setup: () => () => h(OracleTriggerDefinitionDialog, { open: true, connectionId: "ob", database: "APP", schema: "APP", name: "T", tableSchema: "APP", tableName: "DATA", onChanged: changed }) });
+  const app = createApp({ setup: () => () => h(OracleTriggerDefinitionDialog, { open: true, connectionId: "ob", database: database.value, schema: "APP", name: "T", tableSchema: "APP", tableName: "DATA", onChanged: changed }) });
   app.use(pinia); app.use(i18n); app.mount(container); mounted.push(app);
   await vi.waitFor(() => expect(document.querySelectorAll("textarea").length).toBeGreaterThan(0));
   await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenCalled());
   await vi.waitFor(() => expect(document.querySelectorAll("input").length).toBeGreaterThan(1));
-  return { changed, safety: useProductionSafetyStore() };
+  return { changed, database, safety: useProductionSafetyStore() };
 }
 beforeEach(() => {
   storage.clear(); vi.clearAllMocks();
@@ -51,6 +52,23 @@ afterEach(() => {
 });
 
 describe("complete trigger definition dialog", () => {
+  it("reloads the same object identity after a database change and clears stale source on failure", async () => {
+    const { database } = await mountDialog();
+    const body = [...document.querySelectorAll("textarea")].at(-1)!;
+    body.value = "BEGIN dbms_output.put_line('old database edit'); END;";
+    body.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    click("structureEditor.triggerPreviewDefinition"); await nextTick();
+    vi.mocked(api.getObjectSource).mockRejectedValueOnce(new Error("New database is unavailable"));
+    database.value = "OTHER_DATABASE";
+    await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenLastCalledWith("ob", "OTHER_DATABASE", "APP", "T", "TRIGGER"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("New database is unavailable"));
+    expect(document.querySelector("textarea")!.value).toBe("");
+    const save = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === i18n.global.t("common.save"));
+    expect(save!.disabled).toBe(true);
+    expect(api.executeQuery).not.toHaveBeenCalled();
+  });
+
   it("preserves structured body edits when switching to source and back", async () => {
     await mountDialog();
     const body = [...document.querySelectorAll("textarea")].at(-1)!;
@@ -72,6 +90,19 @@ describe("complete trigger definition dialog", () => {
     expect(api.executeQuery).not.toHaveBeenCalled();
     expect(storage.size).toBe(0);
     expect(changed).not.toHaveBeenCalled();
+  });
+
+  it("does not execute an old production confirmation after the database context changes", async () => {
+    const { safety, database } = await mountDialog();
+    click("structureEditor.triggerPreviewDefinition"); await nextTick();
+    click("common.save");
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    database.value = "OTHER_DATABASE";
+    await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenLastCalledWith("ob", "OTHER_DATABASE", "APP", "T", "TRIGGER"));
+    safety.confirm();
+    await nextTick(); await nextTick();
+    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(storage.size).toBe(0);
   });
 
   it("keeps persisted recovery and reports INVALID while refreshing uncertain metadata", async () => {

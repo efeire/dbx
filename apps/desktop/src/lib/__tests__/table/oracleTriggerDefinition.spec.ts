@@ -78,7 +78,36 @@ describe("Oracle complete trigger definition editing", () => {
     "ALTER TRIGGER APP.T ENABLE; DROP TABLE APP.DATA;",
     "DROP TABLE APP.DATA;",
     "SELECT * FROM APP.DATA;",
+    "BEGIN DELETE FROM APP.DATA; END;",
+    "DECLARE v NUMBER; BEGIN DELETE FROM APP.DATA; END;",
   ])("rejects an unsafe or unrelated trailing statement: %s", (tail) => {
     expect(() => prepareOracleTriggerReplacement(`CREATE TRIGGER APP.T BEFORE INSERT ON APP.DATA BEGIN NULL; END;\n${tail}`, { schema: "APP", name: "T" })).toThrow();
+  });
+
+  it("keeps nested blocks, local routines, CASE, IF and LOOP inside one trigger", () => {
+    const sql = `CREATE TRIGGER APP.T BEFORE INSERT ON APP.DATA
+DECLARE
+  PROCEDURE local_proc;
+  PROCEDURE local_proc IS BEGIN NULL; END;
+BEGIN
+  BEGIN NULL; END;
+  BEGIN NULL; END;
+  IF 1 = 1 THEN
+    FOR i IN 1..2 LOOP
+      CASE i WHEN 1 THEN local_proc; ELSE NULL; END CASE;
+    END LOOP;
+  END IF;
+END;`;
+    expect(prepareOracleTriggerReplacement(sql, { schema: "APP", name: "T" })).toBe(sql.replace("CREATE TRIGGER", "CREATE OR REPLACE TRIGGER"));
+  });
+
+  it("does not terminate a compound trigger at the end of its first timing section", () => {
+    const sql = `CREATE TRIGGER APP.T FOR INSERT ON APP.DATA COMPOUND TRIGGER
+  PROCEDURE local_proc IS BEGIN NULL; END;
+  BEFORE STATEMENT IS BEGIN local_proc; END BEFORE STATEMENT;
+  AFTER EACH ROW IS BEGIN NULL; END AFTER EACH ROW;
+END T;`;
+    expect(prepareOracleTriggerReplacement(sql, { schema: "APP", name: "T" })).toBe(sql.replace("CREATE TRIGGER", "CREATE OR REPLACE TRIGGER"));
+    expect(() => prepareOracleTriggerReplacement(sql + "\nBEGIN DELETE FROM APP.DATA; END;", { schema: "APP", name: "T" })).toThrow("Additional statements");
   });
 });
