@@ -75,6 +75,16 @@ describe("Oracle type write planning", () => {
 });
 
 describe("Oracle type write execution", () => {
+  it("preserves a structured backend error detail for dictionary reads and DDL", async () => {
+    const failure: QueryResult = { ...result([], []), execution_error: true, error: { version: 1, code: "ORA-01031", messageKey: "error.database", messageParams: {}, source: "agent", operationOutcome: "not_started", detail: "ORA-01031: insufficient privileges" } };
+    const { io } = ioFor(empty());
+    vi.mocked(io.query).mockResolvedValueOnce(failure);
+    await expect(readTypeWriteSnapshot(io, target)).rejects.toThrow("ORA-01031");
+    vi.mocked(io.execute).mockResolvedValue(failure);
+    const actual = await executeTypeWritePlan(io, prepareTypeWritePlan("oracle", target, empty(), { TYPE: spec }));
+    expect(actual.state).toBe("failed");
+    expect(actual.message).toContain("ORA-01031");
+  });
   it("refuses a preview whose full source changed", async () => {
     const before = { definitions: [definition()], references: [] };
     const plan = prepareTypeWritePlan("oracle", target, before, { TYPE: spec.replace("20", "40") });

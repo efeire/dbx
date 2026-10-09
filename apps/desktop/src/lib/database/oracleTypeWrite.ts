@@ -57,7 +57,7 @@ const qualified = (target: TypeTarget) => `${identifier(target.schema)}.${identi
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 function dictionaryRows(result: QueryResult): Record<string, unknown>[] {
-  if (result.execution_error) throw new Error(result.error?.message || String(result.rows[0]?.[0] ?? "Dictionary query failed"));
+  if (result.execution_error) throw new Error(result.error?.detail || String(result.rows[0]?.[0] ?? "Dictionary query failed"));
   if (result.truncated || result.has_more || result.large_value_cells?.length) throw new Error("Complete metadata is required; the dictionary result was truncated.");
   return result.rows.map((row) => Object.fromEntries(result.columns.map((column, index) => [column.toUpperCase(), row[index]])));
 }
@@ -176,7 +176,7 @@ export async function executeTypeWritePlan(io: TypeWriteIO, plan: TypeWritePlan)
       result.sent.push(step);
       try {
         const response = await io.execute(step.sql);
-        if (response.execution_error) executionError = response.error?.message || String(response.rows[0]?.[0] ?? "Type DDL failed");
+        if (response.execution_error) executionError = response.error?.detail || String(response.rows[0]?.[0] ?? "Type DDL failed");
       } catch (error) {
         executionError = errorText(error);
       }
