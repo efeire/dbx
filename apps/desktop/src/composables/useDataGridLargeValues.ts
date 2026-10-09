@@ -662,17 +662,17 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
       if (!isCurrent()) throw new Error("LOB result context changed");
       // Other consumers can hydrate another cell while these requests await.
       // Merge only the requested baselines into the latest rows and budget.
-      const mergedRows = source.rows.map((row) => [...row]);
       const mergedSizes = new Map(materializedSnapshotBytes.get(source));
       for (const cell of cells) {
-        mergedRows[cell.row_index]![cell.column_index] = rows[cell.row_index]![cell.column_index];
+        if (!source.rows[cell.row_index] || cell.column_index >= source.rows[cell.row_index]!.length) throw new Error("LOB result column is unavailable");
         const key = largeValueCellKey(cell.row_index, cell.column_index);
         mergedSizes.set(key, sizes.get(key)!);
       }
       if ([...mergedSizes.values()].reduce((sum, size) => sum + size, 0) > 64 * 1024 * 1024) throw new Error("LOB save baseline exceeds the 64 MiB view/edit limit; reload and edit a smaller selection");
       source.large_value_refs = [...new Set([...(source.large_value_refs ?? []), ...cells.map((cell) => cell.value_ref!)])];
       const resolved = new Set(cells.map((cell) => largeValueCellKey(cell.row_index, cell.column_index)));
-      source.rows = mergedRows;
+      // Preserve row identity so the editor keeps pending edits, deletes and undo history.
+      for (const cell of cells) source.rows[cell.row_index]![cell.column_index] = rows[cell.row_index]![cell.column_index];
       source.large_value_cells = source.large_value_cells?.filter((cell) => !resolved.has(largeValueCellKey(cell.row_index, cell.column_index)));
       materializedSnapshotBytes.set(source, mergedSizes);
       options.largeValueResolutionVersion.value += 1;
