@@ -9,6 +9,7 @@ METRICS = (
     "dispatch_ms", "jdbc_isValid_calls", "jdbc_isValid_ms",
     "jdbc_statement_execute_calls", "jdbc_statement_execute_ms",
     "physical_connect_calls", "jdbc_cancel_calls",
+    "reported_execution_ms",
 )
 
 
@@ -42,7 +43,7 @@ def summarize(rows):
                     metrics[metric] = distribution(values)
             by_outcome[outcome] = metrics
         result[scenario] = {"outcomes": dict(counts), "by_outcome": by_outcome}
-    return {"format": "dbx-health-summary-v1", "scope": "JDBC and in-process dispatch, not wire requests or GUI latency", "scenarios": result}
+    return {"format": "dbx-health-summary-v1", "scope": "sample-defined dispatch/RPC boundary and reported counters; not pure database execution or GUI latency", "scenarios": result}
 
 
 def main():

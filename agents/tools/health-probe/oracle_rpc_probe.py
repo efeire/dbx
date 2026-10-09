@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -74,7 +75,8 @@ def sample(rpc, wire, output, scenario, index, method, params, cancel=False):
     started = time.monotonic_ns()
     before = wire.snapshot()
     row = {"kind": "sample", "scenario": scenario, "index": index, "method": method,
-           "started_monotonic_ns": started, "started_utc_ns": time.time_ns(), "rpc_requests": 1}
+           "started_monotonic_ns": started, "started_utc_ns": time.time_ns(), "rpc_requests": 1,
+           "timing_scope": "production Agent JSON-RPC roundtrip including process pipes; wire observation is separate"}
     control = []
     cancellation = None
     def cancel_request():
@@ -89,6 +91,10 @@ def sample(rpc, wire, output, scenario, index, method, params, cancel=False):
         if vendor: row["vendor_code"] = vendor
         if method == "execute_query" and outcome == "success":
             rows = response.get("result", {}).get("rows", [])
+            reported = response.get("result", {}).get("execution_time_ms")
+            if type(reported) in (int, float) and math.isfinite(reported) and reported >= 0:
+                row["reported_execution_ms"] = reported
+            row["server_execute_time"] = "not_independently_measured"
             row["correct_result"] = len(rows) == 1 and len(rows[0]) == 1 and str(rows[0][0]) == "1"
             if not row["correct_result"]: row["outcome"] = "incorrect_result"
     except queue.Empty: row["outcome"] = "rpc_timeout"

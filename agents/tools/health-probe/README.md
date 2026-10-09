@@ -71,6 +71,8 @@ python agents/tools/health-probe/wire_summary.py <Oracle-samples-JSONL> <该次w
 
 Oracle 工具共用 `DBX_HEALTH_DEDICATED=1`、`DBX_HEALTH_CONNECT_JSON`，要求简单 host/port/service 参数，拒绝自定义连接描述符，避免绕过中继。保留 profile 和实际 binary SHA256。工具启动自身 TNS 中继后在内存中替换 host/port；不会修改保存的连接。通过关闭本工具的 TCP 流制造真实传输失效，通过 `validate_session` 观察生产恢复；取消时仅暂停专用中继 1 秒，让只读查询等待网络，再发送生产 `cancel_session`，记录成功取消/查询已完成/超时/错误，不强行把结果改成成功。之后继续查询验证恢复。
 
+Oracle 样本的 dispatch_ms 是含进程管道的 JSON-RPC 往返，Java 同名字段是进程内分派，不能直接混合对比。Oracle 另外保留生产结果的 reported_execution_ms；它不等于独立数据库纯执行，server_execute_time 明确未独立测量。线上的首响应时长与 RPC/结果计时各自留证，客户端渲染不在这两个工具范围内。
+
 默认 Oracle 只数实际 TNS 帧，DATA 帧不等于逻辑数据库请求或 SQL 数量。只有独立确认该测试连接没有 TLS/Oracle native encryption，并确认兼容 TTC 后，才可加 `--verified-plaintext-ttc`，记录帧前缀中可确认的 TTC ping/OALL8 等类别及首响应时长下界。未解析 piggyback/跨帧 TTC、加密数据或 OCI 版本差异时明确 incomplete/unknown，不声明完整逻辑请求总数。TNS 重定向可能绕过中继，看到 redirect 或目标流未捕获时验收不完整；不能为了取数自动关闭安全设置。
 
 这些实际协议观测的固定依据：go-ora [v2.9.0 connection.go Ping](https://github.com/sijms/go-ora/blob/v2.9.0/v2/connection.go)、[simple_object.go](https://github.com/sijms/go-ora/blob/v2.9.0/v2/simple_object.go)、[network/data_packet.go](https://github.com/sijms/go-ora/blob/v2.9.0/v2/network/data_packet.go)、[accept_packet.go](https://github.com/sijms/go-ora/blob/v2.9.0/v2/network/accept_packet.go)。实际生产驱动版本若变化须重新核对，不拿 parser fixture 当目标版本已支持。
