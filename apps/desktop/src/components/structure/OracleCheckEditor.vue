@@ -145,6 +145,10 @@ function cancel() {
         </ul>
         <pre class="overflow-auto whitespace-pre-wrap rounded bg-muted p-2">{{ plan.statements.join(";\n") || t("constraintEditor.noChanges") }}</pre>
         <p>{{ t("constraintEditor.nonAtomic") }}</p>
+        <template v-if="plan.recoveryStatements.length">
+          <p>{{ t("constraintEditor.recovery") }}</p>
+          <pre class="overflow-auto whitespace-pre-wrap" data-preview-recovery>{{ plan.recoveryStatements.join(";\n") }}</pre>
+        </template>
       </div>
       <div v-if="result" role="status" class="space-y-2">
         <p :class="result.success ? '' : 'text-destructive'">{{ t(result.success ? "constraintEditor.applied" : "constraintEditor.incomplete") }}</p>

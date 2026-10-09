@@ -67,6 +67,8 @@ describe("CHECK editing", () => {
     button("constraintEditor.preview").click();
     await settle();
     expect(mocks.previewCheckChange).toHaveBeenLastCalledWith("connection", "service", { schema: "Owner", tableName: "T", originalName: key.name, desired: key });
+    expect(root.querySelector("[data-preview-recovery]")?.textContent).toBe(plan.recoveryStatements.join(";\n"));
+    expect(mocks.applyCheckChange).not.toHaveBeenCalled();
     button("common.cancel").click();
     await settle();
     expect(mocks.applyCheckChange).not.toHaveBeenCalled();
