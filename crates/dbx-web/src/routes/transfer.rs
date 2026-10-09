@@ -391,6 +391,7 @@ pub async fn start_transfer(
                     status: TransferStatus::Error,
                     error: Some(e),
                     terminal: true,
+                    object_result: None,
                 };
                 send_transfer_progress(&progress_channel, &progress);
                 finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
