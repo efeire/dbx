@@ -24,9 +24,9 @@ mod iris_tests;
 
 mod db2;
 mod ddl_plan;
+mod oracle_database_links;
 mod oracle_packages;
 mod oracle_synonyms;
-mod oracle_database_links;
 pub use oracle_database_links::{TransferDatabaseLinkConfig, TransferDatabaseLinkCredential};
 mod overwrite_clear;
 mod structure_plan;
@@ -270,7 +270,12 @@ pub fn transfer_object_kinds_for_family(family: &TransferObjectFamily) -> Vec<Tr
 pub fn transfer_object_kinds(db_type: &DatabaseType) -> Vec<TransferObjectKind> {
     if matches!(db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) {
         let mut kinds = transfer_object_kinds_for_family(&TransferObjectFamily::Oracle);
-        kinds.extend([TransferObjectKind::Package, TransferObjectKind::PackageBody, TransferObjectKind::Synonym, TransferObjectKind::PublicSynonym]);
+        kinds.extend([
+            TransferObjectKind::Package,
+            TransferObjectKind::PackageBody,
+            TransferObjectKind::Synonym,
+            TransferObjectKind::PublicSynonym,
+        ]);
         kinds.extend([TransferObjectKind::DbLink, TransferObjectKind::PublicDbLink]);
         return kinds;
     }
@@ -8686,11 +8691,14 @@ async fn transfer_oracle_schema_objects<F>(
 where
     F: FnMut(TransferProgress),
 {
-    let mut outcome = oracle_database_links::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
+    let mut outcome =
+        oracle_database_links::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback)
+            .await?;
     if !outcome.failed.is_empty() {
         return Ok(outcome);
     }
-    let packages = oracle_packages::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
+    let packages =
+        oracle_packages::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
     outcome.transferred.extend(packages.transferred);
     outcome.skipped.extend(packages.skipped);
     outcome.failed.extend(packages.failed);
@@ -8701,7 +8709,15 @@ where
         request.object_selection_mode().selections().iter().map(|s| s.object_type).collect(),
     );
     for kind in order {
-        if matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody | TransferObjectKind::Synonym | TransferObjectKind::PublicSynonym | TransferObjectKind::DbLink | TransferObjectKind::PublicDbLink) {
+        if matches!(
+            kind,
+            TransferObjectKind::Package
+                | TransferObjectKind::PackageBody
+                | TransferObjectKind::Synonym
+                | TransferObjectKind::PublicSynonym
+                | TransferObjectKind::DbLink
+                | TransferObjectKind::PublicDbLink
+        ) {
             continue;
         }
         for name in selected_object_names(request.object_selection_mode().selections(), &kind) {
@@ -8756,7 +8772,8 @@ where
             }
         }
     }
-    let synonyms = oracle_synonyms::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
+    let synonyms =
+        oracle_synonyms::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
     outcome.transferred.extend(synonyms.transferred);
     outcome.skipped.extend(synonyms.skipped);
     outcome.failed.extend(synonyms.failed);
@@ -14107,6 +14124,9 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
                 target_table_name_case: TransferTableNameCase::Preserve,
                 quote_target_column_names: true,
                 ownership_policy: TransferOwnershipPolicy::Preserve,
+                object_conflict_policy: TransferObjectConflictPolicy::Skip,
+                database_links: Vec::new(),
+                database_link_credentials: Vec::new(),
                 batch_size: 1000,
                 table_filters: std::collections::HashMap::new(),
                 drop_target_before_create: false,
