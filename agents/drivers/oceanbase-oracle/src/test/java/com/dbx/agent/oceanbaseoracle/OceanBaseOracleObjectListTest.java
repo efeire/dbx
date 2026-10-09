@@ -343,7 +343,7 @@ class OceanBaseOracleObjectListTest {
         for (String owner : List.of("Mixed.Owner", "PUBLIC")) {
             JdbcCall call = jdbc.rows(objectRow("Mixed.Syn", "SYNONYM"));
             objects.addAll(jdbc.agent.listObjects(owner, constraints("Mixed", 1, 1, "SYNONYM")));
-            assertEquals(List.of(owner, "SYNONYM", "%M%I%X%E%D%", 2, 1), call.args);
+            assertEquals(List.of(owner, "SYNONYM", "%M%I%X%E%D%", "%M%I%X%E%D%", 2, 1), call.args);
             assertTrue(call.sql.contains("FROM ALL_SYNONYMS"), call.sql);
             assertTrue(call.sql.contains("WHEN OWNER = '__public' THEN 'PUBLIC' ELSE OWNER END"), call.sql);
             assertTrue(call.sql.contains("WHERE o.OBJECT_TYPE <> 'SYNONYM'"), call.sql);
