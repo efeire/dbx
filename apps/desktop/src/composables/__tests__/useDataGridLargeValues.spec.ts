@@ -11,12 +11,16 @@ const mocks = vi.hoisted(() => ({
   buildTableSelectSql: vi.fn(),
   cancelQuery: vi.fn(),
   executeMulti: vi.fn(),
+  readLargeValueChunk: vi.fn(),
+  downloadLargeValue: vi.fn(),
 }));
 
 vi.mock("@/lib/backend/api", () => ({
   buildDataGridContextFilterCondition: mocks.buildDataGridContextFilterCondition,
   cancelQuery: mocks.cancelQuery,
   executeMulti: mocks.executeMulti,
+  readLargeValueChunk: mocks.readLargeValueChunk,
+  downloadLargeValue: mocks.downloadLargeValue,
 }));
 
 vi.mock("@/lib/table/tableSelectSql", () => ({ buildTableSelectSql: mocks.buildTableSelectSql }));
@@ -99,6 +103,44 @@ function previewResult(columnType = "bytea", value = "\\x00017f80ff...", origina
 }
 
 describe("useDataGridLargeValues", () => {
+  it("loads original LOB baselines before clear/delete SQL generation without replacing pending edits", async () => {
+    const result = previewResult("CLOB", "preview", 1);
+    result.value.large_value_context = { connectionId: "oracle-1", database: "MAXIMO", clientSessionId: "original-session" };
+    result.value.large_value_cells![0]!.value_ref = "original-locator";
+    const { largeValues } = mountLargeValues("oracle", result);
+    const dirtyRows = new Map([[0, new Map([[1, null]])]]);
+    mocks.readLargeValueChunk.mockResolvedValue({ status: "ok", data: "original complete", next_offset: 17, eof: true, value_kind: "text" });
+    await largeValues.prepareSaveBaseline({ dirtyRows, deletedRows: new Set() });
+    expect(result.value.rows[0]![1]).toBe("original complete");
+    expect(dirtyRows.get(0)!.get(1)).toBeNull();
+    expect(result.value.large_value_refs).toContain("original-locator");
+    expect(result.value.large_value_cells).toEqual([]);
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+    expect(mocks.readLargeValueChunk).toHaveBeenCalledWith(expect.objectContaining({ valueRef: "original-locator", connectionId: "oracle-1", clientSessionId: "original-session" }));
+  });
+
+  it("blocks save on expired snapshots and keeps every original preview for retry", async () => {
+    const result = previewResult("CLOB", "preview", 1);
+    result.value.large_value_context = { connectionId: "oracle-1", database: "MAXIMO" };
+    result.value.large_value_cells![0]!.value_ref = "expired-locator";
+    const { largeValues } = mountLargeValues("oracle", result);
+    const originalRows = result.value.rows;
+    mocks.readLargeValueChunk.mockResolvedValue({ status: "expired" });
+    await expect(largeValues.prepareSaveBaseline({ dirtyRows: new Map(), deletedRows: new Set([0]) })).rejects.toThrow("snapshot expired");
+    expect(result.value.rows).toBe(originalRows);
+    expect(result.value.large_value_cells![0]!.value_ref).toBe("expired-locator");
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+
+  it("refuses a save baseline owned by another connection even after hydration", async () => {
+    const result = previewResult("CLOB", "complete original", 1);
+    result.value.large_value_cells = [];
+    result.value.large_value_context = { connectionId: "different-connection", database: "MAXIMO" };
+    result.value.large_value_refs = ["retained-original-locator"];
+    const { largeValues } = mountLargeValues("oracle", result);
+    await expect(largeValues.prepareSaveBaseline({ dirtyRows: new Map([[0, new Map([[1, null]])]]), deletedRows: new Set() })).rejects.toThrow("connection is unavailable");
+    expect(mocks.readLargeValueChunk).not.toHaveBeenCalled();
+  });
   it.each([
     ["postgres", 3],
     ["mysql", 1],
