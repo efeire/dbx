@@ -3420,6 +3420,7 @@ export default withEnglishFallback({
     noDatabasesFound: "Verilənlər bazası tapılmadı",
   },
   contextMenu: {
+    oracleInvalidObjects: "Etibarsız obyektlər",
     openConnection: "Əlaqəni aç",
     closeConnection: "Əlaqəni bağla",
     closeSelectedConnections: "Seçilmiş {count} əlaqəni bağla",

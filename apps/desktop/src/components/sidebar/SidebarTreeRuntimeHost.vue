@@ -2067,6 +2067,17 @@ async function openDamengJobAdmin() {
   }
 }
 
+async function openOracleInvalidObjects() {
+  const connectionId = activeNode.value.connectionId;
+  if (!connectionId) return;
+  try {
+    await connectionStore.ensureConnected(connectionId);
+    queryStore.openOracleInvalidObjects(connectionId);
+  } catch (error) {
+    toast(t("connection.connectFailed", { message: translateBackendError(t, error) }), 5000);
+  }
+}
+
 function scheduleOpenData(node: TreeNode) {
   emit("open-data", node, true, "default", openData);
 }
@@ -5943,6 +5954,9 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
       items.push({ label: t("contextMenu.damengUsers"), action: openDamengUsers, icon: UsersRound });
       items.push({ label: t("contextMenu.damengRoles"), action: openDamengRoles, icon: ShieldCheck });
       items.push({ label: t("contextMenu.damengJobAdmin"), action: openDamengJobAdmin, icon: CalendarClock });
+    }
+    if (currentDatabaseType() === "oracle" || currentDatabaseType() === "oceanbase-oracle") {
+      items.push({ label: t("contextMenu.oracleInvalidObjects"), action: openOracleInvalidObjects, icon: Wrench });
     }
     if (canCopyFinalProxyPort.value) {
       items.push({ label: t("contextMenu.copyFinalProxyPort"), action: copyFinalProxyPort, icon: Network });

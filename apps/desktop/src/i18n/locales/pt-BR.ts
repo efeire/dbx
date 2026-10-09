@@ -3662,6 +3662,7 @@ export default withEnglishFallback({
     editCancel: "Cancelar",
   },
   contextMenu: {
+    oracleInvalidObjects: "Objetos inválidos",
     compileObjectFailedTitle: "Falha na compilação da visão",
     compileObjectFailedMessage: 'Falha ao compilar a visão "{name}":\n{message}',
     openConnection: "Abrir Conexão",
