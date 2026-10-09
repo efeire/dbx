@@ -58,7 +58,9 @@ def query(sql):
     if "FROM DBA_SYS_PRIVS" in sql:
         return result([], ["GRANTEE", "PRIVILEGE", "ADMIN_OPTION"])
     if "FROM DBA_OBJECTS" in sql:
-        return result([{"OWNER": "Owner", "OBJECT_NAME": "T", "OBJECT_TYPE": "TABLE", "OBJECT_ID": "99"}])
+        return result(config.get("objects", [{"OWNER": "Owner", "OBJECT_NAME": "T", "OBJECT_TYPE": "TABLE", "OBJECT_ID": "99"}]))
+    if "FROM DBA_MVIEWS" in sql:
+        return result(config.get("materializedViews", []))
     if "FROM DBA_DEPENDENCIES" in sql or "FROM DBA_COL_PRIVS" in sql:
         return result([])
     if "FROM DBA_TAB_PRIVS" in sql:

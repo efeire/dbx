@@ -2,7 +2,7 @@ use super::oracle_security_write::{
     effective_system_privilege, fingerprint, identifier, known_version, literal, password, safe_error, text,
     SecuritySession,
 };
-use super::{agent_metadata_timeout, connection_config, lock_metadata_mutex_with_timeout};
+use super::{agent_metadata_timeout, connection_config};
 use crate::connection::{AppState, PoolKind, METADATA_POOL_ACQUIRE_TIMEOUT};
 use crate::models::connection::DatabaseType;
 use serde::{Deserialize, Serialize};
@@ -88,10 +88,33 @@ async fn snapshot(session: &mut SecuritySession<'_>, change: &RoleChange) -> Res
         identifier(owner)?;
         identifier(name)?;
         let objects = session.query(&format!("SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, TO_CHAR(OBJECT_ID) AS OBJECT_ID FROM DBA_OBJECTS WHERE OWNER = {} AND OBJECT_NAME = {} AND OBJECT_TYPE IN ('TABLE','VIEW','MATERIALIZED VIEW','SEQUENCE','PROCEDURE','FUNCTION','PACKAGE','TYPE')",literal(owner),literal(name))).await?;
-        if objects.len() > 1 {
-            return Err("Object identity is ambiguous".into());
-        }
-        object = objects.first().cloned().unwrap_or(Value::Null);
+        object = if objects.len() > 1 {
+            let materialized = objects.iter().find(|row| text(row, "OBJECT_TYPE") == "MATERIALIZED VIEW");
+            if objects.len() != 2
+                || materialized.is_none()
+                || objects.iter().filter(|row| text(row, "OBJECT_TYPE") == "TABLE").count() != 1
+                || objects.iter().any(|row| text(row, "OWNER") != owner || text(row, "OBJECT_NAME") != name)
+            {
+                return Err("Object identity is ambiguous".into());
+            }
+            let containers = session
+                .query(&format!(
+                    "SELECT OWNER, MVIEW_NAME, CONTAINER_NAME FROM DBA_MVIEWS WHERE OWNER = {} AND MVIEW_NAME = {}",
+                    literal(owner),
+                    literal(name)
+                ))
+                .await?;
+            if containers.len() != 1
+                || text(&containers[0], "OWNER") != owner
+                || text(&containers[0], "MVIEW_NAME") != name
+                || text(&containers[0], "CONTAINER_NAME") != name
+            {
+                return Err("Object identity is ambiguous".into());
+            }
+            materialized.cloned().unwrap()
+        } else {
+            objects.first().cloned().unwrap_or(Value::Null)
+        };
         dependencies = session.query(&format!("SELECT OWNER, NAME, TYPE FROM DBA_DEPENDENCIES WHERE REFERENCED_OWNER = {} AND REFERENCED_NAME = {} ORDER BY OWNER, NAME, TYPE",literal(owner),literal(name))).await?;
         if let Some(column) = &change.column {
             columns = session
@@ -369,7 +392,9 @@ pub async fn oracle_role_admin_core(
     let Some(PoolKind::Agent(client)) = pool else {
         return Err("Oracle-family Agent required".into());
     };
-    let mut client = lock_metadata_mutex_with_timeout(&client, METADATA_POOL_ACQUIRE_TIMEOUT).await?;
+    let mut client = tokio::time::timeout(METADATA_POOL_ACQUIRE_TIMEOUT, client.lock())
+        .await
+        .map_err(|_| crate::query::METADATA_POOL_BUSY_ERROR.to_string())?;
     let timeout = agent_metadata_timeout(Some(&config));
     let version = client
         .connection_info(timeout)

@@ -69,6 +69,42 @@ fn change(action: &str, kind: &str) -> RoleChange {
 }
 
 #[tokio::test]
+async fn materialized_view_snapshot_accepts_only_its_confirmed_same_name_container() {
+    let objects = json!([
+        {"OWNER":"Owner","OBJECT_NAME":"T","OBJECT_TYPE":"TABLE","OBJECT_ID":"99"},
+        {"OWNER":"Owner","OBJECT_NAME":"T","OBJECT_TYPE":"MATERIALIZED VIEW","OBJECT_ID":"100"}
+    ]);
+    for (containers, accepted) in [
+        (json!([{"OWNER":"Owner","MVIEW_NAME":"T","CONTAINER_NAME":"T"}]), true),
+        (json!([{"OWNER":"Owner","MVIEW_NAME":"T","CONTAINER_NAME":"OtherTable"}]), false),
+        (json!([]), false),
+    ] {
+        let mut fixture = Fixture::new(json!({"objects":objects,"materializedViews":containers}), false).await;
+        let result = fixture.request("read", &change("grant", "object"), None).await;
+        if accepted {
+            assert_eq!(result.unwrap()["snapshot"]["object"]["OBJECT_TYPE"], "MATERIALIZED VIEW");
+        } else {
+            assert!(result.unwrap_err().contains("ambiguous"));
+        }
+        fixture.no_mutations();
+    }
+}
+
+#[tokio::test]
+async fn unrelated_same_name_object_types_remain_ambiguous() {
+    let mut fixture = Fixture::new(
+        json!({"objects":[
+            {"OWNER":"Owner","OBJECT_NAME":"T","OBJECT_TYPE":"TABLE","OBJECT_ID":"99"},
+            {"OWNER":"Owner","OBJECT_NAME":"T","OBJECT_TYPE":"VIEW","OBJECT_ID":"100"}
+        ]}),
+        false,
+    )
+    .await;
+    assert!(fixture.request("read", &change("grant", "object"), None).await.unwrap_err().contains("ambiguous"));
+    fixture.no_mutations();
+}
+
+#[tokio::test]
 async fn ob_role_and_system_previews_do_not_depend_on_session_privilege_views() {
     let mut fixture = Fixture::new(json!({"permissionError":true}), true).await;
     let mut role = change("createRole", "role");
