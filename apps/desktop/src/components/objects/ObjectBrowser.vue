@@ -4293,9 +4293,12 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
                       <span v-if="showObjectRowStats && (item.rowStatistics || (item.estimatedRows != null && item.estimatedRows > 0))" class="object-browser-stat-badge object-browser-stat-badge-rows rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-primary">{{
                         item.rowStatistics ? estimatedRowsText(item.rowStatistics, t) : formatObjectBrowserCount(item.estimatedRows)
                       }}</span>
-                      <span v-if="showObjectSizeStats && (item.rowStatistics?.space || (item.totalBytes != null && item.totalBytes > 0))" :title="item.rowStatistics?.space ? oceanbaseSpaceHint(item.rowStatistics.space, t) : undefined" class="object-browser-stat-badge object-browser-stat-badge-bytes rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">{{
-                        item.rowStatistics?.space ? oceanbaseSpaceText(item.rowStatistics.space, t) : formatObjectBrowserBytes(item.totalBytes)
-                      }}</span>
+                      <span
+                        v-if="showObjectSizeStats && (item.rowStatistics?.space || (item.totalBytes != null && item.totalBytes > 0))"
+                        :title="item.rowStatistics?.space ? oceanbaseSpaceHint(item.rowStatistics.space, t) : undefined"
+                        class="object-browser-stat-badge object-browser-stat-badge-bytes rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground"
+                        >{{ item.rowStatistics?.space ? oceanbaseSpaceText(item.rowStatistics.space, t) : formatObjectBrowserBytes(item.totalBytes) }}</span
+                      >
                     </div>
                     <!-- Always reserve timestamp/comment slots when the dataset has them so every card shares one height. -->
                     <div v-if="hasCreatedAt || hasUpdatedAt" class="flex min-h-[15px] items-center gap-1 text-[10px] leading-[15px] text-muted-foreground/70">

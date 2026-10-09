@@ -5216,7 +5216,8 @@ export default {
     spaceIndexes: "Index partitions",
     spaceLob: "LOB auxiliary partitions",
     spaceMetric: "Metric coverage",
-    spaceMetricHelp: "Source-reported table disk data and allocation. Space-usage data is compressed; legacy tablet data uses DATA_SIZE. Component snapshots list base, index and LOB partitions separately and are not added to the table metric. Not logical size, MemStore or all-replica storage. Missing components are unknown.",
+    spaceMetricHelp:
+      "Source-reported table disk data and allocation. Space-usage data is compressed; legacy tablet data uses DATA_SIZE. Component snapshots list base, index and LOB partitions separately and are not added to the table metric. Not logical size, MemStore or all-replica storage. Missing components are unknown.",
     spaceStatus: { available: "Available", unknown: "Unknown", permission_denied: "Permission denied", unsupported_or_denied: "Dictionary unavailable or inaccessible", error: "Collection failed" },
     all: "All",
     tables: "Tables",
