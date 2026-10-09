@@ -42,6 +42,16 @@ beforeEach(() => {
 });
 
 describe("OceanBase Oracle structure clone", () => {
+  it.each(["ALL_TAB_COLS", "ALL_IND_COLUMNS", "ALL_CONSTRAINTS"])("rejects short truncated %s metadata even without has_more", async (dictionary) => {
+    const original = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args: Parameters<typeof original>) => {
+      if (!args[2].includes(dictionary)) return original(...args);
+      const partial = dictionary === "ALL_TAB_COLS" ? result() : dictionary === "ALL_IND_COLUMNS" ? await original(...args) : result([["UQ_SOURCE", "U", "UQ_BACKING"]]);
+      return { ...partial, truncated: true, has_more: false };
+    });
+    await expect(buildDuplicateTableStructurePlan(options)).rejects.toThrow("Clone metadata was truncated. No DDL was executed.");
+    expect(api.buildCreateTableSql).not.toHaveBeenCalled();
+  });
   it("excludes UNIQUE backing indexes and reports foreign keys missing from the constraints API", async () => {
     api.listConstraints.mockResolvedValue([
       { name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["b", "a"], enabled: true, valid: true },

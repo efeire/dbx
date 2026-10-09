@@ -26,7 +26,7 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
   const query = async (sql: string) => {
     const result = await api.executeQuery(options.connectionId, options.database, sql, sourceSchema, undefined, { catalog: options.catalog, maxRows: 10001 });
     if (result.execution_error) throw new Error(result.error?.detail || "Unable to read clone metadata.");
-    if (result.rows.length >= 10001 || result.has_more) throw new Error("Clone metadata was truncated. No DDL was executed.");
+    if (result.truncated === true || result.rows.length >= 10001 || result.has_more) throw new Error("Clone metadata was truncated. No DDL was executed.");
     return result.rows;
   };
   if (!sourceSchema) {
