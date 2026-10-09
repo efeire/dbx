@@ -60,6 +60,25 @@ afterEach(() => {
 });
 
 describe("DataTransferProgressDialog", () => {
+  it("renders a successfully transferred DBLink with the existing success translation", async () => {
+    const tracker = useExportTracker();
+    const task = tracker.addDataTransferTask("link-result", "SOURCE → TARGET", 1);
+    const progress = { transferId: task.exportId, table: "L", tableIndex: 1, totalTables: 1, rowsTransferred: 1, totalRows: null, status: "done", terminal: false, error: null };
+    tracker.updateDataTransferTask(task.exportId, { ...progress, objectResult: { objectType: "DB_LINK", name: "L", schema: "TARGET", status: "transferred", sourceVerified: true } });
+    tracker.updateDataTransferTask(task.exportId, { ...progress, terminal: true });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const app = createApp({ render: () => h(DataTransferProgressDialog, { open: true, task }) });
+    mountedApps.push(app);
+    app.use(i18n);
+    app.mount(container);
+    await nextTick();
+    expect(task.status).toBe("Done");
+    expect(container.textContent).toContain("DB_LINK TARGET.L");
+    expect(container.textContent).toContain("Migrated and verified");
+    expect(container.textContent).not.toContain("objectResult_created");
+  });
+
   it("reports a public synonym privilege failure without losing the private synonym result", async () => {
     const tracker = useExportTracker();
     const task = tracker.addDataTransferTask("synonym-results", "SOURCE → TARGET", 2);
@@ -83,7 +102,18 @@ describe("DataTransferProgressDialog", () => {
   it("shows an invalid package and recovery without reporting it as transferred", async () => {
     const tracker = useExportTracker();
     const task = tracker.addDataTransferTask("package-result", "SOURCE → TARGET", 1);
-    tracker.updateDataTransferTask(task.exportId, { transferId: task.exportId, table: "P", tableIndex: 1, totalTables: 1, rowsTransferred: 0, totalRows: null, status: "error", terminal: false, error: "Compilation failed", objectResult: { objectType: "PACKAGE_BODY", name: "P", schema: "TARGET", status: "failed", compileStatus: "INVALID", sourceVerified: false, error: "PLS-00302", recovery: "Previous definition restored" } });
+    tracker.updateDataTransferTask(task.exportId, {
+      transferId: task.exportId,
+      table: "P",
+      tableIndex: 1,
+      totalTables: 1,
+      rowsTransferred: 0,
+      totalRows: null,
+      status: "error",
+      terminal: false,
+      error: "Compilation failed",
+      objectResult: { objectType: "PACKAGE_BODY", name: "P", schema: "TARGET", status: "failed", compileStatus: "INVALID", sourceVerified: false, error: "PLS-00302", recovery: "Previous definition restored" },
+    });
     tracker.updateDataTransferTask(task.exportId, { transferId: task.exportId, table: "", tableIndex: 1, totalTables: 1, rowsTransferred: 0, totalRows: null, status: "done", terminal: true, error: null });
     const container = document.createElement("div");
     document.body.append(container);

@@ -60,7 +60,11 @@ function freezeTransferRequest(request: TransferRequest): TransferRequest {
  * existing `rebuild.sql`.
  */
 export function transferPreviewSql(preview: TransferOwnershipPreview): string {
-  const objectSql = preview.schemaObjects?.items.filter((item) => item.action === "create" || item.action === "replace").map((item) => item.ddl).filter(Boolean).join("\n\n");
+  const objectSql = preview.schemaObjects?.items
+    .filter((item) => item.action === "create" || item.action === "replace")
+    .map((item) => item.ddl)
+    .filter(Boolean)
+    .join("\n\n");
   const sections = [preview.rebuild?.backupSql, preview.structure?.sql, objectSql, preview.rebuild?.cleanupSql].filter((section): section is string => Boolean(section));
   if (sections.length > 0) return sections.join("\n\n");
   return preview.rebuild?.sql ?? "";
@@ -118,7 +122,7 @@ export function createTransferSubmission(options: TransferSubmissionOptions) {
         }
         if (!(await options.confirm(request, preview)) || !isCurrent()) return false;
         if (preview.schemaObjects?.canExecute === false || preview.schemaObjects?.items.some((item) => item.action === "blocked")) return false;
-        if (request.databaseLinks?.some((config) => !config.credentialAvailable)) return false;
+        if (preview.schemaObjects?.items.some((item) => (item.action === "create" || item.action === "replace") && item.credentialRequired && !request.databaseLinks?.some((config) => config.objectType === item.objectType && config.name === item.name && config.credentialAvailable))) return false;
         options.execute(Object.freeze({ ...request, dropTargetConfirmed: request.dropTargetBeforeCreate }));
         return true;
       } catch (error) {
