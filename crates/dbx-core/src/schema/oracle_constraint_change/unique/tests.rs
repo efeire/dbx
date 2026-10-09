@@ -18,7 +18,7 @@ struct Fixture {
     index_uniqueness: Option<String>,
     index_status: Option<String>,
     ambiguous: bool,
-    readback_error: bool,
+    readback_error_after: Option<usize>,
 }
 struct Session {
     engine: Engine,
@@ -74,7 +74,7 @@ fn fixture_session(engine: Engine, request: &UniqueChange) -> Session {
             index_uniqueness: Some("UNIQUE".into()),
             index_status: Some("VALID".into()),
             ambiguous: false,
-            readback_error: false,
+            readback_error_after: None,
         }),
     }
 }
@@ -87,7 +87,7 @@ impl ConstraintSession for Session {
         let mut fixture = self.fixture.lock().unwrap();
         fixture.queries.push(sql.into());
         if sql.starts_with("SELECT c.CONSTRAINT_NAME") {
-            if fixture.readback_error && !fixture.writes.is_empty() {
+            if fixture.readback_error_after.is_some_and(|count| fixture.writes.len() >= count) {
                 return Err("dictionary unavailable".into());
             }
             return Ok(rows(
@@ -334,14 +334,36 @@ async fn failed_dictionary_readback_does_not_report_success_or_fabricate_recover
         let request = request();
         let session = fixture_session(engine, &request);
         let plan = preview_unique(&session, &request).await.unwrap();
-        session.fixture.lock().unwrap().readback_error = true;
+        session.fixture.lock().unwrap().readback_error_after = Some(plan.statements.len());
         let result = apply_unique(&session, &request, &plan.revision).await.unwrap();
         assert!(!result.success);
         assert!(result.refresh_error.is_some());
         assert!(result.current_constraint.is_none());
         assert!(result.recovery_statements.is_empty());
+        assert!(result.steps.iter().all(|step| step.success));
         assert_eq!(session.fixture.lock().unwrap().writes.len(), plan.statements.len());
     }
+}
+
+#[tokio::test]
+async fn dictionary_failure_before_original_unique_drop_stops_ddl_and_preserves_the_constraint() {
+    let request = request();
+    let session = fixture_session(Engine::Oracle, &request);
+    let plan = preview_unique(&session, &request).await.unwrap();
+    assert!(plan.statements[0].starts_with("CREATE INDEX"));
+    assert!(plan.statements[1].contains(" DROP CONSTRAINT "));
+    session.fixture.lock().unwrap().readback_error_after = Some(1);
+    let result = apply_unique(&session, &request, &plan.revision).await.unwrap();
+    assert!(!result.success);
+    assert!(result.refresh_error.is_some());
+    assert!(result.recovery_statements.is_empty());
+    assert_eq!(result.steps.len(), 2);
+    assert!(result.steps[0].success);
+    assert!(!result.steps[1].success);
+    assert!(result.steps[1].error.as_deref().unwrap().contains("dictionary unavailable"));
+    let fixture = session.fixture.lock().unwrap();
+    assert_eq!(fixture.writes, vec![plan.statements[0].clone()]);
+    assert_eq!(fixture.current.as_ref().unwrap().definition, key());
 }
 
 #[tokio::test]
