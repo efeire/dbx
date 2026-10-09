@@ -1605,9 +1605,10 @@ function isStandaloneSelectWildcard(sql: string, cursor: number, selectListColum
   return next.text === "," || next.text === ";" || (next.kind === "word" && SELECT_WILDCARD_FOLLOWING_CLAUSES.has(next.normalized));
 }
 
-export function prepareSqlCompletionReplacement(sql: string, cursor: number, context: Pick<SqlCompletionContext, "prefix" | "qualifier" | "replacementRange" | "selectListWildcardAfterCursor">, items: SqlCompletionItem[]): { from: number; items: SqlCompletionItem[] } {
+export function prepareSqlCompletionReplacement(sql: string, cursor: number, context: Pick<SqlCompletionContext, "prefix" | "prefixQuoted" | "qualifier" | "replacementRange" | "selectListWildcardAfterCursor">, items: SqlCompletionItem[]): { from: number; items: SqlCompletionItem[] } {
   const range = context.replacementRange;
-  const from = range && range.start >= 0 && range.start <= cursor && range.end === cursor ? range.start : cursor - context.prefix.length;
+  let from = range && range.start >= 0 && range.start <= cursor && range.end === cursor ? range.start : cursor - context.prefix.length;
+  if (!range && context.prefixQuoted && SQL_COMPLETION_CLOSING_QUOTES[sql[from - 1] ?? ""] && items.some((item) => item.type === "function")) from--;
   const closingQuote = from < cursor ? SQL_COMPLETION_CLOSING_QUOTES[sql[from] ?? ""] : undefined;
   const replaceClosingQuote = sql[cursor] === closingQuote ? closingQuote : undefined;
   const replaceSelectWildcard = from === cursor && context.selectListWildcardAfterCursor === true;
@@ -1617,6 +1618,8 @@ export function prepareSqlCompletionReplacement(sql: string, cursor: number, con
     items: items.map((item) => {
       let prepared = item;
       const apply = item.apply ?? item.label;
+      // The replacement includes the opening quote, so CodeMirror must match it too.
+      if (closingQuote && item.type === "function") prepared = { ...prepared, filterText: `${sql[from]}${item.label.replaceAll(closingQuote, closingQuote + closingQuote)}` };
       if (closingQuote && item.type === "column" && !(apply.startsWith(sql[from] ?? "") && apply.endsWith(closingQuote)) && (context.qualifier || !apply.includes("."))) {
         const escaped = apply.replaceAll(closingQuote, closingQuote + closingQuote);
         prepared = { ...prepared, apply: `${sql[from]}${escaped}${closingQuote}` };

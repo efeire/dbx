@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-import { CompletionContext, insertCompletionText, snippetCompletion } from "@codemirror/autocomplete";
-import { EditorState } from "@codemirror/state";
+import { acceptCompletion, autocompletion, CompletionContext, currentCompletions, insertCompletionText, snippetCompletion, startCompletion } from "@codemirror/autocomplete";
+import { EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { computed, reactive, shallowRef } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -118,6 +118,18 @@ describe.each([false, true])("OceanBase standalone routine completion (semantic=
     if (typeof option.apply === "function") option.apply(currentView, option, result!.from, currentView.state.doc.length);
     else currentView.dispatch(insertCompletionText(currentView.state, option.apply ?? option.label, result!.from, currentView.state.doc.length));
     expect(currentView.state.doc.toString()).toBe('CALL "Mixed.Owner"."Do.Work"()');
+  });
+
+  it.each(['CALL "Wild%_', 'CALL "APP"."Wild%_'])("shows and accepts a quoted wildcard routine after %s", async (sql) => {
+    const { provide, store, currentView } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", database: "OB", schema: "APP", modelValue: sql }, undefined, semanticCompletionEnabled);
+    store.listCompletionObjects.mockResolvedValue([{ name: "Wild%_Proc", schema: "APP", type: "procedure" }]);
+    currentView.dispatch({ effects: StateEffect.appendConfig.of(autocompletion({ override: [() => provide()] })) });
+    startCompletion(currentView);
+    await vi.waitFor(() => expect(currentCompletions(currentView.state).some((option) => (option.displayLabel ?? option.label) === "Wild%_Proc")).toBe(true));
+    expect(store.listCompletionObjects).toHaveBeenCalledWith("connection", "OB", "Wild%_", 100, "APP", undefined, expect.any(Boolean), "APP", expect.any(Array), true);
+    expect(document.querySelector('[role="listbox"]')).not.toBeNull();
+    await vi.waitFor(() => expect(acceptCompletion(currentView)).toBe(true));
+    expect(currentView.state.doc.toString()).toBe(sql.startsWith('CALL "APP".') ? 'CALL "APP"."Wild%_Proc"()' : 'CALL "Wild%_Proc"()');
   });
 
   it("drops a routine response when the request is invalidated", async () => {
