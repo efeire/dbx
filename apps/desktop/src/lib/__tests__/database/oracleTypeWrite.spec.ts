@@ -99,6 +99,22 @@ describe("Oracle type write execution", () => {
     const actual = await executeTypeWritePlan(io, plan);
     expect(actual.state).toBe("invalid"); expect(actual.sent).toHaveLength(1); expect(io.execute).toHaveBeenCalledTimes(1);
   });
+  it("stops when a VALID readback belongs to a different definition", async () => {
+    const plan = prepareTypeWritePlan("oracle", target, empty(), { TYPE: spec, TYPE_BODY: body });
+    const { io, current } = ioFor(empty());
+    vi.mocked(io.execute).mockImplementation(async () => { current.definitions.push(definition({ source: spec.replace("20", "80") })); return result([], []); });
+    const actual = await executeTypeWritePlan(io, plan);
+    expect(actual.state).toBe("changed"); expect(actual.sent).toHaveLength(1); expect(io.execute).toHaveBeenCalledTimes(1);
+  });
+  it.each(["TYPE", "TYPE_BODY"] as const)("reads back the absence after deleting %s", async (kind) => {
+    const before = { definitions: [definition(), definition({ kind: "TYPE_BODY", source: body, objectId: "2" })], references: [] };
+    const plan = prepareTypeWritePlan("oracle", target, before, {}, kind);
+    const { io, current } = ioFor(before);
+    vi.mocked(io.execute).mockImplementation(async () => { current.definitions = kind === "TYPE" ? [] : current.definitions.filter((item) => item.kind !== kind); return result([], []); });
+    const actual = await executeTypeWritePlan(io, plan);
+    expect(actual.state).toBe("complete"); expect(actual.sent[0].action).toBe("drop");
+    expect(actual.after?.definitions.some((item) => item.kind === kind)).toBe(false);
+  });
   it("keeps original definitions and attempts readback after a failed DDL", async () => {
     const before = { definitions: [definition()], references: [] };
     const plan = prepareTypeWritePlan("oracle", target, before, { TYPE: spec.replace("20", "40") });

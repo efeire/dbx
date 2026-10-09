@@ -148,6 +148,8 @@ export async function executeTypeWritePlan(io: TypeWriteIO, plan: TypeWritePlan)
         if (actual || (step.kind === "TYPE" && result.after.definitions.length)) return { ...result, message: "The object is still present after DROP." };
       } else {
         if (!actual || actual.status !== "VALID" || result.errors.some((row) => row.TYPE === step.kind.replaceAll("_", " ") && row.ATTRIBUTE !== "WARNING")) return { ...result, state: "invalid", message: "The saved definition was not confirmed VALID." };
+        const semanticDefinition = (source: string) => JSON.stringify(tokenizeSqlSemantic(typeDefinitionSql(source, plan.target, step.kind, false), "oracle").filter((token) => token.kind !== "comment").map((token) => token.kind === "word" ? token.normalized : token.text));
+        if (semanticDefinition(actual.source) !== semanticDefinition(step.sql)) return { ...result, state: "changed", message: "The readback definition differs from the sent definition. Remaining steps were not sent." };
       }
     }
     if (result.after?.definitions.some((item) => item.status !== "VALID") || result.errors.some((row) => row.ATTRIBUTE !== "WARNING")) return { ...result, state: "invalid", message: "The specification and body were not both confirmed VALID." };
