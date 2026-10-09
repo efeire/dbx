@@ -52,6 +52,7 @@ pub(super) fn build_create_table_sql_with_partition_clause(
     options.table_name = clean(&options.table_name);
     strip_inherited_mysql_column_charsets(&mut options);
     let mut warnings = Vec::new();
+    warnings.extend(super::oceanbase_indexes::validate(&options));
     warnings.extend(validate_mysql_engine(&options));
     // Fail closed: a concurrent-index request on a partitioned parent (or on an
     // existing index in a hand-built draft) is refused up front instead of
