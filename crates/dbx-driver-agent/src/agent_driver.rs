@@ -5771,7 +5771,7 @@ for line in sys.stdin:
             blob_parameters: vec!["00ff80".into()],
         }];
         let error =
-            client.execute_blob_bound_typed::<Value>(None, &previews, &bound, None, false, None).await.unwrap_err();
+            client.execute_blob_bound_typed::<serde_json::Value>(None, &previews, &bound, None, false, None).await.unwrap_err();
         assert!(error.into_legacy_string().contains("does not support bound BLOB"));
         assert_eq!(client.next_id, 0);
         client.handshake = Some(AgentHandshake {
@@ -5780,7 +5780,7 @@ for line in sys.stdin:
             capabilities: vec!["blob_bind_statements_v1".into()],
         });
         let error = client
-            .execute_blob_bound_typed::<Value>(None, &["edited SQL".into()], &bound, None, true, None)
+            .execute_blob_bound_typed::<serde_json::Value>(None, &["edited SQL".into()], &bound, None, true, None)
             .await
             .unwrap_err();
         assert!(error.into_legacy_string().contains("changed"));
