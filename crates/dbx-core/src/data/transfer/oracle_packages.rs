@@ -66,6 +66,13 @@ struct PackageBackup {
     definitions: Vec<(String, String)>,
 }
 
+fn manual_recovery(backup: &PackageBackup, path: &str) -> String {
+    format!(
+        "No automatic restoration was executed. Wait for pending DDL to finish and compare current source before explicitly restoring the backup on connection {} in schema {}; verify VALID, ALL_ERRORS and full source afterward. Backup retained at {path}",
+        backup.connection_id, backup.schema
+    )
+}
+
 fn is_package(kind: TransferObjectKind) -> bool {
     matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody)
 }
@@ -765,10 +772,7 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
                 } else if let Some(path) = backup_path {
                     // A failed response does not prove that the DDL stopped. Replaying the
                     // backup could race with an unfinished write or overwrite a concurrent edit.
-                    result.recovery = Some(format!(
-                        "No automatic restoration was executed. Wait for pending DDL to finish and compare current source before explicitly restoring the backup on connection {} in schema {}; verify VALID, ALL_ERRORS and full source afterward. Backup retained at {path}",
-                        backup.connection_id, backup.schema
-                    ));
+                    result.recovery = Some(manual_recovery(&backup, &path));
                 } else {
                     result.recovery =
                         Some("New target definition retained for inspection; no DROP was executed".into());
@@ -822,6 +826,30 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uncertain_failed_write_preserves_both_definitions_for_explicit_recovery() {
+        let backup = PackageBackup {
+            connection_id: "target-connection".into(),
+            schema: "Mixed.Target".into(),
+            name: "P".into(),
+            definitions: vec![
+                ("PACKAGE".into(), "PACKAGE P AS END;".into()),
+                ("PACKAGE BODY".into(), "PACKAGE BODY P AS secret varchar2(20) := 'private'; END;".into()),
+            ],
+        };
+        // Producing failure guidance has no pool/executor, and leaves the exact old
+        // specification/body available for recovery after the pending write finishes.
+        let before = serde_json::to_value(&backup).unwrap();
+        let guidance = manual_recovery(&backup, "backup.json");
+        assert_eq!(serde_json::to_value(&backup).unwrap(), before);
+        assert!(guidance.contains("No automatic restoration was executed"));
+        assert!(guidance.contains("Wait for pending DDL to finish and compare current source"));
+        assert!(guidance.contains("explicitly restoring the backup on connection target-connection in schema Mixed.Target"));
+        assert!(guidance.contains("VALID, ALL_ERRORS and full source"));
+        assert!(guidance.contains("backup.json"));
+        assert!(!guidance.contains("private"));
+    }
+
     #[test]
     fn maps_only_the_package_header() {
         let source = "CREATE OR REPLACE PACKAGE BODY \"S\".\"P\" AS\nPROCEDURE x IS BEGIN dbms_output.put_line(q'[\"S\".x]'); END; END;\n/";
