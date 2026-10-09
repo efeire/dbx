@@ -1395,7 +1395,7 @@ describe("useDataGridEditor saveChanges reload", () => {
 
   it("loads complete original baselines before generating forward and rollback SQL", async () => {
     const source = { columns: ["id", "status"], rows: [[1, "LOB preview"]] as CellValue[][] };
-    const prepareSaveBaseline = vi.fn(async (changes) => {
+    const prepareSaveBaseline = vi.fn(async (changes: Parameters<NonNullable<import("@/composables/useDataGridEditor").UseDataGridEditorOptions["prepareSaveBaseline"]>>[0]) => {
       expect(changes.dirtyRows.get(0).get(1)).toBeNull();
       source.rows[0]![1] = "complete original LOB";
     });
