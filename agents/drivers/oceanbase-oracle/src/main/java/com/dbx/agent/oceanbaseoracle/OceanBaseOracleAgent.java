@@ -101,7 +101,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     public QueryResult executeBlobBoundStatements(List<String> previews, List<BlobBoundStatement> statements,
         String schema, int timeoutSecs, boolean transaction) {
         return BlobBoundExecutor.execute(requireConnected(), previews, statements, schema,
-            this::setSchemaSQL, this::resetSchemaSQL, timeoutSecs, transaction);
+            this::setSchemaSQL, this::resetSchemaSQL, timeoutSecs, transaction, OceanBaseLobStatements::configure);
     }
 
     @Override

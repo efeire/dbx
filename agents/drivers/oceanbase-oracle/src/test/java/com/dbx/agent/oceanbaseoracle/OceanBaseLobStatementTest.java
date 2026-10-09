@@ -1,6 +1,8 @@
 package com.dbx.agent.oceanbaseoracle;
 
 import com.dbx.agent.JdbcExecutor;
+import com.dbx.agent.BlobBoundExecutor;
+import com.dbx.agent.BlobBoundStatement;
 import com.oceanbase.jdbc.OceanBaseConnection;
 import com.oceanbase.jdbc.OceanBaseStatement;
 import com.oceanbase.jdbc.internal.protocol.Protocol;
@@ -11,6 +13,7 @@ import java.sql.Blob;
 import java.sql.CallableStatement;
 import java.sql.Clob;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
@@ -21,6 +24,91 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class OceanBaseLobStatementTest {
+    @Test
+    void boundPreparedAndCallableInitializeNativeModeBeforeStreamBindingThroughPool() throws Exception {
+        for (boolean callable : new boolean[]{false, true}) {
+            List<String> calls = new ArrayList<>();
+            Options options = new Options();
+            Protocol protocol = proxy(Protocol.class, (object, method, args) -> {
+                if (method.getName().equals("getOptions")) return options;
+                if (method.getName().equals("getLock")) return new ReentrantLock();
+                return defaultValue(method.getReturnType());
+            });
+            OceanBaseStatement vendor = new OceanBaseStatement(new OceanBaseConnection(protocol), 1003, 1007, null);
+            java.lang.reflect.InvocationHandler handler = (object, method, args) -> {
+                switch (method.getName()) {
+                    case "unwrap": return ((Class<?>) args[0]).cast(vendor);
+                    case "isWrapperFor": return ((Class<?>) args[0]).isInstance(vendor);
+                    case "setBlob":
+                        assertTrue(vendor.isInternal(), "native mode must precede the first stream binding");
+                        assertEquals(3L, args[2]);
+                        assertArrayEquals(new byte[]{0, (byte)255, (byte)128}, ((java.io.InputStream) args[1]).readAllBytes());
+                        calls.add("bind"); return null;
+                    case "execute": assertTrue(JdbcExecutor.current().hasActiveStatements()); calls.add("execute"); return false;
+                    case "getUpdateCount": return 1;
+                    case "close": calls.add("close"); return null;
+                    default: return defaultValue(method.getReturnType());
+                }
+            };
+            PreparedStatement delegate = callable ? proxy(CallableStatement.class, handler) : proxy(PreparedStatement.class, handler);
+            Connection physical = proxy(Connection.class, (object, method, args) -> {
+                if (method.getName().equals(callable ? "prepareCall" : "prepareStatement")) return delegate;
+                if (method.getName().equals("getAutoCommit") || method.getName().equals("isValid")) return true;
+                if (method.getName().equals("getTransactionIsolation")) return Connection.TRANSACTION_READ_COMMITTED;
+                return defaultValue(method.getReturnType());
+            });
+            DataSource source = proxy(DataSource.class, (object, method, args) -> method.getName().equals("getConnection") ? physical : defaultValue(method.getReturnType()));
+            String sql = callable ? "BEGIN UPDATE t SET b = ?; END;" : "UPDATE t SET b = ?";
+            try (HikariDataSource pool = new HikariDataSource()) {
+                pool.setDataSource(source); pool.setMaximumPoolSize(1); pool.setMinimumIdle(0);
+                try (Connection connection = pool.getConnection()) {
+                    BlobBoundExecutor.execute(connection, List.of("preview"),
+                        List.of(new BlobBoundStatement("preview", sql, List.of("00ff80"))),
+                        null, ignored -> null, () -> null, 20, false, OceanBaseLobStatements::configure);
+                }
+            }
+            assertEquals(List.of("bind", "execute", "close"), calls);
+            assertFalse(JdbcExecutor.current().hasActiveStatements());
+        }
+    }
+
+    @Test
+    void boundNativeInitializationFailureClosesEntirePreparedBatchBeforeAnyWrite() {
+        List<String> calls = new ArrayList<>();
+        Options options = new Options();
+        Protocol protocol = proxy(Protocol.class, (object, method, args) -> {
+            if (method.getName().equals("getOptions")) return options;
+            if (method.getName().equals("getLock")) return new ReentrantLock();
+            return defaultValue(method.getReturnType());
+        });
+        OceanBaseStatement vendor = new OceanBaseStatement(new OceanBaseConnection(protocol), 1003, 1007, null);
+        int[] prepared = {0};
+        Connection connection = proxy(Connection.class, (object, method, args) -> {
+            if (method.getName().equals("getAutoCommit")) return true;
+            if (method.getName().equals("prepareStatement")) {
+                int index = ++prepared[0];
+                return proxy(PreparedStatement.class, (o, m, a) -> {
+                    if (m.getName().equals("unwrap")) {
+                        if (index == 2) throw new SQLException("unsupported native wrapper");
+                        return vendor;
+                    }
+                    if (m.getName().equals("close")) calls.add("close" + index);
+                    if (m.getName().equals("execute")) calls.add("write" + index);
+                    return defaultValue(m.getReturnType());
+                });
+            }
+            return defaultValue(method.getReturnType());
+        });
+        RuntimeException error = assertThrows(RuntimeException.class, () -> BlobBoundExecutor.execute(connection,
+            List.of("first", "second"), List.of(new BlobBoundStatement("first", "UPDATE t SET b = ?", List.of("00")),
+                new BlobBoundStatement("second", "UPDATE t SET b = ?", List.of("01"))),
+            null, ignored -> null, () -> null, 20, false, OceanBaseLobStatements::configure));
+        assertEquals("Unsupported OceanBase LOB statement", error.getCause().getMessage());
+        assertEquals(2, calls.size());
+        assertTrue(calls.containsAll(List.of("close1", "close2")));
+        assertFalse(JdbcExecutor.current().hasActiveStatements());
+    }
+
     @Test
     void serverLengthMarksExactLastChunkAndPastEndWithoutHidingReadErrors() throws Exception {
         for (boolean binary : new boolean[]{false, true}) {

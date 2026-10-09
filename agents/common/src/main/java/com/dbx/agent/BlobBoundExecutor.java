@@ -5,6 +5,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.sql.Savepoint;
+import java.sql.SQLException;
 import java.sql.SQLTransientConnectionException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -16,9 +17,21 @@ import java.util.function.Supplier;
 public final class BlobBoundExecutor {
     private BlobBoundExecutor() { }
 
+    @FunctionalInterface
+    public interface PreparedStatementConfigurer {
+        void configure(PreparedStatement statement) throws SQLException;
+    }
+
     public static QueryResult execute(Connection conn, List<String> previews, List<BlobBoundStatement> statements,
         String schema, Function<String, String> setSchemaSql, Supplier<String> resetSchemaSql,
         int timeoutSecs, boolean transaction) {
+        return execute(conn, previews, statements, schema, setSchemaSql, resetSchemaSql, timeoutSecs,
+            transaction, statement -> { });
+    }
+
+    public static QueryResult execute(Connection conn, List<String> previews, List<BlobBoundStatement> statements,
+        String schema, Function<String, String> setSchemaSql, Supplier<String> resetSchemaSql,
+        int timeoutSecs, boolean transaction, PreparedStatementConfigurer configurer) {
         BlobBoundStatement.validate(previews, statements);
         if (timeoutSecs < 0) throw new IllegalArgumentException("BLOB binding timeout must be non-negative");
         try (JdbcExecutor.NativeOperation operation = JdbcExecutor.current().beginNativeOperation()) {
@@ -36,7 +49,7 @@ public final class BlobBoundExecutor {
             boolean discarded = false;
             try {
                 long start = System.currentTimeMillis();
-                long affected = executeAll(conn, statements, schema, setSchemaSql, resetSchemaSql, timeoutSecs, operation);
+                long affected = executeAll(conn, statements, schema, setSchemaSql, resetSchemaSql, timeoutSecs, operation, configurer);
                 operation.checkCancelled();
                 if (transaction) conn.commit();
                 if (savepoint != null) conn.releaseSavepoint(savepoint);
@@ -89,7 +102,7 @@ public final class BlobBoundExecutor {
 
     private static long executeAll(Connection conn, List<BlobBoundStatement> statements, String schema,
         Function<String, String> setSchemaSql, Supplier<String> resetSchemaSql, int timeoutSecs,
-        JdbcExecutor.NativeOperation operation) throws Exception {
+        JdbcExecutor.NativeOperation operation, PreparedStatementConfigurer configurer) throws Exception {
         JdbcExecutor executor = JdbcExecutor.current();
         try (BoundResources resources = new BoundResources()) {
             operation.checkCancelled();
@@ -102,6 +115,7 @@ public final class BlobBoundExecutor {
                 resources.statements.add(executor.trackStatement(statement));
                 statement.setQueryTimeout(timeoutSecs);
                 if (statement instanceof PreparedStatement prepared) {
+                    configurer.configure(prepared);
                     int index = 1;
                     for (String hex : bound.blobParameters()) {
                         InputStream stream = new HexStream(hex);

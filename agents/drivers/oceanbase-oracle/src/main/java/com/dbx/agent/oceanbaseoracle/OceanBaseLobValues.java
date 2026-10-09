@@ -1,7 +1,6 @@
 package com.dbx.agent.oceanbaseoracle;
 
 import com.dbx.agent.JdbcExecutor;
-import com.oceanbase.jdbc.OceanBaseStatement;
 import com.oceanbase.jdbc.DbxLobResourceBytes;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
@@ -167,15 +166,7 @@ final class OceanBaseLobValues {
             + "v_buffer " + (binary ? "RAW(32767)" : "VARCHAR2(32767)") + "; v_length INTEGER; BEGIN v_length := DBMS_LOB.GETLENGTH(v_lob); "
             + "IF v_offset > v_length THEN v_amount := 0; ELSE DBMS_LOB.READ(v_lob,v_amount,v_offset,v_buffer); END IF; "
             + "? := v_amount; ? := v_buffer; ? := v_length; END;")) {
-            OceanBaseStatement vendor;
-            try {
-                vendor = call instanceof OceanBaseStatement ? (OceanBaseStatement) call : call.unwrap(OceanBaseStatement.class);
-            } catch (SQLException error) {
-                throw new SQLException("Unsupported OceanBase LOB statement", error);
-            }
-            if (vendor == null) throw new SQLException("Unsupported OceanBase LOB statement");
-            // Only the vendor flag bypasses the pool proxy; lifecycle and cancellation stay on call.
-            vendor.setInternal();
+            OceanBaseLobStatements.configure(call);
             if (binary) call.setBlob(1, (Blob) locator);
             else call.setClob(1, (Clob) locator);
             call.setInt(2, limit);
