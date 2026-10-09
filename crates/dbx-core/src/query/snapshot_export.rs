@@ -271,7 +271,7 @@ fn csv_needs_quotes(mut reader: impl Read) -> Result<bool, String> {
 // Same cell-level guard as dbx-formats, including negative decimals and literal
 // apostrophes, without retaining leading spaces/zeroes or the complete cell.
 fn stream_formula_guard(reader: impl Read) -> Result<bool, String> {
-    let mut bytes = reader.bytes();
+    let mut bytes = BufReader::new(reader).bytes();
     let mut next = || bytes.next().transpose().map_err(|e| e.to_string());
     let mut byte = next()?;
     if byte == Some(b'\'') {
@@ -344,6 +344,37 @@ mod tests {
             dbx_formats::csv_export::push_formula_guard(&mut expected, value);
             assert_eq!(stream_formula_guard(value.as_bytes()).unwrap(), !expected.is_empty(), "{value}");
         }
+    }
+    #[test]
+    fn streamed_guard_buffers_reads_and_preserves_long_cell_boundaries() {
+        struct CountingReader<'a> {
+            data: &'a [u8],
+            reads: usize,
+        }
+        impl Read for CountingReader<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                self.data.read(buffer)
+            }
+        }
+        for value in [
+            format!("{}=cmd", " ".repeat(16385)),
+            format!("-{}1", "0".repeat(16385)),
+            format!("{}中🙂", " ".repeat(16385)),
+        ] {
+            let mut reader = CountingReader { data: value.as_bytes(), reads: 0 };
+            let mut expected = String::new();
+            dbx_formats::csv_export::push_formula_guard(&mut expected, &value);
+            assert_eq!(stream_formula_guard(&mut reader).unwrap(), !expected.is_empty());
+            assert!(reader.reads < 16, "reader performed {} reads", reader.reads);
+        }
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("snapshot read failed"))
+            }
+        }
+        assert_eq!(stream_formula_guard(FailingReader).unwrap_err(), "snapshot read failed");
     }
     #[test]
     fn escapes_chunk_boundaries_without_changing_utf8_or_binary_hex() {
