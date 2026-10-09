@@ -21,6 +21,24 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OceanBaseLobStatementTest {
     @Test
+    void emptyLocatorReturnsEmptyEofWithoutCallingDbmsLobRead() throws Exception {
+        Clob locator = proxy(Clob.class, (object, method, args) -> {
+            if (method.getName().equals("length")) return 0L;
+            throw new AssertionError("Empty LOB must not be materialized");
+        });
+        Connection connection = proxy(Connection.class, (object, method, args) -> {
+            if (method.getName().equals("prepareCall")) throw new SQLException("ORA-06502: no data found", "HY000", 6502);
+            throw new AssertionError("Empty LOB must not execute a statement");
+        });
+        var chunk = OceanBaseLobValues.read(connection, locator, 0, 257);
+        assertEquals("", chunk.data());
+        assertEquals(0, chunk.next_offset());
+        assertTrue(chunk.eof());
+        assertEquals("text", chunk.value_kind());
+        assertFalse(JdbcExecutor.current().hasActiveStatements());
+    }
+
+    @Test
     void pooledCallableUnwrapsVendorOnlyForInternalFlagAndKeepsLifecycleOnProxy() throws Exception {
         {
             List<String> calls = new ArrayList<>();
@@ -31,7 +49,7 @@ class OceanBaseLobStatementTest {
                 return defaultValue(method.getReturnType());
             });
             OceanBaseStatement vendor = new OceanBaseStatement(new OceanBaseConnection(protocol), 1003, 1007, null);
-            Clob locator = proxy(Clob.class, (o, m, a) -> defaultValue(m.getReturnType()));
+            Clob locator = proxy(Clob.class, (o, m, a) -> m.getName().equals("length") ? 8L : defaultValue(m.getReturnType()));
             CallableStatement delegate = proxy(CallableStatement.class, (object, method, args) -> {
                 switch (method.getName()) {
                     case "unwrap": return ((Class<?>) args[0]).cast(vendor);
@@ -85,7 +103,7 @@ class OceanBaseLobStatementTest {
             return defaultValue(method.getReturnType());
         });
         Connection connection = proxy(Connection.class, (object, method, args) -> method.getName().equals("prepareCall") ? call : defaultValue(method.getReturnType()));
-        SQLException error = assertThrows(SQLException.class, () -> OceanBaseLobValues.read(connection, proxy(Clob.class, (o, m, a) -> null), 0, 1));
+        SQLException error = assertThrows(SQLException.class, () -> OceanBaseLobValues.read(connection, proxy(Clob.class, (o, m, a) -> m.getName().equals("length") ? 1L : null), 0, 1));
         assertEquals("Unsupported OceanBase LOB statement", error.getMessage());
         assertEquals(List.of("close"), calls);
         assertFalse(JdbcExecutor.current().hasActiveStatements());

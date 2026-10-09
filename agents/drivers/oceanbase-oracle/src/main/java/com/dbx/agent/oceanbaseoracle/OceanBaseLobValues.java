@@ -145,6 +145,9 @@ final class OceanBaseLobValues {
     }
 
     static Chunk read(Connection connection, Clob locator, long offset, int limit) throws SQLException {
+        // OceanBase READ raises ORA-06502 for empty LOBs. Only zero is safe here:
+        // JDBC CLOB length counts UTF-16 units while READ offsets count code points.
+        if (locator.length() == 0) return new Chunk("ok", "", offset, true, "text");
         try (CallableStatement call = connection.prepareCall("{call DBMS_LOB.READ(?, ?, ?, ?)}")) {
             OceanBaseStatement vendor;
             try {
