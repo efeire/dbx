@@ -29,6 +29,15 @@ export interface OracleTriggerDefinition {
   replace: boolean;
 }
 
+export function oracleTriggerOwner(trigger: { name: string; owner?: string | null; statement?: string | null }): string | undefined {
+  if (trigger.owner) return trigger.owner;
+  if (!trigger.statement) return undefined;
+  try {
+    const definition = parseOracleTriggerDefinition(trigger.statement);
+    return definition.name === trigger.name ? definition.schema : undefined;
+  } catch { return undefined; }
+}
+
 // Keep source offsets, including comments and whitespace, so unchanged fields
 // do not pass through a serializer. Oracle q/nq literals can contain apostrophes.
 function scan(source: string): Token[] {

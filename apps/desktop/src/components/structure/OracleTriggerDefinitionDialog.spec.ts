@@ -31,14 +31,15 @@ async function mountDialog() {
   useConnectionStore().connections = [connection];
   const changed = vi.fn();
   const database = ref("APP");
+  const owner = ref("APP");
   const container = document.createElement("div");
   document.body.append(container);
-  const app = createApp({ setup: () => () => h(OracleTriggerDefinitionDialog, { open: true, connectionId: "ob", database: database.value, schema: "APP", name: "T", tableSchema: "APP", tableName: "DATA", onChanged: changed }) });
+  const app = createApp({ setup: () => () => h(OracleTriggerDefinitionDialog, { open: true, connectionId: "ob", database: database.value, schema: owner.value, name: "T", tableSchema: "APP", tableName: "DATA", onChanged: changed }) });
   app.use(pinia); app.use(i18n); app.mount(container); mounted.push(app);
   await vi.waitFor(() => expect(document.querySelectorAll("textarea").length).toBeGreaterThan(0));
   await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenCalled());
   await vi.waitFor(() => expect(document.querySelectorAll("input").length).toBeGreaterThan(1));
-  return { changed, database, safety: useProductionSafetyStore() };
+  return { changed, database, owner, safety: useProductionSafetyStore() };
 }
 beforeEach(() => {
   storage.clear(); vi.clearAllMocks();
@@ -52,6 +53,33 @@ afterEach(() => {
 });
 
 describe("complete trigger definition dialog", () => {
+  it("saves and restores state using the trigger owner while checking the independent table owner", async () => {
+    const { owner, safety, changed } = await mountDialog();
+    const otherSource = original.replace("TRIGGER APP.T", "TRIGGER OTHER.T");
+    vi.mocked(api.getObjectSource).mockResolvedValue({ source: otherSource } as any);
+    owner.value = "OTHER";
+    await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenLastCalledWith("ob", "APP", "OTHER", "T", "TRIGGER"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("OTHER.T"));
+    vi.mocked(api.executeQuery)
+      .mockResolvedValueOnce({ columns: [], rows: [["VALID", "ENABLED", "APP", "DATA"]] } as any)
+      .mockResolvedValueOnce({ columns: [], rows: [] } as any)
+      .mockResolvedValueOnce({ columns: [], rows: [["VALID", "DISABLED", "APP", "DATA"]] } as any)
+      .mockResolvedValueOnce({ columns: [], rows: [] } as any)
+      .mockResolvedValueOnce({ columns: [], rows: [["VALID", "ENABLED", "APP", "DATA"]] } as any);
+    click("structureEditor.triggerPreviewDefinition"); await nextTick();
+    click("common.save");
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+    const sql = vi.mocked(api.executeQuery).mock.calls.map((call) => call[2]);
+    expect(sql[0]).toContain("o.OWNER = 'OTHER'");
+    expect(sql[1]).toContain("TRIGGER OTHER.T");
+    expect(sql[1]).toContain("ON APP.DATA");
+    expect(sql[3]).toBe('ALTER TRIGGER "OTHER"."T" ENABLE');
+    expect([...storage.keys()][0]).toContain("OTHER");
+    expect(api.executeQuery).toHaveBeenCalledTimes(5);
+  });
+
   it("reloads the same object identity after a database change and clears stale source on failure", async () => {
     const { database } = await mountDialog();
     const body = [...document.querySelectorAll("textarea")].at(-1)!;

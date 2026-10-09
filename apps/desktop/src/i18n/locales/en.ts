@@ -5560,6 +5560,7 @@ export default {
     triggerName: "Trigger",
     triggerStatement: "Trigger statement",
     editTriggerDefinition: "Edit trigger definition",
+    triggerOwnerUnknown: "The trigger owner could not be identified. Refresh its metadata before editing; the table owner cannot identify the trigger owner.",
     triggerStructuredMode: "Structured fields",
     triggerSourceMode: "Complete source",
     triggerPreviewDefinition: "Preview complete DDL",

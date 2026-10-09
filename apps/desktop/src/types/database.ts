@@ -1194,6 +1194,7 @@ export interface ForeignKeyInfo {
 
 export interface TriggerInfo {
   name: string;
+  owner?: string | null;
   event: string;
   timing: string;
   level?: string | null;

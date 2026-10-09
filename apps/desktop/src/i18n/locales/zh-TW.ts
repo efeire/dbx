@@ -4524,6 +4524,7 @@ export default withEnglishFallback({
     triggerName: "觸發器名稱",
     triggerStatement: "觸發語句",
     editTriggerDefinition: "編輯觸發器定義",
+    triggerOwnerUnknown: "無法確認觸發器擁有者，請重新整理中繼資料後重試。不會使用資料表擁有者代替觸發器擁有者。",
     triggerStructuredMode: "結構化欄位",
     triggerSourceMode: "完整原始碼",
     triggerPreviewDefinition: "預覽完整 DDL",

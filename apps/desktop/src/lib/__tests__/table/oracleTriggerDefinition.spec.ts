@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOracleTriggerDefinition, prepareDisabledOracleTriggerReplacement, prepareOracleTriggerReplacement, updateOracleTriggerDefinition } from "@/lib/table/oracleTriggerDefinition";
+import { oracleTriggerOwner, parseOracleTriggerDefinition, prepareDisabledOracleTriggerReplacement, prepareOracleTriggerReplacement, updateOracleTriggerDefinition } from "@/lib/table/oracleTriggerDefinition";
 
 const source = `-- original header
 CREATE OR REPLACE TRIGGER "APP"."Quoted Trigger"
@@ -15,6 +15,13 @@ END;
 /`;
 
 describe("Oracle complete trigger definition editing", () => {
+  it("uses the exact trigger owner and does not infer it from an unqualified or mismatched source", () => {
+    expect(oracleTriggerOwner({ name: "T", owner: " Other Owner ", statement: "invalid source" })).toBe(" Other Owner ");
+    expect(oracleTriggerOwner({ name: "T", statement: "CREATE TRIGGER OTHER.T BEFORE INSERT ON APP.DATA BEGIN NULL; END;" })).toBe("OTHER");
+    expect(oracleTriggerOwner({ name: "T", statement: "CREATE TRIGGER T BEFORE INSERT ON APP.DATA BEGIN NULL; END;" })).toBeUndefined();
+    expect(oracleTriggerOwner({ name: "T", statement: "CREATE TRIGGER OTHER.UNRELATED BEFORE INSERT ON APP.DATA BEGIN NULL; END;" })).toBeUndefined();
+    expect(oracleTriggerOwner({ name: "T" })).toBeUndefined();
+  });
   it("round-trips comments, aliases, WHEN, body and quoted names without serialization", () => {
     const parsed = parseOracleTriggerDefinition(source);
     expect(parsed).toMatchObject({ structured: true, schema: "APP", name: "Quoted Trigger", tableName: "Data Table" });

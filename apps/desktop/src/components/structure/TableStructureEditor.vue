@@ -5,6 +5,7 @@ import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
 import StructureIndexColumnPicker from "./StructureIndexColumnPicker.vue";
 import OracleTriggerDefinitionDialog from "./OracleTriggerDefinitionDialog.vue";
+import { oracleTriggerOwner } from "@/lib/table/oracleTriggerDefinition";
 
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from "vue";
 import { uuid } from "@/lib/common/utils";
@@ -4806,10 +4807,14 @@ const canEditTriggers = computed(() => structureDialect.value === "mysql" || str
 const isOracleTriggerEditor = computed(() => structureDialect.value === "oracle");
 const triggerDefinitionOpen = ref(false);
 const triggerDefinitionName = ref("");
+const triggerDefinitionSchema = ref("");
 const canEditFullTriggerDefinition = computed(() => databaseType.value === "oracle" || databaseType.value === "oceanbase-oracle");
 function openTriggerDefinition(trigger: EditableStructureTrigger) {
   if (!trigger.original || trigger.markedForDrop || triggersLoading.value) return;
+  const owner = oracleTriggerOwner(trigger.original);
+  if (!owner) { errorMessage.value = t("structureEditor.triggerOwnerUnknown"); return; }
   triggerDefinitionName.value = trigger.original.name;
+  triggerDefinitionSchema.value = owner;
   triggerDefinitionOpen.value = true;
 }
 async function refreshAfterTriggerDefinitionSave() {
@@ -6597,7 +6602,7 @@ watch(
                       @blur="renamingTriggerId = null"
                     />
                   </template>
-                  <span v-else class="min-w-0 flex-1 truncate font-mono" :class="trigger.name ? '' : 'italic text-muted-foreground'" :title="trigger.name || t('structureEditor.triggerName')">{{ trigger.name || t("structureEditor.triggerName") }}</span>
+                  <span v-else class="min-w-0 flex-1 truncate font-mono" :class="trigger.name ? '' : 'italic text-muted-foreground'" :title="trigger.original?.owner ? `${trigger.original.owner}.${trigger.name}` : trigger.name || t('structureEditor.triggerName')">{{ trigger.original?.owner ? `${trigger.original.owner}.${trigger.name}` : trigger.name || t("structureEditor.triggerName") }}</span>
                   <Button v-if="renamingTriggerId === trigger.id" variant="ghost" size="sm" :class="structureToolbarButtonClass" :title="t('structureEditor.triggerName')" @click.stop="renamingTriggerId = null">
                     <Check :class="structureIconClass" />
                   </Button>
@@ -6630,7 +6635,7 @@ watch(
                     {{ trigger.markedForDrop ? t("structureEditor.restore") : t("structureEditor.drop") }}
                   </Button>
                   <Button v-if="trigger.original && canEditFullTriggerDefinition" variant="outline" size="sm" :disabled="trigger.markedForDrop || triggersLoading" @click.stop="openTriggerDefinition(trigger)">{{ t("structureEditor.editTriggerDefinition") }}</Button>
-                  <Button v-else variant="ghost" size="sm" :class="structureToolbarButtonClass" @click.stop="removeNewTrigger(trigger)">
+                  <Button v-else-if="!trigger.original" variant="ghost" size="sm" :class="structureToolbarButtonClass" @click.stop="removeNewTrigger(trigger)">
                     <X :class="structureIconClass" />
                     {{ t("structureEditor.remove") }}
                   </Button>
@@ -7073,7 +7078,7 @@ watch(
       v-model:open="triggerDefinitionOpen"
       :connection-id="connectionId"
       :database="database"
-      :schema="metadataSchema || database"
+      :schema="triggerDefinitionSchema"
       :name="triggerDefinitionName"
       :table-schema="metadataSchema || database"
       :table-name="tableName || ''"
