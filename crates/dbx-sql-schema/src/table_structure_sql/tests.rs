@@ -80,7 +80,7 @@ fn oracle_numeric_parameters_survive_create_add_and_alter() {
             let mut new_column = column("VALUE");
             new_column.id = "new:value".to_string();
             new_column.data_type = data_type.to_string();
-            let options = structure_change_options(database_type.clone(), Some("APP"), "NUMBERS", vec![new_column]);
+            let options = structure_change_options(database_type, Some("APP"), "NUMBERS", vec![new_column]);
             let created = build_create_table_sql(options.clone());
             assert!(
                 created.statements.iter().any(|sql| sql.contains(&format!("\"VALUE\" {data_type}"))),
@@ -96,7 +96,7 @@ fn oracle_numeric_parameters_survive_create_add_and_alter() {
             let mut existing = existing_pk_column("VALUE", "NUMBER", false, false);
             existing.data_type = data_type.to_string();
             let altered = build_table_structure_change_sql(structure_change_options(
-                database_type.clone(),
+                database_type,
                 Some("APP"),
                 "NUMBERS",
                 vec![existing],
