@@ -461,20 +461,25 @@ describe("TableStructureEditor primary key editing", () => {
     await vi.waitFor(() => expect(add.disabled).toBe(false));
     add.click();
     await nextTick();
-    expect(section.querySelector<HTMLInputElement>('[data-ref-schema]')?.value).toBe("Owner");
-    expect(section.querySelector<HTMLSelectElement>('[data-source-column]')?.value).toBe("id");
+    expect(section.querySelector<HTMLInputElement>("[data-ref-schema]")?.value).toBe("Owner");
+    expect(section.querySelector<HTMLSelectElement>("[data-source-column]")?.value).toBe("id");
     buttonWithText(section, "constraintEditor.preview").click();
-    await vi.waitFor(() => expect(mocks.previewForeignKeyChange).toHaveBeenCalledWith(
-      mocks.connection.id, "Owner", expect.objectContaining({ schema: "Owner", tableName: "users", originalName: null }),
-    ));
+    await vi.waitFor(() => expect(mocks.previewForeignKeyChange).toHaveBeenCalledWith(mocks.connection.id, "Owner", expect.objectContaining({ schema: "Owner", tableName: "users", originalName: null })));
+    await vi.waitFor(() => expect(buttonWithText(section, "common.cancel").disabled).toBe(false));
     buttonWithText(section, "common.cancel").click();
     await nextTick();
-    buttonWithText(root, "structureEditor.addColumn").click();
+    const comment = root.querySelector<HTMLInputElement>('input[placeholder="structureEditor.tableCommentPlaceholder"]')!;
+    comment.value = "unsaved parent change";
+    comment.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
-    expect(buttonWithText(section, "foreignKeyEditor.add").disabled).toBe(true);
-    buttonWithText(section, "foreignKeyEditor.add").click();
+    const dirtySection = await vi.waitFor(() => {
+      const current = root.querySelector<HTMLElement>('[aria-label="foreignKeyEditor.title"]')!;
+      expect(buttonWithText(current, "foreignKeyEditor.add").disabled).toBe(true);
+      return current;
+    });
+    buttonWithText(dirtySection, "foreignKeyEditor.add").click();
     await nextTick();
-    expect(section.querySelector('[data-name]')).toBeNull();
+    expect(dirtySection.querySelector("[data-name]")).toBeNull();
     expect(mocks.applyForeignKeyChange).not.toHaveBeenCalled();
   });
 
