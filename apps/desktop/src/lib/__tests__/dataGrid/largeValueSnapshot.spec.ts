@@ -8,6 +8,12 @@ const response = (data: string, next_offset: number, eof = false) => ({ status: 
 beforeEach(() => mocks.readLargeValueChunk.mockReset());
 
 describe("original-result LOB snapshot consumption", () => {
+  it.each([{ eof: "false" }, { value_kind: "unknown" }, { data: null }])("rejects malformed payload fields before consuming a chunk: %j", async (invalid) => {
+    mocks.readLargeValueChunk.mockResolvedValue({ ...response("text", 4, true), ...invalid });
+    const consume = vi.fn();
+    await expect(readLargeValueSnapshot(request, () => true, consume)).rejects.toThrow("Invalid LOB chunk payload");
+    expect(consume).not.toHaveBeenCalled();
+  });
   it("uses server character offsets and preserves Chinese and emoji across chunks", async () => {
     mocks.readLargeValueChunk.mockResolvedValueOnce(response("中文😀", 3)).mockResolvedValueOnce(response("末尾😀", 6, true));
     expect(await materializeLargeValueSnapshot(request, () => true)).toBe("中文😀末尾😀");

@@ -16,6 +16,7 @@ export async function readLargeValueSnapshot(
     const chunk = await api.readLargeValueChunk({ ...request, offset, limit: 4096 });
     if (!isCurrent()) throw new Error("LOB result context changed");
     if (chunk.status !== "ok") throw new Error(`LOB snapshot ${chunk.status}; execute the query again`);
+    if (typeof chunk.data !== "string" || typeof chunk.eof !== "boolean" || (chunk.value_kind !== "text" && chunk.value_kind !== "binary")) throw new Error("Invalid LOB chunk payload");
     if (!Number.isSafeInteger(chunk.next_offset) || chunk.next_offset < offset || (!chunk.eof && chunk.next_offset === offset)) {
       throw new Error("Invalid LOB chunk offset");
     }
