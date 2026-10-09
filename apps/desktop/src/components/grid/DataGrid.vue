@@ -4363,6 +4363,7 @@ const editor = useDataGridEditor({
   cacheKey: computed(() => props.pendingStateKey ?? props.cacheKey),
   onResultPayloadMutated: () => queryStore.invalidateResultEstimateForPayload(props.result),
   refreshSavedRows,
+  prepareSaveBaseline: async (changes) => { await largeValueRuntime?.prepareSaveBaseline(changes); },
   onCellValueChanged: (rowId, columnIndex) => largeValueRuntime?.invalidateVisibleLargeValuePreviewCell(rowId, columnIndex),
   prepareFullReload,
   emit,

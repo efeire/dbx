@@ -636,6 +636,51 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     });
   }
 
+  async function prepareSaveBaseline(changes: { dirtyRows: ReadonlyMap<number, ReadonlyMap<number, CellValue>>; deletedRows: ReadonlySet<number> }): Promise<void> {
+    const source = options.result.value;
+    const cells = (source.large_value_cells ?? []).filter((cell) => cell.value_ref && (changes.deletedRows.has(cell.row_index) || changes.dirtyRows.get(cell.row_index)?.has(cell.column_index)));
+    const context = source.large_value_context;
+    const connectionId = options.connectionId.value;
+    const database = options.executionDatabase.value;
+    if ((cells.length || source.large_value_refs?.length) && (!context || context.connectionId !== connectionId || context.database !== database)) throw new Error("LOB result connection is unavailable; execute the query again");
+    if (!cells.length) return;
+    if (!context) throw new Error("LOB result connection is unavailable; execute the query again");
+    const operation = options.resultLifecycle.beginOperation();
+    const isCurrent = () => options.result.value === source && options.connectionId.value === connectionId && options.executionDatabase.value === database && options.resultLifecycle.isCurrent(operation);
+    const executionId = options.uuid();
+    snapshotExecutionIds.add(executionId);
+    try {
+      const sizes = new Map(materializedSnapshotBytes.get(source));
+      const rows = source.rows.map((row) => [...row]);
+      for (const cell of cells) {
+        const value = await materializeLargeValueSnapshot({ ...context, valueRef: cell.value_ref!, executionId }, isCurrent);
+        if (!rows[cell.row_index] || cell.column_index >= rows[cell.row_index]!.length) throw new Error("LOB result column is unavailable");
+        sizes.set(largeValueCellKey(cell.row_index, cell.column_index), new TextEncoder().encode(value).length);
+        if ([...sizes.values()].reduce((sum, size) => sum + size, 0) > 64 * 1024 * 1024) throw new Error("LOB save baseline exceeds the 64 MiB view/edit limit; reload and edit a smaller selection");
+        rows[cell.row_index]![cell.column_index] = value;
+      }
+      if (!isCurrent()) throw new Error("LOB result context changed");
+      // Other consumers can hydrate another cell while these requests await.
+      // Merge only the requested baselines into the latest rows and budget.
+      const mergedRows = source.rows.map((row) => [...row]);
+      const mergedSizes = new Map(materializedSnapshotBytes.get(source));
+      for (const cell of cells) {
+        mergedRows[cell.row_index]![cell.column_index] = rows[cell.row_index]![cell.column_index];
+        const key = largeValueCellKey(cell.row_index, cell.column_index);
+        mergedSizes.set(key, sizes.get(key)!);
+      }
+      if ([...mergedSizes.values()].reduce((sum, size) => sum + size, 0) > 64 * 1024 * 1024) throw new Error("LOB save baseline exceeds the 64 MiB view/edit limit; reload and edit a smaller selection");
+      source.large_value_refs = [...new Set([...(source.large_value_refs ?? []), ...cells.map((cell) => cell.value_ref!)])];
+      const resolved = new Set(cells.map((cell) => largeValueCellKey(cell.row_index, cell.column_index)));
+      source.rows = mergedRows;
+      source.large_value_cells = source.large_value_cells?.filter((cell) => !resolved.has(largeValueCellKey(cell.row_index, cell.column_index)));
+      materializedSnapshotBytes.set(source, mergedSizes);
+      options.largeValueResolutionVersion.value += 1;
+      options.clearCellFormatCache();
+      options.invalidateResultEstimate(source);
+    } finally { snapshotExecutionIds.delete(executionId); }
+  }
+
   return {
     snapshotReference,
     downloadSnapshotCell,
@@ -646,6 +691,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     visibleLargeValuePreviewValue,
     resolveLargeValueCells,
     hydrateLargeValueCell,
+    prepareSaveBaseline,
     invalidateVisibleLargeValuePreviewCell,
     scheduleVisibleLargeValuePreviewHydration,
     reportLargeValueLoadError,
