@@ -1008,10 +1008,10 @@ mod tests {
             "targetConnectionId": "t", "targetDatabase": "T", "targetSchema": "T", "tables": ["TABLE_A"],
             "createTable": true, "batchSize": 10, "content": "structureOnly",
             "objects": [
-                {"objectType": "TYPE", "names": ["T"]},
+                {"objectType": "PACKAGE", "names": ["PRE"]},
                 {"objectType": "DB_LINK", "names": ["L"]},
                 {"objectType": "PACKAGE", "names": ["P"]},
-                {"objectType": "TYPE_BODY", "names": ["T"]},
+                {"objectType": "PACKAGE_BODY", "names": ["PRE"]},
                 {"objectType": "SYNONYM", "names": ["SAME"]},
                 {"objectType": "PUBLIC_SYNONYM", "names": ["SAME"]}
             ]
@@ -1020,7 +1020,7 @@ mod tests {
         let journal =
             TransferTaskJournal::accept(&storage, &app, &request, TaskLifecycleOwner::Web).await.unwrap().unwrap();
         let prerequisites =
-            TransferObjectOutcome { transferred: vec!["DbLink:L".into(), "Type:T".into()], ..Default::default() };
+            TransferObjectOutcome { transferred: vec!["DbLink:L".into(), "Package:PRE".into()], ..Default::default() };
         journal.record_object_outcome(&prerequisites).await;
         journal
             .record_object_outcome(&TransferObjectOutcome {
@@ -1033,12 +1033,16 @@ mod tests {
         journal.clone().record_object_outcome(&prerequisites).await;
         // Storage keeps terminal results immutable even if a later phase repeats the identity.
         journal
-            .record_object_outcome(&TransferObjectOutcome { skipped: vec!["Type:T".into()], ..Default::default() })
+            .record_object_outcome(&TransferObjectOutcome { skipped: vec!["Package:PRE".into()], ..Default::default() })
             .await;
         journal.record_schema_objects_error(true).await;
         journal.record_schema_objects_error(false).await;
         let pending = storage.list_task_run_items(&request.transfer_id, TaskRunItemsQuery::default()).await.unwrap();
-        let body = pending.items.iter().find(|item| item.source_object == "TypeBody:T").unwrap();
+        let body = pending
+            .items
+            .iter()
+            .find(|item| item.item_kind == TaskItemKind::PackageBody && item.source_object == "PRE")
+            .unwrap();
         assert_eq!(body.status, TaskItemStatus::Pending);
         assert_eq!(body.safe_error_summary, None);
         journal
@@ -1059,10 +1063,10 @@ mod tests {
         assert_eq!(before.items.len(), 8);
         let expected = [
             (0, TaskItemKind::Table, "TABLE_A", TaskItemStatus::NotStarted),
-            (1, TaskItemKind::Object, "Type:T", TaskItemStatus::Succeeded),
+            (1, TaskItemKind::Package, "PRE", TaskItemStatus::Succeeded),
             (2, TaskItemKind::Object, "DbLink:L", TaskItemStatus::Succeeded),
             (3, TaskItemKind::Package, "P", TaskItemStatus::Failed),
-            (4, TaskItemKind::Object, "TypeBody:T", TaskItemStatus::NotStarted),
+            (4, TaskItemKind::PackageBody, "PRE", TaskItemStatus::NotStarted),
             (5, TaskItemKind::Synonym, "SAME", TaskItemStatus::Succeeded),
             (6, TaskItemKind::PublicSynonym, "SAME", TaskItemStatus::Failed),
             (7, TaskItemKind::Object, "schema objects", TaskItemStatus::Cancelled),
