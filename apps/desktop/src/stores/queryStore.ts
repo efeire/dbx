@@ -2958,6 +2958,12 @@ export const useQueryStore = defineStore("query", () => {
    * 用户看到的是点击后毫无反应。
    */
   function openObjectSourceTabPending(options: OpenPendingObjectSourceTabOptions): string {
+    const typeTab = tabs.value.find((tab) => tab.connectionId === options.connectionId && tab.database === options.database && (tab.catalog || "") === (options.catalog || "") && tab.oracleTypeIdentity?.schema === (options.schema || options.database) && tab.oracleTypeIdentity.name === options.request.name && tab.oracleTypeIdentity.object_type === options.request.objectType);
+    if (typeTab) {
+      switchTab(typeTab.id);
+      if (!isTabDirty(typeTab)) refreshObjectSourceTab(typeTab.id);
+      return typeTab.id;
+    }
     // 这个对象已经打开过：立刻切过去，再在后台重新校验源码。
     // 两条弯路都要避开 —— 再建一个 pending tab 会让界面上多出一个转圈 tab，
     // 随后又被交接逻辑关掉；而只切过去不校验，会让重开看到的是旧 DDL
@@ -3058,7 +3064,7 @@ export const useQueryStore = defineStore("query", () => {
     const tab = tabs.value.find((candidate) => candidate.id === id);
     if (!tab) return false;
     if (tab.sourceLoad && !tab.sourceLoad.error) return true;
-    const request = tab.sourceLoad?.request ? { ...tab.sourceLoad.request } : tab.objectSource ? { name: tab.objectSource.name, objectType: tab.objectSource.objectType, signature: tab.objectSource.signature } : null;
+    const request = tab.sourceLoad?.request ? { ...tab.sourceLoad.request } : tab.objectSource ? { name: tab.objectSource.name, objectType: tab.objectSource.objectType, signature: tab.objectSource.signature } : tab.oracleTypeIdentity ? { name: tab.oracleTypeIdentity.name, objectType: tab.oracleTypeIdentity.object_type } : null;
     if (!request) return false;
     sourceRevalidateInFlight.delete(id);
     tab.sourceLoad = {
@@ -3127,6 +3133,9 @@ export const useQueryStore = defineStore("query", () => {
     // 加载期间 tab 被关掉（用户放弃）或连接被断开：静默丢弃，不重建、不写库
     const tab = tabs.value.find((candidate) => candidate.id === id);
     if (!tab?.sourceLoad) return;
+    if ((loaded.databaseType === "oracle" || loaded.databaseType === "oceanbase-oracle") && (loaded.resolvedType === "TYPE" || loaded.resolvedType === "TYPE_BODY")) {
+      tab.oracleTypeIdentity = { schema: loaded.raw.schema || loaded.schema || loaded.database, name: loaded.raw.name, object_type: loaded.resolvedType };
+    }
     const sourceIsEditable = !isViewOnlySourceWithoutEditablePayload(loaded.initialEditing, loaded.resolvedType) && loaded.raw.editable !== false && (!OBJECT_SOURCE_READ_ONLY_TYPES.includes(loaded.resolvedType) || (loaded.databaseType === "oceanbase-oracle" && loaded.resolvedType === "SEQUENCE"));
     if (sourceIsEditable) {
       const options: OpenObjectSourceTabOptions = {
@@ -4789,6 +4798,7 @@ export const useQueryStore = defineStore("query", () => {
       structureDraft: original.structureDraft ? cloneTabDraft(original.structureDraft) : undefined,
       objectBrowser: original.objectBrowser ? { ...original.objectBrowser } : undefined,
       objectSource: original.objectSource ? { ...original.objectSource } : undefined,
+      oracleTypeIdentity: original.oracleTypeIdentity ? { ...original.oracleTypeIdentity } : undefined,
       sourceView: original.sourceView,
       tableMeta: original.tableMeta
         ? {
