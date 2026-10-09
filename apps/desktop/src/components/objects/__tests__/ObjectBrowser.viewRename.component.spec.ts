@@ -48,7 +48,15 @@ vi.mock("@/components/ui/CustomContextMenu.vue", () => ({
     },
   }),
 }));
-vi.mock("@/components/editor/QueryEditor.vue", () => ({ default: { render: () => null } }));
+vi.mock("@/components/editor/QueryEditor.vue", () => ({
+  default: defineComponent({
+    props: ["modelValue", "readOnly"],
+    emits: ["update:modelValue"],
+    setup(props, { emit }) {
+      return () => h("div", [h("pre", props.modelValue), !props.readOnly && h("button", { "data-edit-source": true, onClick: () => emit("update:modelValue", "CREATE VIEW old_view AS SELECT 3") }, "edit draft")]);
+    },
+  }),
+}));
 vi.mock("@/components/objects/ProcedureExecutionDialog.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/objects/CustomTypeInfoPanel.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/export/XlsxHeaderDialog.vue", () => ({ default: { render: () => null } }));
@@ -60,6 +68,7 @@ import { useQueryStore } from "@/stores/queryStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 import { invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
+import { notifyViewRenameReadback } from "@/lib/table/objectRenameSql";
 
 const connection = { id: "ob-rename", name: "OB", db_type: "oceanbase-oracle" as const, database: "APP", host: "localhost", port: 2881, username: "APP", password: "", is_production: true };
 const mounted: App[] = [];
@@ -100,6 +109,8 @@ async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" = "VIEW"
   await vi.waitFor(() => expect(container.querySelector("[data-open-rename]")).not.toBeNull());
   (container.querySelector("[data-open-source]") as HTMLElement).click();
   await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenCalled());
+  await vi.waitFor(() => expect(container.querySelector("[data-edit-source]")).not.toBeNull());
+  (container.querySelector("[data-edit-source]") as HTMLElement).click();
   await nextTick();
   (container.querySelector("[data-open-rename]") as HTMLElement).click();
   await nextTick();
@@ -156,6 +167,7 @@ describe("ObjectBrowser OceanBase view rename", () => {
     expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "CREATE VIEW old_view AS SELECT 2" });
     expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
     expect([...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === i18n.global.t("objects.saveSource"))).toBe(false);
+    expect(document.querySelector("[data-object-source-preview]")?.textContent).toContain("SELECT 3");
     await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 
@@ -167,6 +179,24 @@ describe("ObjectBrowser OceanBase view rename", () => {
     expect(queries.tabs.find((tab) => tab.id === sourceId)?.sourceSnapshot).toBe(true);
     expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
     expect([...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === i18n.global.t("objects.saveSource"))).toBe(false);
+    expect(document.querySelector("[data-object-source-preview]")?.textContent).toContain("SELECT 3");
+  });
+
+  it("freezes the embedded source for a sidebar rename and restores editing only after old-name readback", async () => {
+    const { safety } = await openRename();
+    safety.cancel();
+    const hasSave = () => [...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === i18n.global.t("objects.saveSource"));
+    expect(hasSave()).toBe(true);
+    notifyViewRenameReadback(connection.id, "APP", "APP", "Old View", "pending");
+    await nextTick();
+    expect(hasSave()).toBe(false);
+    notifyViewRenameReadback(connection.id, "APP", "APP", "Old View", "unknown");
+    await nextTick();
+    expect(hasSave()).toBe(false);
+    expect(document.body.textContent).toContain(i18n.global.t("contextMenu.viewRenameStateUnknown"));
+    notifyViewRenameReadback(connection.id, "APP", "APP", "Old View", "unchanged");
+    await nextTick();
+    expect(hasSave()).toBe(true);
   });
 });
 
