@@ -23,6 +23,7 @@ export interface OracleTriggerDefinition {
   tableName?: string;
   identityStart: number;
   tableStart?: number;
+  tableEnd?: number;
   structured: boolean;
   reason?: string;
   fields?: OracleTriggerFields;
@@ -161,6 +162,7 @@ export function parseOracleTriggerDefinition(source: string): OracleTriggerDefin
     const table = name();
     result.tableName = table.name;
     result.tableSchema = table.schema;
+    result.tableEnd = tokens[index - 1].end;
   } catch { return fallback("Special trigger target: edit the complete source"); }
   if (nestedTarget) return fallback("Nested table trigger: edit the complete source");
   let referencingSpan: Span | undefined;
@@ -236,9 +238,40 @@ export function updateOracleTriggerDefinition(definition: OracleTriggerDefinitio
   return source;
 }
 
-function requireSingleTriggerBody(tokens: Token[]): void {
-  const body = tokens.findIndex((token) => token.kind === "word" && ["COMPOUND", "DECLARE", "BEGIN", "CALL"].includes(token.text.toUpperCase()));
-  if (body < 0) throw new Error("Cannot locate the trigger body safely");
+function triggerHeaderBoundary(tokens: Token[], tableEnd: number | undefined): { body: number; insertion: number; state?: Token } {
+  if (tableEnd === undefined) throw new Error("Cannot locate the trigger target safely");
+  let index = tokens.findIndex((token) => token.start >= tableEnd);
+  const is = (word: string) => tokens[index]?.kind === "word" && tokens[index].text.toUpperCase() === word;
+  const requireWord = (word: string) => { if (!is(word)) throw new Error(`Expected ${word} in trigger header`); index++; };
+  const name = () => { identifier(tokens[index++]); if (tokens[index]?.text === ".") { index++; identifier(tokens[index++]); } };
+  if (is("REFERENCING")) {
+    index++;
+    while (is("OLD") || is("NEW") || is("PARENT")) { index++; if (is("AS")) index++; identifier(tokens[index++]); }
+  }
+  if (is("FOR")) { index++; requireWord("EACH"); requireWord("ROW"); }
+  if (is("FORWARD") || is("REVERSE")) { index++; requireWord("CROSSEDITION"); }
+  if (is("FOLLOWS") || is("PRECEDES")) {
+    index++; name();
+    while (tokens[index]?.text === ",") { index++; name(); }
+  }
+  const state = is("ENABLE") || is("DISABLE") ? tokens[index++] : undefined;
+  const insertion = tokens[index]?.start;
+  if (is("WHEN")) {
+    index++;
+    if (tokens[index]?.text !== "(") throw new Error("Unrecognized WHEN clause");
+    let depth = 0;
+    do {
+      const token = tokens[index++];
+      if (!token) throw new Error("Unclosed WHEN clause");
+      if (token.kind === "symbol" && token.text === "(") depth++;
+      if (token.kind === "symbol" && token.text === ")") depth--;
+    } while (depth);
+  }
+  if (insertion === undefined || !["COMPOUND", "DECLARE", "BEGIN", "CALL"].some(is)) throw new Error("Cannot locate the trigger body safely");
+  return { body: index, insertion, state };
+}
+
+function requireSingleTriggerBody(tokens: Token[], body: number): void {
   if (tokens[body].text.toUpperCase() === "CALL") {
     const end = tokens.findIndex((token, index) => index >= body && token.text === ";" && token.kind === "symbol");
     if (end >= 0 && end !== tokens.length - 1) throw new Error("Additional statements follow the trigger call");
@@ -306,7 +339,7 @@ export function prepareOracleTriggerReplacement(source: string, expected: Trigge
   let singleDefinition = source.slice(0, end);
   const definitionTokens = tokens.filter((token) => token.start < end);
   if (definitionTokens.slice(1).some((token) => token.kind === "word" && ["DROP", "CREATE", "ALTER"].includes(token.text.toUpperCase()))) throw new Error("Additional DDL cannot be saved with a trigger definition");
-  requireSingleTriggerBody(definitionTokens);
+  requireSingleTriggerBody(definitionTokens, triggerHeaderBoundary(definitionTokens, definition.tableEnd).body);
   const qualifiers: Array<{ start: number; schema: string }> = [];
   if (!definition.schema) qualifiers.push({ start: definition.identityStart, schema: expected.schema });
   if (!definition.tableSchema && expected.tableSchema && definition.tableStart !== undefined) qualifiers.push({ start: definition.tableStart, schema: expected.tableSchema });
@@ -319,18 +352,7 @@ export function prepareOracleTriggerReplacement(source: string, expected: Trigge
 export function prepareDisabledOracleTriggerReplacement(source: string, expected: TriggerReplacementIdentity): string {
   const sql = prepareOracleTriggerReplacement(source, expected);
   const tokens = scan(sql);
-  let depth = 0;
-  let state: Token | undefined;
-  let insertion: number | undefined;
-  for (const token of tokens) {
-    if (token.kind === "symbol" && token.text === "(") depth++;
-    if (token.kind === "symbol" && token.text === ")") depth--;
-    if (depth || token.kind !== "word") continue;
-    const word = token.text.toUpperCase();
-    if (word === "ENABLE" || word === "DISABLE") state = token;
-    if (["WHEN", "DECLARE", "BEGIN", "CALL", "COMPOUND"].includes(word)) { insertion = token.start; break; }
-  }
+  const { state, insertion } = triggerHeaderBoundary(tokens, parseOracleTriggerDefinition(sql).tableEnd);
   if (state) return sql.slice(0, state.start) + "DISABLE" + sql.slice(state.end);
-  if (insertion === undefined) throw new Error("Cannot locate the trigger body safely");
   return sql.slice(0, insertion) + "DISABLE\n" + sql.slice(insertion);
 }

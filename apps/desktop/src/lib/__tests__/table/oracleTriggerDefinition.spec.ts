@@ -15,6 +15,24 @@ END;
 /`;
 
 describe("Oracle complete trigger definition editing", () => {
+  it.each([
+    { name: "ENABLE", table: "DISABLE", header: "" },
+    { name: "T", table: "DATA", header: "REFERENCING OLD AS DISABLE NEW AS ENABLE FOR EACH ROW" },
+    { name: "T", table: "DATA", header: "FOLLOWS APP.ENABLE, APP.DISABLE" },
+    { name: "T", table: "DATA", header: 'FOLLOWS APP."BEGIN"' },
+  ])("preserves names in the header when disabling before replacement: $header", ({ name, table, header }) => {
+    const prefix = `CREATE OR REPLACE TRIGGER APP.${name} BEFORE INSERT ON APP.${table} ${header} `;
+    const expected = { schema: "APP", name, tableSchema: "APP", tableName: table };
+    expect(prepareDisabledOracleTriggerReplacement(prefix + "BEGIN NULL; END;", expected)).toBe(prefix + "DISABLE\nBEGIN NULL; END;");
+    expect(prepareDisabledOracleTriggerReplacement(prefix + "ENABLE BEGIN NULL; END;", expected)).toBe(prefix + "DISABLE BEGIN NULL; END;");
+  });
+
+  it("locates the body after an edition clause, ordering names and a balanced WHEN condition", () => {
+    const prefix = "CREATE OR REPLACE TRIGGER APP.T BEFORE INSERT ON APP.DATA FOR EACH ROW FORWARD CROSSEDITION FOLLOWS APP.ENABLE ";
+    const body = 'WHEN (:NEW."BEGIN" = q\'[DISABLE (BEGIN)]\') BEGIN NULL; END;';
+    expect(prepareDisabledOracleTriggerReplacement(prefix + body, { schema: "APP", name: "T" })).toBe(prefix + "DISABLE\n" + body);
+  });
+
   it("uses the exact trigger owner and does not infer it from an unqualified or mismatched source", () => {
     expect(oracleTriggerOwner({ name: "T", owner: " Other Owner ", statement: "invalid source" })).toBe(" Other Owner ");
     expect(oracleTriggerOwner({ name: "T", statement: "CREATE TRIGGER OTHER.T BEFORE INSERT ON APP.DATA BEGIN NULL; END;" })).toBe("OTHER");
