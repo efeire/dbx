@@ -214,8 +214,7 @@ pub fn build_oceanbase_renamed_routine_create(input: &RoutineRenameObjectSourceI
     let name_start = first.0;
     let mut name_end = first.1;
     let mut names = vec![normalized(&first.2)];
-    // Only inspect the declaration prefix. The body may contain dialect-specific
-    // literals which must remain byte-for-byte intact and need no tokenization.
+    // Only replace the declaration identifier here; body references remain intact.
     let mut after = name_end;
     while let Some(found) = trivia.find(&source[after..]) {
         after += found.end();
@@ -238,7 +237,48 @@ pub fn build_oceanbase_renamed_routine_create(input: &RoutineRenameObjectSourceI
     if let Some(range) = replace_range {
         prefix.replace_range(range, "");
     }
-    Ok(format!("{}{}{}", prefix, postgres_qualified_name(Some(schema), &input.new_name), &source[name_end..]))
+    let body = rename_oceanbase_routine_end(&source[name_end..], &input.name, &input.new_name)?;
+    Ok(format!("{}{}{}", prefix, postgres_qualified_name(Some(schema), &input.new_name), body))
+}
+
+fn rename_oceanbase_routine_end(source: &str, old_name: &str, new_name: &str) -> Result<String, String> {
+    let tokens = Tokenizer::new(&OracleDialect {}, source)
+        .tokenize_with_location()
+        .map_err(|error| format!("Cannot read the routine ending: {error}"))?
+        .into_iter()
+        .filter(|token| !matches!(token.token, Token::Whitespace(_)))
+        .collect::<Vec<_>>();
+    if tokens.len() >= 3 {
+        // In a complete routine definition, the final END [name]; closes the
+        // outer routine. Nested END clauses and literals cannot be this suffix.
+        let suffix = &tokens[tokens.len() - 3..];
+        if let (Token::Word(end), Token::Word(name), Token::SemiColon) =
+            (&suffix[0].token, &suffix[1].token, &suffix[2].token)
+        {
+            let identity = if name.quote_style.is_some() { name.value.clone() } else { name.value.to_uppercase() };
+            if end.quote_style.is_none() && end.value.eq_ignore_ascii_case("END") && identity == old_name {
+                // Token columns count Unicode characters, not UTF-8 bytes.
+                let byte_offset = |location: sqlparser::tokenizer::Location| {
+                    let line = source.split_inclusive('\n').nth(location.line as usize - 1).unwrap();
+                    let start =
+                        source.split_inclusive('\n').take(location.line as usize - 1).map(str::len).sum::<usize>();
+                    start
+                        + line
+                            .char_indices()
+                            .nth(location.column as usize - 1)
+                            .map(|(offset, _)| offset)
+                            .unwrap_or(line.len())
+                };
+                let mut renamed = source.to_string();
+                renamed.replace_range(
+                    byte_offset(suffix[1].span.start)..byte_offset(suffix[1].span.end),
+                    &postgres_qualified_name(None, new_name),
+                );
+                return Ok(renamed);
+            }
+        }
+    }
+    Ok(source.to_string())
 }
 
 fn build_oceanbase_routine_rename_steps(input: &RoutineRenameObjectSourceInput) -> Result<Vec<String>, String> {
@@ -2649,6 +2689,70 @@ mod tests {
                 source: source.to_string(),
             })
             .is_err());
+        }
+    }
+
+    #[test]
+    fn oceanbase_rename_create_updates_only_matching_outer_end_name() {
+        for (object_type, kind, declaration, body) in [
+            (ObjectSourceKind::Procedure, "PROCEDURE", "AS", "NULL;"),
+            (ObjectSourceKind::Function, "FUNCTION", "RETURN NUMBER AS", "RETURN 1;"),
+        ] {
+            let source = format!(
+                "CREATE OR REPLACE {kind} APP.P {declaration}\n  PROCEDURE nested AS BEGIN NULL; END nested;\nBEGIN\n  <<P>> BEGIN NULL; END P;\n  IF 1 = 1 THEN NULL; END IF;\n  dbms_output.put_line('END P;');\n  dbms_output.put_line(q'[owner's END P;]');\n  dbms_output.put_line(nq'!END P;!');\n  {body}\nEND /* keep END P; */ p; -- trailing END P;\n/"
+            );
+            let expected = source
+                .replace(&format!("CREATE OR REPLACE {kind} APP.P"), &format!("CREATE  {kind} \"APP\".\"P2\""))
+                .replace("END /* keep END P; */ p;", "END /* keep END P; */ \"P2\";")
+                .trim_end_matches("\n/")
+                .to_string();
+            let sql = build_oceanbase_renamed_routine_create(&RoutineRenameObjectSourceInput {
+                package_cleanup: false,
+                package_body_source: None,
+                database_type: DatabaseType::OceanbaseOracle,
+                object_type,
+                schema: Some("APP".to_string()),
+                name: "P".to_string(),
+                new_name: "P2".to_string(),
+                source,
+            })
+            .unwrap();
+            assert_eq!(sql, expected);
+        }
+    }
+
+    #[test]
+    fn oceanbase_rename_create_preserves_quoted_unicode_end_identity_and_trivia() {
+        let source = "CREATE PROCEDURE \"APP\".\"旧 \"\"Proc\" AS\r\nBEGIN\r\n  dbms_output.put_line('旧名 END');\r\nEND /* 注释 */ \"旧 \"\"Proc\"; /* END fake; */\r\n/";
+        let sql = build_oceanbase_renamed_routine_create(&RoutineRenameObjectSourceInput {
+            package_cleanup: false,
+            package_body_source: None,
+            database_type: DatabaseType::OceanbaseOracle,
+            object_type: ObjectSourceKind::Procedure,
+            schema: Some("APP".to_string()),
+            name: "旧 \"Proc".to_string(),
+            new_name: "新 \"Proc".to_string(),
+            source: source.to_string(),
+        })
+        .unwrap();
+        assert_eq!(sql, "CREATE PROCEDURE \"APP\".\"新 \"\"Proc\" AS\r\nBEGIN\r\n  dbms_output.put_line('旧名 END');\r\nEND /* 注释 */ \"新 \"\"Proc\"; /* END fake; */");
+    }
+
+    #[test]
+    fn oceanbase_rename_create_does_not_rewrite_nonmatching_end_name() {
+        for body in ["AS BEGIN NULL; END;", "AS BEGIN NULL; END \"p\";", "AS BEGIN NULL; END OTHER;"] {
+            let sql = build_oceanbase_renamed_routine_create(&RoutineRenameObjectSourceInput {
+                package_cleanup: false,
+                package_body_source: None,
+                database_type: DatabaseType::OceanbaseOracle,
+                object_type: ObjectSourceKind::Procedure,
+                schema: Some("APP".to_string()),
+                name: "P".to_string(),
+                new_name: "P2".to_string(),
+                source: format!("CREATE PROCEDURE APP.P {body}"),
+            })
+            .unwrap();
+            assert_eq!(sql, format!("CREATE PROCEDURE \"APP\".\"P2\" {body}"));
         }
     }
 
