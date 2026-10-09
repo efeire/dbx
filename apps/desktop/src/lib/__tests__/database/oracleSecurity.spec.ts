@@ -105,6 +105,46 @@ describe("Oracle security dictionary reads", () => {
     expect(snapshot.users).toMatchObject({ visibility: "limited", truncated: true });
   });
 
+  it.each(["oracle", "oceanbase-oracle"] as const)("includes visible role/public object and column grants without inventing grantors for %s", async (db_type) => {
+    const snapshot = await loadOracleSecurity(
+      async (sql) => {
+        if (/FROM DBA_/.test(sql)) throw new Error("ORA-00942");
+        if (sql.includes("FROM USER_ROLE_PRIVS UNION"))
+          return result(
+            ["GRANTEE", "GRANTED_ROLE", "ADMIN_OPTION"],
+            [
+              ["Reader", "R1", "NO"],
+              ["R1", "R2", "NO"],
+            ],
+          );
+        if (sql.includes("FROM ALL_TAB_PRIVS")) {
+          expect(sql).toContain("R.COLUMN_NAME IS NULL AND NOT EXISTS");
+          expect(sql).toContain("A.TABLE_SCHEMA = R.OWNER");
+          const rows = [["Reader", "Owner", "T", "Owner", "SELECT", "YES"]];
+          if (sql.includes("FROM ROLE_TAB_PRIVS")) rows.push(["R2", "Owner", "T", "", "SELECT", "NO"], ["PUBLIC", "Owner", "T", "", "SELECT", "NO"]);
+          return result(["GRANTEE", "OWNER", "TABLE_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"], rows);
+        }
+        if (sql.includes("FROM ALL_COL_PRIVS")) {
+          expect(sql).toContain("R.COLUMN_NAME IS NOT NULL AND NOT EXISTS");
+          expect(sql).toContain(`A.${db_type === "oceanbase-oracle" ? "OWNER" : "TABLE_SCHEMA"} = R.OWNER`);
+          return result(["GRANTEE", "OWNER", "TABLE_NAME", "COLUMN_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"], sql.includes("FROM ROLE_TAB_PRIVS") ? [["R2", "Owner", "T", "Col", null, "UPDATE", "NO"]] : []);
+        }
+        return blankQuery(sql);
+      },
+      { db_type } as ConnectionConfig,
+    );
+    const sources = oracleGrantSources(snapshot, "Reader").grants;
+    expect(sources.map((row) => [row.kind, row.source])).toEqual([
+      ["object", "direct"],
+      ["object", "role"],
+      ["column", "role"],
+      ["object", "public"],
+    ]);
+    expect(sources[1]).toMatchObject({ rolePath: ["R1", "R2"], grant: { grantor: "" } });
+    expect(sources[2].grant).toMatchObject({ columnName: "Col", grantor: "" });
+    expect(snapshot.objectGrants).toMatchObject({ visibility: "limited", message: "Error: ORA-00942" });
+  });
+
   it.each(["truncated", "has_more"] as const)("keeps short dictionary responses limited when the backend reports %s", async (flag) => {
     const snapshot = await loadOracleSecurity(async (sql) => (sql.includes("FROM DBA_USERS") ? { ...result(["USERNAME"], [["Reader"]]), [flag]: true } : blankQuery(sql)));
     expect(snapshot.users).toMatchObject({ state: "ok", visibility: "limited", truncated: true });

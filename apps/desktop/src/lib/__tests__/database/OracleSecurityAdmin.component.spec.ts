@@ -60,6 +60,7 @@ describe("Oracle security page", () => {
           rows: [
             ["Reader", "Owner", "T", "Owner", "SELECT", "NO"],
             ["Reader", "Other", "T", "Other", "UPDATE", "NO"],
+            ["Reader", "Owner", "T", null, "DELETE", "NO"],
           ],
         };
       return { columns: [], rows: [] };
@@ -69,6 +70,7 @@ describe("Oracle security page", () => {
     expect(host.textContent).toContain("Limited visibility");
     expect(host.textContent).toContain("Account status unavailable");
     expect(host.textContent).toContain("Other.T");
+    expect(host.textContent).toContain("grantor: Unknown");
     const owner = host.querySelector('input[placeholder="Exact object owner"]') as HTMLInputElement;
     owner.value = "Owner";
     owner.dispatchEvent(new Event("input", { bubbles: true }));

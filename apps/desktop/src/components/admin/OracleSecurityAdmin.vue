@@ -115,7 +115,7 @@ defineExpose({ refresh });
           <td class="p-2">{{ row.kind }}</td>
           <td>{{ row.grant.privilege }}</td>
           <td>{{ "owner" in row.grant ? `${row.grant.owner}.${row.grant.objectName}` : "—" }}{{ "columnName" in row.grant ? `.${row.grant.columnName}` : "" }}</td>
-          <td>{{ row.source }} · {{ row.grant.grantee }}{{ row.rolePath.length ? ` (${row.rolePath.join(" → ")})` : "" }}{{ "grantor" in row.grant ? ` · grantor: ${row.grant.grantor}` : "" }}</td>
+          <td>{{ row.source }} · {{ row.grant.grantee }}{{ row.rolePath.length ? ` (${row.rolePath.join(" → ")})` : "" }}{{ "grantor" in row.grant ? ` · grantor: ${row.grant.grantor || label("未知", "Unknown")}` : "" }}</td>
           <td>{{ "adminOption" in row.grant ? row.grant.adminOption : row.grant.grantable }}</td>
         </tr>
       </tbody>
