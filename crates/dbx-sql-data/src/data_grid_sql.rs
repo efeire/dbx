@@ -2916,6 +2916,27 @@ fn regex_like_oracle_temporal(text: &str) -> Option<Rfc3339Parts> {
     if let Some(parts) = regex_like_rfc3339(text) {
         return Some(parts);
     }
+    if let Some((datetime, zone)) = text.rsplit_once(' ') {
+        let bytes = zone.as_bytes();
+        let normalized_zone = if is_timezone_offset(zone) {
+            Some(zone.to_string())
+        } else if bytes.len() == 5
+            && matches!(bytes[0], b'+' | b'-')
+            && bytes[1].is_ascii_digit()
+            && bytes[2] == b':'
+            && bytes[3].is_ascii_digit()
+            && bytes[4].is_ascii_digit()
+        {
+            Some(format!("{}0{}", &zone[..1], &zone[1..]))
+        } else {
+            None
+        };
+        if let Some(zone) = normalized_zone {
+            let mut parts = regex_like_local_datetime(datetime)?;
+            parts.zone = zone;
+            return Some(parts);
+        }
+    }
     regex_like_local_datetime(text)
 }
 
@@ -7106,6 +7127,60 @@ mod tests {
             format_grid_sql_literal(&json!("2022-08-25T09:58:43Z"), Some(DatabaseType::Oracle), Some(&text)),
             "'2022-08-25T09:58:43Z'"
         );
+    }
+
+    #[test]
+    fn copy_insert_preserves_oracle_agent_timezone_values_and_nulls() {
+        for database_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle] {
+            for (data_type, value, literal) in [
+                (
+                    "TIMESTAMP WITH TIME ZONE",
+                    "2026-10-09 13:14:15 +8:00",
+                    "TO_TIMESTAMP_TZ('2026-10-09 13:14:15 +08:00', 'YYYY-MM-DD HH24:MI:SS TZH:TZM')",
+                ),
+                (
+                    "TIMESTAMP(6) WITH TIME ZONE",
+                    "2026-10-09 13:14:15.123456 +8:00",
+                    "TO_TIMESTAMP_TZ('2026-10-09 13:14:15.123456 +08:00', 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM')",
+                ),
+                (
+                    "timestamp(9) with time zone",
+                    "2026-10-09 13:14:15.123456789 -5:30",
+                    "TO_TIMESTAMP_TZ('2026-10-09 13:14:15.123456789 -05:30', 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM')",
+                ),
+                (
+                    "TIMESTAMP(3) WITH TIME ZONE",
+                    "2026-10-09 13:14:15.123 +00:00",
+                    "TO_TIMESTAMP_TZ('2026-10-09 13:14:15.123 +00:00', 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM')",
+                ),
+            ] {
+                for has_table_columns in [true, false] {
+                    let statement = build_data_grid_copy_insert_statement(DataGridCopyInsertStatementOptions {
+                        database_type: Some(database_type),
+                        identifier_quote: None,
+                        table_meta: Some(DataGridTableMeta {
+                            catalog: None,
+                            database: None,
+                            schema: None,
+                            table_name: "tz_roundtrip".to_string(),
+                            primary_keys: vec![],
+                            columns: has_table_columns.then(|| vec![column("Z", data_type, true, None)]),
+                        }),
+                        columns: vec!["Z".to_string()],
+                        column_types: Some(vec![Some(data_type.to_string())]),
+                        source_columns: None,
+                        rows: vec![vec![json!(value)], vec![Value::Null]],
+                        exclude_primary_keys: false,
+                        include_computed_columns: false,
+                        include_database_name: false,
+                        insert_mode: DataGridCopyInsertMode::RowByRow,
+                    })
+                    .unwrap();
+                    assert!(statement.contains(literal), "{database_type:?}: {statement}");
+                    assert!(statement.contains("VALUES (NULL)"), "{statement}");
+                }
+            }
+        }
     }
 
     #[test]
