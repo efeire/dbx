@@ -130,15 +130,24 @@ async fn secure_rpc(state: &AppState, pool: &str, method: &str, params: serde_js
 }
 async fn endpoint(state: &AppState, pool: &str, kind: &DatabaseType) -> Result<String, String> {
     if !matches!(kind, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) { return Err("DBLINK_ENDPOINT_UNSUPPORTED".into()); }
-    let sql = if *kind == DatabaseType::OceanbaseOracle { "SELECT VERSION() FROM DUAL" } else { "SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle Database%'" };
+    let sql = endpoint_version_sql(kind);
     let rows = metadata(state, pool, sql).await?.rows;
     let version = rows.first().map(|r| text(r, 0)).unwrap_or_default();
     // Only documented/test-target versions are eligible; unknown versions do not inherit support.
-    let supported = if *kind == DatabaseType::OceanbaseOracle {
-        Regex::new(r"(?i)(oceanbase.*)?\b4\.2\.5(?:\.|\b)").unwrap().is_match(&version)
-    } else { Regex::new(r"Oracle Database (?:19c|21c|23ai|23c)\b").unwrap().is_match(&version) };
+    let supported = endpoint_version_supported(kind, &version);
     if !supported { return Err("DBLINK_VERSION_UNSUPPORTED_OR_UNKNOWN".into()); }
     login(state, pool).await
+}
+fn endpoint_version_sql(kind: &DatabaseType) -> &'static str {
+    if *kind == DatabaseType::OceanbaseOracle { "SELECT OB_VERSION() FROM DUAL" }
+    else { "SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle Database%'" }
+}
+fn endpoint_version_supported(kind: &DatabaseType, version: &str) -> bool {
+    match kind {
+        DatabaseType::OceanbaseOracle => Regex::new(r"\A\s*4\.2\.5(?:\.[0-9]+)*(?:\s.*)?\z").unwrap().is_match(version),
+        DatabaseType::Oracle => Regex::new(r"Oracle Database (?:19c|21c|23ai|23c)\b").unwrap().is_match(version),
+        _ => false,
+    }
 }
 async fn privileges(state: &AppState, pool: &str, scope: &str, replace: bool) -> Result<(), String> {
     let privileges: Vec<_> = metadata(state, pool, "SELECT PRIVILEGE FROM SESSION_PRIVS").await?.rows.iter().map(|r| text(r, 0)).collect();
@@ -280,6 +289,16 @@ mod tests {
         assert!(valid_name("REMOTE.EXAMPLE"));
         assert!(!valid_name("REMOTE; DROP TABLE X"));
         assert!(!valid_name("REMOTE\nEXAMPLE"));
+    }
+    #[test]
+    fn oracle_mode_version_query_and_gate_use_ob_version_results() {
+        assert_eq!(endpoint_version_sql(&DatabaseType::OceanbaseOracle), "SELECT OB_VERSION() FROM DUAL");
+        assert_eq!(endpoint_version_sql(&DatabaseType::Oracle), "SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle Database%'");
+        for version in ["4.2.5", "4.2.5.0", "4.2.5.6", " 4.2.5.6 "] { assert!(endpoint_version_supported(&DatabaseType::OceanbaseOracle, version), "{version}"); }
+        for version in ["", "4.2.50.0", "4.3.0.0", "3.4.2.5.0", "5.7.25-OceanBase-v4.2.5.0", "4.2.5x"] { assert!(!endpoint_version_supported(&DatabaseType::OceanbaseOracle, version), "{version}"); }
+        assert!(endpoint_version_supported(&DatabaseType::Oracle, "Oracle Database 19c Enterprise Edition"));
+        assert!(!endpoint_version_supported(&DatabaseType::Oracle, "4.2.5.0"));
+        assert!(!endpoint_version_supported(&DatabaseType::Mysql, "4.2.5.0"));
     }
     #[test]
     fn public_config_rejects_credential_fields() {
