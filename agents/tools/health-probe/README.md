@@ -45,10 +45,42 @@ python agents/tools/health-probe/summarize.py <JSONL绝对路径>
 
 新增常规回归 `:common:test --tests com.dbx.agent.QueryHealthValidationTest` 使用实际 RPC 分派、Agent 和 H2，只在 JDBC 边界注入失效/取消；汇总器回归为 `python -m unittest discover -s agents/tools/health-probe -p test_summarize.py`。上述命令本阶段均未运行。
 
+## 真实网络观测与 Oracle Go/OCI 入口
+
+`wire_relay.py` 是绑定 127.0.0.1 的透明 TCP 中继，完整转发原字节，重组 TCP 分片后仅保存协议类别、帧长度、UTC/单调时间和首个响应时长；不保存 payload/SQL/账号/认证内容。不是生产服务，不进入产品包。连接握手、TLS/压缩、不完整帧、重定向和解码失败单独标注。
+
+OB JDBC 实际使用 MySQL 传输：认证成功后，sequence=0 的 COM_QUERY/COM_PING/COM_STMT_EXECUTE 等分别计数。这是该专用中继内实际命令数，独立于 JDBC 方法调用数；TLS/压缩时只记录 opaque transport，不伪造命令计数。首个响应时长包括中继、网络和服务器等待，并非纯数据库执行时间。
+
+```powershell
+python agents/tools/health-probe/wire_relay.py mysql <专用OB主机> <端口> <新wire证据文件> --port 12983 --duration 600
+```
+
+中继打印实际 loopback 端口。独立 Java 采样进程设置 `DBX_HEALTH_RELAY_PORT=12983`；工具会只在该进程内覆盖 host/port 指向中继，含自定义 connection_string 时拒绝此模式。原 connect JSON 凭据仍仅在环境内。复用已编译的 HealthProbe 执行 pooled/direct，两模式各使用新 wire 文件和新 sample 文件；启用中继期间的额外延迟必须在环境说明中保留。
+
+```powershell
+python agents/tools/health-probe/wire_summary.py <Java-samples-JSONL> <该次wire-JSONL>
+```
+
+Oracle Agent 的真实代码在 `agents/drivers/oracle-go`：thin 是 go-ora，OCI 是带 `oci` tag 的 godror/CGO，Rust 负责 Agent 启动环境。`oracle_rpc_probe.py` 启动 root 指定的实际候选 binary，经既有 `open_session/execute_query/validate_session/cancel_session/close_session` JSON-RPC 采样；请求 ID 分流并发取消响应，不使用测试专用生产 API。
+
+```powershell
+python agents/tools/health-probe/oracle_rpc_probe.py <thin候选Agent绝对路径> thin <新samples文件> <新wire文件> --samples 20
+python agents/tools/health-probe/oracle_rpc_probe.py <OCI候选Agent绝对路径> oci <另一个新samples文件> <另一个新wire文件> --samples 20
+python agents/tools/health-probe/wire_summary.py <Oracle-samples-JSONL> <该次wire-JSONL>
+```
+
+Oracle 工具共用 `DBX_HEALTH_DEDICATED=1`、`DBX_HEALTH_CONNECT_JSON`，要求简单 host/port/service 参数，拒绝自定义连接描述符，避免绕过中继。保留 profile 和实际 binary SHA256。工具启动自身 TNS 中继后在内存中替换 host/port；不会修改保存的连接。通过关闭本工具的 TCP 流制造真实传输失效，通过 `validate_session` 观察生产恢复；取消时仅暂停专用中继 1 秒，让只读查询等待网络，再发送生产 `cancel_session`，记录成功取消/查询已完成/超时/错误，不强行把结果改成成功。之后继续查询验证恢复。
+
+默认 Oracle 只数实际 TNS 帧，DATA 帧不等于逻辑数据库请求或 SQL 数量。只有独立确认该测试连接没有 TLS/Oracle native encryption，并确认兼容 TTC 后，才可加 `--verified-plaintext-ttc`，记录帧前缀中可确认的 TTC ping/OALL8 等类别及首响应时长下界。未解析 piggyback/跨帧 TTC、加密数据或 OCI 版本差异时明确 incomplete/unknown，不声明完整逻辑请求总数。TNS 重定向可能绕过中继，看到 redirect 或目标流未捕获时验收不完整；不能为了取数自动关闭安全设置。
+
+这些实际协议观测的固定依据：go-ora [v2.9.0 connection.go Ping](https://github.com/sijms/go-ora/blob/v2.9.0/v2/connection.go)、[simple_object.go](https://github.com/sijms/go-ora/blob/v2.9.0/v2/simple_object.go)、[network/data_packet.go](https://github.com/sijms/go-ora/blob/v2.9.0/v2/network/data_packet.go)、[accept_packet.go](https://github.com/sijms/go-ora/blob/v2.9.0/v2/network/accept_packet.go)。实际生产驱动版本若变化须重新核对，不拿 parser fixture 当目标版本已支持。
+
+新增 `test_wire_relay.py` 覆盖 TCP 分片/合帧、真实 loopback 字节转发、认证和 TLS 边界、TNS 16/32 位帧、默认不解码逻辑请求、显式明文 TTC 下界、首响应口径、窗口关联与错误脱敏。统一运行 Python suite 时使用 `python -m unittest discover -s agents/tools/health-probe -p "test_*.py"`，包含汇总和网络用例。源码仅做语法解析，未执行。
+
 ## 尚待实证
 
-JDBC 计数不能证明真实网络请求数。统一验收需补充目标 JDBC 版本的驱动协议证据或隔离连接的包级计数，区分 ping、SQL 与 TLS 下不可见信息；只留命令类别/数量/时长，不保存业务载荷。不能为普通查询新增 SQL_AUDIT 补查来填这个空缺。
+JDBC 计数不能证明真实网络请求数。现在已有上述真实传输观测入口，仍须在目标版本/权限/网络条件下实际运行并核对覆盖。TLS/压缩、Oracle 加密、跨帧 TTC 或重定向使逻辑请求数不可确认时保留未验证边界；不能用 JDBC/RPC/TNS DATA 数替代，不为普通查询新增 SQL_AUDIT 补查。
 
-原生 Oracle 走 Rust/OCI，应使用其实际生产入口独立测量；本 Java 工具不代表原生 Oracle。客户端 IPC/传输/渲染也需真实桌面证据。实际网络中断、验证阻塞与成功取消仍需专用环境验收；快速查询的取消竞态可能只能得到“查询已完成”。当前没有实库样本、性能结论、修复前后对比或 GUI 通过结论。
+Oracle Go/OCI 使用上述生产 Agent 入口独立测量；Java 工具不代表它。客户端 Tauri IPC/传输/渲染仍需真实桌面证据。现有网络失效/暂停/取消场景已编写但未执行；实际数据库不可达、真实探测阻塞与成功取消仍须核对结果。当前没有实库样本、性能结论、修复前后对比或 GUI 通过结论。
 
 若后续确认重复探测或阻塞缺陷，再为实际调用链写失败回归并做最小修复；保留失效检测和错误分类，经独立 Standards/Spec、固定 SHA CI 后交付。无缺陷时记录保留现状的证据，不为性能猜测修改生产行为。

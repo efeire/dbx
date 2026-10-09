@@ -52,6 +52,14 @@ public final class HealthProbe {
         // Only the existing driver and a dedicated Oracle-mode endpoint are used.
         connect.remove("jdbc_driver_paths");
         connect.addProperty("jdbc_driver_class", "com.oceanbase.jdbc.Driver");
+        String relayPort = System.getenv("DBX_HEALTH_RELAY_PORT");
+        if (relayPort != null && !relayPort.isBlank()) {
+            if (connect.has("connection_string") && !connect.get("connection_string").getAsString().isBlank()) throw new IllegalArgumentException("Relay requires host/port parameters");
+            int port = Integer.parseInt(relayPort);
+            if (port < 1 || port > 65535) throw new IllegalArgumentException("Relay port");
+            connect.addProperty("host", "127.0.0.1");
+            connect.addProperty("port", port);
+        }
         Path output = Path.of(required("DBX_HEALTH_OUTPUT"));
         Class.forName("com.oceanbase.jdbc.Driver");
         Driver delegate = new com.oceanbase.jdbc.Driver();
@@ -78,6 +86,7 @@ public final class HealthProbe {
             environment.put("samples_per_scenario", samples);
             environment.put("scope", "production RPC dispatch and JDBC boundary; no IPC, wire packet or GUI measurement");
             environment.put("wire_requests", "not_measured");
+            environment.put("wire_observer", relayPort == null || relayPort.isBlank() ? "not_configured" : "external metadata relay; correlate separate wire evidence");
             environment.put("native_oracle", "not_measured");
             emit(writer, environment);
             try {
@@ -147,6 +156,7 @@ public final class HealthProbe {
             if (sql != null) row.put("vendor_code", sql.getErrorCode());
         } finally {
             row.put("dispatch_ms", (System.nanoTime() - started) / 1_000_000.0);
+            row.put("completed_at", Instant.now().toString());
             cancellation.shutdownNow();
             if (!cancellation.awaitTermination(10, TimeUnit.SECONDS)) throw new IllegalStateException("cancel worker did not stop");
             long[] after = counts.values();

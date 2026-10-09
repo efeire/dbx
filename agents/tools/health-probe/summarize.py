@@ -23,8 +23,8 @@ def distribution(values):
 
 def summarize(rows):
     groups = defaultdict(list)
-    allowed = {"connect", "cold_query", "warm_query", "idle_query", "invalid_hot", "invalid_expired", "reconnect", "after_reconnect", "cancel_race", "after_cancel"}
-    outcomes = {"success", "error", "incorrect_result", "completed_during_cancel_race"}
+    allowed = {"connect", "cold_query", "warm_query", "idle_query", "invalid_hot", "invalid_expired", "reconnect", "after_reconnect", "cancel_race", "after_cancel", "disconnect", "after_explicit_reconnect"}
+    outcomes = {"success", "error", "incorrect_result", "completed_during_cancel_race", "cancelled", "timeout", "rpc_timeout", "rpc_error"}
     for row in rows:
         if row.get("kind") == "sample" and row.get("scenario") in allowed:
             groups[row["scenario"]].append(row)
