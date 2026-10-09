@@ -1,6 +1,6 @@
 //! Scheduler administration deliberately bypasses query history and SQL logging.
 //! Never retry a mutation: Scheduler DDL and argument changes are not atomic.
-use super::{agent_metadata_timeout, connection_config, lock_metadata_mutex_with_timeout};
+use super::{agent_metadata_timeout, connection_config};
 use crate::connection::{AppState, PoolKind, METADATA_POOL_ACQUIRE_TIMEOUT};
 use crate::db::{agent_driver::AgentDriverClient, QueryResult};
 use crate::models::connection::DatabaseType;
@@ -507,7 +507,9 @@ pub async fn oracle_jobs_core(
     let Some(PoolKind::Agent(client)) = pool else {
         return Err("Job administration requires the Oracle-compatible Agent driver".into());
     };
-    let mut client = lock_metadata_mutex_with_timeout(&client, METADATA_POOL_ACQUIRE_TIMEOUT).await?;
+    let mut client = tokio::time::timeout(METADATA_POOL_ACQUIRE_TIMEOUT, client.lock())
+        .await
+        .map_err(|_| crate::query::METADATA_POOL_BUSY_ERROR.to_string())?;
     let timeout = agent_metadata_timeout(Some(&config));
     let version = client
         .connection_info(timeout)
