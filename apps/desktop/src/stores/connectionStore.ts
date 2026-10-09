@@ -9261,7 +9261,7 @@ export const useConnectionStore = defineStore("connection", () => {
   /// the same fallback.
   const LOGIN_SCHEMA_COMPLETION_TYPES = new Set(["dameng", "db2"]);
 
-  async function listCompletionColumns(connectionId: string, database: string, table: string, schema?: string, context?: { clientSessionId?: string; version?: number; tableQuoted?: boolean; schemaQuoted?: boolean }, catalog?: string): Promise<SqlCompletionColumn[]> {
+  async function listCompletionColumns(connectionId: string, database: string, table: string, schema?: string, context?: { clientSessionId?: string; version?: number; tableQuoted?: boolean; schemaQuoted?: boolean; currentSchema?: string }, catalog?: string): Promise<SqlCompletionColumn[]> {
     const config = getConfig(connectionId);
     // Use the effective database type (e.g. a JDBC connection whose URL is
     // `jdbc:oracle:...` resolves to "oracle") rather than the raw db_type.
@@ -9283,7 +9283,9 @@ export const useConnectionStore = defineStore("connection", () => {
       return [];
     }
     const sessionCacheScope = usesCurrentSchema && context?.clientSessionId ? `:${context.clientSessionId}:${context.version ?? 0}` : "";
-    const cacheKey = `${completionColumnsKey(connectionId, database, completionTable, completionSchema, catalog, context)}${sessionCacheScope}`;
+    const currentSchema = effectiveDbType === "oceanbase-oracle" && usesCurrentSchema ? context?.currentSchema : undefined;
+    const contextCacheScope = currentSchema ? `:current=${JSON.stringify(currentSchema)}` : "";
+    const cacheKey = `${completionColumnsKey(connectionId, database, completionTable, completionSchema, catalog, context)}${sessionCacheScope}${contextCacheScope}`;
     if (!completionColumnsCache.value[cacheKey]) {
       const requestRevision = completionCacheRevision(connectionId, database);
       await withCompletionInFlight(
@@ -9317,7 +9319,9 @@ export const useConnectionStore = defineStore("connection", () => {
             }
           }
           const querySchema = usesCurrentSchema ? "" : metadataQuerySchema(connectionId, database, completionSchema);
-          const columns = await api.getColumns(connectionId, database, querySchema, completionTable, catalog, usesCurrentSchema ? context?.clientSessionId : undefined);
+          const columns = currentSchema
+            ? await api.getColumns(connectionId, database, querySchema, completionTable, catalog, context?.clientSessionId, currentSchema)
+            : await api.getColumns(connectionId, database, querySchema, completionTable, catalog, usesCurrentSchema ? context?.clientSessionId : undefined);
           if (requestRevision !== completionCacheRevision(connectionId, database)) return;
           completionColumnsCache.value[cacheKey] = columns;
           evictOldestCacheEntries(completionColumnsCache.value, COMPLETION_CACHE_MAX);
@@ -9388,7 +9392,7 @@ export const useConnectionStore = defineStore("connection", () => {
     return listCompletionDatabases(connectionId);
   }
 
-  function refreshCompletionColumns(connectionId: string, database: string, table: string, schema?: string, context?: { clientSessionId?: string; version?: number; tableQuoted?: boolean; schemaQuoted?: boolean }, catalog?: string): Promise<SqlCompletionColumn[]> {
+  function refreshCompletionColumns(connectionId: string, database: string, table: string, schema?: string, context?: { clientSessionId?: string; version?: number; tableQuoted?: boolean; schemaQuoted?: boolean; currentSchema?: string }, catalog?: string): Promise<SqlCompletionColumn[]> {
     return listCompletionColumns(connectionId, database, table, schema, context, catalog);
   }
 
