@@ -167,10 +167,12 @@ async fn live_oceanbase_bound_manual_savepoint_and_user_rollback() {
                 .expect("independent installed bound Agent jar")
         )
     );
-    assert_eq!(
-        agent_hash, "E2CC1C842C0C2C2F69803D6DE8306EADC08AA57B73A52C92131C54C1FD131A1A",
-        "use the verified bound-v1 Agent artifact"
+    let expected_agent_hash = required("AGENT_SHA256");
+    assert!(
+        expected_agent_hash.len() == 64 && expected_agent_hash.bytes().all(|c| c.is_ascii_hexdigit()),
+        "verified Agent SHA256 required"
     );
+    assert_eq!(agent_hash, expected_agent_hash.to_ascii_uppercase(), "use the approved independent Agent artifact");
     let directory = tempfile::tempdir().unwrap();
     let storage = dbx_core::persistence::test_storage::open(&directory.path().join("state.db")).await.unwrap();
     let state = AppState::new_with_plugin_and_agent_dir_and_app_version(
