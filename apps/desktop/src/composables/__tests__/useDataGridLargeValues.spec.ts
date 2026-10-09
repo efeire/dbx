@@ -101,13 +101,10 @@ function mountLargeValues(databaseType: DatabaseType, result: Ref<QueryResult>, 
             tableMeta: computed(() => ({
               schema: "public",
               tableName: "APP_DATA",
-              columns: [
-                { name: "ID", data_type: "NUMBER" },
-                { name: "APP", data_type: "CLOB" },
-              ],
+              columns: result.value.columns.map((name, index) => ({ name, data_type: index === 0 ? "NUMBER" : "CLOB" })),
               primaryKeys: ["ID"],
             })),
-            sourceColumns: computed(() => ["ID", "APP"]),
+            sourceColumns: computed(() => result.value.columns),
             onExecuteSql: computed(() => undefined),
             sql: computed(() => undefined),
             searchText: ref(""),
@@ -145,6 +142,47 @@ function previewResult(columnType = "bytea", value = "\\x00017f80ff...", origina
 }
 
 describe("useDataGridLargeValues", () => {
+  it("keeps the first pending CLOB edit when loading a second complete CLOB on the same row", async () => {
+    const result = previewResult("CLOB", "first preview", 2057);
+    result.value.columns.push("DOCUMENT");
+    result.value.column_types!.push("CLOB");
+    result.value.rows[0]!.push("second preview");
+    result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO" };
+    result.value.large_value_cells = [
+      { row_index: 0, column_index: 1, original_bytes: 2057, value_ref: "first" },
+      { row_index: 0, column_index: 2, original_bytes: 2061, value_ref: "second" },
+    ];
+    mocks.readLargeValueChunk.mockImplementation(async (options) => {
+      const bytes = options.valueRef === "first" ? 2057 : 2061;
+      return { status: "ok", data: (options.valueRef === "first" ? "a" : "b").repeat(bytes), next_offset: bytes, eof: true, value_kind: "text" };
+    });
+    const { largeValues, editor } = mountLargeValues("oceanbase-oracle", result, true);
+    await expect(largeValues.hydrateLargeValueCell(1, 1)).resolves.toBe(true);
+    editor!.applyCellValue(0, 1, "first pending edit");
+    await nextTick();
+    const row = result.value.rows[0];
+    await expect(largeValues.hydrateLargeValueCell(1, 2)).resolves.toBe(true);
+    await nextTick();
+    expect(editor!.dirtyRows.value.get(0)?.get(1)).toBe("first pending edit");
+    expect(result.value.rows[0]).toBe(row);
+    editor!.applyCellValue(0, 2, "second pending edit");
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["both CLOB updates"], rollbackStatements: [] });
+    await editor!.previewChanges();
+    expect(mocks.prepareDataGridSave.mock.calls[0]![0].dirtyRows).toEqual([
+      [
+        0,
+        [
+          [1, "first pending edit"],
+          [2, "second pending edit"],
+        ],
+      ],
+    ]);
+    expect(result.value.rows[0]).toEqual([1, "a".repeat(2057), "b".repeat(2061)]);
+    editor!.undoPendingChange();
+    expect(editor!.dirtyRows.value.get(0)?.get(1)).toBe("first pending edit");
+    expect(editor!.dirtyRows.value.get(0)?.has(2)).toBe(false);
+  });
+
   it.each(["preview", "failed preparation"])("keeps editor edits, deletes and undo after baseline reads during %s", async (action) => {
     const result = previewResult("CLOB", "preview", 1);
     result.value.rows.push([2, "second preview"]);
