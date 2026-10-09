@@ -24,6 +24,8 @@ mod iris_tests;
 
 mod db2;
 mod ddl_plan;
+#[path = "transfer/oceanbase_source.rs"]
+pub(crate) mod oceanbase_source;
 mod structure_plan;
 
 use crate::connection::{config_for_pool_key, AppState, PoolKind};
@@ -8221,8 +8223,23 @@ where
     F: FnMut(TransferProgress),
 {
     let mut outcome = TransferObjectOutcome::default();
+    let oceanbase_source = get_db_type(state, &request.source_connection_id).await? == DatabaseType::OceanbaseOracle;
     let source_schema = resolve_oracle_schema(&request.source_schema, &request.source_database);
-    let target_schema = resolve_oracle_schema(&request.target_schema, &request.target_database);
+    let target_schema = if oceanbase_source && request.target_schema.trim().is_empty() {
+        let result =
+            execute_on_pool(state, target_pool_key, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+                .await?;
+        result
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(|value| value.as_str())
+            .filter(|schema| !schema.is_empty())
+            .ok_or("Target current schema is unavailable for OceanBase object transfer")?
+            .to_string()
+    } else {
+        resolve_oracle_schema(&request.target_schema, &request.target_database)
+    };
     let order = ordered_transfer_object_kinds(
         request.object_selection_mode().selections().iter().map(|s| s.object_type).collect(),
     );
@@ -8251,6 +8268,22 @@ where
             if exists {
                 outcome.skipped.push(format!("{kind:?}:{name}"));
                 progress(&mut outcome, TransferStatus::Running, None);
+                continue;
+            }
+            if oceanbase_source {
+                match oceanbase_source::execute(state, request, target_pool_key, &target_schema, &name, kind).await {
+                    Ok(()) => {
+                        outcome.transferred.push(format!("{kind:?}:{name}"));
+                        progress(&mut outcome, TransferStatus::Running, None);
+                    }
+                    Err(error) => {
+                        if is_cancelled(&request.transfer_id).await {
+                            return Err("Cancelled".into());
+                        }
+                        outcome.failed.push(format!("{kind:?}:{name}"));
+                        progress(&mut outcome, TransferStatus::Error, Some(error));
+                    }
+                }
                 continue;
             }
             let query = oracle_object_source_query(&kind, &source_schema, &name)?;
@@ -8419,29 +8452,43 @@ where
                 progress(&mut outcome, TransferStatus::Running, None);
                 continue;
             }
-            let query = match source_family {
-                TransferObjectFamily::Mysql => mysql_object_source_query(&kind, &source_schema, &name)?,
-                TransferObjectFamily::SqlServer => sqlserver_object_source_query(&kind, &source_schema, &name)?,
-                TransferObjectFamily::Oracle => oracle_object_source_query(&kind, &source_schema, &name)?,
-                TransferObjectFamily::Postgres => {
-                    return Err(format!("跨库传输暂不支持 Postgres 源: {name}"));
+            let raw_ddl = if source_db_type == DatabaseType::OceanbaseOracle {
+                match oceanbase_source::load(state, request, &source_schema, &name, kind).await {
+                    Ok(statements) => statements.join("\n"),
+                    Err(error) => {
+                        if is_cancelled(&request.transfer_id).await {
+                            return Err("Cancelled".into());
+                        }
+                        outcome.failed.push(format!("{kind:?}:{name}"));
+                        progress(&mut outcome, TransferStatus::Error, Some(error));
+                        continue;
+                    }
                 }
-            };
-            let result = execute_on_pool(state, source_pool_key, &query).await?;
-            let raw_ddl = match source_family {
-                TransferObjectFamily::Mysql => mysql_object_ddl_from_result(&kind, &source_schema, &result.rows)?,
-                TransferObjectFamily::SqlServer => {
-                    sqlserver_object_ddl_from_result(&result, &source_schema, &name, &kind)?
-                }
-                TransferObjectFamily::Oracle => result
-                    .rows
-                    .first()
-                    .and_then(|row| row.first())
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| format!("No DDL returned for Oracle {:?} {name}", kind))?
-                    .to_string(),
-                TransferObjectFamily::Postgres => {
-                    return Err(format!("跨库传输暂不支持 Postgres 源: {name}"));
+            } else {
+                let query = match source_family {
+                    TransferObjectFamily::Mysql => mysql_object_source_query(&kind, &source_schema, &name)?,
+                    TransferObjectFamily::SqlServer => sqlserver_object_source_query(&kind, &source_schema, &name)?,
+                    TransferObjectFamily::Oracle => oracle_object_source_query(&kind, &source_schema, &name)?,
+                    TransferObjectFamily::Postgres => {
+                        return Err(format!("跨库传输暂不支持 Postgres 源: {name}"));
+                    }
+                };
+                let result = execute_on_pool(state, source_pool_key, &query).await?;
+                match source_family {
+                    TransferObjectFamily::Mysql => mysql_object_ddl_from_result(&kind, &source_schema, &result.rows)?,
+                    TransferObjectFamily::SqlServer => {
+                        sqlserver_object_ddl_from_result(&result, &source_schema, &name, &kind)?
+                    }
+                    TransferObjectFamily::Oracle => result
+                        .rows
+                        .first()
+                        .and_then(|row| row.first())
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| format!("No DDL returned for Oracle {:?} {name}", kind))?
+                        .to_string(),
+                    TransferObjectFamily::Postgres => {
+                        return Err(format!("跨库传输暂不支持 Postgres 源: {name}"));
+                    }
                 }
             };
             let ddl = convert_cross_family_object_ddl(
