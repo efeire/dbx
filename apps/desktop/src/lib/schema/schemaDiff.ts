@@ -236,6 +236,7 @@ export interface FieldMappingEntry {
 }
 
 export interface SchemaDiffPreparationOptions {
+  routineEndpoints?: SchemaDiffRoutineEndpoints;
   sourceTables: TableInfo[];
   targetTables: TableInfo[];
   sourceDetails: TableSchemaDetail[];
@@ -348,6 +349,7 @@ export interface MissingRollbackObject {
 export type RollbackCompleteness = "complete" | "incomplete";
 
 export interface SchemaDiffRoutineStep {
+  compatibilityWarnings?: string[];
   name: string;
   sourceSchema?: string;
   targetSchema?: string;
@@ -397,7 +399,16 @@ export interface SchemaSyncSqlPlan {
   missingRollbackObjects: MissingRollbackObject[];
 }
 
+export interface SchemaDiffRoutineEndpoints {
+  recovery?: boolean;
+  sourceConnectionId: string;
+  sourceDatabase: string;
+  targetConnectionId: string;
+  targetDatabase: string;
+}
+
 export interface GenerateSchemaSyncPlanOptions {
+  routineEndpoints?: SchemaDiffRoutineEndpoints;
   databaseType: DatabaseType;
   sourceDatabaseType?: DatabaseType;
   sourceSchema?: string;
@@ -427,6 +438,7 @@ export type DiffOperationType = "modify" | "create" | "delete" | "none";
 export type DiffObjectKind = "table" | "view" | "function" | "sequence" | "rule" | "owner" | "column" | "index" | "trigger" | "foreignKey" | "tableOption";
 
 export interface SchemaDiffObject {
+  compatibilityWarnings?: string[];
   id: string;
   operationType: DiffOperationType;
   objectKind: DiffObjectKind;
@@ -685,7 +697,15 @@ function buildSequenceDdl(seq: SequenceInfo): string {
   return parts.join("\n");
 }
 
-export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiffs: FunctionDiff[] = [], sequenceDiffs: SequenceDiff[] = [], ruleDiffs: RuleDiff[] = [], ownerDiffs: OwnerDiff[] = [], renameCandidates?: RenameCandidate[], routineSteps: SchemaDiffRoutineStep[] = []): SchemaDiffObject[] {
+export function convertToSchemaDiffObjects(
+  tableDiffs: TableDiff[],
+  functionDiffs: FunctionDiff[] = [],
+  sequenceDiffs: SequenceDiff[] = [],
+  ruleDiffs: RuleDiff[] = [],
+  ownerDiffs: OwnerDiff[] = [],
+  renameCandidates?: RenameCandidate[],
+  routineSteps: SchemaDiffRoutineStep[] = [],
+): SchemaDiffObject[] {
   const objects: SchemaDiffObject[] = [];
 
   for (const diff of tableDiffs) {
@@ -790,7 +810,7 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
     const routineType = schemaDiffRoutineType(diff.source?.function_type || diff.target?.function_type);
     const trigger = diff.source?.trigger ?? diff.target?.trigger;
     const routineStep = routineSteps.find((step) => {
-      const tableOwner = trigger && trigger.tableOwner === diff.source?.schema ? step.targetSchema ?? trigger.tableOwner : trigger?.tableOwner;
+      const tableOwner = trigger && trigger.tableOwner === diff.source?.schema ? (step.targetSchema ?? trigger.tableOwner) : trigger?.tableOwner;
       return step.name === diff.name && step.routineType === routineType && step.trigger?.tableName === trigger?.tableName && step.trigger?.tableOwner === tableOwner;
     });
     objects.push({
@@ -806,6 +826,7 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
       sourceSchema: diff.source?.schema,
       targetSchema: diff.target?.schema,
       blockedReason: routineStep?.blockedReason,
+      compatibilityWarnings: routineStep?.compatibilityWarnings,
       dependencies: routineStep?.dependencies,
       sourceName: diff.type === "added" ? undefined : diff.name,
       targetName: diff.type === "removed" ? undefined : diff.name,

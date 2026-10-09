@@ -488,23 +488,46 @@ test.each([
   apiMock.listFunctions.mockResolvedValueOnce(programs).mockResolvedValueOnce([]);
   apiMock.prepareSchemaDiff.mockResolvedValue({ diffs: [], functionDiffs: [{ name: "P_SYNC", type: "added", source }], syncSql: "" });
   const tableListLoader = { load: vi.fn() };
-  const session = startSchemaDiffSession({ sourceConnectionId: "routine-source", sourceDatabase: "db", sourceSchema: "SRC", targetConnectionId: "routine-target", targetDatabase: "db", targetSchema: "DST", sourceDbType, targetDbType, options: { tables: false, functions: true }, ignoreComments: false, label: "routines" }, { tableListLoader });
+  const session = startSchemaDiffSession(
+    { sourceConnectionId: "routine-source", sourceDatabase: "db", sourceSchema: "SRC", targetConnectionId: "routine-target", targetDatabase: "db", targetSchema: "DST", sourceDbType, targetDbType, options: { tables: false, functions: true }, ignoreComments: false, label: "routines" },
+    { tableListLoader },
+  );
   await waitForSession(session);
   assert.equal(session.status, "completed");
   assert.equal(tableListLoader.load.mock.calls.length, 0);
-  assert.deepEqual(apiMock.listFunctions.mock.calls, [["routine-source", "db", "SRC"], ["routine-target", "db", "DST"]]);
+  assert.deepEqual(apiMock.listFunctions.mock.calls, [
+    ["routine-source", "db", "SRC"],
+    ["routine-target", "db", "DST"],
+  ]);
   const options = apiMock.prepareSchemaDiff.mock.calls[0]?.[0];
   assert.equal(options.sourceDatabaseType, sourceDbType);
   assert.equal(options.databaseType, targetDbType);
   assert.equal(options.sourceSchema, "SRC");
   assert.equal(options.targetSchema, "DST");
+  assert.deepEqual(options.routineEndpoints, { sourceConnectionId: "routine-source", sourceDatabase: "db", targetConnectionId: "routine-target", targetDatabase: "db" });
+  assert.equal(options.routineContext, undefined);
   assert.deepEqual(options.sourceFunctions, programs);
 });
 
 test("fails a routine compare on source read errors before generating a removal plan", async () => {
   vi.clearAllMocks();
   apiMock.listFunctions.mockRejectedValueOnce(new Error("SRC.P_SYNC: ORA-01031")).mockResolvedValueOnce([]);
-  const session = startSchemaDiffSession({ sourceConnectionId: "read-source", sourceDatabase: "db", sourceSchema: "SRC", targetConnectionId: "read-target", targetDatabase: "db", targetSchema: "DST", sourceDbType: "oracle", targetDbType: "oceanbase-oracle", options: { tables: false, functions: true }, ignoreComments: false, label: "read failure" }, { tableListLoader: { load: vi.fn() } });
+  const session = startSchemaDiffSession(
+    {
+      sourceConnectionId: "read-source",
+      sourceDatabase: "db",
+      sourceSchema: "SRC",
+      targetConnectionId: "read-target",
+      targetDatabase: "db",
+      targetSchema: "DST",
+      sourceDbType: "oracle",
+      targetDbType: "oceanbase-oracle",
+      options: { tables: false, functions: true },
+      ignoreComments: false,
+      label: "read failure",
+    },
+    { tableListLoader: { load: vi.fn() } },
+  );
   await waitForSession(session);
   assert.equal(session.status, "failed");
   assert.match(session.error ?? "", /ORA-01031/);

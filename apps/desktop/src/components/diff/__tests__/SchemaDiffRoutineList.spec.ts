@@ -21,7 +21,7 @@ it("renders distinct package parts and trigger state, dependencies, and affected
     { name: "SAME", type: "added", source: { ...base, function_type: "TRIGGER", trigger } },
   ];
   const objects = convertToSchemaDiffObjects([], diffs, [], [], [], undefined, [
-    { name: "SAME", routineType: "PACKAGE", operation: "added", dependencies: [], incomingDependencies: [{ owner: "DST", name: "CALLER", objectType: "PROCEDURE" }] },
+    { name: "SAME", routineType: "PACKAGE", operation: "added", compatibilityWarnings: ["Future edition capability is not preserved"], dependencies: [], incomingDependencies: [{ owner: "DST", name: "CALLER", objectType: "PROCEDURE" }] },
     { name: "SAME", routineType: "PACKAGE BODY", operation: "added", dependencies: ["DST.SAME PACKAGE"], blockedReason: "Specification unavailable" },
     { name: "SAME", routineType: "TRIGGER", operation: "added", sourceSchema: "SRC", targetSchema: "DST", trigger: { ...trigger, tableOwner: "DST" }, dependencies: ["DST.Orders TABLE"] },
   ]);
@@ -30,7 +30,17 @@ it("renders distinct package parts and trigger state, dependencies, and affected
   const host = document.createElement("div");
   document.body.append(host);
   app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
-  app.use(createI18n({ legacy: false, locale: "en", messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}", routineIncomingDependencies: "Affected: {dependencies}" } } } }));
+  app.use(
+    createI18n({
+      legacy: false,
+      locale: "en",
+      messages: {
+        en: {
+          diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}", routineIncomingDependencies: "Affected: {dependencies}" },
+        },
+      },
+    }),
+  );
   app.mount(host);
   await nextTick();
   expect(host.textContent).toContain("PACKAGE SRC.SAME");
@@ -38,6 +48,7 @@ it("renders distinct package parts and trigger state, dependencies, and affected
   expect(host.textContent).toContain("TRIGGER SRC.SAME · SRC.Orders");
   expect(host.textContent).toContain("BEFORE EACH ROW · UPDATE · DISABLED");
   expect(host.textContent).toContain("Affected: PROCEDURE DST.CALLER");
+  expect(host.textContent).toContain("Future edition capability is not preserved");
   expect(host.textContent).toContain("Blocked: Specification unavailable");
   const checkboxes = host.querySelectorAll("input");
   expect(checkboxes[1]!.disabled).toBe(true);
@@ -57,7 +68,13 @@ it("shows both routine owners and dependencies while blocked rows remain inspect
   const host = document.createElement("div");
   document.body.append(host);
   app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
-  app.use(createI18n({ legacy: false, locale: "en", messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", noDifferences: "No differences", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}" } } } }));
+  app.use(
+    createI18n({
+      legacy: false,
+      locale: "en",
+      messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", noDifferences: "No differences", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}" } } },
+    }),
+  );
   app.mount(host);
   await nextTick();
   expect(host.textContent).toContain("PROCEDURE SRC.P_SYNC");

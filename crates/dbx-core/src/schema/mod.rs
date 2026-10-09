@@ -1,6 +1,8 @@
-pub mod table_structure_sql;
 mod oracle_routines;
-pub use oracle_routines::{validate_schema_diff_routines, RoutineValidation};
+pub mod table_structure_sql;
+pub use oracle_routines::{
+    prepare_schema_diff_core, schema_diff_routine_context, validate_schema_diff_routines, RoutineValidation,
+};
 
 pub use dbx_drivers::metadata::sqlite_ddl;
 
@@ -8799,9 +8801,10 @@ pub async fn list_functions_core(
     database: &str,
     schema: &str,
 ) -> Result<Vec<db::FunctionInfo>, String> {
-    if connection_config(state, connection_id).await.is_some_and(|config| {
-        crate::schema_diff::is_oracle_routine_database(config.db_type)
-    }) {
+    if connection_config(state, connection_id)
+        .await
+        .is_some_and(|config| crate::schema_diff::is_oracle_routine_database(config.db_type))
+    {
         return oracle_routines::list_routines(state, connection_id, database, schema).await;
     }
     let postgres_functions = retry_metadata_connection(state, connection_id, Some(database), || async {
@@ -8917,7 +8920,10 @@ async fn load_function_info_via_object(
     };
 
     Some(db::FunctionInfo {
-        trigger: None, dependency_objects: Vec::new(), incoming_dependencies: Vec::new(), paired_object_present: None,
+        trigger: None,
+        dependency_objects: Vec::new(),
+        incoming_dependencies: Vec::new(),
+        paired_object_present: None,
         schema: None,
         status: None,
         dependencies: Vec::new(),
