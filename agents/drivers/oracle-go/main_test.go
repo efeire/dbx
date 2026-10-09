@@ -3525,7 +3525,7 @@ func (c *oracleViewSourceConn) QueryContext(
 	for index, arg := range args {
 		values[index] = arg.Value
 	}
-	if !reflect.DeepEqual(values, step.args) {
+	if len(values) != len(step.args) || (len(values) > 0 && !reflect.DeepEqual(values, step.args)) {
 		return nil, errors.New("unexpected query arguments")
 	}
 	if step.err != nil {
@@ -3609,8 +3609,8 @@ func openOracleViewSourceTestDB(
 	steps []oracleViewSourceQueryStep,
 ) (*sql.DB, *oracleViewSourceDriver) {
 	t.Helper()
-	driverName := "oracle-test-view-source-" + strings.ReplaceAll(t.Name(), "/", "-") + "-" + time.Now().Format("150405.000000000")
 	scripted := &oracleViewSourceDriver{steps: steps}
+	driverName := fmt.Sprintf("oracle-test-view-source-%s-%p", strings.ReplaceAll(t.Name(), "/", "-"), scripted)
 	sql.Register(driverName, scripted)
 	db, err := sql.Open(driverName, "")
 	if err != nil {
