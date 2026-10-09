@@ -37,7 +37,7 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
   const targetSchema = options.targetSchema || sourceSchema;
   if (!options.targetName.trim()) throw new Error("Target table name is required.");
   const where = `OWNER = ${literal(sourceSchema)} AND TABLE_NAME = ${literal(options.sourceName)}`;
-  const [columns, constraints, indexes, triggers, comments, directions, conflicts, virtualColumns] = await Promise.all([
+  const [columns, constraints, indexes, triggers, comments, directions, conflicts, virtualColumns, excludedConstraints] = await Promise.all([
     options.sourceColumns ?? api.getColumns(options.connectionId, options.database, sourceSchema, options.sourceName, options.catalog),
     api.listConstraints(options.connectionId, options.database, sourceSchema, options.sourceName, options.catalog),
     api.listIndexes(options.connectionId, options.database, sourceSchema, options.sourceName, options.catalog),
@@ -46,6 +46,7 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
     query(`SELECT INDEX_NAME, COLUMN_NAME, COLUMN_POSITION, DESCEND FROM SYS.ALL_IND_COLUMNS WHERE TABLE_OWNER = ${literal(sourceSchema)} AND TABLE_NAME = ${literal(options.sourceName)} ORDER BY INDEX_NAME, COLUMN_POSITION`),
     query(`SELECT OBJECT_NAME FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(targetSchema)} AND OBJECT_NAME = ${literal(options.targetName)} AND ROWNUM <= 1`),
     query(`SELECT COLUMN_NAME FROM SYS.ALL_TAB_COLS WHERE ${where} AND VIRTUAL_COLUMN = 'YES'`),
+    query(`SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE, INDEX_NAME FROM SYS.ALL_CONSTRAINTS WHERE ${where} AND CONSTRAINT_TYPE IN ('U', 'R')`),
   ]);
   if (virtualColumns.length) throw new Error(`Cloning virtual columns is not supported: ${virtualColumns.map((row) => ident(String(row[0]))).join(", ")}. No DDL was executed.`);
   if (!columns.length || comments.length !== 1) throw new Error("Source table metadata is missing or inaccessible. No DDL was executed.");
@@ -82,10 +83,19 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
     copied.push(steps[steps.length - 1]!.label);
   }
   const excluded = constraints.filter((constraint) => constraint.constraint_type !== "PRIMARY KEY").map((constraint) => `${constraint.constraint_type}: ${ident(constraint.name)}`);
+  const uniqueConstraintIndexes = new Set<string>();
+  for (const row of excludedConstraints) {
+    if (row[1] === "U") {
+      if (typeof row[2] !== "string" || !row[2]) throw new Error("Source unique-constraint index metadata is unavailable. No DDL was executed.");
+      uniqueConstraintIndexes.add(row[2]);
+    }
+    const label = `${row[1] === "U" ? "UNIQUE" : "FOREIGN KEY"}: ${ident(String(row[0]))}`;
+    if (!excluded.includes(label)) excluded.push(label);
+  }
   excluded.push(...triggers.map((trigger) => `TRIGGER: ${ident(trigger.name)}`));
   const columnNames = new Set(columns.map((column) => column.name));
   const normalIndexes = indexes.filter((index) => {
-    if (index.is_primary) return false;
+    if (index.is_primary || uniqueConstraintIndexes.has(index.name)) return false;
     if (index.index_type?.toUpperCase() !== "NORMAL" || index.key_is_expression?.some(Boolean)) {
       excluded.push(`INDEX (${index.index_type || "unknown"}): ${ident(index.name)}`);
       return false;

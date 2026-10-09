@@ -42,6 +42,35 @@ beforeEach(() => {
 });
 
 describe("OceanBase Oracle structure clone", () => {
+  it("excludes UNIQUE backing indexes and reports foreign keys missing from the constraints API", async () => {
+    api.listConstraints.mockResolvedValue([
+      { name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["b", "a"], enabled: true, valid: true },
+      { name: "UQ_SOURCE", constraint_type: "UNIQUE", columns: ["a"] },
+    ]);
+    api.listIndexes.mockResolvedValue([
+      { name: "UQ_BACKING", columns: ["a"], index_type: "NORMAL", is_unique: true },
+      { name: "IX_STANDALONE", columns: ["b"], index_type: "NORMAL", is_unique: true },
+    ]);
+    const original = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args: Parameters<typeof original>) => {
+      if (args[2].includes("ALL_CONSTRAINTS"))
+        return result([
+          ["UQ_SOURCE", "U", "UQ_BACKING"],
+          ["FK_SOURCE", "R", null],
+        ]);
+      if (args[2].includes("ALL_IND_COLUMNS"))
+        return result([
+          ["UQ_BACKING", "a", 1, "ASC"],
+          ["IX_STANDALONE", "b", 1, "ASC"],
+        ]);
+      return original(...args);
+    });
+    const plan = await buildDuplicateTableStructurePlan(options);
+    expect(plan.oceanbaseClone?.copied.join("\n")).not.toContain("UQ_BACKING");
+    expect(plan.oceanbaseClone?.copied.join("\n")).toContain("IX_STANDALONE");
+    expect(plan.oceanbaseClone?.excluded).toEqual(expect.arrayContaining(['UNIQUE: "UQ_SOURCE"', 'FOREIGN KEY: "FK_SOURCE"']));
+    expect(plan.sql).toContain("CREATE UNIQUE INDEX");
+  });
   it("reads virtual-column identity from the OceanBase ALL_TAB_COLS dictionary", async () => {
     const original = api.executeQuery.getMockImplementation()!;
     api.executeQuery.mockImplementation(async (...args: Parameters<typeof original>) => {
@@ -53,6 +82,11 @@ describe("OceanBase Oracle structure clone", () => {
     const plan = await buildDuplicateTableStructurePlan(options);
     expect(plan.oceanbaseClone?.targetName).toBe(options.targetName);
     expect(api.executeQuery.mock.calls.find((call) => call[2].includes("VIRTUAL_COLUMN"))?.[2]).toContain("FROM SYS.ALL_TAB_COLS WHERE");
+  });
+  it("refuses a UNIQUE constraint whose backing index identity is unavailable", async () => {
+    const original = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args: Parameters<typeof original>) => (args[2].includes("ALL_CONSTRAINTS") ? result([["UQ_SOURCE", "U", null]]) : original(...args)));
+    await expect(buildDuplicateTableStructurePlan(options)).rejects.toThrow("unique-constraint index metadata is unavailable");
   });
   it("carries FLOAT binary precision from metadata into the CREATE request", async () => {
     api.getColumns.mockResolvedValue([...columns, { name: "measurement", data_type: "FLOAT", numeric_precision: 24, numeric_scale: null, is_nullable: true, column_default: null, is_primary_key: false, extra: "" }]);
