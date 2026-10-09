@@ -33,6 +33,8 @@ const {
   showRenameObjectDialog,
   renameObjectName,
   renameObjectDialogTitle,
+  packageCleanupReviewed,
+  packageRenameAvailable,
   renameObjectPreviewSql,
   renameObjectWarning,
   renameObjectError,
@@ -293,6 +295,10 @@ watch(
       </DialogHeader>
       <div class="grid gap-3">
         <Input v-model="renameObjectName" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" @keydown.enter.prevent="confirmRenameObject" />
+        <label v-if="packageRenameAvailable" class="flex items-start gap-2 text-sm">
+          <input v-model="packageCleanupReviewed" type="checkbox" class="mt-1" />
+          <span>{{ t("contextMenu.packageCleanupAcknowledgement", { oldName: node.objectName || node.label, newName: renameObjectName }) }}</span>
+        </label>
         <p v-if="renameObjectWarning" class="text-sm text-muted-foreground">{{ renameObjectWarning }}</p>
         <pre v-if="renameObjectPreviewSql" class="max-h-32 min-w-0 max-w-full overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(renameObjectPreviewSql)"></pre>
         <p v-if="renameObjectError" class="min-w-0 max-w-full overflow-x-auto text-sm text-destructive">{{ renameObjectError }}</p>
@@ -300,7 +306,7 @@ watch(
       <DialogFooter>
         <Button variant="outline" @click="showRenameObjectDialog = false">{{ t("dangerDialog.cancel") }}</Button>
         <Button :disabled="!renameObjectName.trim() || renameObjectName.trim() === node.label" @click="confirmRenameObject">
-          {{ t("contextMenu.renameObject") }}
+          {{ t(packageCleanupReviewed ? "contextMenu.packageCleanupAction" : "contextMenu.renameObject") }}
         </Button>
       </DialogFooter>
     </DialogContent>

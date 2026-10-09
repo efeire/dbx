@@ -101,7 +101,7 @@ import {
 import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeOceanBaseRoutineRenameSteps, RoutineRenameStepError, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildRenameObjectSql, supportsObjectRename } from "@/lib/table/objectRenameSql";
-import { executePackageRename, PackageRenameStepError, preparePackageRename, supportsPackageRename } from "@/lib/table/packageRename";
+import { executePackageCleanup, executePackageRename, PackageRenameCleanupError, PackageRenameStepError, preparePackageRename, supportsPackageRename } from "@/lib/table/packageRename";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
 import { generateDatabaseExportId } from "@/lib/export/databaseExport";
@@ -355,6 +355,7 @@ const renameTarget = ref<ObjectBrowserRow | null>(null);
 const renameInput = ref("");
 const renameError = ref("");
 const renamePreviewSqlText = ref("");
+const packageCleanupReviewed = ref(false);
 const showTruncateConfirm = ref(false);
 const truncateTarget = ref<ObjectBrowserRow | null>(null);
 const truncatePreviewSql = ref("");
@@ -1742,6 +1743,7 @@ function requestDrop(row: ObjectBrowserRow) {
 }
 
 function requestRename(row: ObjectBrowserRow) {
+  packageCleanupReviewed.value = false;
   renameTarget.value = row;
   renameInput.value = row.name;
   renameError.value = "";
@@ -1761,7 +1763,7 @@ async function refreshRenamePreviewSql() {
   }
   if (supportsPackageRename(effectiveDatabaseType.value, row.type)) {
     try {
-      const plan = await preparePackageRename({ connectionId: props.connection.id, database: props.database, databaseType: effectiveDatabaseType.value, schema: row.schema || selectedSchema.value || props.database, name: row.name, newName });
+      const plan = await preparePackageRename({ connectionId: props.connection.id, database: props.database, databaseType: effectiveDatabaseType.value, schema: row.schema || selectedSchema.value || props.database, name: row.name, newName }, { cleanup: packageCleanupReviewed.value, callersMigrated: packageCleanupReviewed.value });
       if (requestId === renamePreviewRequestId) renamePreviewSqlText.value = plan.statements.join("\n\n");
     } catch (error: any) {
       if (requestId === renamePreviewRequestId) { renamePreviewSqlText.value = ""; renameError.value = error?.message || String(error); }
@@ -1800,7 +1802,8 @@ async function refreshRenamePreviewSql() {
   }
 }
 
-watch([showRenameDialog, renameTarget, renameInput, selectedSchema], () => {
+watch([renameTarget, renameInput, selectedSchema], () => { packageCleanupReviewed.value = false; });
+watch([showRenameDialog, renameTarget, renameInput, selectedSchema, packageCleanupReviewed], () => {
   void refreshRenamePreviewSql();
 });
 
@@ -1815,20 +1818,28 @@ async function confirmRename() {
   const schema = row.schema || selectedSchema.value || props.database;
   try {
     if (supportsPackageRename(effectiveDatabaseType.value, row.type)) {
-      const plan = await preparePackageRename({ connectionId: props.connection.id, database: props.database, databaseType: effectiveDatabaseType.value, schema, name: row.name, newName });
+      const cleanup = packageCleanupReviewed.value;
+      const plan = await preparePackageRename({ connectionId: props.connection.id, database: props.database, databaseType: effectiveDatabaseType.value, schema, name: row.name, newName }, { cleanup, callersMigrated: cleanup });
       let recoveryId: string | undefined;
       let attempted = false;
       try {
         const executed = await executeObjectBrowserSqlWithProductionGuard(plan.statements.join("\n\n"), async () => {
           attempted = true;
-          await executePackageRename(plan, (sql) => {
+          const saveRecovery = (sql: string) => {
             if (recoveryId) queryStore.updateSql(recoveryId, sql);
             else recoveryId = queryStore.openSourceRecoverySnapshot({ connectionId: props.connection.id, database: props.database, schema, title: t("contextMenu.packageRenameRecoveryTitle", { name: row.name }), sql });
-          });
+          };
+          if (cleanup) await executePackageCleanup(plan, cleanup, saveRecovery);
+          else await executePackageRename(plan, saveRecovery);
           return true;
         });
         if (!executed) return;
-        toast(t("contextMenu.packageRenameIncomplete", { oldName: row.name, newName }));
+        if (cleanup) {
+          renameApplied = true;
+          for (const objectType of ["PACKAGE", "PACKAGE_BODY"] as const) queryStore.invalidateRenamedObjectTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType });
+          if (sourceRow.value?.id === row.id) closeSource();
+        }
+        toast(t(cleanup ? "contextMenu.renameObjectSuccess" : "contextMenu.packageRenameIncomplete", { oldName: row.name, newName }));
         showRenameDialog.value = false;
       } finally {
         if (attempted) {
@@ -1836,6 +1847,12 @@ async function confirmRename() {
           await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
           await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
         }
+      }
+      if (cleanup && renameApplied) {
+        const renamedTarget = { ...oldPinnedNode, label: newName, objectName: newName, tableName: newName };
+        const renamedRow = rows.value.find((candidate) => objectBrowserRowMatchesPinnedTreeNode(candidate, treeNodePinIdentity(renamedTarget), objectBrowserPinnedTreeNodeContext()));
+        if (renamedRow) connectionStore.replacePinnedTreeNode(oldPinnedNode, pinnedTreeNodeForObjectBrowserRow(renamedRow), canonicalizeObjectBrowserPinnedIdentity, oldLegacyPinnedNodes.map((node) => node.id));
+        else connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
       }
       return;
     }
@@ -1905,7 +1922,14 @@ async function confirmRename() {
       // remove the old pin instead of allowing it to revive later.
       connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
     }
-    renameError.value = e instanceof PackageRenameStepError
+    if (e instanceof PackageRenameCleanupError && (e.oldObjects == null || e.oldObjects === 0)) {
+      for (const objectType of ["PACKAGE", "PACKAGE_BODY"] as const) queryStore.invalidateRenamedObjectTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType });
+      if (sourceRow.value?.id === row.id) closeSource();
+      if (e.oldObjects === 0) connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
+    }
+    renameError.value = e instanceof PackageRenameCleanupError
+      ? t("contextMenu.packageCleanupFailed", { message: e.message, state: t(e.oldObjects == null ? "contextMenu.packageCleanupStateUnknown" : e.oldObjects === 0 ? "contextMenu.packageCleanupStateRemoved" : "contextMenu.packageCleanupStateRetained") })
+      : e instanceof PackageRenameStepError
       ? t("contextMenu.packageRenameFailed", { step: e.step, message: e.message })
       : e instanceof RoutineRenameStepError
       ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: row.name, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
@@ -4647,6 +4671,10 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       </DialogHeader>
       <div class="grid gap-3">
         <Input v-model="renameInput" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" @keydown.enter.prevent="confirmRename" />
+        <label v-if="renameTarget && supportsPackageRename(effectiveDatabaseType, renameTarget.type)" class="flex items-start gap-2 text-sm">
+          <input v-model="packageCleanupReviewed" type="checkbox" class="mt-1" />
+          <span>{{ t("contextMenu.packageCleanupAcknowledgement", { oldName: renameTarget.name, newName: renameInput }) }}</span>
+        </label>
         <p v-if="effectiveDatabaseType === 'oceanbase-oracle' && renameTarget?.type === 'VIEW'" class="text-sm text-muted-foreground">{{ t("contextMenu.oceanbaseViewRenameWarning") }}</p>
         <p v-if="effectiveDatabaseType === 'oceanbase-oracle' && (renameTarget?.type === 'PROCEDURE' || renameTarget?.type === 'FUNCTION')" class="text-sm text-muted-foreground">{{ t("contextMenu.oceanbaseRoutineRenameWarning") }}</p>
         <pre v-if="renamePreviewSqlText" class="max-h-32 min-w-0 max-w-full overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(renamePreviewSqlText)"></pre>
@@ -4655,7 +4683,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       <DialogFooter>
         <Button variant="outline" @click="showRenameDialog = false">{{ t("dangerDialog.cancel") }}</Button>
         <Button :disabled="!renameInput.trim() || renameInput.trim() === renameTarget?.name" @click="confirmRename">
-          {{ t("contextMenu.renameObject") }}
+          {{ t(packageCleanupReviewed ? "contextMenu.packageCleanupAction" : "contextMenu.renameObject") }}
         </Button>
       </DialogFooter>
     </DialogContent>

@@ -4954,7 +4954,7 @@ export const useQueryStore = defineStore("query", () => {
     invalidateRenamedObjectTabs({ ...target, objectType: "VIEW" });
   }
 
-  function invalidateRenamedObjectTabs(target: Omit<DroppedTableObjectTarget, "objectType"> & { objectType: "VIEW" | "PROCEDURE" | "FUNCTION" }) {
+  function invalidateRenamedObjectTabs(target: Omit<DroppedTableObjectTarget, "objectType"> & { objectType: "VIEW" | "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE_BODY" }) {
     if (target.objectType === "VIEW") closeDroppedTableObjectTabs({ ...target, objectType: "VIEW" });
     const schemas = droppedTableObjectSchemaCandidates({ ...target, objectType: undefined });
     for (const tab of tabs.value) {

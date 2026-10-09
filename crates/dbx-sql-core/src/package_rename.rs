@@ -1,8 +1,58 @@
-//! Source preparation for guarded Oracle package renames. This module does not
-//! execute DDL or authorize removal of the original package.
+//! Guarded Oracle package migration and separately requested cleanup plans.
 
 use crate::models::connection::DatabaseType;
 use crate::object_source_sql::RoutineRenameObjectSourceInput;
+
+/// Build only after the caller explicitly selects removal following caller migration.
+/// Recheck compilation, signatures, grants and complete dependencies immediately
+/// before DROP, then read back both identities rather than trusting a DDL response.
+pub fn build_package_cleanup_steps(input: &RoutineRenameObjectSourceInput) -> Result<Vec<String>, String> {
+    let creation = build_package_rename_steps(input)?;
+    let validation = &creation[creation.len() - 3];
+    let owner = input.schema.as_deref().unwrap();
+    let literal = |value: &str| format!("'{}'", value.replace('\'', "''"));
+    let schema = literal(owner);
+    let old = literal(&input.name);
+    let new = literal(&input.new_name);
+    let body_count = usize::from(input.package_body_source.is_some());
+    let object_count = 1 + body_count;
+    let drop = literal(&format!("DROP PACKAGE {}.{}", quoted(owner), quoted(&input.name)));
+    let cleanup = format!("-- Explicit cleanup after external and dynamic callers have been migrated.
+DECLARE n PLS_INTEGER;
+BEGIN
+  IF SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')<>{schema} THEN RAISE_APPLICATION_ERROR(-20041,'Package cleanup schema mismatch.'); END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={old} AND OBJECT_TYPE='PACKAGE';
+  IF n<>1 THEN RAISE_APPLICATION_ERROR(-20041,'Original package is missing or inaccessible; reload before cleanup.'); END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={old} AND OBJECT_TYPE='PACKAGE BODY';
+  IF n<>{body_count} THEN RAISE_APPLICATION_ERROR(-20041,'Original package body changed; reload both definitions.'); END IF;
+  IF SYS_CONTEXT('USERENV','SESSION_USER') NOT IN ({schema},'SYS') THEN
+    SELECT COUNT(*) INTO n FROM SYS.USER_SYS_PRIVS WHERE PRIVILEGE='DROP ANY PROCEDURE';
+    IF n=0 THEN RAISE_APPLICATION_ERROR(-20042,'Cross-owner cleanup requires direct DROP ANY PROCEDURE.'); END IF;
+  END IF;
+  {validation}
+  SELECT COUNT(*) INTO n FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={new} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY');
+  IF n<>{object_count} THEN RAISE_APPLICATION_ERROR(-20043,'Replacement package pair changed; original retained.'); END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_TAB_PRIVS a WHERE a.OWNER={schema} AND a.TABLE_NAME={old}
+    AND (a.PRIVILEGE<>'EXECUTE' OR a.HIERARCHY='YES' OR NOT EXISTS (SELECT 1 FROM SYS.DBA_TAB_PRIVS b WHERE b.OWNER={schema} AND b.TABLE_NAME={new} AND b.GRANTEE=a.GRANTEE AND b.PRIVILEGE=a.PRIVILEGE AND (a.GRANTABLE='NO' OR b.GRANTABLE='YES')));
+  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20044,'Replacement grants differ; original retained.'); END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_DEPENDENCIES WHERE REFERENCED_OWNER={schema} AND REFERENCED_NAME={old}
+    AND REFERENCED_TYPE IN ('PACKAGE','PACKAGE BODY') AND NOT (OWNER={schema} AND NAME={old} AND TYPE IN ('PACKAGE','PACKAGE BODY'));
+  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20045,'Static callers still reference the original package; migrate and validate them first.'); END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_DEPENDENCIES d LEFT JOIN SYS.DBA_OBJECTS o ON o.OWNER=d.OWNER AND o.OBJECT_NAME=d.NAME AND o.OBJECT_TYPE=d.TYPE
+    WHERE d.REFERENCED_OWNER={schema} AND d.REFERENCED_NAME={new} AND d.REFERENCED_TYPE IN ('PACKAGE','PACKAGE BODY') AND (o.STATUS IS NULL OR o.STATUS<>'VALID');
+  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20045,'Replacement callers are invalid or inaccessible; original retained.'); END IF;
+  SELECT COUNT(*) INTO n FROM SYS.DBA_SYNONYMS WHERE TABLE_OWNER={schema} AND TABLE_NAME={old} AND DB_LINK IS NULL;
+  IF n<>0 THEN RAISE_APPLICATION_ERROR(-20046,'Local synonyms still reference the original package.'); END IF;
+  EXECUTE IMMEDIATE {drop};
+END;");
+    let readback = format!("SELECT
+  (SELECT COUNT(*) FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={old} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY')) AS OLD_OBJECTS,
+  (SELECT COUNT(*) FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={new} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY') AND STATUS='VALID') AS VALID_NEW_OBJECTS,
+  (SELECT COUNT(*) FROM SYS.DBA_OBJECTS WHERE OWNER={schema} AND OBJECT_NAME={new} AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY')) AS NEW_OBJECTS,
+  (SELECT COUNT(*) FROM SYS.ALL_ERRORS WHERE OWNER={schema} AND NAME={new} AND TYPE IN ('PACKAGE','PACKAGE BODY') AND ATTRIBUTE='ERROR') AS COMPILE_ERRORS
+FROM DUAL");
+    Ok(vec![cleanup, readback])
+}
 
 /// A package migration intentionally ends with both names present. External and
 /// dynamic callers require a separate, explicit migration before removing the old name.
@@ -354,6 +404,7 @@ mod tests {
         for database_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle] {
             for with_body in [false, true] {
                 let steps = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+                    package_cleanup: false,
                     database_type,
                     object_type: ObjectSourceKind::Package,
                     schema: Some("APP".into()),
@@ -446,7 +497,42 @@ mod tests {
         }))
         .unwrap();
         assert!(input.package_body_source.is_some());
+        assert!(!input.package_cleanup);
         assert_eq!(build_routine_rename_object_source_statements(input).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn explicit_cleanup_rechecks_both_objects_grants_callers_then_drops_and_reads_back() {
+        for database_type in ["oracle", "oceanbase-oracle"] {
+            for body in [None, Some("CREATE PACKAGE BODY \"Mixed.Owner\".\"Old\"\"Pkg\" AS END;")] {
+                let input = serde_json::from_value(serde_json::json!({
+                    "databaseType": database_type, "objectType":"PACKAGE", "schema":"Mixed.Owner",
+                    "name":"Old\"Pkg", "newName":"New.Pkg", "source":"CREATE PACKAGE \"Mixed.Owner\".\"Old\"\"Pkg\" AS END;",
+                    "packageBodySource": body, "packageCleanup":true
+                })).unwrap();
+                let steps = build_routine_rename_object_source_statements(input).unwrap();
+                assert_eq!(steps.len(), 2);
+                let cleanup = &steps[0];
+                let drop = cleanup.find("EXECUTE IMMEDIATE").unwrap();
+                for required in [
+                    "DROP ANY PROCEDURE",
+                    "STATUS='VALID'",
+                    "ATTRIBUTE='ERROR'",
+                    " MINUS ",
+                    "DBA_TAB_PRIVS",
+                    "DBA_DEPENDENCIES",
+                    "Replacement callers are invalid",
+                    "DBA_SYNONYMS",
+                ] {
+                    assert!(cleanup.find(required).unwrap() < drop, "{required}");
+                }
+                assert!(cleanup.contains("DROP PACKAGE \"Mixed.Owner\".\"Old\"\"Pkg\""));
+                assert!(!cleanup.contains("CREATE PACKAGE"));
+                for field in ["OLD_OBJECTS", "VALID_NEW_OBJECTS", "NEW_OBJECTS", "COMPILE_ERRORS"] {
+                    assert!(steps[1].contains(field));
+                }
+            }
+        }
     }
 
     #[test]

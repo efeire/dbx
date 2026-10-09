@@ -194,7 +194,7 @@ import {
 } from "@/lib/database/dbAdminSql";
 import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
 import { buildRoutineRenameObjectSourceStatements, executeOceanBaseRoutineRenameSteps, RoutineRenameStepError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
-import { executePackageRename, PackageRenameStepError, preparePackageRename, supportsPackageRename } from "@/lib/table/packageRename";
+import { executePackageCleanup, executePackageRename, PackageRenameCleanupError, PackageRenameStepError, preparePackageRename, supportsPackageRename } from "@/lib/table/packageRename";
 import { buildViewDdl } from "@/lib/table/viewDdl";
 import { formatSqlForDisplay, sqlFormatDialectForDbType } from "@/lib/sql/sqlFormatter";
 import { getTableStructureCapabilities } from "@/lib/table/tableStructureCapabilities";
@@ -3371,6 +3371,7 @@ const canRenameObject = computed(() => {
 });
 
 function openRenameObjectDialog() {
+  packageCleanupReviewed.value = false;
   claimTreeItemDialogOwnership();
   routeTreeItemDialogController();
   renameObjectName.value = activeNode.value.label;
@@ -3380,6 +3381,7 @@ function openRenameObjectDialog() {
 }
 
 function openRenameDatabaseDialog() {
+  packageCleanupReviewed.value = false;
   claimTreeItemDialogOwnership();
   routeTreeItemDialogController();
   renameObjectName.value = activeNode.value.label;
@@ -3431,6 +3433,7 @@ async function executeTreeNodeSqlWithProductionGuard(
 }
 
 let renameObjectPreviewRequestId = 0;
+const packageCleanupReviewed = ref(false);
 
 async function refreshRenameObjectPreviewSql() {
   const node = activeNode.value;
@@ -3462,7 +3465,7 @@ async function refreshRenameObjectPreviewSql() {
   if (supportsPackageRename(currentDatabaseType(), objectType)) {
     try {
       if (!node.connectionId || !node.database) return;
-      const plan = await preparePackageRename({ connectionId: node.connectionId, database: node.database, databaseType: currentDatabaseType()!, schema: node.schema || node.database, name: node.objectName || node.label, newName });
+      const plan = await preparePackageRename({ connectionId: node.connectionId, database: node.database, databaseType: currentDatabaseType()!, schema: node.schema || node.database, name: node.objectName || node.label, newName }, { cleanup: packageCleanupReviewed.value, callersMigrated: packageCleanupReviewed.value });
       if (requestId === renameObjectPreviewRequestId) renameObjectPreviewSql.value = plan.statements.join("\n\n");
     } catch (error: any) {
       if (requestId === renameObjectPreviewRequestId) { renameObjectPreviewSql.value = ""; renameObjectError.value = error?.message || String(error); }
@@ -3502,7 +3505,8 @@ async function refreshRenameObjectPreviewSql() {
   }
 }
 
-watch([showRenameObjectDialog, renameObjectName, () => activeNode.value.label, () => activeNode.value.schema, () => activeNode.value.type, () => currentDatabaseType()], () => {
+watch([renameObjectName, () => activeNode.value.label, () => activeNode.value.schema, () => activeNode.value.type, () => currentDatabaseType()], () => { packageCleanupReviewed.value = false; });
+watch([showRenameObjectDialog, renameObjectName, () => activeNode.value.label, () => activeNode.value.schema, () => activeNode.value.type, () => currentDatabaseType(), packageCleanupReviewed], () => {
   void refreshRenameObjectPreviewSql();
 });
 
@@ -3571,20 +3575,27 @@ async function confirmRenameObject() {
     if (supportsPackageRename(dbType, node.type === "package" ? "PACKAGE" : node.type === "package-body" ? "PACKAGE_BODY" : "")) {
       const schema = node.schema || node.database;
       const oldName = node.objectName || node.label;
-      const plan = await preparePackageRename({ connectionId: node.connectionId, database: node.database, databaseType: dbType!, schema, name: oldName, newName });
+      const cleanup = packageCleanupReviewed.value;
+      const plan = await preparePackageRename({ connectionId: node.connectionId, database: node.database, databaseType: dbType!, schema, name: oldName, newName }, { cleanup, callersMigrated: cleanup });
       let recoveryId: string | undefined;
       let attempted = false;
       try {
         const executed = await executeWithProductionSqlGuard({ connection: connectionStore.getConfig(node.connectionId), database: node.database, sql: plan.statements.join("\n\n"), source: t("production.sourceSidebar"), execute: async () => {
           attempted = true;
-          await executePackageRename(plan, (sql) => {
+          const saveRecovery = (sql: string) => {
             if (recoveryId) queryStore.updateSql(recoveryId, sql);
             else recoveryId = queryStore.openSourceRecoverySnapshot({ connectionId: node.connectionId!, database: node.database!, schema, title: t("contextMenu.packageRenameRecoveryTitle", { name: oldName }), sql });
-          });
+          };
+          if (cleanup) await executePackageCleanup(plan, cleanup, saveRecovery);
+          else await executePackageRename(plan, saveRecovery);
           return true;
         } });
         if (!executed) return;
-        toast(t("contextMenu.packageRenameIncomplete", { oldName, newName }), 5000);
+        if (cleanup) {
+          renameApplied = true;
+          for (const objectType of ["PACKAGE", "PACKAGE_BODY"] as const) queryStore.invalidateRenamedObjectTabs({ connectionId: node.connectionId, database: node.database, schema, name: oldName, objectType });
+        }
+        toast(t(cleanup ? "contextMenu.renameObjectSuccess" : "contextMenu.packageRenameIncomplete", { oldName, newName }), 5000);
         showRenameObjectDialog.value = false;
       } finally {
         if (attempted) {
@@ -3593,6 +3604,7 @@ async function confirmRenameObject() {
           await Promise.allSettled([refreshTableList(node)]);
         }
       }
+      if (cleanup && renameApplied) connectionStore.replacePinnedTreeNode(node, { ...node, label: newName, objectName: newName, tableName: newName, children: undefined, isExpanded: false });
       return;
     }
     const objectType = node.type === "table" ? "TABLE" : node.type === "view" ? "VIEW" : node.type === "materialized_view" ? "MATERIALIZED_VIEW" : node.type === "procedure" ? "PROCEDURE" : node.type === "function" ? "FUNCTION" : null;
@@ -3657,7 +3669,14 @@ async function confirmRenameObject() {
       // remove the old pin instead of allowing it to revive later.
       connectionStore.removePinnedTreeNodes([node]);
     }
-    renameObjectError.value = e instanceof PackageRenameStepError
+    if (e instanceof PackageRenameCleanupError && (e.oldObjects == null || e.oldObjects === 0)) {
+      const schema = node.schema || node.database;
+      for (const objectType of ["PACKAGE", "PACKAGE_BODY"] as const) queryStore.invalidateRenamedObjectTabs({ connectionId: node.connectionId, database: node.database, schema, name: node.objectName || node.label, objectType });
+      if (e.oldObjects === 0) connectionStore.removePinnedTreeNodes([node]);
+    }
+    renameObjectError.value = e instanceof PackageRenameCleanupError
+      ? t("contextMenu.packageCleanupFailed", { message: e.message, state: t(e.oldObjects == null ? "contextMenu.packageCleanupStateUnknown" : e.oldObjects === 0 ? "contextMenu.packageCleanupStateRemoved" : "contextMenu.packageCleanupStateRetained") })
+      : e instanceof PackageRenameStepError
       ? t("contextMenu.packageRenameFailed", { step: e.step, message: e.message })
       : e instanceof RoutineRenameStepError
       ? t("contextMenu.routineRenameStepFailed", { step: e.step, oldName: node.label, newName, message: e.message }) + " " + t(e.step < 5 ? "contextMenu.routineRenameOriginalNotDropped" : "contextMenu.routineRenameFinalStateUnknown")
@@ -5659,6 +5678,8 @@ function objectDialogCapabilities() {
     showRenameObjectDialog,
     renameObjectName,
     renameObjectDialogTitle,
+    packageCleanupReviewed,
+    packageRenameAvailable: computed(() => supportsPackageRename(currentDatabaseType(), nodeRenameObjectType() ?? "")),
     renameObjectPreviewSql,
     renameObjectWarning: computed(() => {
       if (currentDatabaseType() !== "oceanbase-oracle") return "";
