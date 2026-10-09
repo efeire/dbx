@@ -123,7 +123,11 @@ describe.each([false, true])("OceanBase standalone routine completion (semantic=
   it("drops a routine response when the request is invalidated", async () => {
     const { provide, store, completion } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", database: "OB", schema: "APP", modelValue: "CALL P" }, undefined, semanticCompletionEnabled);
     let resolve!: (objects: SqlCompletionObject[]) => void;
-    store.listCompletionObjects.mockReturnValue(new Promise((done) => { resolve = done; }));
+    store.listCompletionObjects.mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
     const pending = provide();
     await vi.waitFor(() => expect(store.listCompletionObjects).toHaveBeenCalled());
     completion.invalidateRequests();

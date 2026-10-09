@@ -1605,7 +1605,9 @@ describe("connectionStore completion assistant", () => {
       candidates: [
         { name: "CALC", kind: "procedure", schema: "APP", data_type: "PROCEDURE" },
         { name: "Calc", kind: "function", schema: "APP", data_type: "FUNCTION" },
-      ], incomplete: false, fallback_used: false,
+      ],
+      incomplete: false,
+      fallback_used: false,
     });
     const listCompletionObjects = vi.fn();
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
@@ -1622,8 +1624,7 @@ describe("connectionStore completion assistant", () => {
   });
 
   it("retains OceanBase legacy-agent fallback without treating an empty search as unsupported", async () => {
-    const completionAssistantSearch = vi.fn().mockRejectedValueOnce(new Error("OceanBase agent does not support filtered routine completion"))
-      .mockResolvedValue({ candidates: [], incomplete: false, fallback_used: false });
+    const completionAssistantSearch = vi.fn().mockRejectedValueOnce(new Error("OceanBase agent does not support filtered routine completion")).mockResolvedValue({ candidates: [], incomplete: false, fallback_used: false });
     const listCompletionObjects = vi.fn().mockResolvedValue([{ name: "P", object_type: "PROCEDURE", schema: "APP" }]);
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
     vi.doMock("@/lib/backend/api", () => ({ checkConnectionHealth: vi.fn(), completionAssistantSearch, listCompletionObjects }));
@@ -1638,7 +1639,10 @@ describe("connectionStore completion assistant", () => {
 
   it("does not restore invalidated OceanBase routine results or their local index", async () => {
     const stale = deferred<{ candidates: Array<{ name: string; kind: string; schema: string }>; incomplete: boolean; fallback_used: boolean }>();
-    const completionAssistantSearch = vi.fn().mockReturnValueOnce(stale.promise).mockResolvedValue({ candidates: [{ name: "P_NEW", kind: "procedure", schema: "APP" }], incomplete: false, fallback_used: false });
+    const completionAssistantSearch = vi
+      .fn()
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue({ candidates: [{ name: "P_NEW", kind: "procedure", schema: "APP" }], incomplete: false, fallback_used: false });
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
     vi.doMock("@/lib/backend/api", () => ({ checkConnectionHealth: vi.fn(), completionAssistantSearch }));
     const { useConnectionStore } = await import("@/stores/connectionStore");
