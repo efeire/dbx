@@ -2,7 +2,7 @@ import type { EditorState, Text } from "@codemirror/state";
 import type { CompletionMetadataScope } from "./queryEditorTypes";
 import { insertValueHintColumnNames } from "@/lib/sql/insertValueHintColumns";
 import { COMPLETION_METADATA_CONCURRENCY } from "@/stores/connectionStore";
-import { getSqlCompletionContext } from "@/lib/sql/sqlCompletion";
+import { getSqlCompletionContext, oceanBaseCompletionCacheKey } from "@/lib/sql/sqlCompletion";
 import { buildSqlSemanticModel } from "@/lib/sql/semantic/model";
 import type { SqlSemanticModel } from "@/lib/sql/semantic/types";
 import { analyzeSqlCompletion, type SqlCompletionAnalysisResult } from "@/lib/sql/sqlCompletionAnalysis";
@@ -246,11 +246,11 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
   }
 
   function completionCacheKey(table: { name: string; catalog?: string | null; database?: string | null; schema?: string | null; nameQuoted?: boolean; schemaQuoted?: boolean }, scope?: CompletionMetadataScope) {
+    if (props.databaseType === "oceanbase-oracle") return oceanBaseCompletionCacheKey(table, scope?.schema ?? props.schema);
     const schema = table.schema ?? scope?.schema ?? props.schema;
     const scopedDatabase = scope && scope.database !== props.database ? scope.database : undefined;
     const database = supportsDatabaseSchemaQualifierCompletion() ? (table.database ?? scopedDatabase) : undefined;
     const baseKey = schema ? `${database ? `${database}.` : ""}${schema}.${table.name}` : table.name;
-    if (props.databaseType === "oceanbase-oracle") return `${baseKey}:${table.schema ? "qualified" : "unqualified"}`;
     if (props.databaseType !== "postgres" || (!table.nameQuoted && !table.schemaQuoted)) return baseKey;
     return `${baseKey}:quoted:s=${table.schemaQuoted ? "1" : "0"}:t=${table.nameQuoted ? "1" : "0"}`;
   }
@@ -363,7 +363,7 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
     // unqualified table name. The query editor commonly has no schema selected
     // when the user is working from a database-level tab, so use the same
     // default as the table/DDL metadata paths instead of returning no columns.
-    const selectedSchema = props.databaseType === "oceanbase-oracle" ? table.schema : table.schema ?? scope?.schema ?? props.schema;
+    const selectedSchema = props.databaseType === "oceanbase-oracle" ? table.schema : (table.schema ?? scope?.schema ?? props.schema);
     const effectiveSchema = selectedSchema ?? (props.databaseType === "sqlserver" ? metadataSchemaForConnection(connectionStore.getConfig(props.connectionId ?? ""), currentDatabase, undefined) : undefined);
     if (supportsDatabaseSchemaQualifierCompletion() && table.database) {
       return { database: table.database, schema: effectiveSchema, catalog: table.catalog ?? props.catalog };
@@ -415,9 +415,9 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
     return remoteMatches.find((item) => completionTablesMatch(item, table)) ?? null;
   }
 
-  async function ensureColumnsForTable(table: { name: string; database?: string | null; schema?: string | null }, reference?: Pick<SqlCompletionReferencedTable, "nameQuoted" | "schemaQuoted">, scope?: CompletionMetadataScope): Promise<boolean> {
+  async function ensureColumnsForTable(table: { name: string; database?: string | null; schema?: string | null; nameQuoted?: boolean; schemaQuoted?: boolean }, reference: Pick<SqlCompletionReferencedTable, "nameQuoted" | "schemaQuoted"> = table, scope?: CompletionMetadataScope): Promise<boolean> {
     if (isVirtualCompletionTableReference(table)) return false;
-    const cacheKey = completionCacheKey(table, scope);
+    const cacheKey = completionCacheKey({ ...table, ...reference }, scope);
     if (cachedColumnsByTable.has(cacheKey)) return true;
     if (!props.connectionId || props.database == null) return false;
     const target = completionMetadataTarget(table, scope);

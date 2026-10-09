@@ -70,9 +70,7 @@ describe("tableMetadataCache columns facet request counts", () => {
   });
 
   it("uses a synonym's exact resolved target for indexes while retaining its source name", async () => {
-    mocks.getColumns.mockResolvedValue([
-      { ...column("ItemId"), is_primary_key: false, resolved_schema: "MixedOwner", resolved_table: "ActualItems", resolved_object_type: "TABLE" },
-    ]);
+    mocks.getColumns.mockResolvedValue([{ ...column("ItemId"), is_primary_key: false, resolved_schema: "MixedOwner", resolved_table: "ActualItems", resolved_object_type: "TABLE" }]);
     mocks.listIndexes.mockResolvedValue([{ name: "ITEMS_PK", columns: ["ItemId"], is_primary: true, is_unique: true }]);
     const request = { connectionId: "ob-1", database: "service", schema: "AppOwner", tableName: "ItemsAlias", tableType: "SYNONYM", databaseType: "oceanbase-oracle" };
 
@@ -106,7 +104,11 @@ describe("tableMetadataCache columns facet request counts", () => {
 
   it("uses the current schema for parallel index discovery on a known direct table", async () => {
     let releaseColumns: (value: ColumnInfo[]) => void = () => {};
-    mocks.getColumns.mockReturnValueOnce(new Promise<ColumnInfo[]>((resolve) => { releaseColumns = resolve; }));
+    mocks.getColumns.mockReturnValueOnce(
+      new Promise<ColumnInfo[]>((resolve) => {
+        releaseColumns = resolve;
+      }),
+    );
     const load = loadTableMetadata({ connectionId: "ob-1", database: "service", schema: "", currentSchema: "SelectedOwner", tableName: "Items", tableType: "TABLE", databaseType: "oceanbase-oracle" });
 
     await flush();
