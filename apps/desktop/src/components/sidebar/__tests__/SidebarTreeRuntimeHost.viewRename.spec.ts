@@ -7,7 +7,7 @@ import type { ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import type { TreeNode } from "@/types/database";
 
 vi.mock("@/lib/backend/api", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/backend/api")>(),
+  ...(await importOriginal<typeof import("@/lib/backend/api")>()),
   listPlugins: vi.fn().mockResolvedValue([]),
   buildRenameObjectSql: vi.fn().mockResolvedValue('RENAME "Old View" TO "New View"'),
   executeQuery: vi.fn(),
@@ -39,7 +39,17 @@ async function openRename() {
   let controller: RenameDialog | undefined;
   const container = document.createElement("div");
   document.body.append(container);
-  const app = createApp({ setup: () => () => h(SidebarTreeRuntimeHost, { ref: instance, node, depth: 0, "onOpen-dialog-controller": (value: RenameDialog) => { controller = value; } }) });
+  const app = createApp({
+    setup: () => () =>
+      h(SidebarTreeRuntimeHost, {
+        ref: instance,
+        node,
+        depth: 0,
+        "onOpen-dialog-controller": (value: RenameDialog) => {
+          controller = value;
+        },
+      }),
+  });
   app.use(pinia);
   app.use(i18n);
   app.mount(container);

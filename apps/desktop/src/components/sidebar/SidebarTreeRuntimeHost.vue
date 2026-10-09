@@ -3396,6 +3396,7 @@ async function executeTreeNodeSqlWithProductionGuard(
     isCancelledBeforeDispatch?: () => boolean;
     beforeExecute?: () => Promise<void>;
     markDispatched?: () => void;
+    timeoutSecs?: number;
   } = {},
 ) {
   if (!node.connectionId) return undefined;
@@ -3421,7 +3422,7 @@ async function executeTreeNodeSqlWithProductionGuard(
       await options.beforeExecute?.();
       if (options.isCancelledBeforeDispatch?.()) throw new Error("Operation cancelled before it was sent to the database.");
       options.markDispatched?.();
-      return options.executeAsScript ? api.executeScript(node.connectionId!, database, sql, options.schema ?? node.schema) : api.executeQuery(node.connectionId!, database, sql, options.schema ?? node.schema, executionId, { timeoutSecs });
+      return options.executeAsScript ? api.executeScript(node.connectionId!, database, sql, options.schema ?? node.schema) : api.executeQuery(node.connectionId!, database, sql, options.schema ?? node.schema, executionId, { timeoutSecs: options.timeoutSecs ?? timeoutSecs });
     },
   });
 }
@@ -3574,10 +3575,7 @@ async function confirmRenameObject() {
       const schema = node.schema || node.database;
       queryStore.invalidateRenamedViewTabs({ connectionId: node.connectionId, database: node.database, schema, name: node.label, objectType: "VIEW" });
       invalidateObjectBrowserRowsCache({ connectionId: node.connectionId, database: node.database, schema });
-      await Promise.all([node.label, newName].flatMap((tableName) => [
-        invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }),
-        invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName }),
-      ]));
+      await Promise.all([node.label, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: node.connectionId!, database: node.database!, schema, tableName }), invalidateObjectDdl({ connectionId: node.connectionId!, database: node.database!, schema, tableName })]));
     }
     toast(t("contextMenu.renameObjectSuccess", { oldName: node.label, newName }), 3000);
     showRenameObjectDialog.value = false;
@@ -4861,7 +4859,7 @@ async function confirmPasteTable() {
           identifierQuote: connectionStore.connectionIdentifierQuote?.(entry.connectionId),
           ...dataCopyColumnOptions,
         });
-        const dataExecuted = await executeTreeNodeSqlWithProductionGuard(entry, dataSql, { database: entry.database, schema: entry.schema });
+        const dataExecuted = await executeTreeNodeSqlWithProductionGuard(entry, dataSql, { database: entry.database, schema: entry.schema, timeoutSecs: 0 });
         if (!dataExecuted) {
           pasteCancelled = true;
           break;
@@ -5576,7 +5574,7 @@ function objectDialogCapabilities() {
     renameObjectName,
     renameObjectDialogTitle,
     renameObjectPreviewSql,
-    renameObjectWarning: computed(() => currentDatabaseType() === "oceanbase-oracle" && activeNode.value.type === "view" ? t("contextMenu.oceanbaseViewRenameWarning") : ""),
+    renameObjectWarning: computed(() => (currentDatabaseType() === "oceanbase-oracle" && activeNode.value.type === "view" ? t("contextMenu.oceanbaseViewRenameWarning") : "")),
     renameObjectError,
     confirmRenameObject,
     showStructurePreviewDialog,
