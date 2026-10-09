@@ -2,6 +2,7 @@ package com.dbx.agent.oceanbaseoracle;
 
 import com.dbx.agent.JdbcExecutor;
 import com.oceanbase.jdbc.OceanBaseStatement;
+import com.oceanbase.jdbc.DbxLobResourceBytes;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -26,18 +27,22 @@ final class OceanBaseLobValues {
     static final int PREVIEW_CHARACTERS = 256;
     static final int MAX_CHUNK_CHARACTERS = 4096;
     private static final int MAX_REFS = 4096;
+    private static final long MAX_RETAINED_BYTES = 64L * 1024 * 1024;
     private static final long IDLE_MILLIS = 5 * 60_000L;
     private static final long MAX_AGE_MILLIS = 30 * 60_000L;
     private final Map<String, Entry> entries = new LinkedHashMap<>();
     private final BlockReader reader;
+    private final java.util.function.ToLongFunction<Object> retainedBytes;
+    private long retainedByteCount;
 
     @FunctionalInterface
     interface BlockReader {
         Chunk read(Connection connection, Object locator, long offset, int limit) throws SQLException;
     }
 
-    OceanBaseLobValues() { this(OceanBaseLobValues::read); }
-    OceanBaseLobValues(BlockReader reader) { this.reader = reader; }
+    OceanBaseLobValues() { this(OceanBaseLobValues::read, DbxLobResourceBytes::retainedBytes); }
+    OceanBaseLobValues(BlockReader reader) { this(reader, ignored -> 0); }
+    OceanBaseLobValues(BlockReader reader, java.util.function.ToLongFunction<Object> retainedBytes) { this.reader = reader; this.retainedBytes = retainedBytes; }
 
     record Preview(String text, String ref, String kind) {
         Preview(String text, String ref) { this(text, ref, "clob"); }
@@ -47,11 +52,13 @@ final class OceanBaseLobValues {
     private static final class Entry {
         final Connection connection;
         final Object locator;
+        final long retainedBytes;
         final long created = System.currentTimeMillis();
         long accessed = created;
-        Entry(Connection connection, Object locator) {
+        Entry(Connection connection, Object locator, long retainedBytes) {
             this.connection = connection;
             this.locator = locator;
+            this.retainedBytes = retainedBytes;
         }
     }
 
@@ -65,7 +72,8 @@ final class OceanBaseLobValues {
         if (locator == null || rs.wasNull()) return new Preview(null, null, kind);
         Connection connection = rs.getStatement().getConnection();
         prune();
-        if (entries.size() >= MAX_REFS) {
+        long bytes = retainedBytes.applyAsLong(locator);
+        if (bytes < 0 || bytes > MAX_RETAINED_BYTES - retainedByteCount || entries.size() >= MAX_REFS) {
             freeLocator(locator);
             throw new SQLException("LOB result resource limit reached; close older results and execute again", "HY001");
         }
@@ -77,7 +85,8 @@ final class OceanBaseLobValues {
             int count = binary ? text.length() / 2 : text.codePointCount(0, text.length());
             if (count <= PREVIEW_CHARACTERS) return new Preview(binary ? "0x" + text : text, null, kind);
             String ref = UUID.randomUUID().toString();
-            entries.put(ref, new Entry(connection, locator));
+            entries.put(ref, new Entry(connection, locator, bytes));
+            retainedByteCount += bytes;
             retained = true;
             String preview = binary ? "0x" + text.substring(0, PREVIEW_CHARACTERS * 2)
                 : text.substring(0, text.offsetByCodePoints(0, PREVIEW_CHARACTERS));
@@ -109,6 +118,7 @@ final class OceanBaseLobValues {
     synchronized boolean release(String ref) {
         Entry entry = entries.remove(ref);
         if (entry == null) return false;
+        retainedByteCount -= entry.retainedBytes;
         free(entry);
         return true;
     }
@@ -121,6 +131,7 @@ final class OceanBaseLobValues {
     synchronized void clear() {
         entries.values().forEach(OceanBaseLobValues::free);
         entries.clear();
+        retainedByteCount = 0;
     }
 
     private void prune() {
@@ -130,6 +141,7 @@ final class OceanBaseLobValues {
             Entry entry = iterator.next();
             if (now - entry.accessed >= IDLE_MILLIS || now - entry.created >= MAX_AGE_MILLIS) {
                 iterator.remove();
+                retainedByteCount -= entry.retainedBytes;
                 free(entry);
             }
         }
