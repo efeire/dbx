@@ -95,7 +95,11 @@ describe("transfer submission", () => {
   it("does not accept a private synonym plan for a same-named selected public synonym", async () => {
     const execute = vi.fn();
     const confirm = vi.fn();
-    const plan: TransferOwnershipPreview = { missingOwners: [], targetOwner: "TARGET", schemaObjects: { canExecute: true, items: [{ objectType: "SYNONYM", name: "S", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "create", ddl: 'CREATE SYNONYM "TARGET"."S" FOR "TARGET"."T"', dependencies: [], warnings: [], errors: [] }] } };
+    const plan: TransferOwnershipPreview = {
+      missingOwners: [],
+      targetOwner: "TARGET",
+      schemaObjects: { canExecute: true, items: [{ objectType: "SYNONYM", name: "S", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "create", ddl: 'CREATE SYNONYM "TARGET"."S" FOR "TARGET"."T"', dependencies: [], warnings: [], errors: [] }] },
+    };
     const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm, execute });
     await expect(submission.start(request({ tables: [], objects: [{ objectType: "PUBLIC_SYNONYM", names: ["S"] }], dropTargetBeforeCreate: false }))).rejects.toThrow("TRANSFER_OBJECT_PREVIEW_UNAVAILABLE");
     expect(confirm).not.toHaveBeenCalled();
@@ -104,7 +108,26 @@ describe("transfer submission", () => {
 
   it("reviews the original remote synonym reference without expanding it to a table transfer", async () => {
     const execute = vi.fn();
-    const plan: TransferOwnershipPreview = { missingOwners: [], targetOwner: "TARGET", schemaObjects: { canExecute: true, items: [{ objectType: "PUBLIC_SYNONYM", name: "Remote S", sourceSchema: "PUBLIC", targetSchema: "PUBLIC", action: "create", ddl: 'CREATE PUBLIC SYNONYM "Remote S" FOR "REMOTE_OWNER"."T"@"REMOTE_LINK"', dependencies: [{ owner: "TARGET", name: "REMOTE_LINK", objectType: "DB_LINK", available: true }], warnings: ["Remote object not validated"], errors: [] }] } };
+    const plan: TransferOwnershipPreview = {
+      missingOwners: [],
+      targetOwner: "TARGET",
+      schemaObjects: {
+        canExecute: true,
+        items: [
+          {
+            objectType: "PUBLIC_SYNONYM",
+            name: "Remote S",
+            sourceSchema: "PUBLIC",
+            targetSchema: "PUBLIC",
+            action: "create",
+            ddl: 'CREATE PUBLIC SYNONYM "Remote S" FOR "REMOTE_OWNER"."T"@"REMOTE_LINK"',
+            dependencies: [{ owner: "TARGET", name: "REMOTE_LINK", objectType: "DB_LINK", available: true }],
+            warnings: ["Remote object not validated"],
+            errors: [],
+          },
+        ],
+      },
+    };
     const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm: async () => true, execute });
     const input = request({ tables: [], objects: [{ objectType: "PUBLIC_SYNONYM", names: ["Remote S"] }], dropTargetBeforeCreate: false });
     await expect(submission.start(input)).resolves.toBe(true);
@@ -115,7 +138,8 @@ describe("transfer submission", () => {
     const execute = vi.fn();
     const confirm = vi.fn().mockResolvedValue(true);
     const plan: TransferOwnershipPreview = {
-      missingOwners: [], targetOwner: "TARGET",
+      missingOwners: [],
+      targetOwner: "TARGET",
       schemaObjects: { canExecute: true, items: [{ objectType: "PACKAGE", name: "Keep Case", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "replace", ddl: 'CREATE OR REPLACE PACKAGE "TARGET"."Keep Case" AS PROCEDURE p; END;', dependencies: [], warnings: [], errors: [] }] },
     };
     const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm, execute });
@@ -138,7 +162,14 @@ describe("transfer submission", () => {
   it("shows blocked package dependencies but cannot execute even if confirmation returns true", async () => {
     const execute = vi.fn();
     const confirm = vi.fn().mockResolvedValue(true);
-    const plan: TransferOwnershipPreview = { missingOwners: [], targetOwner: "TARGET", schemaObjects: { canExecute: false, items: [{ objectType: "PACKAGE_BODY", name: "P", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "blocked", ddl: "", dependencies: [{ owner: "TARGET", name: "P", objectType: "PACKAGE", available: false }], warnings: [], errors: ["Package specification missing"] }] } };
+    const plan: TransferOwnershipPreview = {
+      missingOwners: [],
+      targetOwner: "TARGET",
+      schemaObjects: {
+        canExecute: false,
+        items: [{ objectType: "PACKAGE_BODY", name: "P", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "blocked", ddl: "", dependencies: [{ owner: "TARGET", name: "P", objectType: "PACKAGE", available: false }], warnings: [], errors: ["Package specification missing"] }],
+      },
+    };
     const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm, execute });
     await expect(submission.start(request({ tables: [], objects: [{ objectType: "PACKAGE_BODY", names: ["P"] }], dropTargetBeforeCreate: false }))).resolves.toBe(false);
     expect(confirm).toHaveBeenCalledWith(expect.anything(), plan);
