@@ -2122,7 +2122,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     }
 
     try {
-      await options.prepareSaveBaseline?.(snapshot);
+      if (options.prepareSaveBaseline) await options.prepareSaveBaseline(snapshot);
     } catch (error) {
       saveError.value = normalizeDataGridSaveError(databaseType.value, error);
       await finishInterruptedSaveChanges(snapshot);
