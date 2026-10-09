@@ -178,6 +178,24 @@ fn canonical_readback_ignores_formatting_but_not_case_sensitive_identifiers_or_p
     assert_eq!(canonical_expression("x <> q'[a;);b]'"), canonical_expression("\"X\" <> 'a;);b'"));
     assert_ne!(canonical_expression("\"Mixed\">0"), canonical_expression("MIXED>0"));
     assert_ne!(canonical_expression("a=1 AND (b=2 OR c=3)"), canonical_expression("(a=1 AND b=2) OR c=3"));
+    assert_eq!(canonical_expression("a=1 AND ((b=2 OR c=3))"), canonical_expression("A = 1 AND (B = 2 OR C = 3)"));
+    assert_ne!(canonical_expression("a * (b + c) > 0"), canonical_expression("a * b + c > 0"));
+}
+
+#[tokio::test]
+async fn readback_with_changed_operator_grouping_is_not_marked_successful() {
+    for engine in [Engine::Oracle, Engine::OceanBaseOracle] {
+        let mut request = request();
+        request.desired.as_mut().unwrap().expression = "a=1 AND (b=2 OR c=3)".into();
+        let session = session(engine, &request);
+        let plan = preview_check(&session, &request).await.unwrap();
+        session.fixture.lock().unwrap().desired.as_mut().unwrap().expression = "(a=1 AND b=2) OR c=3".into();
+        let result = apply_check(&session, &request, &plan.revision).await.unwrap();
+        assert!(result.steps.iter().all(|step| step.success));
+        assert!(!result.success);
+        assert!(result.refresh_error.as_ref().unwrap().contains("could not be confirmed"));
+        assert_eq!(result.current_constraint.unwrap().expression, "(a=1 AND b=2) OR c=3");
+    }
 }
 
 #[tokio::test]

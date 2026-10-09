@@ -169,7 +169,7 @@ fn expression_boundary(expression: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-fn canonical_expression(expression: &str) -> Option<String> {
+fn canonical_expression(expression: &str) -> Option<sqlparser::ast::Statement> {
     use sqlparser::{
         ast::{Expr, VisitMut, VisitorMut},
         dialect::GenericDialect,
@@ -215,7 +215,9 @@ fn canonical_expression(expression: &str) -> Option<String> {
         return None;
     }
     let _ = statements.visit(&mut Normalize);
-    Some(statements[0].to_string())
+    // Compare the normalized tree. Rendering after removing Nested expressions
+    // loses parentheses that distinguish different operator groupings.
+    Some(statements.remove(0))
 }
 
 async fn read_check(
