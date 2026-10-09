@@ -1,11 +1,20 @@
 use super::oracle_security_write::{
     fingerprint, identifier, known_version, literal, password, safe_error, text, SecuritySession,
 };
-use super::{agent_metadata_timeout, connection_config, lock_metadata_mutex_with_timeout};
+use super::{agent_metadata_timeout, connection_config};
 use crate::connection::{AppState, PoolKind, METADATA_POOL_ACQUIRE_TIMEOUT};
+use crate::db::agent_driver::{AgentDriverClient, PooledAgentClient};
 use crate::models::connection::DatabaseType;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Duration;
+
+async fn lock_user_admin_client(
+    client: &PooledAgentClient,
+    timeout: Duration,
+) -> Result<tokio::sync::MutexGuard<'_, AgentDriverClient>, String> {
+    tokio::time::timeout(timeout, client.lock()).await.map_err(|_| crate::query::METADATA_POOL_BUSY_ERROR.to_string())
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -201,7 +210,7 @@ pub async fn oracle_user_admin_core(
     let Some(PoolKind::Agent(client)) = pool else {
         return Err("Oracle-family Agent required".into());
     };
-    let mut client = lock_metadata_mutex_with_timeout(&client, METADATA_POOL_ACQUIRE_TIMEOUT).await?;
+    let mut client = lock_user_admin_client(&client, METADATA_POOL_ACQUIRE_TIMEOUT).await?;
     let timeout = agent_metadata_timeout(Some(&config));
     let version = client
         .connection_info(timeout)
@@ -272,6 +281,16 @@ pub async fn oracle_user_admin_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn busy_user_admin_pool_times_out_and_remains_usable_after_release() {
+        let client = PooledAgentClient::new(AgentDriverClient::test_stub());
+        let held = client.lock().await;
+        let result = lock_user_admin_client(&client, Duration::from_millis(1)).await;
+        assert_eq!(result.err().as_deref(), Some(crate::query::METADATA_POOL_BUSY_ERROR));
+        drop(held);
+        let acquired = lock_user_admin_client(&client, Duration::from_secs(1)).await;
+        assert!(acquired.is_ok());
+    }
     fn change(action: &str) -> UserChange {
         UserChange {
             action: action.into(),
