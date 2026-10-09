@@ -60,7 +60,7 @@ export function buildPackageMemberNodes(packageNode: TreeNode, candidates: reado
 
   for (const candidate of candidates) {
     if (candidate.kind !== "procedure" && candidate.kind !== "function") continue;
-    const name = candidate.name.trim();
+    const name = databaseType === "oceanbase-oracle" ? candidate.name : candidate.name.trim();
     if (!name) continue;
     const signature = candidate.signature?.trim() || "";
     const key = JSON.stringify([candidate.kind, name, candidate.routine_id ?? signature]);
