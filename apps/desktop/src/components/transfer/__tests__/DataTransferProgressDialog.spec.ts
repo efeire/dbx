@@ -96,8 +96,8 @@ describe("DataTransferProgressDialog", () => {
       expect(task.transferFailures ?? []).toHaveLength(0);
       expect(container.textContent).not.toContain("Migration or verification failed");
       const result = [...container.querySelectorAll("p")].find((element) => element.textContent?.includes("TYPE_BODY TARGET.T"));
-      expect(result?.parentElement?.className).not.toContain("text-green");
-      expect(result?.parentElement?.className).not.toContain("text-destructive");
+      expect(result?.textContent).toContain("Not executed");
+      expect(result?.parentElement?.textContent).toContain("Prerequisite did not complete; no DDL executed");
     }
   });
   it("reports a public synonym privilege failure without losing the private synonym result", async () => {
