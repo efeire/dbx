@@ -24,6 +24,14 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class OceanBaseLobStatementTest {
+    @Test void onlyConfirmedObBusinessErrorIsEligibleForSavepointKeep() {
+        assertTrue(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLTransientConnectionException("ORA-20001: stale", "HY000", 20001)));
+        assertFalse(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLTransientConnectionException("connection lost", "08006", 20001)));
+        assertFalse(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLTransientConnectionException("other error", "HY000", 600)));
+        assertFalse(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLRecoverableException("lost", "HY000", 20001)));
+        assertFalse(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLTimeoutException("timeout", "HY000", 20001)));
+        assertFalse(OceanBaseLobStatements.BINDING.isRollbackConfirmedBusinessError(new java.sql.SQLTransientConnectionException("stale", "HY000", 20001, new SQLException("lost", "08006"))));
+    }
     @Test
     void boundPreparedAndCallableInitializeNativeModeBeforeStreamBindingThroughPool() throws Exception {
         for (boolean callable : new boolean[]{false, true}) {

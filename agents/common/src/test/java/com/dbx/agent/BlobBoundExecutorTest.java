@@ -36,6 +36,16 @@ class BlobBoundExecutorTest {
         for (InputStream stream : jdbc.streams) assertThrows(java.io.IOException.class, stream::read);
     }
 
+    @Test void piecewiseDriverSeesRemainingBytesUntilEntireHexStreamIsSent() throws Exception {
+        Fake jdbc=new Fake(); jdbc.piecewiseRead=true;
+        String hex="00ff80".repeat(40000);
+        BlobBoundStatement statement=new BlobBoundStatement(PREVIEW,"UPDATE t SET b=?",Arrays.asList(hex));
+        run(jdbc,Arrays.asList(statement),false);
+        assertEquals(Arrays.asList(hex),jdbc.boundHex);
+        assertEquals(4,jdbc.pieces);
+        assertEquals(0,jdbc.streams.get(0).available());
+    }
+
     @Test void timeoutRollsBackClosesStreamsAndNeverFallsBackToText() throws Exception {
         Fake jdbc = new Fake(); jdbc.fail = true;
         RuntimeException failure = assertThrows(RuntimeException.class, () -> run(jdbc, Arrays.asList(bound()), true));
@@ -76,6 +86,27 @@ class BlobBoundExecutorTest {
         assertEquals("unknown",data.get("operationOutcome").getAsString());
         assertEquals("connection",data.get("category").getAsString());
         assertEquals("08007",data.get("sqlState").getAsString());
+    }
+
+    @Test void confirmedObBusinessErrorKeepsPriorWorkButRollbackFailureStillQuarantines() {
+        for (int cleanupFailure : new int[]{0,1,2}) {
+            boolean cleanupFails=cleanupFailure!=0;
+            Fake jdbc=new Fake(); jdbc.autoCommit=false; jdbc.failAt=2; jdbc.failRollback=cleanupFailure==1; jdbc.failRelease=cleanupFailure==2;
+            jdbc.executionFailure=new java.sql.SQLTransientConnectionException("ORA-20001: stale target", "HY000", 20001);
+            BlobBoundExecutor.PreparedStatementConfigurer configurer=new BlobBoundExecutor.PreparedStatementConfigurer() {
+                public void configure(PreparedStatement statement) { }
+                public boolean isRollbackConfirmedBusinessError(java.sql.SQLException error) { return error.getErrorCode()==20001; }
+            };
+            RuntimeException failure=assertThrows(RuntimeException.class,()->BlobBoundExecutor.execute(jdbc.connection(),
+                Arrays.asList(PREVIEW,PREVIEW),Arrays.asList(bound(),bound()),null,s->s,()->null,7,false,configurer));
+            var data=AgentRpcError.toJson(failure,"execute_batch","test").getAsJsonObject("data");
+            assertEquals(cleanupFails?"quarantine":"keep",data.get("sessionDisposition").getAsString());
+            assertEquals(cleanupFails?"connection":"sql",data.get("category").getAsString());
+            assertEquals("unknown",data.get("operationOutcome").getAsString());
+            assertEquals(0,jdbc.commits); assertEquals(0,jdbc.rollbacks);
+            if(!cleanupFails) { assertEquals(42,jdbc.value); assertEquals(1,jdbc.savepointRollbacks); assertFalse(jdbc.connectionClosed); }
+            else { assertTrue(jdbc.connectionClosed); assertEquals("08007",data.get("sqlState").getAsString()); }
+        }
     }
 
     @Test void unsupportedSavepointFailsBeforeAnyWrite() {
@@ -159,10 +190,12 @@ class BlobBoundExecutorTest {
     }
 
     private static final class Fake {
-        boolean autoCommit = true, fail, cancel, unsupportedSavepoint, failRollback, connectionClosed, failReset, cancelOnClose;
+        boolean autoCommit = true, fail, cancel, unsupportedSavepoint, failRollback, connectionClosed, failReset, cancelOnClose, piecewiseRead, failRelease;
+        int pieces;
         int value=42,savedValue=42,failAt,failBindAt;
         int commits, rollbacks, savepointRollbacks, savepoints, releases, executions, closedStatements, cancels, timeout;
         String preparedSql;
+        java.sql.SQLException executionFailure;
         List<String> events = new ArrayList<>(), boundHex = new ArrayList<>();
         List<Long> lengths = new ArrayList<>(); List<InputStream> streams = new ArrayList<>();
         Connection connection() {
@@ -174,7 +207,7 @@ class BlobBoundExecutorTest {
                     case "setAutoCommit": if(failReset && (boolean)a[0])throw new java.sql.SQLException("reset failed"); autoCommit = (boolean)a[0]; return null;
                     case "getMetaData": return Proxy.newProxyInstance(DatabaseMetaData.class.getClassLoader(), new Class<?>[]{DatabaseMetaData.class}, (x,y,z) -> y.getName().equals("supportsTransactions") ? true : defaultValue(y.getReturnType()));
                     case "setSavepoint": if (unsupportedSavepoint) throw new java.sql.SQLFeatureNotSupportedException(); savepoints++; savedValue=value; return Proxy.newProxyInstance(Savepoint.class.getClassLoader(),new Class<?>[]{Savepoint.class},(x,y,z)->defaultValue(y.getReturnType()));
-                    case "releaseSavepoint": releases++; return null;
+                    case "releaseSavepoint": releases++; if(failRelease)throw new java.sql.SQLTransientConnectionException("release lost connection","08006"); return null;
                     case "commit": commits++; events.add("commit"); return null;
                     case "rollback": if(failRollback)throw new java.sql.SQLException("rollback lost connection","08006"); if (a == null || a.length == 0) rollbacks++; else {savepointRollbacks++;value=savedValue;} return null;
                     case "prepareCall": case "prepareStatement": preparedSql=(String)a[0]; return statement(m.getName().equals("prepareCall"));
@@ -190,8 +223,15 @@ class BlobBoundExecutorTest {
                     case "setBlob": assertInstanceOf(InputStream.class,a[1]); assertInstanceOf(Long.class,a[2]);
                         InputStream stream=(InputStream)a[1]; streams.add(stream); lengths.add((Long)a[2]);
                         if(streams.size()==failBindAt)throw new java.sql.SQLException("binding failed");
-                        byte[] bytes=stream.readAllBytes(); StringBuilder hex=new StringBuilder(); for(byte b:bytes)hex.append(String.format("%02x",b&255)); boundHex.add(hex.toString()); return null;
-                    case "execute": executions++;value++; if(fail)throw new SQLTimeoutException("timed out","HYT00"); if(executions==failAt)throw new java.sql.SQLException("stale target","23000"); if(cancel)JdbcExecutor.current().cancelActiveStatements(); return false;
+                        byte[] bytes;
+                        if(piecewiseRead) {
+                            java.io.ByteArrayOutputStream sent=new java.io.ByteArrayOutputStream(); byte[] buffer=new byte[32768];
+                            int read;
+                            while((read=stream.read(buffer))!=-1) { sent.write(buffer,0,read); pieces++; if(stream.available()==0)break; }
+                            bytes=sent.toByteArray();
+                        } else bytes=stream.readAllBytes();
+                        StringBuilder hex=new StringBuilder(); for(byte b:bytes)hex.append(String.format("%02x",b&255)); boundHex.add(hex.toString()); return null;
+                    case "execute": executions++;value++; if(fail)throw new SQLTimeoutException("timed out","HYT00"); if(executions==failAt)throw executionFailure!=null?executionFailure:new java.sql.SQLException("stale target","23000"); if(cancel)JdbcExecutor.current().cancelActiveStatements(); return false;
                     case "getUpdateCount": return 1;
                     case "cancel": cancels++; return null;
                     case "close": closedStatements++; events.add("close"); if(cancelOnClose)JdbcExecutor.current().cancelActiveStatements(); return null;

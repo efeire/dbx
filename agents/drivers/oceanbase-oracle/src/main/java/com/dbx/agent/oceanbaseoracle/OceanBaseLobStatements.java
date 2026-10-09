@@ -1,11 +1,27 @@
 package com.dbx.agent.oceanbaseoracle;
 
 import com.oceanbase.jdbc.OceanBaseStatement;
+import com.dbx.agent.BlobBoundExecutor;
 import java.sql.SQLException;
 import java.sql.Statement;
 
 final class OceanBaseLobStatements {
     private OceanBaseLobStatements() { }
+
+    static final BlobBoundExecutor.PreparedStatementConfigurer BINDING = new BlobBoundExecutor.PreparedStatementConfigurer() {
+        @Override public void configure(java.sql.PreparedStatement statement) throws SQLException {
+            OceanBaseLobStatements.configure(statement);
+        }
+        @Override public boolean isRollbackConfirmedBusinessError(SQLException error) {
+            if (!(error instanceof java.sql.SQLTransientConnectionException)
+                || error.getErrorCode() != 20001 || !"HY000".equals(error.getSQLState())) return false;
+            for (Throwable cause = error.getCause(); cause != null; cause = cause.getCause()) {
+                if (cause instanceof java.sql.SQLRecoverableException || cause instanceof java.sql.SQLTimeoutException
+                    || cause instanceof SQLException sql && sql.getSQLState() != null && sql.getSQLState().startsWith("08")) return false;
+            }
+            return true;
+        }
+    };
 
     static void configure(Statement statement) throws SQLException {
         OceanBaseStatement vendor;

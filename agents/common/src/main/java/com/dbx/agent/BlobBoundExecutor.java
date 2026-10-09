@@ -20,6 +20,7 @@ public final class BlobBoundExecutor {
     @FunctionalInterface
     public interface PreparedStatementConfigurer {
         void configure(PreparedStatement statement) throws SQLException;
+        default boolean isRollbackConfirmedBusinessError(SQLException error) { return false; }
     }
 
     public static QueryResult execute(Connection conn, List<String> previews, List<BlobBoundStatement> statements,
@@ -68,7 +69,16 @@ public final class BlobBoundExecutor {
                     try { conn.rollback(savepoint); }
                     catch (Exception rollbackFailure) { throw rollbackUnconfirmed(conn, failure, rollbackFailure); }
                     try { conn.releaseSavepoint(savepoint); }
-                    catch (Exception releaseFailure) { failure.addSuppressed(releaseFailure); }
+                    catch (Exception releaseFailure) {
+                        SQLTransientConnectionException unsafe = new SQLTransientConnectionException(
+                            "BLOB savepoint cleanup failed after batch rollback; discard this connection and treat transaction state as unknown", "08007", releaseFailure);
+                        unsafe.addSuppressed(failure);
+                        try { conn.close(); } catch (Exception closeFailure) { unsafe.addSuppressed(closeFailure); }
+                        throw unsafe;
+                    }
+                    if (failure instanceof SQLException sqlFailure && configurer.isRollbackConfirmedBusinessError(sqlFailure)) {
+                        throw AgentRpcError.rollbackConfirmedSql(sqlFailure);
+                    }
                 }
                 throw failure;
             } finally {
@@ -167,6 +177,7 @@ public final class BlobBoundExecutor {
         private int offset;
         private boolean closed;
         HexStream(String hex) { this.hex = hex; }
+        @Override public int available() { return closed ? 0 : (hex.length() - offset) / 2; }
         @Override public int read() throws java.io.IOException {
             if (closed) throw new java.io.IOException("BLOB binding stream is closed");
             if (offset == hex.length()) return -1;
