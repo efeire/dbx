@@ -14,6 +14,9 @@ struct Fixture {
     permission: bool,
     index_exists: bool,
     index_name: String,
+    index_type: Option<String>,
+    index_uniqueness: Option<String>,
+    index_status: Option<String>,
     ambiguous: bool,
     readback_error: bool,
 }
@@ -67,6 +70,9 @@ fn fixture_session(engine: Engine, request: &UniqueChange) -> Session {
             permission: true,
             index_exists: true,
             index_name,
+            index_type: Some("NORMAL".into()),
+            index_uniqueness: Some("UNIQUE".into()),
+            index_status: Some("VALID".into()),
             ambiguous: false,
             readback_error: false,
         }),
@@ -122,7 +128,13 @@ impl ConstraintSession for Session {
         }
         if sql.starts_with("SELECT OWNER,INDEX_NAME") {
             return Ok(rows(if fixture.index_exists {
-                vec![vec![json!("Owner"), json!(fixture.index_name), json!("NORMAL"), json!("UNIQUE"), json!("VALID")]]
+                vec![vec![
+                    json!("Owner"),
+                    json!(fixture.index_name),
+                    json!(fixture.index_type),
+                    json!(fixture.index_uniqueness),
+                    json!(fixture.index_status),
+                ]]
             } else {
                 vec![]
             }));
@@ -136,7 +148,13 @@ impl ConstraintSession for Session {
         }
         if sql.starts_with("SELECT INDEX_TYPE") {
             return Ok(rows(if fixture.index_exists {
-                vec![vec![json!("NORMAL"), json!("UNIQUE"), json!("VALID"), json!("Owner"), json!("Table\"Name")]]
+                vec![vec![
+                    json!(fixture.index_type),
+                    json!(fixture.index_uniqueness),
+                    json!(fixture.index_status),
+                    json!("Owner"),
+                    json!("Table\"Name"),
+                ]]
             } else {
                 vec![]
             }));
@@ -216,6 +234,66 @@ impl ConstraintSession for Session {
         }
         Err(format!("Unexpected query: {sql}"))
     }
+}
+
+#[tokio::test]
+async fn oracle_reuses_only_valid_normal_indexes_compatible_with_deferrable_unique_keys() {
+    for (index_type, status, uniqueness, deferrable, reusable) in [
+        ("NORMAL", "VALID", "UNIQUE", false, true),
+        ("BITMAP", "VALID", "UNIQUE", false, false),
+        ("NORMAL", "UNUSABLE", "UNIQUE", false, false),
+        ("NORMAL", "VALID", "UNIQUE", true, false),
+        ("NORMAL", "VALID", "NONUNIQUE", true, true),
+    ] {
+        let mut request = request();
+        request.original_name = None;
+        let desired = request.desired.as_mut().unwrap();
+        desired.columns = vec!["Key A".into()];
+        desired.deferrable = deferrable;
+        let session = fixture_session(Engine::Oracle, &request);
+        {
+            let mut fixture = session.fixture.lock().unwrap();
+            fixture.current = None;
+            fixture.index_type = Some(index_type.into());
+            fixture.index_status = Some(status.into());
+            fixture.index_uniqueness = Some(uniqueness.into());
+        }
+        let plan = preview_unique(&session, &request).await.unwrap();
+        assert_eq!(plan.statements.len(), if reusable { 1 } else { 2 });
+        assert_eq!(plan.statements.last().unwrap().contains("USING INDEX \"Owner\".\"User Index\""), reusable);
+        assert!(session.fixture.lock().unwrap().writes.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn invalid_or_unknown_index_metadata_blocks_unique_previews_without_ddl() {
+    for engine in [Engine::Oracle, Engine::OceanBaseOracle] {
+        for field in ["type", "status", "uniqueness"] {
+            let mut request = request();
+            if engine == Engine::Oracle {
+                request.desired.as_mut().unwrap().deferrable = true;
+            }
+            let session = fixture_session(engine, &request);
+            {
+                let mut fixture = session.fixture.lock().unwrap();
+                match field {
+                    "type" => fixture.index_type = None,
+                    "status" => fixture.index_status = None,
+                    _ => fixture.index_uniqueness = None,
+                }
+            }
+            if engine == Engine::Oracle || field == "uniqueness" {
+                assert!(preview_unique(&session, &request).await.is_err(), "{engine:?} {field}");
+                assert!(session.fixture.lock().unwrap().writes.is_empty());
+            }
+        }
+    }
+    let request = request();
+    let session = fixture_session(Engine::OceanBaseOracle, &request);
+    session.fixture.lock().unwrap().index_uniqueness = Some("NONUNIQUE".into());
+    let error = preview_unique(&session, &request).await.unwrap_err();
+    assert!(error.contains("mapping cannot be confirmed"));
+    assert!(session.fixture.lock().unwrap().writes.is_empty());
 }
 
 #[tokio::test]
