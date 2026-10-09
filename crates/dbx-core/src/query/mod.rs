@@ -3226,21 +3226,14 @@ pub async fn write_large_value_snapshot(
     loop {
         if is_canceled(&cancel) { return Err(canceled_error()); }
         let chunk = request_large_value_with_cancel(state, request.clone(), false, cancel.clone()).await?;
-        if chunk.get("status").and_then(|value| value.as_str()) != Some("ok") {
-            return Err("LOB snapshot expired; execute the query again".to_string());
-        }
-        let next = chunk.get("next_offset").and_then(|value| value.as_u64()).ok_or("Invalid LOB offset")?;
-        let eof = chunk.get("eof").and_then(|value| value.as_bool()).ok_or("Invalid LOB EOF")?;
-        let data = chunk.get("data").and_then(|value| value.as_str()).ok_or("Invalid LOB data")?;
-        let kind = chunk.get("value_kind").and_then(|value| value.as_str()).ok_or("Invalid LOB type")?;
+        if is_canceled(&cancel) { return Err(canceled_error()); }
+        let (data, next, eof, kind) = snapshot_export::checked_chunk(&chunk, request.offset)?;
         if value_kind.as_deref().is_some_and(|original| original != kind) {
             return Err("LOB chunk type changed".to_string());
         }
         value_kind = Some(kind.to_string());
-        if next < request.offset || (!eof && next == request.offset) { return Err("Invalid LOB offset".to_string()); }
         let bytes = if kind == "binary" {
             let bytes = decode_lob_hex_chunk(data)?;
-            if bytes.len() as u64 != next - request.offset { return Err("Invalid LOB byte count".to_string()); }
             if let Some(decoder) = decoder.as_mut() {
                 let mut text = decode_lob_text_chunk(decoder, &bytes, eof)?;
                 if first_decoded_output && !text.is_empty() {
@@ -3250,7 +3243,6 @@ pub async fn write_large_value_snapshot(
                 text.into_bytes()
             } else { bytes }
         } else if kind == "text" {
-            if data.chars().count() as u64 != next - request.offset { return Err("Invalid LOB character count".to_string()); }
             data.as_bytes().to_vec()
         } else { return Err("Invalid LOB type".to_string()); };
         output.write_all(&bytes).map_err(|error| error.to_string())?;
@@ -3258,6 +3250,7 @@ pub async fn write_large_value_snapshot(
         if eof { break; }
         request.offset = next;
     }
+    if is_canceled(&cancel) { return Err(canceled_error()); }
     output.flush().map_err(|error| error.to_string())?;
     Ok(written)
 }
