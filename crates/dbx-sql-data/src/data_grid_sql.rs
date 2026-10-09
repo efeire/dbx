@@ -3510,6 +3510,14 @@ fn oceanbase_lob_predicate(
         let Some(hex) = oceanbase_blob_hex(value) else {
             return Some("1 = 0".to_string());
         };
+        if hex.len() > 4000 {
+            // Reuse the temporary BLOB bind in oceanbase_blob_statement instead of
+            // compiling one RAW predicate per 1000 bytes of the original value.
+            return Some(format!(
+                "(DBMS_LOB.GETLENGTH({ident}) = {} AND DBMS_LOB.COMPARE({ident}, TO_BLOB(HEXTORAW('{hex}'))) = 0)",
+                hex.len() / 2
+            ));
+        }
         let mut predicates = vec![format!("DBMS_LOB.GETLENGTH({ident}) = {}", hex.len() / 2)];
         for (index, chunk) in hex.as_bytes().chunks(2000).enumerate() {
             let chunk = std::str::from_utf8(chunk).expect("validated ASCII hex");
@@ -7471,6 +7479,40 @@ mod tests {
         let invalid = prepare_data_grid_save(options);
         assert!(invalid.validation_error.is_some());
         assert!(invalid.statements.is_empty());
+    }
+
+    #[test]
+    fn oceanbase_large_blob_baseline_uses_one_exact_bound_comparison() {
+        let original = format!("0x{}80", "00ff".repeat(524291)); // 1 MiB + 7 bytes
+        let prepared = prepare_data_grid_save(DataGridSaveStatementOptions {
+            database_type: Some(DatabaseType::OceanbaseOracle),
+            identifier_quote: None,
+            server_version: None,
+            table_meta: DataGridTableMeta {
+                catalog: None,
+                database: None,
+                schema: Some("APP".into()),
+                table_name: "FILES".into(),
+                primary_keys: vec!["ID".into()],
+                columns: Some(vec![column("ID", "NUMBER", false, None), column("CONTENT", "BLOB", true, None)]),
+            },
+            columns: vec!["ID".into(), "CONTENT".into()],
+            source_columns: None,
+            rows: vec![vec![json!(6), json!(original)]],
+            dirty_rows: vec![(0, vec![(1, json!("0x00ff80"))])],
+            deleted_rows: vec![],
+            new_rows: vec![],
+            include_database_name: false,
+        });
+        assert_eq!(prepared.validation_error, None);
+        let sql = &prepared.statements[0];
+        assert_eq!(sql.matches("DBMS_LOB.COMPARE").count(), 1);
+        assert!(!sql.contains("DBMS_LOB.SUBSTR"));
+        assert!(sql.contains("DBMS_LOB.COMPARE(\"CONTENT\", :dbx_lob_0) = 0"));
+        assert!(sql.contains("DBMS_LOB.GETLENGTH(\"CONTENT\") = 1048583"));
+        assert!(sql.contains("EXECUTE IMMEDIATE dbx_sql USING dbx_lob_0"));
+        assert!(sql.contains("SQL%ROWCOUNT <> 1"));
+        assert_eq!(sql.matches("FREETEMPORARY(dbx_lob_0)").count(), 2);
     }
 
     #[test]
