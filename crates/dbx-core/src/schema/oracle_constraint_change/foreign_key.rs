@@ -248,6 +248,7 @@ async fn check_reference(
     key: &ForeignKeyDefinition,
     user: &str,
     check_data: bool,
+    require_enabled: bool,
 ) -> Result<Vec<Vec<serde_json::Value>>, String> {
     let mut evidence = require_table(session, &key.referenced_schema, &key.referenced_table).await?;
     let mut column_types = Vec::new();
@@ -291,13 +292,14 @@ async fn check_reference(
     let keys = read(session, &format!("SELECT c.CONSTRAINT_NAME,c.STATUS,c.DEFERRABLE,k.COLUMN_NAME FROM ALL_CONSTRAINTS c JOIN ALL_CONS_COLUMNS k ON k.OWNER=c.OWNER AND k.CONSTRAINT_NAME=c.CONSTRAINT_NAME AND k.TABLE_NAME=c.TABLE_NAME WHERE c.OWNER={} AND c.TABLE_NAME={} AND c.CONSTRAINT_TYPE IN ('P','U') ORDER BY c.CONSTRAINT_NAME,k.POSITION", literal(&key.referenced_schema), literal(&key.referenced_table))).await?;
     let mut candidates: std::collections::BTreeMap<String, (bool, Vec<String>)> = std::collections::BTreeMap::new();
     for row in &keys.rows {
-        let eligible = text(row, 1)? == "ENABLED" && text(row, 2)? == "NOT DEFERRABLE";
+        let enabled = flag(row, 1, "ENABLED", "DISABLED")?;
+        let eligible = (!require_enabled || enabled) && text(row, 2)? == "NOT DEFERRABLE";
         let entry = candidates.entry(text(row, 0)?).or_insert((eligible, Vec::new()));
         entry.0 &= eligible;
         entry.1.push(text(row, 3)?);
     }
     if !candidates.values().any(|(eligible, columns)| *eligible && columns == &key.referenced_columns) {
-        return Err("The referenced columns do not match a visible enabled nondeferrable primary or unique constraint in order.".into());
+        return Err("The referenced columns do not match a visible nondeferrable primary or unique constraint in order, enabled when the requested foreign key is enabled.".into());
     }
     evidence.extend(keys.rows);
     if key.referenced_schema != user {
@@ -349,7 +351,7 @@ async fn preview_foreign_key(
     let mut recovery = Vec::new();
     if let Some(old) = &current {
         recovery.push(foreign_key_sql(session.engine(), change, old)?);
-        evidence.extend(check_reference(session, change, old, &user, false).await?);
+        evidence.extend(check_reference(session, change, old, &user, false, false).await?);
         affected.push(format!(
             "Original relation: {} ({}) -> {} ({})",
             target,
@@ -374,7 +376,7 @@ async fn preview_foreign_key(
         if collision != expected {
             return Err("The requested constraint name is already used or its visibility changed.".into());
         }
-        evidence.extend(check_reference(session, change, desired, &user, true).await?);
+        evidence.extend(check_reference(session, change, desired, &user, true, desired.enabled).await?);
         affected.push(format!(
             "Requested relation: {} ({}) -> {} ({})",
             target,
