@@ -101,7 +101,8 @@ describe("useSidebarTreeExportRuntime", () => {
       },
     );
     vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:ddl"), revokeObjectURL: vi.fn() });
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const click = vi.fn();
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({ href: "", download: "", click })) });
     try {
       await runtime.exportStructure();
       expect(structurePreviewSql.value).toContain("visible table triggers (count: 1)");
@@ -118,7 +119,6 @@ describe("useSidebarTreeExportRuntime", () => {
       expect(apiMock.executeQuery).not.toHaveBeenCalled();
     } finally {
       scope.stop();
-      click.mockRestore();
       vi.unstubAllGlobals();
     }
   });
