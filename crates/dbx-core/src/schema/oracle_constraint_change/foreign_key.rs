@@ -305,8 +305,12 @@ async fn check_reference(
     if key.referenced_schema != user {
         let grants = count(session, &format!("SELECT COUNT(*) FROM ALL_TAB_PRIVS WHERE TABLE_SCHEMA={} AND TABLE_NAME={} AND PRIVILEGE='REFERENCES' AND GRANTEE IN ({},'PUBLIC')", literal(&key.referenced_schema), literal(&key.referenced_table), literal(user))).await?;
         if grants == 0 {
+            let owner_column = match session.engine() {
+                Engine::Oracle => "TABLE_SCHEMA",
+                Engine::OceanBaseOracle => "OWNER",
+            };
             for column in &key.referenced_columns {
-                if count(session, &format!("SELECT COUNT(*) FROM ALL_COL_PRIVS WHERE TABLE_SCHEMA={} AND TABLE_NAME={} AND COLUMN_NAME={} AND PRIVILEGE='REFERENCES' AND GRANTEE IN ({},'PUBLIC')", literal(&key.referenced_schema), literal(&key.referenced_table), literal(column), literal(user))).await? == 0 { return Err("Cannot confirm a direct REFERENCES grant on every referenced column.".into()); }
+                if count(session, &format!("SELECT COUNT(*) FROM ALL_COL_PRIVS WHERE {owner_column}={} AND TABLE_NAME={} AND COLUMN_NAME={} AND PRIVILEGE='REFERENCES' AND GRANTEE IN ({},'PUBLIC')", literal(&key.referenced_schema), literal(&key.referenced_table), literal(column), literal(user))).await? == 0 { return Err("Cannot confirm a direct REFERENCES grant on every referenced column.".into()); }
             }
         }
     }
