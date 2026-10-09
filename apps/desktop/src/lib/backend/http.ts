@@ -1233,6 +1233,10 @@ export async function getObjectSource(connectionId: string, database: string, sc
   return get(`/api/schema/object-source?${qs({ connection_id: connectionId, database, schema, table: name, object_type: objectType, signature, relation_name: relationName })}`);
 }
 
+export async function oracleUserAdmin(connectionId: string, database: string, request: import("@/lib/database/oracleUserAdmin").OracleUserRequest): Promise<import("@/lib/database/oracleUserAdmin").OracleUserResponse> {
+  return post("/api/oracle-user-admin", { connection_id: connectionId, database, request });
+}
+
 export async function getEventInfo(connectionId: string, database: string, schema: string, name: string): Promise<MysqlEventInfo> {
   return get(`/api/schema/event-info?${qs({ connection_id: connectionId, database, schema, table: name })}`);
 }

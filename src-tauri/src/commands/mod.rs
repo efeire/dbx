@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod oracle_user_admin;
 pub mod ai;
 pub mod ai_multi_config;
 pub mod app_settings;

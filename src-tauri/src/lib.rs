@@ -2058,6 +2058,7 @@ pub fn run() {
             commands::plugins::install_jdbc_plugin_local,
             commands::plugins::uninstall_jdbc_plugin,
             commands::schema_diff::prepare_schema_diff,
+            commands::oracle_user_admin::oracle_user_admin,
             commands::schema_diff::generate_schema_sync_sql,
             commands::schema_diff::generate_schema_sync_plan,
             commands::dialect_cmd::list_dialect_data_types,

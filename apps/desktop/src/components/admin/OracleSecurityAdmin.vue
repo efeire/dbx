@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import OracleUserAdmin from "@/components/admin/OracleUserAdmin.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import * as api from "@/lib/backend/api";
 import type { ConnectionConfig } from "@/types/database";
@@ -59,6 +60,7 @@ defineExpose({ refresh });
     </header>
     <p class="text-xs text-muted-foreground">{{ label("显示当前账号可见的授予关系。继承来源不代表角色已在当前会话启用；受限范围无法证明其他授权不存在。", "Shows grants visible to the current account. Role inheritance does not imply that a role is enabled in this session. Limited visibility cannot prove the absence of other grants.") }}</p>
     <p v-if="error" role="alert" class="text-sm text-destructive">{{ error }}</p>
+    <OracleUserAdmin :connection="connection" :selected-name="selectedUser?.name" @changed="refresh" />
     <div v-if="snapshot" class="grid gap-2 text-xs sm:grid-cols-2">
       <details v-for="[name, result] in sections" :key="name" class="rounded border p-2" :data-security-state="result.state">
         <summary>{{ name }} · {{ stateLabel(result.state) }} · {{ result.rows.length }} · {{ result.visibility === "complete" ? label("完整字典范围", "Full dictionary scope") : label("可见范围受限", "Limited visibility") }}{{ result.truncated ? label("，已达读取上限", ", row limit reached") : "" }}</summary>
