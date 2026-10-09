@@ -7925,6 +7925,9 @@ export default withEnglishFallback({
     fileFilterHint: "Используйте шаблон, например *.sql или *.sh, либо регулярное выражение, например {regex}.",
   },
   diff: {
+    routineIncomingDependencies: "Возможно затронутые вызывающие объекты: {dependencies}",
+    routineRecoveryHint: "Часть DDL уже могла примениться. Перед восстановлением проверьте выполненные шаги и состояние словаря; автоматический откат не гарантирован.",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle также сравнивают спецификации и тела пакетов и триггеры.",
     routinePlanBlocked: "Развертывание заблокировано: {reason}",
     routineDependencies: "Зависимости: {dependencies}",
     routineValidationTitle: "Компиляция и повторное чтение исходного кода",

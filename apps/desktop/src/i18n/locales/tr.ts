@@ -6544,6 +6544,9 @@ export default withEnglishFallback({
     fileFilterHint: "*.sql ya da *.sh gibi bir glob veya {regex} gibi bir düzenli ifade kullanın.",
   },
   diff: {
+    routineIncomingDependencies: "Etkilenebilecek çağıranlar: {dependencies}",
+    routineRecoveryHint: "DDL kısmen uygulanmış olabilir. Kurtarma planını kullanmadan önce yürütülen adımları ve sözlük durumunu kontrol edin; otomatik geri alma garanti edilmez.",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle paket tanımlarını, paket gövdelerini ve tetikleyicileri de karşılaştırır.",
     routinePlanBlocked: "Dağıtım engellendi: {reason}",
     routineDependencies: "Bağımlılıklar: {dependencies}",
     routineValidationTitle: "Derleme ve kaynak kodu doğrulaması",

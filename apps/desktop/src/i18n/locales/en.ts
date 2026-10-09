@@ -7607,6 +7607,9 @@ export default {
     warnings: "Warnings",
   },
   diff: {
+    routineIncomingDependencies: "Potentially affected callers: {dependencies}",
+    routineRecoveryHint: "Some DDL may already be applied. Review the executed steps and dictionary status before using the rollback plan; automatic rollback is not guaranteed.",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle also compare package specifications, package bodies, and triggers.",
     routinePlanBlocked: "Deployment blocked: {reason}",
     routineDependencies: "Dependencies: {dependencies}",
     routineValidationTitle: "Compilation and source readback",

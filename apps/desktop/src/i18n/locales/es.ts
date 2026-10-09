@@ -6901,6 +6901,9 @@ export default withEnglishFallback({
     totalFiles: "{count} archivos",
   },
   diff: {
+    routineIncomingDependencies: "Llamadores que pueden verse afectados: {dependencies}",
+    routineRecoveryHint: "Puede que parte del DDL ya se haya aplicado. Revise los pasos ejecutados y el estado del diccionario antes de usar el plan de recuperación; la reversión automática no está garantizada.",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle también comparan especificaciones y cuerpos de paquetes y disparadores.",
     routinePlanBlocked: "Despliegue bloqueado: {reason}",
     routineDependencies: "Dependencias: {dependencies}",
     routineValidationTitle: "Compilación y lectura del código fuente",

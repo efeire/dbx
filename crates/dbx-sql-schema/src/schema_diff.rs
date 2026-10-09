@@ -4018,8 +4018,11 @@ pub fn normalize_definition(def: &str) -> String {
         .join("\n")
 }
 
-fn routine_identity(info: &FunctionInfo) -> (&str, &str, &str) {
-    (&info.name, &info.arguments, if info.schema.is_some() { &info.function_type } else { "" })
+fn routine_identity(info: &FunctionInfo) -> (&str, &str, &str, &str, &str) {
+    let (table_owner, table_name) = info.trigger.as_ref().map(|trigger| (
+        if Some(trigger.table_owner.as_str()) == info.schema.as_deref() { "" } else { trigger.table_owner.as_str() }, trigger.table_name.as_str()
+    )).unwrap_or(("", ""));
+    (&info.name, &info.arguments, if info.schema.is_some() { &info.function_type } else { "" }, table_owner, table_name)
 }
 
 pub fn diff_functions(source: &[FunctionInfo], target: &[FunctionInfo]) -> Vec<FunctionDiff> {
@@ -4055,6 +4058,9 @@ pub fn diff_functions(source: &[FunctionInfo], target: &[FunctionInfo]) -> Vec<F
         };
         if definitions_differ {
             changes.push("definition changed".to_string());
+        }
+        if source_fn.trigger.as_ref().map(|trigger| (&trigger.timing, &trigger.event, &trigger.status, &trigger.base_object_type)) != target_fn.trigger.as_ref().map(|trigger| (&trigger.timing, &trigger.event, &trigger.status, &trigger.base_object_type)) {
+            changes.push("trigger timing, event or enabled state changed".to_string());
         }
         if !changes.is_empty() {
             diffs.push(FunctionDiff {
@@ -8152,7 +8158,8 @@ mod tests {
             diff_type: "modified".into(),
             name: "next_value".into(),
             source: Some(FunctionInfo {
-                schema: None,
+                trigger: None, dependency_objects: Vec::new(), incoming_dependencies: Vec::new(), paired_object_present: None,
+        schema: None,
                 status: None,
                 dependencies: Vec::new(),
                 name: "next_value".into(),
@@ -8490,7 +8497,8 @@ mod tests {
             diff_type: "modified".into(),
             name: "next_value".into(),
             source: Some(FunctionInfo {
-                schema: None,
+                trigger: None, dependency_objects: Vec::new(), incoming_dependencies: Vec::new(), paired_object_present: None,
+        schema: None,
                 status: None,
                 dependencies: Vec::new(),
                 name: "next_value".into(),
@@ -8540,7 +8548,8 @@ mod tests {
             diff_type: "added".into(),
             name: "pg_only".into(),
             source: Some(FunctionInfo {
-                schema: None,
+                trigger: None, dependency_objects: Vec::new(), incoming_dependencies: Vec::new(), paired_object_present: None,
+        schema: None,
                 status: None,
                 dependencies: Vec::new(),
                 name: "pg_only".into(),
@@ -14831,7 +14840,8 @@ mod tests {
             diff_type: "added".into(),
             name: "f1".into(),
             source: Some(FunctionInfo {
-                schema: None,
+                trigger: None, dependency_objects: Vec::new(), incoming_dependencies: Vec::new(), paired_object_present: None,
+        schema: None,
                 status: None,
                 dependencies: Vec::new(),
                 name: "f1".into(),
@@ -14904,7 +14914,8 @@ mod tests {
             diff_type: "added".into(),
             name: "armor".into(),
             source: Some(FunctionInfo {
-                schema: None,
+                trigger: None, dependency_objects: Vec::new(), incoming_dependencies: Vec::new(), paired_object_present: None,
+        schema: None,
                 status: None,
                 dependencies: Vec::new(),
                 name: "armor".into(),
@@ -14952,7 +14963,8 @@ mod tests {
             diff_type: "added".into(),
             name: "f1".into(),
             source: Some(FunctionInfo {
-                schema: None,
+                trigger: None, dependency_objects: Vec::new(), incoming_dependencies: Vec::new(), paired_object_present: None,
+        schema: None,
                 status: None,
                 dependencies: Vec::new(),
                 name: "f1".into(),

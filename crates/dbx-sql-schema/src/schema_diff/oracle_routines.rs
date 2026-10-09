@@ -12,6 +12,11 @@ pub struct RoutineStep {
     pub sql: Option<String>,
     pub blocked_reason: Option<String>,
     pub dependencies: Vec<String>,
+    pub incoming_dependencies: Vec<crate::types::RoutineDependency>,
+    pub post_sql: Vec<String>,
+    pub trigger: Option<crate::types::RoutineTriggerInfo>,
+    pub source_schema: Option<String>,
+    pub target_schema: Option<String>,
 }
 
 pub fn is_oracle_routine_database(database: DatabaseType) -> bool {
@@ -20,13 +25,59 @@ pub fn is_oracle_routine_database(database: DatabaseType) -> bool {
 
 fn header(definition: &str) -> Option<(String, usize)> {
     let identifier = r#"(?:"(?:[^"]|"")*"|[A-Za-z][A-Za-z0-9_$#]*)"#;
-    let pattern = format!(r"(?is)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(PROCEDURE|FUNCTION)\s+{identifier}(?:\s*\.\s*{identifier})?");
+    let pattern = format!(
+        r"(?is)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(PACKAGE\s+BODY|PACKAGE|TRIGGER|PROCEDURE|FUNCTION)\s+{identifier}(?:\s*\.\s*{identifier})?"
+    );
     let captures = Regex::new(&pattern).ok()?.captures(definition)?;
-    Some((captures[1].to_ascii_uppercase(), captures.get(0)?.end()))
+    Some((captures[1].split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_uppercase(), captures.get(0)?.end()))
 }
 
 fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn decode_identifier(value: &str) -> String {
+    if value.starts_with('"') {
+        value[1..value.len() - 1].replace("\"\"", "\"")
+    } else {
+        value.to_ascii_uppercase()
+    }
+}
+
+fn trigger_declaration_identity(definition: &str) -> Option<(Option<String>, String)> {
+    let identifier = r#"(?:"(?:[^"]|"")*"|[A-Za-z][A-Za-z0-9_$#]*)"#;
+    let pattern = Regex::new(&format!(r"(?is)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?TRIGGER\s+({identifier})(?:\s*\.\s*({identifier}))?" )).ok()?;
+    let captures = pattern.captures(definition)?;
+    Some(match captures.get(2) {
+        Some(value) => (Some(decode_identifier(&captures[1])), decode_identifier(value.as_str())),
+        None => (None, decode_identifier(&captures[1])),
+    })
+}
+
+fn trigger_program_source(definition: &str, name: &str, owner: Option<&str>) -> Result<String, String> {
+    let statements = crate::sql::split_sql_statements_for_database(definition, DatabaseType::Oracle);
+    let first = statements.first().ok_or("The complete trigger declaration is missing")?;
+    if statements.len() > 2 {
+        return Err("Additional trigger source statements require explicit review".into());
+    }
+    if let Some(state) = statements.get(1) {
+        let identifier = r#"(?:"(?:[^"]|"")*"|[A-Za-z][A-Za-z0-9_$#]*)"#;
+        let pattern = Regex::new(&format!(
+            r"(?is)^\s*ALTER\s+TRIGGER\s+({identifier})(?:\s*\.\s*({identifier}))?\s+(?:ENABLE|DISABLE)\s*;?\s*$"
+        ))
+        .unwrap();
+        let captures = pattern
+            .captures(state)
+            .ok_or("Only an ENABLE/DISABLE statement for the same trigger may follow its declaration")?;
+        let (actual_owner, actual_name) = match captures.get(2) {
+            Some(value) => (Some(decode_identifier(&captures[1])), decode_identifier(value.as_str())),
+            None => (None, decode_identifier(&captures[1])),
+        };
+        if actual_name != name || actual_owner.as_deref().is_some_and(|actual| Some(actual) != owner) {
+            return Err("Trailing ALTER TRIGGER targets a different object".into());
+        }
+    }
+    Ok(first.clone())
 }
 
 fn edition_clause(definition: &str) -> &str {
@@ -49,6 +100,9 @@ fn definition_without_client_delimiter(definition: &str) -> &str {
 /// Only the object declaration's owner/name and optional client slash are ignored.
 /// Strings, comments, quoted identifiers and all body whitespace remain byte-for-byte.
 pub fn comparable_oracle_routine(definition: &str) -> String {
+    let trigger_source = trigger_declaration_identity(definition)
+        .and_then(|(owner, name)| trigger_program_source(definition, &name, owner.as_deref()).ok());
+    let definition = trigger_source.as_deref().unwrap_or(definition);
     let definition = definition_without_client_delimiter(definition);
     match header(definition) {
         Some((kind, end)) => format!("{}{kind}{}", edition_clause(definition), &definition[end..]),
@@ -65,14 +119,25 @@ pub fn oracle_routine_sql(definition: &str, name: &str, schema: &str, kind: &str
     if !definition.ends_with(';') {
         return Err("The complete routine must end with its PL/SQL terminator".to_string());
     }
-    Ok(format!("CREATE OR REPLACE {}{kind} {}.{}{}", edition_clause(definition), quote(schema), quote(name), &definition[end..]))
+    Ok(format!(
+        "CREATE OR REPLACE {}{kind} {}.{}{}",
+        edition_clause(definition),
+        quote(schema),
+        quote(name),
+        &definition[end..]
+    ))
 }
 
 /// Cross-engine automatic conversion is deliberately limited to a portable PL/SQL
 /// subset. Other definitions remain visible and require a target-specific migration.
 fn portable_cross_engine_body(definition: &str) -> bool {
-    if !edition_clause(definition).is_empty() { return false; }
+    if !edition_clause(definition).is_empty() {
+        return false;
+    }
     let Some((kind, end)) = header(definition) else { return false };
+    if !matches!(kind.as_str(), "PROCEDURE" | "FUNCTION") {
+        return false;
+    }
     let body = definition_without_client_delimiter(&definition[end..]);
     let pattern = if kind == "PROCEDURE" {
         r"(?is)^\s*(?:\(\s*\))?\s*(?:AS|IS)\s+BEGIN\s+NULL\s*;\s*END\s*;\s*$"
@@ -82,77 +147,186 @@ fn portable_cross_engine_body(definition: &str) -> bool {
     Regex::new(pattern).is_ok_and(|pattern| pattern.is_match(body))
 }
 
+fn mapped_dependency(
+    dependency: &crate::types::RoutineDependency,
+    owner: Option<&str>,
+    target: &str,
+) -> crate::types::RoutineDependency {
+    let mut mapped = dependency.clone();
+    if owner == Some(dependency.owner.as_str()) {
+        mapped.owner = target.to_string();
+    }
+    mapped
+}
+fn step_identity(step: &RoutineStep) -> (String, String, String) {
+    (step.target_schema.clone().unwrap_or_default(), step.name.clone(), step.routine_type.clone())
+}
+fn typed_dependencies(diff: &FunctionDiff, target: &str) -> Vec<(String, String, String)> {
+    let info = if diff.diff_type == "removed" { diff.target.as_ref() } else { diff.source.as_ref() };
+    let Some(info) = info else { return Vec::new() };
+    let mut dependencies: Vec<_> = info
+        .dependency_objects
+        .iter()
+        .map(|dependency| {
+            let mapped = mapped_dependency(dependency, info.schema.as_deref(), target);
+            (mapped.owner, mapped.name, mapped.object_type)
+        })
+        .collect();
+    if info.function_type == "PACKAGE BODY" {
+        dependencies.push((target.to_string(), info.name.clone(), "PACKAGE".into()));
+    }
+    dependencies
+}
+
 pub fn oracle_routine_steps(
     diffs: &[FunctionDiff],
     target: DatabaseType,
     target_schema: Option<&str>,
     source: Option<DatabaseType>,
 ) -> Vec<RoutineStep> {
-    if !is_oracle_routine_database(target) { return Vec::new(); }
+    if !is_oracle_routine_database(target) {
+        return Vec::new();
+    }
+    let target_owner = target_schema.unwrap_or_default();
     let mut steps: Vec<_> = diffs.iter().map(|diff| {
         let info = if diff.diff_type == "removed" { diff.target.as_ref() } else { diff.source.as_ref() };
         let kind = info.map(|info| info.function_type.to_ascii_uppercase()).unwrap_or_default();
         let result = (|| {
             let schema = target_schema.filter(|schema| !schema.is_empty()).ok_or("An explicit target schema is required")?;
-            if !matches!(kind.as_str(), "PROCEDURE" | "FUNCTION") { return Err("This routine type is not supported".to_string()); }
+            if !matches!(kind.as_str(), "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE BODY" | "TRIGGER") { return Err("This routine type is not supported".to_string()); }
+            let info = info.ok_or("The complete routine source is missing")?;
+            if info.name != diff.name { return Err("Routine identity does not match its metadata".into()); }
+            let source = source.ok_or("The source database type must be explicit")?;
+            if !is_oracle_routine_database(source) { return Err("This source language cannot be converted to Oracle PL/SQL automatically".into()); }
+            if source != target && (matches!(kind.as_str(), "PACKAGE" | "PACKAGE BODY" | "TRIGGER") || !portable_cross_engine_body(&info.definition)) { return Err("This cross-engine routine requires target-version compatibility verification".into()); }
+            if diffs.iter().any(|other| other.name == diff.name && other.diff_type != diff.diff_type && other.source.as_ref().or(other.target.as_ref()).is_some_and(|candidate| candidate.function_type == kind) && matches!(other.diff_type.as_str(), "added" | "removed") && matches!(diff.diff_type.as_str(), "added" | "removed")) { return Err("Conflicting routine identities share a target name; review the trigger table mapping".into()); }
             if diff.diff_type == "removed" {
+                if info.schema.as_deref() != Some(schema) { return Err("Removed routine owner does not match the selected target schema".into()); }
+                if matches!(kind.as_str(), "PACKAGE" | "PACKAGE BODY") {
+                    let paired = if kind == "PACKAGE" { "PACKAGE BODY" } else { "PACKAGE" };
+                    match info.paired_object_present {
+                        None => return Err("Package pair presence is unknown; deletion is blocked".into()),
+                        Some(true) if !diffs.iter().any(|other| other.diff_type == "removed" && other.name == diff.name && other.target.as_ref().is_some_and(|other| other.function_type == paired && other.schema == info.schema)) => return Err("Package specification and body must be selected together for deletion".into()),
+                        _ => {}
+                    }
+                }
+                if info.incoming_dependencies.iter().any(|dependency| !diffs.iter().any(|other| other.diff_type == "removed" && other.target.as_ref().is_some_and(|candidate| candidate.schema.as_deref() == Some(dependency.owner.as_str()) && candidate.name == dependency.name && candidate.function_type == dependency.object_type))) { return Err("Unselected dependent objects would be invalidated by this deletion".into()); }
                 return Ok(format!("DROP {kind} {}.{};", quote(schema), quote(&diff.name)));
             }
-            let info = info.ok_or("The complete routine source is missing")?;
-            if info.status.as_deref() != Some("VALID") {
-                return Err("The source routine is not confirmed VALID".to_string());
+            if !matches!(diff.diff_type.as_str(), "added" | "modified") { return Err("Unknown routine operation".into()); }
+            if info.status.as_deref() != Some("VALID") { return Err("The source routine is not confirmed VALID".into()); }
+            let program = if kind == "TRIGGER" { trigger_program_source(&info.definition, &info.name, info.schema.as_deref())? } else { info.definition.clone() };
+            if kind == "PACKAGE BODY" && info.paired_object_present != Some(true) { return Err("A complete package specification is required before its body".into()); }
+            if kind == "PACKAGE BODY" && diff.diff_type == "added" && !diffs.iter().any(|other| other.name == diff.name && other.source.as_ref().is_some_and(|candidate| candidate.function_type == "PACKAGE" && candidate.schema == info.schema)) {
+                return Err("The target package specification is not confirmed by this plan; include its specification".into());
             }
             if let Some(owner) = info.schema.as_deref().filter(|owner| *owner != schema) {
                 let qualified = format!(r#"(?i)(?:{}|{})\s*\."#, regex::escape(owner), regex::escape(&quote(owner)));
-                let (_, header_end) = header(&info.definition).ok_or("The routine declaration is incomplete")?;
-                if Regex::new(&qualified).is_ok_and(|pattern| pattern.is_match(&info.definition[header_end..])) {
-                    return Err("The body contains an explicit source-schema reference; review its target mapping before applying".to_string());
-                }
+                let (_, header_end) = header(&program).ok_or("The routine declaration is incomplete")?;
+                if Regex::new(&qualified).is_ok_and(|pattern| pattern.is_match(&program[header_end..])) { return Err("The body contains an explicit source-schema reference; review its target mapping before applying".into()); }
             }
-            let source = source.ok_or("The source database type must be explicit")?;
-            if !is_oracle_routine_database(source) { return Err("This source language cannot be converted to Oracle PL/SQL automatically".to_string()); }
-            if source != target && !portable_cross_engine_body(&info.definition) {
-                return Err("This cross-engine routine requires target-version compatibility verification; automatic conversion supports only parameterless NULL procedures and numeric constant functions".to_string());
+            if kind == "TRIGGER" {
+                let trigger = info.trigger.as_ref().ok_or("Complete trigger metadata is required")?;
+                if !matches!(trigger.status.as_str(), "ENABLED" | "DISABLED") { return Err("Unknown trigger enabled state".into()); }
+                if !matches!(trigger.base_object_type.as_str(), "TABLE" | "VIEW") || trigger.table_owner.is_empty() || trigger.table_name.is_empty() { return Err("Schema/database triggers require a separate target compatibility review".into()); }
             }
-            oracle_routine_sql(&info.definition, &diff.name, schema, &kind)
+            oracle_routine_sql(&program, &diff.name, schema, &kind)
         })();
         let (sql, blocked_reason) = match result { Ok(sql) => (Some(sql), None), Err(reason) => (None, Some(reason)) };
-        let dependencies = info.map(|info| info.dependencies.iter().map(|dependency| {
-            match (info.schema.as_deref(), target_schema) {
-                (Some(owner), Some(target_owner)) if dependency.starts_with(&format!("{}.", quote(owner))) => format!("{}{}", quote(target_owner), &dependency[quote(owner).len()..]),
-                _ => dependency.clone(),
-            }
+        let dependencies = info.map(|info| info.dependencies.iter().map(|dependency| match (info.schema.as_deref(), target_schema) {
+            (Some(owner), Some(target_owner)) if dependency.starts_with(&format!("{}.", quote(owner))) => format!("{}{}", quote(target_owner), &dependency[quote(owner).len()..]), _ => dependency.clone()
         }).collect()).unwrap_or_default();
-        RoutineStep { name: diff.name.clone(), routine_type: kind, operation: diff.diff_type.clone(), sql, blocked_reason, dependencies }
+        let trigger = info.and_then(|info| info.trigger.clone().map(|mut trigger| { if Some(trigger.table_owner.as_str()) == info.schema.as_deref() { trigger.table_owner = target_owner.to_string(); } trigger }));
+        let post_sql = if sql.is_some() && diff.diff_type != "removed" { trigger.as_ref().map(|trigger| vec![format!("ALTER TRIGGER {}.{} {};", quote(target_owner), quote(&diff.name), if trigger.status == "DISABLED" { "DISABLE" } else { "ENABLE" })]).unwrap_or_default() } else { Vec::new() };
+        // Target callers matter on replacement, even if no source caller references the new object.
+        let mut incoming_dependencies = info.map(|info| info.incoming_dependencies.iter().map(|dependency| mapped_dependency(dependency, info.schema.as_deref(), target_owner)).collect::<Vec<_>>()).unwrap_or_default();
+        if let Some(target_info) = &diff.target { for dependency in &target_info.incoming_dependencies { if !incoming_dependencies.contains(dependency) { incoming_dependencies.push(dependency.clone()); } } }
+        RoutineStep { name: diff.name.clone(), routine_type: kind, operation: diff.diff_type.clone(), sql, blocked_reason, dependencies, incoming_dependencies, post_sql, trigger, source_schema: info.and_then(|info| info.schema.clone()), target_schema: target_schema.map(str::to_string) }
     }).collect();
-    steps.sort_by_key(|step| step.operation != "removed");
+    let dependencies: Vec<_> = diffs.iter().map(|diff| typed_dependencies(diff, target_owner)).collect();
+    // Keep dependency identities typed: a package body may depend on its same-name spec without a self cycle.
+    let mut pending: Vec<usize> = (0..steps.len()).collect();
+    pending.sort_by_key(|index| steps[*index].operation != "removed");
     let mut ordered = Vec::with_capacity(steps.len());
-    while !steps.is_empty() {
-        let next = steps.iter().position(|step| {
-            let identity = format!("{}.{}", quote(target_schema.unwrap_or_default()), quote(&step.name));
-            !steps.iter().any(|other| {
-                if other.name == step.name && other.routine_type == step.routine_type { return false; }
-                let other_identity = format!("{}.{}", quote(target_schema.unwrap_or_default()), quote(&other.name));
-                if step.operation == "removed" { other.operation == "removed" && other.dependencies.contains(&identity) }
-                else { other.operation != "removed" && step.dependencies.contains(&other_identity) }
+    while !pending.is_empty() {
+        let next = pending.iter().position(|index| {
+            !pending.iter().any(|other| {
+                if index == other {
+                    return false;
+                }
+                let step = &steps[*index];
+                let other_step = &steps[*other];
+                if step.operation == "removed" {
+                    other_step.operation == "removed" && dependencies[*other].contains(&step_identity(step))
+                } else if other_step.operation == "removed" {
+                    false
+                } else if dependencies[*index].is_empty() {
+                    step.dependencies.contains(&format!("{}.{}", quote(target_owner), quote(&other_step.name)))
+                } else {
+                    dependencies[*index].contains(&step_identity(other_step))
+                }
             })
         });
-        if let Some(index) = next { ordered.push(steps.remove(index)); }
-        else {
-            for step in &mut steps { step.sql = None; step.blocked_reason = Some("Routine dependency cycle requires an explicit compilation plan".to_string()); }
-            ordered.append(&mut steps);
+        if let Some(position) = next {
+            ordered.push(pending.remove(position));
+        } else {
+            for index in pending.drain(..) {
+                steps[index].sql = None;
+                steps[index].post_sql.clear();
+                steps[index].blocked_reason =
+                    Some("Routine dependency cycle requires an explicit compilation plan".into());
+                ordered.push(index);
+            }
         }
     }
-    ordered
+    // Propagate blocked prerequisite states; never offer a body whose selected spec cannot execute.
+    loop {
+        let mut changed = false;
+        for index in 0..steps.len() {
+            if steps[index].blocked_reason.is_none()
+                && dependencies[index].iter().any(|dependency| {
+                    steps.iter().any(|step| step_identity(step) == *dependency && step.blocked_reason.is_some())
+                })
+            {
+                steps[index].sql = None;
+                steps[index].post_sql.clear();
+                steps[index].blocked_reason = Some("A selected dependency is blocked".into());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    ordered.into_iter().map(|index| steps[index].clone()).collect()
 }
-
-pub fn add_oracle_routines_to_plan(plan: &mut SchemaSyncSqlPlan, diffs: &[FunctionDiff], target: DatabaseType, schema: Option<&str>, source: Option<DatabaseType>, source_schema: Option<&str>) {
+pub fn add_oracle_routines_to_plan(
+    plan: &mut SchemaSyncSqlPlan,
+    diffs: &[FunctionDiff],
+    target: DatabaseType,
+    schema: Option<&str>,
+    source: Option<DatabaseType>,
+    source_schema: Option<&str>,
+) {
     plan.routine_steps = oracle_routine_steps(diffs, target, schema, source);
     for step in &mut plan.routine_steps {
-        if step.operation == "removed" { continue; }
-        let actual_schema = diffs.iter().find(|diff| diff.name == step.name && diff.source.as_ref().is_some_and(|info| info.function_type.eq_ignore_ascii_case(&step.routine_type))).and_then(|diff| diff.source.as_ref()).and_then(|info| info.schema.as_deref());
+        if step.operation == "removed" {
+            continue;
+        }
+        let actual_schema = diffs
+            .iter()
+            .find(|diff| {
+                diff.name == step.name
+                    && diff
+                        .source
+                        .as_ref()
+                        .is_some_and(|info| info.function_type.eq_ignore_ascii_case(&step.routine_type))
+            })
+            .and_then(|diff| diff.source.as_ref())
+            .and_then(|info| info.schema.as_deref());
         if source_schema.is_none() || actual_schema != source_schema {
             step.sql = None;
+            step.post_sql.clear();
             step.blocked_reason = Some("Routine source owner does not match the selected source schema".to_string());
         }
     }
@@ -160,21 +334,70 @@ pub fn add_oracle_routines_to_plan(plan: &mut SchemaSyncSqlPlan, diffs: &[Functi
         if let Some(sql) = &step.sql {
             plan.sync_sql.push_str("\n\n");
             plan.sync_sql.push_str(sql);
-            if step.operation != "removed" { plan.sync_sql.push_str("\n/"); }
+            if step.operation != "removed" {
+                plan.sync_sql.push_str("\n/");
+            }
+            for sql in &step.post_sql {
+                plan.sync_sql.push('\n');
+                plan.sync_sql.push_str(sql);
+            }
         }
     }
     if let Some(rollback) = &mut plan.rollback_sync_sql {
-        let reverse: Vec<_> = diffs.iter().map(|diff| FunctionDiff {
-            diff_type: match diff.diff_type.as_str() { "added" => "removed", "removed" => "added", _ => "modified" }.to_string(),
-            name: diff.name.clone(), source: diff.target.clone(), target: diff.source.clone(), changes: Vec::new(),
-        }).collect();
+        let reverse: Vec<_> = diffs
+            .iter()
+            .map(|diff| FunctionDiff {
+                diff_type: match diff.diff_type.as_str() {
+                    "added" => "removed",
+                    "removed" => "added",
+                    _ => "modified",
+                }
+                .to_string(),
+                name: diff.name.clone(),
+                source: diff.target.clone(),
+                target: diff.source.clone().map(|mut info| {
+                    if let Some(schema) = schema {
+                        info.dependency_objects = info
+                            .dependency_objects
+                            .iter()
+                            .map(|dependency| mapped_dependency(dependency, info.schema.as_deref(), schema))
+                            .collect();
+                        info.incoming_dependencies = info
+                            .incoming_dependencies
+                            .iter()
+                            .map(|dependency| mapped_dependency(dependency, info.schema.as_deref(), schema))
+                            .collect();
+                        if let Some(trigger) = &mut info.trigger {
+                            if Some(trigger.table_owner.as_str()) == info.schema.as_deref() {
+                                trigger.table_owner = schema.to_string();
+                            }
+                        }
+                        info.schema = Some(schema.to_string());
+                    }
+                    info
+                }),
+                changes: Vec::new(),
+            })
+            .collect();
         for step in oracle_routine_steps(&reverse, target, schema, Some(target)) {
             if let Some(sql) = step.sql {
-                rollback.push_str("\n\n"); rollback.push_str(&sql);
-                if step.operation != "removed" { rollback.push_str("\n/"); }
+                rollback.push_str("\n\n");
+                rollback.push_str(&sql);
+                if step.operation != "removed" {
+                    rollback.push_str("\n/");
+                }
+                for sql in &step.post_sql {
+                    rollback.push('\n');
+                    rollback.push_str(sql);
+                }
             } else if let Some(reason) = step.blocked_reason {
                 plan.rollback_completeness = super::RollbackCompleteness::Incomplete;
-                plan.missing_rollback_objects.push(super::MissingRollbackObject { kind: step.routine_type, name: step.name, table: None, reason });
+                plan.missing_rollback_objects.push(super::MissingRollbackObject {
+                    kind: step.routine_type,
+                    name: step.name,
+                    table: None,
+                    reason,
+                });
             }
         }
     }
@@ -190,7 +413,10 @@ mod tests {
         assert!(sql.starts_with("CREATE OR REPLACE PROCEDURE \"New Owner\".\"Mixed Name\" AS"));
         assert!(sql.contains("q'[old  owner]'; -- keep  spaces"));
         assert_eq!(comparable_oracle_routine(source), comparable_oracle_routine(&sql));
-        assert_ne!(comparable_oracle_routine(source), comparable_oracle_routine(&source.replace("old  owner", "old owner")));
+        assert_ne!(
+            comparable_oracle_routine(source),
+            comparable_oracle_routine(&source.replace("old  owner", "old owner"))
+        );
     }
     #[test]
     fn cross_engine_subset_does_not_accept_arbitrary_body_or_dynamic_sql() {
@@ -200,7 +426,20 @@ mod tests {
     }
 
     fn routine(name: &str, definition: &str) -> crate::types::FunctionInfo {
-        crate::types::FunctionInfo { name: name.to_string(), function_type: "PROCEDURE".into(), data_type: String::new(), definition: definition.to_string(), arguments: String::new(), schema: Some("SOURCE".into()), status: Some("VALID".into()), dependencies: Vec::new() }
+        crate::types::FunctionInfo {
+            trigger: None,
+            dependency_objects: Vec::new(),
+            incoming_dependencies: Vec::new(),
+            paired_object_present: None,
+            name: name.to_string(),
+            function_type: "PROCEDURE".into(),
+            data_type: String::new(),
+            definition: definition.to_string(),
+            arguments: String::new(),
+            schema: Some("SOURCE".into()),
+            status: Some("VALID".into()),
+            dependencies: Vec::new(),
+        }
     }
 
     #[test]
@@ -228,8 +467,157 @@ mod tests {
         assert_eq!(steps[1].dependencies, vec!["\"TARGET\".\"parent\""]);
         let mut invalid = routine("bad", "CREATE PROCEDURE bad IS BEGIN NULL; END;");
         invalid.status = Some("INVALID".into());
-        let steps = oracle_routine_steps(&super::super::diff_functions(&[invalid], &[]), DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
+        let steps = oracle_routine_steps(
+            &super::super::diff_functions(&[invalid], &[]),
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
         assert!(steps[0].sql.is_none());
         assert!(steps[0].blocked_reason.as_deref().unwrap().contains("VALID"));
+    }
+
+    fn package(name: &str, body: bool) -> crate::types::FunctionInfo {
+        let mut info =
+            routine(name, &format!("CREATE {} {name} AS END;", if body { "PACKAGE BODY" } else { "PACKAGE" }));
+        info.function_type = if body { "PACKAGE BODY" } else { "PACKAGE" }.into();
+        info.paired_object_present = Some(true);
+        info
+    }
+    fn trigger_info(name: &str, table: &str, status: &str) -> crate::types::FunctionInfo {
+        let mut info = routine(
+            name,
+            &format!("CREATE TRIGGER {name} BEFORE INSERT ON {table} FOR EACH ROW BEGIN :NEW.x := 'a  b'; END;"),
+        );
+        info.function_type = "TRIGGER".into();
+        info.trigger = Some(crate::types::RoutineTriggerInfo {
+            table_owner: "SOURCE".into(),
+            table_name: table.into(),
+            timing: "BEFORE EACH ROW".into(),
+            event: "INSERT".into(),
+            status: status.into(),
+            base_object_type: "TABLE".into(),
+        });
+        info
+    }
+    #[test]
+    fn package_spec_and_same_name_body_have_distinct_identity_and_order() {
+        let diffs = super::super::diff_functions(&[package("p", true), package("p", false)], &[]);
+        assert_eq!(diffs.len(), 2);
+        let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
+        assert_eq!(
+            steps.iter().map(|step| step.routine_type.as_str()).collect::<Vec<_>>(),
+            vec!["PACKAGE", "PACKAGE BODY"]
+        );
+        assert!(steps.iter().all(|step| step.sql.is_some()));
+    }
+    #[test]
+    fn missing_package_half_never_becomes_an_independent_drop() {
+        let source = package("p", false);
+        let mut target_body = package("p", true);
+        target_body.schema = Some("TARGET".into());
+        let diffs = super::super::diff_functions(&[source], &[target_body]);
+        let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
+        assert!(steps.iter().find(|step| step.routine_type == "PACKAGE BODY").unwrap().sql.is_none());
+        let mut unknown = package("p", false);
+        unknown.schema = Some("TARGET".into());
+        unknown.paired_object_present = None;
+        assert!(oracle_routine_steps(
+            &super::super::diff_functions(&[], &[unknown]),
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle)
+        )[0]
+        .sql
+        .is_none());
+    }
+    #[test]
+    fn package_deletion_orders_body_before_spec_and_blocks_unselected_callers() {
+        let mut spec = package("p", false);
+        spec.schema = Some("TARGET".into());
+        let mut body = package("p", true);
+        body.schema = Some("TARGET".into());
+        let steps = oracle_routine_steps(
+            &super::super::diff_functions(&[], &[spec.clone(), body.clone()]),
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
+        assert_eq!(steps[0].routine_type, "PACKAGE BODY");
+        assert_eq!(steps[1].routine_type, "PACKAGE");
+        spec.incoming_dependencies.push(crate::types::RoutineDependency {
+            owner: "TARGET".into(),
+            name: "caller".into(),
+            object_type: "PROCEDURE".into(),
+        });
+        let steps = oracle_routine_steps(
+            &super::super::diff_functions(&[], &[spec, body]),
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
+        assert!(steps.iter().all(|step| step.sql.is_none()));
+    }
+    #[test]
+    fn trigger_state_is_separate_from_body_and_same_name_tables_do_not_merge() {
+        let enabled = trigger_info("tr", "t", "ENABLED");
+        let disabled = trigger_info("tr", "t", "DISABLED");
+        let diffs = super::super::diff_functions(&[disabled], &[enabled.clone()]);
+        assert_eq!(diffs[0].diff_type, "modified");
+        let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
+        assert!(steps[0].sql.as_ref().unwrap().contains("'a  b'"));
+        assert_eq!(steps[0].post_sql, vec!["ALTER TRIGGER \"TARGET\".\"tr\" DISABLE;"]);
+        let diffs = super::super::diff_functions(&[trigger_info("tr", "other", "ENABLED")], &[enabled]);
+        assert_eq!(diffs.len(), 2);
+        assert!(oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle))
+            .iter()
+            .all(|step| step.sql.is_none()));
+    }
+    #[test]
+    fn package_cross_engine_and_typed_cycles_are_blocked_without_losing_source() {
+        let a = package("p", false);
+        let cross = oracle_routine_steps(
+            &super::super::diff_functions(&[a.clone()], &[]),
+            DatabaseType::OceanbaseOracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
+        assert!(cross[0].sql.is_none());
+        let mut a = a;
+        let mut b = package("q", false);
+        a.dependency_objects.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "q".into(),
+            object_type: "PACKAGE".into(),
+        });
+        b.dependency_objects.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "p".into(),
+            object_type: "PACKAGE".into(),
+        });
+        let diffs = super::super::diff_functions(&[a, b], &[]);
+        assert!(oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle))
+            .iter()
+            .all(|step| step.sql.is_none()));
+        assert!(diffs[0].source.as_ref().unwrap().definition.starts_with("CREATE PACKAGE"));
+    }
+    #[test]
+    fn compound_trigger_keeps_complete_body_and_rejects_unrelated_trailing_sql() {
+        let mut info = trigger_info("TR", "T", "DISABLED");
+        let body = "CREATE TRIGGER TR FOR INSERT ON T COMPOUND TRIGGER\nBEFORE STATEMENT IS BEGIN NULL; END BEFORE STATEMENT;\nAFTER EACH ROW IS BEGIN NULL; END AFTER EACH ROW;\nEND TR;";
+        info.definition = format!("{body}\n/\nALTER TRIGGER SOURCE.TR DISABLE;");
+        let diffs = super::super::diff_functions(&[info.clone()], &[]);
+        let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
+        assert!(steps[0].sql.as_ref().unwrap().ends_with("END TR;"));
+        assert!(steps[0].sql.as_ref().unwrap().contains("END BEFORE STATEMENT;"));
+        assert_eq!(steps[0].post_sql, vec!["ALTER TRIGGER \"TARGET\".\"TR\" DISABLE;"]);
+        for tail in ["ALTER TRIGGER SOURCE.OTHER DISABLE;", "DROP TABLE T;"] {
+            info.definition = format!("{body}\n/\n{tail}");
+            let diffs = super::super::diff_functions(&[info.clone()], &[]);
+            let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
+            assert!(steps[0].sql.is_none());
+            assert!(steps[0].post_sql.is_empty());
+            assert_eq!(diffs[0].source.as_ref().unwrap().definition, info.definition);
+        }
     }
 }

@@ -1,4 +1,5 @@
-import type { ColumnInfo, IndexInfo, ForeignKeyInfo, TriggerInfo, FunctionInfo, SequenceInfo, RuleInfo, OwnerInfo, DatabaseType, TableInfo, ConnectionConfig } from "@/types/database";
+import type { ColumnInfo, IndexInfo, ForeignKeyInfo, TriggerInfo, FunctionInfo, SequenceInfo, RuleInfo, OwnerInfo, DatabaseType, TableInfo, ConnectionConfig, SchemaDiffTriggerInfo, SchemaDiffDependencyObject } from "@/types/database";
+import { schemaDiffRoutineObjectId, schemaDiffRoutineType, type SchemaDiffRoutineKind } from "@/lib/schema/schemaDiffRoutine";
 import type { SchemaDiffTableMapping } from "@/types/schemaDiff";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 import { splitSqlStatementRanges } from "@/lib/sql/sqlStatementRanges";
@@ -348,16 +349,23 @@ export type RollbackCompleteness = "complete" | "incomplete";
 
 export interface SchemaDiffRoutineStep {
   name: string;
-  routineType: "PROCEDURE" | "FUNCTION";
+  sourceSchema?: string;
+  targetSchema?: string;
+  routineType: SchemaDiffRoutineKind;
   operation: "added" | "modified" | "removed";
   sql?: string;
   blockedReason?: string;
   dependencies: string[];
+  incomingDependencies?: SchemaDiffDependencyObject[];
+  trigger?: SchemaDiffTriggerInfo;
+  postSql?: string[];
 }
 
 export interface SchemaDiffRoutineValidation {
   name: string;
-  routineType: "PROCEDURE" | "FUNCTION";
+  schema?: string;
+  routineType: SchemaDiffRoutineKind;
+  trigger?: SchemaDiffTriggerInfo;
   success: boolean;
   message: string;
 }
@@ -437,7 +445,10 @@ export interface SchemaDiffObject {
   /** Function arguments signature (for PostgreSQL overloaded functions) */
   arguments?: string;
   /** PROCEDURE vs FUNCTION when objectKind is function (for getObjectSource). */
-  routineType?: "PROCEDURE" | "FUNCTION";
+  routineType?: SchemaDiffRoutineKind;
+  sourceTrigger?: SchemaDiffTriggerInfo;
+  targetTrigger?: SchemaDiffTriggerInfo;
+  incomingDependencies?: SchemaDiffDependencyObject[];
   sourceSchema?: string;
   targetSchema?: string;
   blockedReason?: string;
@@ -776,16 +787,22 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
 
   for (const diff of functionDiffs) {
     const args = diff.source?.arguments || diff.target?.arguments || "";
-    const functionType = (diff.source?.function_type || diff.target?.function_type || "").toUpperCase();
-    const routineType: "PROCEDURE" | "FUNCTION" = functionType.includes("PROC") ? "PROCEDURE" : "FUNCTION";
-    const routineStep = routineSteps.find((step) => step.name === diff.name && step.routineType === routineType);
+    const routineType = schemaDiffRoutineType(diff.source?.function_type || diff.target?.function_type);
+    const trigger = diff.source?.trigger ?? diff.target?.trigger;
+    const routineStep = routineSteps.find((step) => {
+      const tableOwner = trigger && trigger.tableOwner === diff.source?.schema ? step.targetSchema ?? trigger.tableOwner : trigger?.tableOwner;
+      return step.name === diff.name && step.routineType === routineType && step.trigger?.tableName === trigger?.tableName && step.trigger?.tableOwner === tableOwner;
+    });
     objects.push({
-      id: `func-${diff.name}-${args}`,
+      id: schemaDiffRoutineObjectId(diff),
       operationType: getOperationType(diff.type),
       objectKind: "function",
       name: diff.name,
       arguments: args,
       routineType,
+      sourceTrigger: diff.source?.trigger,
+      targetTrigger: diff.target?.trigger,
+      incomingDependencies: routineStep?.incomingDependencies,
       sourceSchema: diff.source?.schema,
       targetSchema: diff.target?.schema,
       blockedReason: routineStep?.blockedReason,
@@ -912,7 +929,7 @@ export function selectSchemaDiffInput(result: SchemaDiffPreparation, objects: Sc
 
   return {
     diffs,
-    functionDiffs: (result.functionDiffs ?? []).filter((diff) => selectedIds.has(`func-${diff.name}-${diff.source?.arguments || diff.target?.arguments || ""}`)),
+    functionDiffs: (result.functionDiffs ?? []).filter((diff) => selectedIds.has(schemaDiffRoutineObjectId(diff))),
     sequenceDiffs: (result.sequenceDiffs ?? []).filter((diff) => selectedIds.has(`seq-${diff.name}`)),
     ruleDiffs: (result.ruleDiffs ?? []).filter((diff) => selectedIds.has(`rule-${diff.name}`)),
     ownerDiffs: (result.ownerDiffs ?? []).filter((diff) => selectedIds.has(`owner-${diff.objectName}`)),

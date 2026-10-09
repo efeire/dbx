@@ -42,7 +42,9 @@ function displayName(object: SchemaDiffObject, side: "source" | "target"): strin
   const name = side === "source" ? (object.sourceName ?? object.name) : (object.targetName ?? object.name);
   const schema = side === "source" ? (object.sourceSchema ?? props.sourceSchema) : (object.targetSchema ?? props.targetSchema);
   const qualifiedName = schema ? `${schema}.${name}` : name;
-  return `${object.routineType ?? "FUNCTION"} ${schemaDiffRoutineKey(qualifiedName, object.arguments ?? "")}`;
+  const trigger = side === "source" ? object.sourceTrigger : object.targetTrigger;
+  const relation = trigger ? ` · ${trigger.tableOwner}.${trigger.tableName}` : "";
+  return `${object.routineType ?? "FUNCTION"} ${schemaDiffRoutineKey(qualifiedName, object.arguments ?? "")}${relation}`;
 }
 
 function hasStats(stats: SchemaDiffRoutineTextDiffStats): boolean {
@@ -103,9 +105,12 @@ function onRowActivate(object: SchemaDiffObject) {
           </template>
           <span v-else class="text-muted-foreground">—</span>
         </div>
-        <div v-if="row.object.blockedReason || row.object.dependencies?.length" class="col-span-full space-y-1 break-words text-xs">
+        <div v-if="row.object.blockedReason || row.object.dependencies?.length || row.object.incomingDependencies?.length || row.object.sourceTrigger || row.object.targetTrigger" class="col-span-full space-y-1 break-words text-xs">
           <p v-if="row.object.blockedReason" class="text-amber-700 dark:text-amber-400">{{ t("diff.routinePlanBlocked", { reason: row.object.blockedReason }) }}</p>
           <p v-if="row.object.dependencies?.length" class="text-muted-foreground">{{ t("diff.routineDependencies", { dependencies: row.object.dependencies.join(", ") }) }}</p>
+          <p v-if="row.object.incomingDependencies?.length" class="text-amber-700 dark:text-amber-400">{{ t("diff.routineIncomingDependencies", { dependencies: row.object.incomingDependencies.map((item) => `${item.objectType} ${item.owner}.${item.name}`).join(", ") }) }}</p>
+          <p v-if="row.object.sourceTrigger" class="text-muted-foreground">{{ t("diff.sourceObject") }}: {{ row.object.sourceTrigger.timing }} · {{ row.object.sourceTrigger.event }} · {{ row.object.sourceTrigger.status }} · {{ row.object.sourceTrigger.baseObjectType }}</p>
+          <p v-if="row.object.targetTrigger" class="text-muted-foreground">{{ t("diff.targetObject") }}: {{ row.object.targetTrigger.timing }} · {{ row.object.targetTrigger.event }} · {{ row.object.targetTrigger.status }} · {{ row.object.targetTrigger.baseObjectType }}</p>
         </div>
       </div>
     </div>
