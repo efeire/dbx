@@ -26,6 +26,7 @@ describe("OceanBase Oracle object rename", () => {
   it("offers table rename without enabling other object renames", () => {
     expect(supportsObjectRename("oceanbase-oracle", "TABLE")).toBe(true);
     expect(supportsObjectRename("oceanbase-oracle", "VIEW")).toBe(false);
+    expect(supportsObjectRename("oceanbase-oracle", "MATERIALIZED_VIEW")).toBe(false);
   });
 });
 
