@@ -17,6 +17,7 @@ import java.sql.Driver;
 import java.sql.DriverManager;
 import java.sql.DriverPropertyInfo;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.Collections;
@@ -149,7 +150,7 @@ public final class HealthProbe {
                 row.put("reported_execution_ms", queryResult.getExecution_time_ms());
             }
         } catch (Exception error) {
-            row.put("outcome", "error");
+            row.put("outcome", errorOutcome(error));
             SQLException sql = sqlCause(error);
             // SQLSTATE and vendor number only, never messages, SQL or connect parameters.
             row.put("sqlstate", sql != null && sql.getSQLState() != null && sql.getSQLState().matches("[0-9A-Z]{5}") ? sql.getSQLState() : "unknown");
@@ -168,6 +169,19 @@ public final class HealthProbe {
             row.put("jdbc_cancel_calls", after[5] - before[5]);
             emit(writer, row);
         }
+    }
+
+    static String errorOutcome(Throwable error) {
+        for (int depth = 0; error != null && depth < 20; depth++, error = error.getCause()) {
+            if (error instanceof SQLException sql) {
+                String state = sql.getSQLState();
+                if ("57014".equals(state) || ("72000".equals(state) && sql.getErrorCode() == 1013)) return "cancelled";
+                if ("HYT00".equals(state) || "HYT01".equals(state)) return "timeout";
+                // OB also wraps ambiguous 70100 interruptions in SQLTimeoutException.
+                if (sql instanceof SQLTimeoutException && !"70100".equals(state)) return "timeout";
+            }
+        }
+        return "error";
     }
 
     private static SQLException sqlCause(Throwable error) {

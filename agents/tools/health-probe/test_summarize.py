@@ -19,6 +19,15 @@ class SummaryTests(unittest.TestCase):
         summary = summarize([{"kind": "sample", "scenario": "cancel_race", "outcome": "completed_during_cancel_race", "jdbc_cancel_calls": 0}])
         self.assertEqual(summary["scenarios"]["cancel_race"]["outcomes"], {"completed_during_cancel_race": 1})
 
+    def test_keeps_cancel_timeout_and_unknown_error_distributions_separate(self):
+        rows = [{"kind": "sample", "scenario": "cancel_race", "outcome": outcome,
+                 "dispatch_ms": latency, "jdbc_cancel_calls": 1}
+                for outcome, latency in [("cancelled", 2), ("timeout", 50), ("error", 900)]]
+        summary = summarize(rows)["scenarios"]["cancel_race"]
+        self.assertEqual(summary["outcomes"], {"cancelled": 1, "timeout": 1, "error": 1})
+        for outcome, latency in [("cancelled", 2), ("timeout", 50), ("error", 900)]:
+            self.assertEqual(summary["by_outcome"][outcome]["dispatch_ms"]["p50"], latency)
+
 
 if __name__ == "__main__":
     unittest.main()

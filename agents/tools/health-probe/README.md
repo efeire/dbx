@@ -43,6 +43,13 @@ python agents/tools/health-probe/summarize.py <JSONL绝对路径>
 
 汇总器按场景和 outcome 分开报告 n/min/p50/p95/max，不混合失败延迟。原始数值样本保留，不能仅凭 p50 或单次差异确认性能问题。
 
+Java 探针沿异常 cause 链按明确 SQLState 分类：`57014`、`72000`/vendor `1013` 为 cancelled；`HYT00`、`HYT01` 或非 `70100` 的 `SQLTimeoutException` 为 timeout。OB 驱动会把 `70100` 一律包装成 `SQLTimeoutException`，而 `1317`/`70100` 可同时表示中断或超时，因此仅有该信号时仍记 error。未知异常与原始消息不用于猜测分类，`jdbc_cancel_calls` 只证明取消调用已送达。独立分类回归编译实际探针并运行真实 OB 异常工厂，不连接数据库：
+
+```powershell
+javac -cp $probeAgentJar -d $probeClasses agents/tools/health-probe/HealthProbe.java agents/tools/health-probe/HealthProbeOutcomeTest.java
+java -cp "$probeClasses;$probeAgentJar" com.dbx.agent.HealthProbeOutcomeTest
+```
+
 新增常规回归 `:common:test --tests com.dbx.agent.QueryHealthValidationTest` 使用实际 RPC 分派、Agent 和 H2，只在 JDBC 边界注入失效/取消；汇总器回归为 `python -m unittest discover -s agents/tools/health-probe -p test_summarize.py`。上述命令本阶段均未运行。
 
 ## 真实网络观测与 Oracle Go/OCI 入口
