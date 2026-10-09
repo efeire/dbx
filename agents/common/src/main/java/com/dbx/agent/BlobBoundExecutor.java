@@ -42,28 +42,36 @@ public final class BlobBoundExecutor {
             if (transaction && !autoCommit) {
                 throw new IllegalStateException("Cannot start a one-shot transaction while a manual transaction is open");
             }
-            if (transaction && !conn.getMetaData().supportsTransactions()) {
+            // Typed grid saves are atomic even when execute_batch omits useTransaction.
+            // Existing manual transactions keep their batch-only savepoint boundary.
+            boolean oneShot = transaction || autoCommit;
+            if (oneShot && !conn.getMetaData().supportsTransactions()) {
                 throw new UnsupportedOperationException("Transactions are not supported by this JDBC driver");
             }
-            if (transaction) conn.setAutoCommit(false);
-            Savepoint savepoint = !transaction && !autoCommit ? conn.setSavepoint() : null;
-            boolean finished = !transaction;
+            if (oneShot) conn.setAutoCommit(false);
+            Savepoint savepoint = !oneShot ? conn.setSavepoint() : null;
+            boolean finished = !oneShot;
             boolean discarded = false;
+            boolean commitAttempted = false;
             try {
                 long start = System.currentTimeMillis();
                 long affected = executeAll(conn, statements, schema, setSchemaSql, resetSchemaSql, timeoutSecs, operation, configurer);
                 operation.checkCancelled();
-                if (transaction) conn.commit();
+                if (oneShot) { commitAttempted = true; conn.commit(); }
                 if (savepoint != null) releaseSavepoint(conn, savepoint, configurer);
                 finished = true;
                 return new QueryResult(Collections.emptyList(), Collections.emptyList(), affected,
                     System.currentTimeMillis() - start, false);
             } catch (Exception failure) {
-                if (transaction) {
+                if (oneShot) {
                     try { conn.rollback(); finished = true; }
                     catch (Exception rollbackFailure) {
                         discarded = true;
                         throw rollbackUnconfirmed(conn, failure, rollbackFailure);
+                    }
+                    if (!commitAttempted && failure instanceof SQLException sqlFailure
+                        && configurer.isRollbackConfirmedBusinessError(sqlFailure)) {
+                        throw AgentRpcError.rollbackConfirmedSql(sqlFailure);
                     }
                 }
                 if (savepoint != null) {
@@ -83,7 +91,7 @@ public final class BlobBoundExecutor {
                 }
                 throw failure;
             } finally {
-                if (transaction) {
+                if (oneShot) {
                     if (finished) {
                         try { conn.setAutoCommit(autoCommit); }
                         catch (Exception resetFailure) {

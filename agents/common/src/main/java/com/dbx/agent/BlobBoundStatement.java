@@ -30,7 +30,14 @@ public final class BlobBoundStatement {
             if (bound.blobParameters.isEmpty() && !bound.sql.equals(bound.previewSql)) {
                 throw new IllegalArgumentException("Unbound statement SQL must match its preview");
             }
-            if (!bound.blobParameters.isEmpty() && parameterCount(bound.sql) != bound.blobParameters.size()) {
+            SqlScan scan = scanSql(bound.sql);
+            String visible = scan.visible().stripLeading().toUpperCase(java.util.Locale.ROOT);
+            if (!visible.matches("(?s)^(?:UPDATE|INSERT|DELETE)\\b.*")
+                && !visible.matches("(?s)^(?:DECLARE\\b.*?)?BEGIN\\s+(?:UPDATE|INSERT|DELETE)\\b.*")
+                || java.util.regex.Pattern.compile("\\b(?:CREATE|ALTER|DROP|TRUNCATE|COMMIT|ROLLBACK|SAVEPOINT|GRANT|REVOKE|EXECUTE)\\b").matcher(visible).find()) {
+                throw new IllegalArgumentException("BLOB binding only supports data-grid DML, without DDL or transaction control");
+            }
+            if (!bound.blobParameters.isEmpty() && scan.parameters() != bound.blobParameters.size()) {
                 throw new IllegalArgumentException("BLOB parameter count does not match statement " + (i + 1));
             }
             for (String hex : bound.blobParameters) {
@@ -46,22 +53,29 @@ public final class BlobBoundStatement {
         }
     }
 
-    private static int parameterCount(String sql) {
+    private record SqlScan(int parameters, String visible) { }
+
+    private static SqlScan scanSql(String sql) {
         int count = 0;
+        StringBuilder visible = new StringBuilder();
         for (int i = 0; i < sql.length(); i++) {
             char ch = sql.charAt(i);
             char next = i + 1 < sql.length() ? sql.charAt(i + 1) : '\0';
             if (ch == '-' && next == '-') {
+                visible.append(' ');
                 while (i + 1 < sql.length() && sql.charAt(i + 1) != '\n') i++;
             } else if (ch == '/' && next == '*') {
+                visible.append(' ');
                 int end = sql.indexOf("*/", i + 2);
                 i = end < 0 ? sql.length() : end + 1;
             } else if ((ch == 'q' || ch == 'Q') && next == '\'' && i + 2 < sql.length()) {
+                visible.append(' ');
                 char open = sql.charAt(i + 2);
                 char close = open == '[' ? ']' : open == '(' ? ')' : open == '{' ? '}' : open == '<' ? '>' : open;
                 int end = sql.indexOf("" + close + '\'', i + 3);
                 i = end < 0 ? sql.length() : end + 1;
             } else if (ch == '\'' || ch == '"') {
+                visible.append(' ');
                 char quote = ch;
                 while (++i < sql.length()) {
                     if (sql.charAt(i) == quote) {
@@ -69,8 +83,11 @@ public final class BlobBoundStatement {
                         else break;
                     }
                 }
-            } else if (ch == '?') count++;
+            } else {
+                visible.append(ch);
+                if (ch == '?') count++;
+            }
         }
-        return count;
+        return new SqlScan(count, visible.toString());
     }
 }

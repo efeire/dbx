@@ -132,6 +132,56 @@ class BlobBoundExecutorTest {
         }
     }
 
+    @Test void defaultTypedBatchCommitsOrRollsBackBeforeRestoringAutoCommit() {
+        for(boolean conflict : new boolean[]{false,true}) {
+            Fake jdbc=new Fake();
+            if(conflict) { jdbc.failAt=2; jdbc.executionFailure=new java.sql.SQLTransientConnectionException("ORA-20001: stale", "HY000",20001); }
+            BlobBoundExecutor.PreparedStatementConfigurer configurer=new BlobBoundExecutor.PreparedStatementConfigurer() {
+                public void configure(PreparedStatement statement) { }
+                public boolean isRollbackConfirmedBusinessError(java.sql.SQLException error) { return error.getErrorCode()==20001; }
+            };
+            if(conflict) {
+                RuntimeException failure=assertThrows(RuntimeException.class,()->BlobBoundExecutor.execute(jdbc.connection(),
+                    Arrays.asList(PREVIEW,PREVIEW),Arrays.asList(bound(),bound()),null,s->s,()->null,7,false,configurer));
+                assertEquals("keep",AgentRpcError.toJson(failure,"execute_batch","test").getAsJsonObject("data").get("sessionDisposition").getAsString());
+                assertEquals(42,jdbc.value); assertEquals(1,jdbc.rollbacks); assertEquals(0,jdbc.commits);
+            } else {
+                BlobBoundExecutor.execute(jdbc.connection(),Arrays.asList(PREVIEW,PREVIEW),Arrays.asList(bound(),bound()),null,s->s,()->null,7,false,configurer);
+                assertEquals(44,jdbc.value); assertEquals(1,jdbc.commits); assertEquals(0,jdbc.rollbacks);
+            }
+            assertTrue(jdbc.autoCommit); assertEquals(0,jdbc.savepoints);
+        }
+        Fake manual=new Fake(); manual.autoCommit=false;
+        assertThrows(IllegalStateException.class,()->run(manual,Arrays.asList(bound()),true));
+        assertEquals(0,manual.executions); assertFalse(manual.autoCommit);
+    }
+
+    @Test void typedDdlOrTransactionControlRejectsCompleteBatchBeforeOpeningConnection() {
+        for(String sql : List.of("CREATE TABLE t (b BLOB)","BEGIN UPDATE t SET b=?; COMMIT; END;", "BEGIN EXECUTE IMMEDIATE 'DROP TABLE t'; END;")) {
+            Fake jdbc=new Fake();
+            BlobBoundStatement invalid=new BlobBoundStatement(sql,sql,sql.contains("?")?List.of("00"):List.of());
+            assertThrows(IllegalArgumentException.class,()->run(jdbc,Arrays.asList(bound(),invalid),false));
+            assertEquals(0,jdbc.executions); assertNull(jdbc.preparedSql); assertTrue(jdbc.autoCommit);
+        }
+        BlobBoundStatement.validate(List.of(PREVIEW),List.of(new BlobBoundStatement(PREVIEW,"UPDATE t SET b=? /* COMMIT */ WHERE note='CREATE TABLE x'",List.of("00"))));
+    }
+
+    @Test void defaultTypedCommitRollbackOrResetFailuresNeverBecomeKnownBusinessKeep() {
+        for(String stage : List.of("commit","rollback","reset")) {
+            Fake jdbc=new Fake(); jdbc.failCommit=stage.equals("commit"); jdbc.failReset=stage.equals("reset");
+            if(stage.equals("rollback")) { jdbc.failAt=1; jdbc.failRollback=true; jdbc.executionFailure=new java.sql.SQLTransientConnectionException("stale", "HY000",20001); }
+            BlobBoundExecutor.PreparedStatementConfigurer configurer=new BlobBoundExecutor.PreparedStatementConfigurer() {
+                public void configure(PreparedStatement statement) { }
+                public boolean isRollbackConfirmedBusinessError(java.sql.SQLException error) { return error.getErrorCode()==20001; }
+            };
+            RuntimeException failure=assertThrows(RuntimeException.class,()->BlobBoundExecutor.execute(jdbc.connection(),
+                Arrays.asList(PREVIEW),Arrays.asList(bound()),null,s->s,()->null,7,false,configurer));
+            var data=AgentRpcError.toJson(failure,"execute_batch","test").getAsJsonObject("data");
+            assertEquals("quarantine",data.get("sessionDisposition").getAsString());
+            assertEquals("unknown",data.get("operationOutcome").getAsString());
+        }
+    }
+
     @Test void unsupportedSavepointFailsBeforeAnyWrite() {
         Fake jdbc = new Fake(); jdbc.autoCommit = false; jdbc.unsupportedSavepoint = true;
         assertThrows(RuntimeException.class, () -> run(jdbc, Arrays.asList(bound()), false));
@@ -213,9 +263,9 @@ class BlobBoundExecutorTest {
     }
 
     private static final class Fake {
-        boolean autoCommit = true, fail, cancel, unsupportedSavepoint, failRollback, connectionClosed, failReset, cancelOnClose, piecewiseRead, failRelease;
+        boolean autoCommit = true, fail, cancel, unsupportedSavepoint, failRollback, connectionClosed, failReset, cancelOnClose, piecewiseRead, failRelease, failCommit;
         int pieces;
-        int value=42,savedValue=42,failAt,failBindAt;
+        int value=42,savedValue=42,transactionStartValue=42,failAt,failBindAt;
         int commits, rollbacks, savepointRollbacks, savepoints, releases, executions, closedStatements, cancels, timeout;
         String preparedSql;
         java.sql.SQLException executionFailure;
@@ -228,12 +278,12 @@ class BlobBoundExecutorTest {
                     case "getAutoCommit": return autoCommit;
                     case "isValid": return true;
                     case "close": connectionClosed=true; return null;
-                    case "setAutoCommit": if(failReset && (boolean)a[0])throw new java.sql.SQLException("reset failed"); autoCommit = (boolean)a[0]; return null;
+                    case "setAutoCommit": if(failReset && (boolean)a[0])throw new java.sql.SQLException("reset failed"); if(autoCommit && !(boolean)a[0])transactionStartValue=value; autoCommit = (boolean)a[0]; return null;
                     case "getMetaData": return Proxy.newProxyInstance(DatabaseMetaData.class.getClassLoader(), new Class<?>[]{DatabaseMetaData.class}, (x,y,z) -> y.getName().equals("supportsTransactions") ? true : defaultValue(y.getReturnType()));
                     case "setSavepoint": if (unsupportedSavepoint) throw new java.sql.SQLFeatureNotSupportedException(); savepoints++; savedValue=value; return Proxy.newProxyInstance(Savepoint.class.getClassLoader(),new Class<?>[]{Savepoint.class},(x,y,z)->defaultValue(y.getReturnType()));
                     case "releaseSavepoint": releases++; if(failRelease)throw releaseFailure!=null?releaseFailure:new java.sql.SQLTransientConnectionException("release lost connection","08006"); return null;
-                    case "commit": commits++; events.add("commit"); return null;
-                    case "rollback": if(failRollback)throw new java.sql.SQLException("rollback lost connection","08006"); if (a == null || a.length == 0) rollbacks++; else {savepointRollbacks++;value=savedValue;} return null;
+                    case "commit": commits++; events.add("commit"); if(failCommit)throw new java.sql.SQLTransientConnectionException("commit outcome unknown","HY000",20001); return null;
+                    case "rollback": if(failRollback)throw new java.sql.SQLException("rollback lost connection","08006"); if (a == null || a.length == 0) {rollbacks++;value=transactionStartValue;} else {savepointRollbacks++;value=savedValue;} return null;
                     case "prepareCall": case "prepareStatement": preparedSql=(String)a[0]; return statement(m.getName().equals("prepareCall"));
                     default: return defaultValue(m.getReturnType());
                 }

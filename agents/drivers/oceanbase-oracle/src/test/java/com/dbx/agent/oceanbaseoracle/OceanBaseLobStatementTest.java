@@ -64,6 +64,7 @@ class OceanBaseLobStatementTest {
             PreparedStatement delegate = callable ? proxy(CallableStatement.class, handler) : proxy(PreparedStatement.class, handler);
             Connection physical = proxy(Connection.class, (object, method, args) -> {
                 if (method.getName().equals(callable ? "prepareCall" : "prepareStatement")) return delegate;
+                if (method.getName().equals("getMetaData")) return proxy(java.sql.DatabaseMetaData.class, (o,m,a) -> m.getName().equals("supportsTransactions") ? true : defaultValue(m.getReturnType()));
                 if (method.getName().equals("getAutoCommit") || method.getName().equals("isValid")) return true;
                 if (method.getName().equals("getTransactionIsolation")) return Connection.TRANSACTION_READ_COMMITTED;
                 return defaultValue(method.getReturnType());
@@ -96,6 +97,7 @@ class OceanBaseLobStatementTest {
         int[] prepared = {0};
         Connection connection = proxy(Connection.class, (object, method, args) -> {
             if (method.getName().equals("getAutoCommit")) return true;
+            if (method.getName().equals("getMetaData")) return proxy(java.sql.DatabaseMetaData.class, (o,m,a) -> m.getName().equals("supportsTransactions") ? true : defaultValue(m.getReturnType()));
             if (method.getName().equals("prepareStatement")) {
                 int index = ++prepared[0];
                 return proxy(PreparedStatement.class, (o, m, a) -> {
