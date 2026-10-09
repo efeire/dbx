@@ -2961,7 +2961,15 @@ export const useQueryStore = defineStore("query", () => {
    * 用户看到的是点击后毫无反应。
    */
   function openObjectSourceTabPending(options: OpenPendingObjectSourceTabOptions): string {
-    const typeTab = tabs.value.find((tab) => tab.connectionId === options.connectionId && tab.database === options.database && (tab.catalog || "") === (options.catalog || "") && tab.oracleTypeIdentity?.schema === (options.schema || options.database) && tab.oracleTypeIdentity.name === options.request.name && tab.oracleTypeIdentity.object_type === options.request.objectType);
+    const typeTab = tabs.value.find(
+      (tab) =>
+        tab.connectionId === options.connectionId &&
+        tab.database === options.database &&
+        (tab.catalog || "") === (options.catalog || "") &&
+        tab.oracleTypeIdentity?.schema === (options.schema || options.database) &&
+        tab.oracleTypeIdentity.name === options.request.name &&
+        tab.oracleTypeIdentity.object_type === options.request.objectType,
+    );
     if (typeTab) {
       switchTab(typeTab.id);
       if (!isTabDirty(typeTab)) refreshObjectSourceTab(typeTab.id);
@@ -3067,7 +3075,13 @@ export const useQueryStore = defineStore("query", () => {
     const tab = tabs.value.find((candidate) => candidate.id === id);
     if (!tab) return false;
     if (tab.sourceLoad && !tab.sourceLoad.error) return true;
-    const request = tab.sourceLoad?.request ? { ...tab.sourceLoad.request } : tab.objectSource ? { name: tab.objectSource.name, objectType: tab.objectSource.objectType, signature: tab.objectSource.signature } : tab.oracleTypeIdentity ? { name: tab.oracleTypeIdentity.name, objectType: tab.oracleTypeIdentity.object_type } : null;
+    const request = tab.sourceLoad?.request
+      ? { ...tab.sourceLoad.request }
+      : tab.objectSource
+        ? { name: tab.objectSource.name, objectType: tab.objectSource.objectType, signature: tab.objectSource.signature }
+        : tab.oracleTypeIdentity
+          ? { name: tab.oracleTypeIdentity.name, objectType: tab.oracleTypeIdentity.object_type }
+          : null;
     if (!request) return false;
     sourceRevalidateInFlight.delete(id);
     tab.sourceLoad = {
