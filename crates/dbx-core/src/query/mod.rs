@@ -543,7 +543,10 @@ fn server_large_value_marker(value: &serde_json::Value) -> Option<ServerLargeVal
     let original_bytes = parts.next().and_then(|value| value.parse::<usize>().ok());
     let value_ref = parts.next().filter(|value| !value.is_empty());
     Some(ServerLargeValueMarkerValue {
-        kind, preview_size: preview_size.parse::<usize>().ok()?.max(1), original_bytes, value_ref,
+        kind,
+        preview_size: preview_size.parse::<usize>().ok()?.max(1),
+        original_bytes,
+        value_ref,
     })
 }
 
@@ -635,9 +638,14 @@ fn extract_server_large_value_markers(result: &mut db::QueryResult) -> Vec<db::L
     for (row_index, row) in result.rows.iter_mut().enumerate() {
         for marker in &markers {
             // Own the locator before mutating the preview in this row.
-            let value_ref = row.get(marker.result_index).and_then(server_large_value_marker)
-                .and_then(|value| value.value_ref).map(str::to_owned);
-            let marker_value = row.get(marker.result_index).and_then(server_large_value_marker)
+            let value_ref = row
+                .get(marker.result_index)
+                .and_then(server_large_value_marker)
+                .and_then(|value| value.value_ref)
+                .map(str::to_owned);
+            let marker_value = row
+                .get(marker.result_index)
+                .and_then(server_large_value_marker)
                 .map(|value| (value.kind, value.preview_size, value.original_bytes));
             let source_result_index = marker.result_index.saturating_sub(1);
             if marker_value.is_some_and(|value| {
@@ -647,9 +655,7 @@ fn extract_server_large_value_markers(result: &mut db::QueryResult) -> Vec<db::L
                 large_value_cells.push(db::LargeValueCell {
                     row_index,
                     column_index: marker.source_index,
-                    original_bytes: marker_value
-                        .and_then(|value| value.2)
-                        .unwrap_or(SERVER_LARGE_VALUE_UNKNOWN_BYTES),
+                    original_bytes: marker_value.and_then(|value| value.2).unwrap_or(SERVER_LARGE_VALUE_UNKNOWN_BYTES),
                     value_ref,
                 });
             }
@@ -3136,12 +3142,16 @@ pub async fn request_large_value(
     if request.value_ref.len() > 128 || (!release && (request.limit == 0 || request.limit > 4096)) {
         return Err("Invalid LOB chunk request".to_string());
     }
-    let registered = request.execution_id.as_ref().map(|id| state.running_queries.register_task(
-        id.clone(),
-        crate::query_cancel::RunningTaskMetadata::query(
-            request.connection_id.clone(), request.database.clone(), request.client_session_id.clone(),
-        ),
-    ));
+    let registered = request.execution_id.as_ref().map(|id| {
+        state.running_queries.register_task(
+            id.clone(),
+            crate::query_cancel::RunningTaskMetadata::query(
+                request.connection_id.clone(),
+                request.database.clone(),
+                request.client_session_id.clone(),
+            ),
+        )
+    });
     let cancel_token = registered.as_ref().map(|task| task.token());
     request_large_value_with_cancel(state, request, release, cancel_token).await
 }
@@ -3158,8 +3168,10 @@ async fn request_large_value_with_cancel(
         let connection = {
             let mut sessions = state.transaction_sessions.write().await;
             let session = sessions.get_mut(txn_id).ok_or(MANUAL_TRANSACTION_SESSION_NOT_FOUND_ERROR)?;
-            if session.connection_id != request.connection_id || session.busy
-                || session.last_activity.elapsed().as_secs() >= MANUAL_TRANSACTION_IDLE_TIMEOUT_SECS {
+            if session.connection_id != request.connection_id
+                || session.busy
+                || session.last_activity.elapsed().as_secs() >= MANUAL_TRANSACTION_IDLE_TIMEOUT_SECS
+            {
                 return Err("LOB transaction context expired or busy".to_string());
             }
             session.last_activity = std::time::Instant::now();
@@ -3169,18 +3181,20 @@ async fn request_large_value_with_cancel(
         let TxnConnection::Agent { client, .. } = &*connection else {
             return Err("LOB snapshot chunks require an agent transaction".to_string());
         };
-        let result = client.lock().await.call_with_timeout_and_cancel(
-            method, params, Some(std::time::Duration::from_secs(30)), cancel_token,
-        ).await;
+        let result = client
+            .lock()
+            .await
+            .call_with_timeout_and_cancel(method, params, Some(std::time::Duration::from_secs(30)), cancel_token)
+            .await;
         if !state.transaction_sessions.read().await.contains_key(txn_id) {
             return Err("LOB transaction context expired".to_string());
         }
         return result;
     }
     let pool_database = query_pool_database(&request.database, request.catalog.as_deref());
-    let pool_key = state.get_or_create_pool_for_session(
-        &request.connection_id, pool_database, request.client_session_id.as_deref(),
-    ).await?;
+    let pool_key = state
+        .get_or_create_pool_for_session(&request.connection_id, pool_database, request.client_session_id.as_deref())
+        .await?;
     let _activity = state.pool_activity_touch(pool_key.as_str());
     let client = {
         let handle = state.pool_handle(&pool_key).await;
@@ -3190,10 +3204,7 @@ async fn request_large_value_with_cancel(
         client.clone()
     };
     let mut client = client.lock().await;
-    client.call_with_timeout_and_cancel(
-        method, params,
-        Some(std::time::Duration::from_secs(30)), cancel_token,
-    ).await
+    client.call_with_timeout_and_cancel(method, params, Some(std::time::Duration::from_secs(30)), cancel_token).await
 }
 
 pub async fn write_large_value_snapshot(
@@ -3202,27 +3213,42 @@ pub async fn write_large_value_snapshot(
     output: &mut std::fs::File,
 ) -> Result<u64, String> {
     use std::io::Write;
-    let registered = request.execution_id.as_ref().map(|id| state.running_queries.register_task(
-        id.clone(), crate::query_cancel::RunningTaskMetadata::query(
-            request.connection_id.clone(), request.database.clone(), request.client_session_id.clone(),
-        ),
-    ));
+    let registered = request.execution_id.as_ref().map(|id| {
+        state.running_queries.register_task(
+            id.clone(),
+            crate::query_cancel::RunningTaskMetadata::query(
+                request.connection_id.clone(),
+                request.database.clone(),
+                request.client_session_id.clone(),
+            ),
+        )
+    });
     let cancel = registered.as_ref().map(|task| task.token());
     request.offset = 0;
     request.limit = 4096;
     let mut written = 0;
     loop {
-        if is_canceled(&cancel) { return Err(canceled_error()); }
+        if is_canceled(&cancel) {
+            return Err(canceled_error());
+        }
         let chunk = request_large_value_with_cancel(state, request.clone(), false, cancel.clone()).await?;
-        if is_canceled(&cancel) { return Err(canceled_error()); }
+        if is_canceled(&cancel) {
+            return Err(canceled_error());
+        }
         let (data, next, eof, kind) = snapshot_export::checked_chunk(&chunk, request.offset)?;
-        if kind != "text" { return Err("CLOB download requires text chunks".to_string()); }
+        if kind != "text" {
+            return Err("CLOB download requires text chunks".to_string());
+        }
         output.write_all(data.as_bytes()).map_err(|error| error.to_string())?;
         written += data.len() as u64;
-        if eof { break; }
+        if eof {
+            break;
+        }
         request.offset = next;
     }
-    if is_canceled(&cancel) { return Err(canceled_error()); }
+    if is_canceled(&cancel) {
+        return Err(canceled_error());
+    }
     output.flush().map_err(|error| error.to_string())?;
     Ok(written)
 }
@@ -10448,17 +10474,26 @@ for line in sys.stdin:
         ];
         let normalized = ExecuteMultiResult::success_with_optional_server_large_values(result, true);
         assert_eq!(normalized.result.columns, vec!["Payload"]);
-        assert_eq!(normalized.result.rows, vec![vec![serde_json::json!("原😀值")], vec![serde_json::Value::Null], vec![serde_json::json!("")]]);
-        assert_eq!(normalized.large_value_cells, vec![db::LargeValueCell {
-            row_index: 0, column_index: 0, original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
-            value_ref: Some("original-ref".to_string()),
-        }]);
+        assert_eq!(
+            normalized.result.rows,
+            vec![vec![serde_json::json!("原😀值")], vec![serde_json::Value::Null], vec![serde_json::json!("")]]
+        );
+        assert_eq!(
+            normalized.large_value_cells,
+            vec![db::LargeValueCell {
+                row_index: 0,
+                column_index: 0,
+                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
+                value_ref: Some("original-ref".to_string()),
+            }]
+        );
         let wire = serde_json::to_value(normalized).unwrap();
         assert_eq!(wire["large_value_cells"][0]["value_ref"], "original-ref");
         assert_eq!(wire["rows"][0][0], "原😀值");
         let legacy: db::LargeValueCell = serde_json::from_value(serde_json::json!({
             "row_index": 0, "column_index": 1, "original_bytes": 128,
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(legacy.value_ref, None);
         assert!(serde_json::to_value(legacy).unwrap().get("value_ref").is_none());
     }
@@ -10620,7 +10655,9 @@ for line in sys.stdin:
             vec![db::LargeValueCell {
                 row_index: 0,
                 column_index: 1,
-                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None }]
+                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
+                value_ref: None
+            }]
         );
 
         let options = QueryExecutionOptions { max_rows: Some(100), table_data_preview: true, ..Default::default() };
@@ -12355,7 +12392,9 @@ for line in sys.stdin:
             vec![db::LargeValueCell {
                 row_index: 0,
                 column_index: 1,
-                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None }]
+                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
+                value_ref: None
+            }]
         );
     }
 
@@ -12421,8 +12460,18 @@ for line in sys.stdin:
         assert_eq!(
             cells,
             vec![
-                db::LargeValueCell { row_index: 0, column_index: 1, original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None },
-                db::LargeValueCell { row_index: 0, column_index: 2, original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None },
+                db::LargeValueCell {
+                    row_index: 0,
+                    column_index: 1,
+                    original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
+                    value_ref: None
+                },
+                db::LargeValueCell {
+                    row_index: 0,
+                    column_index: 2,
+                    original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
+                    value_ref: None
+                },
             ]
         );
     }
@@ -12580,9 +12629,9 @@ for line in sys.stdin:
                 sizes
                     .into_iter()
                     .enumerate()
-                    .filter_map(|(row_index, size)| size
-                        .filter(|size| *size > preview_size)
-                        .map(|original_bytes| { db::LargeValueCell { row_index, column_index: 1, original_bytes, value_ref: None } }))
+                    .filter_map(|(row_index, size)| size.filter(|size| *size > preview_size).map(|original_bytes| {
+                        db::LargeValueCell { row_index, column_index: 1, original_bytes, value_ref: None }
+                    }))
                     .collect::<Vec<_>>()
             );
         }
@@ -12626,7 +12675,9 @@ for line in sys.stdin:
             vec![db::LargeValueCell {
                 row_index: 0,
                 column_index: 1,
-                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES, value_ref: None }]
+                original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
+                value_ref: None
+            }]
         );
     }
 

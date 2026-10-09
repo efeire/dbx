@@ -1701,7 +1701,11 @@ fn build_data_grid_save_statements(
             options.identifier_quote.as_deref(),
         );
         let guarded_lob = append_oceanbase_lob_save_guards(
-            options, &save_columns, row, changes.iter().map(|(index, _)| *index), &mut where_clause,
+            options,
+            &save_columns,
+            row,
+            changes.iter().map(|(index, _)| *index),
+            &mut where_clause,
         );
         guard_predicate(&where_clause, &mut guarded_predicates);
         if batch_mysql_writes {
@@ -1741,9 +1745,8 @@ fn build_data_grid_save_statements(
             column_info,
             options.identifier_quote.as_deref(),
         );
-        let guarded_lob = append_oceanbase_lob_save_guards(
-            options, &save_columns, row, 0..save_columns.len(), &mut where_clause,
-        );
+        let guarded_lob =
+            append_oceanbase_lob_save_guards(options, &save_columns, row, 0..save_columns.len(), &mut where_clause);
         guard_predicate(&where_clause, &mut guarded_predicates);
         if batch_mysql_writes {
             delete_predicates.push(where_clause);
@@ -3476,7 +3479,9 @@ fn oceanbase_lob_predicate(
     let mut count = 0;
     for ch in text.chars() {
         if chunk.len() + oracle_sql_literal_char_len(ch) > 2000 {
-            predicates.push(format!("UTL_RAW.CAST_TO_RAW(DBMS_LOB.SUBSTR({ident}, {count}, {offset})) = UTL_RAW.CAST_TO_RAW('{chunk}')"));
+            predicates.push(format!(
+                "UTL_RAW.CAST_TO_RAW(DBMS_LOB.SUBSTR({ident}, {count}, {offset})) = UTL_RAW.CAST_TO_RAW('{chunk}')"
+            ));
             offset += count;
             chunk.clear();
             count = 0;
@@ -3485,7 +3490,9 @@ fn oceanbase_lob_predicate(
         count += 1;
     }
     if count > 0 {
-        predicates.push(format!("UTL_RAW.CAST_TO_RAW(DBMS_LOB.SUBSTR({ident}, {count}, {offset})) = UTL_RAW.CAST_TO_RAW('{chunk}')"));
+        predicates.push(format!(
+            "UTL_RAW.CAST_TO_RAW(DBMS_LOB.SUBSTR({ident}, {count}, {offset})) = UTL_RAW.CAST_TO_RAW('{chunk}')"
+        ));
     }
     Some(format!("({})", predicates.join(" AND ")))
 }
@@ -3505,7 +3512,10 @@ fn append_oceanbase_lob_save_guards(
         };
         let ident = predicate_ident(options.database_type, column, options.identifier_quote.as_deref());
         if let Some(predicate) = oceanbase_lob_predicate(
-            options.database_type, &ident, row.get(index).unwrap_or(&Value::Null), column_info_for(column_info, column),
+            options.database_type,
+            &ident,
+            row.get(index).unwrap_or(&Value::Null),
+            column_info_for(column_info, column),
         ) {
             if !where_clause.is_empty() {
                 where_clause.push_str(" AND ");
@@ -7227,10 +7237,14 @@ mod tests {
         let clob = column("BODY", "CLOB", true, None);
         let database_type = Some(DatabaseType::OceanbaseOracle);
         assert_eq!(format_grid_assignment_sql_literal(&json!(""), database_type, Some(&clob), None), "EMPTY_CLOB()");
-        assert_eq!(build_column_predicate(database_type, "BODY", &json!(""), Some(&clob), true, None),
-            "(DBMS_LOB.GETLENGTH(\"BODY\") = 0)");
-        assert_eq!(build_column_predicate(database_type, "BODY", &Value::Null, Some(&clob), true, None),
-            "\"BODY\" IS NULL");
+        assert_eq!(
+            build_column_predicate(database_type, "BODY", &json!(""), Some(&clob), true, None),
+            "(DBMS_LOB.GETLENGTH(\"BODY\") = 0)"
+        );
+        assert_eq!(
+            build_column_predicate(database_type, "BODY", &Value::Null, Some(&clob), true, None),
+            "\"BODY\" IS NULL"
+        );
         let text = format!("{}'尾", "😀".repeat(501));
         let predicate = build_column_predicate(database_type, "BODY", &json!(text), Some(&clob), true, None);
         assert!(predicate.contains("GETLENGTH(\"BODY\") = 503"));
@@ -7240,14 +7254,24 @@ mod tests {
         assert!(!predicate.contains("DBMS_LOB.COMPARE"));
 
         let result = prepare_data_grid_save(DataGridSaveStatementOptions {
-            database_type, identifier_quote: None, server_version: None,
+            database_type,
+            identifier_quote: None,
+            server_version: None,
             table_meta: DataGridTableMeta {
-                catalog: None, database: None, schema: Some("APP".into()), table_name: "DOCS".into(),
-                primary_keys: vec!["ID".into()], columns: Some(vec![column("ID", "NUMBER", false, None), clob]),
+                catalog: None,
+                database: None,
+                schema: Some("APP".into()),
+                table_name: "DOCS".into(),
+                primary_keys: vec!["ID".into()],
+                columns: Some(vec![column("ID", "NUMBER", false, None), clob]),
             },
-            columns: vec!["ID".into(), "BODY".into()], source_columns: None,
-            rows: vec![vec![json!(1), json!("original")]], dirty_rows: vec![(0, vec![(1, json!("edited"))])],
-            deleted_rows: vec![], new_rows: vec![], include_database_name: false,
+            columns: vec!["ID".into(), "BODY".into()],
+            source_columns: None,
+            rows: vec![vec![json!(1), json!("original")]],
+            dirty_rows: vec![(0, vec![(1, json!("edited"))])],
+            deleted_rows: vec![],
+            new_rows: vec![],
+            include_database_name: false,
         });
         assert_eq!(result.validation_error, None);
         assert!(result.statements[0].contains("\"BODY\" = 'edited'"));
