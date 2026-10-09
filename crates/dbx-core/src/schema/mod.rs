@@ -1,5 +1,5 @@
-pub mod table_structure_sql;
 pub mod oracle_types;
+pub mod table_structure_sql;
 
 pub use dbx_drivers::metadata::sqlite_ddl;
 
@@ -11026,10 +11026,20 @@ async fn get_object_source_once(
             }
             first_string_cell(result?)?
         } else if let Some(client) = extract_pool!(pool_handle.as_ref(), Agent) {
-            if db_config.as_ref().is_some_and(|config| matches!(config.db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle))
+            if db_config
+                .as_ref()
+                .is_some_and(|config| matches!(config.db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle))
                 && matches!(object_type, db::ObjectSourceKind::Type | db::ObjectSourceKind::TypeBody)
             {
-                return oracle_types::source(client, database, schema, name, &object_type, agent_metadata_timeout(db_config.as_ref())).await;
+                return oracle_types::source(
+                    client,
+                    database,
+                    schema,
+                    name,
+                    &object_type,
+                    agent_metadata_timeout(db_config.as_ref()),
+                )
+                .await;
             } else if uses_oracle_metadata_object_source(db_config.as_ref(), &object_type) {
                 oracle_agent_object_source(
                     client,
