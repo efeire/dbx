@@ -83,7 +83,18 @@ describe("DataTransferProgressDialog", () => {
   it.each(["PACKAGE_BODY", "TYPE", "TYPE_BODY"] as const)("shows invalid %s and recovery without reporting it as transferred", async (objectType) => {
     const tracker = useExportTracker();
     const task = tracker.addDataTransferTask("package-result", "SOURCE → TARGET", 1);
-    tracker.updateDataTransferTask(task.exportId, { transferId: task.exportId, table: "P", tableIndex: 1, totalTables: 1, rowsTransferred: 0, totalRows: null, status: "error", terminal: false, error: "Compilation failed", objectResult: { objectType, name: "P", schema: "TARGET", status: "failed", compileStatus: "INVALID", sourceVerified: false, error: "PLS-00302", recovery: "Previous definition restored" } });
+    tracker.updateDataTransferTask(task.exportId, {
+      transferId: task.exportId,
+      table: "P",
+      tableIndex: 1,
+      totalTables: 1,
+      rowsTransferred: 0,
+      totalRows: null,
+      status: "error",
+      terminal: false,
+      error: "Compilation failed",
+      objectResult: { objectType, name: "P", schema: "TARGET", status: "failed", compileStatus: "INVALID", sourceVerified: false, error: "PLS-00302", recovery: "Previous definition restored" },
+    });
     tracker.updateDataTransferTask(task.exportId, { transferId: task.exportId, table: "", tableIndex: 1, totalTables: 1, rowsTransferred: 0, totalRows: null, status: "done", terminal: true, error: null });
     const container = document.createElement("div");
     document.body.append(container);

@@ -68,7 +68,10 @@ describe("transferTaskStore", () => {
   });
 
   it("never persists database-link passwords or a previous credential-ready flag", async () => {
-    const config = makeConfig({ objects: { DB_LINK: ["L"] }, databaseLinks: [{ objectType: "DB_LINK", name: "L", sourceOwner: "SRC", targetName: "L", targetScope: "private", authentication: "fixedUser", username: "REMOTE", host: "connect-string", credentialAvailable: true, password: "nested-secret" } as any] });
+    const config = makeConfig({
+      objects: { DB_LINK: ["L"] },
+      databaseLinks: [{ objectType: "DB_LINK", name: "L", sourceOwner: "SRC", targetName: "L", targetScope: "private", authentication: "fixedUser", username: "REMOTE", host: "connect-string", credentialAvailable: true, password: "nested-secret" } as any],
+    });
     Object.assign(config, { databaseLinkCredentials: [{ password: "top-level-secret" }] });
     const store = useTransferTaskStore();
     const task = await store.saveTask({ name: "links", config });

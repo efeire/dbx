@@ -14,8 +14,23 @@ export function savedTransferDatabaseLinks(raw: unknown): TransferDatabaseLinkCo
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((value) => {
     if (!value || typeof value !== "object" || !["DB_LINK", "PUBLIC_DB_LINK"].includes(value.objectType) || typeof value.name !== "string" || typeof value.sourceOwner !== "string" || value.authentication !== "fixedUser") return [];
-    const text = (key: string) => typeof value[key] === "string" ? value[key] : "";
-    return [{ objectType: value.objectType as TransferDatabaseLinkConfig["objectType"], name: value.name, sourceOwner: value.sourceOwner, targetName: text("targetName"), targetScope: ["private", "public", "tenant"].includes(value.targetScope) ? value.targetScope as TransferDatabaseLinkConfig["targetScope"] : "", authentication: "fixedUser" as const, username: text("username"), host: text("host"), protocol: value.protocol === "OB" || value.protocol === "OCI" ? value.protocol : undefined, tenant: text("tenant"), cluster: text("cluster"), credentialAvailable: false }];
+    const text = (key: string) => (typeof value[key] === "string" ? value[key] : "");
+    return [
+      {
+        objectType: value.objectType as TransferDatabaseLinkConfig["objectType"],
+        name: value.name,
+        sourceOwner: value.sourceOwner,
+        targetName: text("targetName"),
+        targetScope: ["private", "public", "tenant"].includes(value.targetScope) ? (value.targetScope as TransferDatabaseLinkConfig["targetScope"]) : "",
+        authentication: "fixedUser" as const,
+        username: text("username"),
+        host: text("host"),
+        protocol: value.protocol === "OB" || value.protocol === "OCI" ? value.protocol : undefined,
+        tenant: text("tenant"),
+        cluster: text("cluster"),
+        credentialAvailable: false,
+      },
+    ];
   });
 }
 

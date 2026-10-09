@@ -93,11 +93,13 @@ describe("queryStore pending object source tab", () => {
     const other = store.openObjectSourceTabPending({ ...pendingOptions({ name: "T", objectType: "TYPE" }), schema: "Other" });
     await settle();
     expect(new Set([spec, body, other]).size).toBe(3);
-    expect(store.tabs.map((tab) => tab.oracleTypeIdentity)).toEqual(expect.arrayContaining([
-      { schema: SCHEMA, name: "T", object_type: "TYPE" },
-      { schema: SCHEMA, name: "T", object_type: "TYPE_BODY" },
-      { schema: "Other", name: "T", object_type: "TYPE" },
-    ]));
+    expect(store.tabs.map((tab) => tab.oracleTypeIdentity)).toEqual(
+      expect.arrayContaining([
+        { schema: SCHEMA, name: "T", object_type: "TYPE" },
+        { schema: SCHEMA, name: "T", object_type: "TYPE_BODY" },
+        { schema: "Other", name: "T", object_type: "TYPE" },
+      ]),
+    );
   });
 
   it("creates a visible loading tab before the source arrives", async () => {
