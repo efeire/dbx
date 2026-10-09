@@ -5,11 +5,7 @@ import type { QueryResult } from "@/types/database";
 const MAX_MATERIALIZED_BYTES = 16 * 1024 * 1024;
 
 /** No cache: every request validates the original server locator's lifecycle. */
-export async function readLargeValueSnapshot(
-  request: LargeValueRequest,
-  isCurrent: () => boolean,
-  consume: (chunk: LargeValueChunk) => Promise<void> | void,
-): Promise<void> {
+export async function readLargeValueSnapshot(request: LargeValueRequest, isCurrent: () => boolean, consume: (chunk: LargeValueChunk) => Promise<void> | void): Promise<void> {
   let offset = 0;
   while (true) {
     if (!isCurrent()) throw new Error("LOB result context changed");
@@ -21,7 +17,7 @@ export async function readLargeValueSnapshot(
       throw new Error("Invalid LOB chunk offset");
     }
     const amount = chunk.next_offset - offset;
-    if (amount > 4096 || chunk.value_kind === "text" && Array.from(chunk.data).length !== amount) {
+    if (amount > 4096 || (chunk.value_kind === "text" && Array.from(chunk.data).length !== amount)) {
       throw new Error("Invalid LOB chunk character count");
     }
     if (chunk.value_kind === "binary" && (!/^(?:[0-9a-f]{2})*$/i.test(chunk.data) || chunk.data.length / 2 !== amount)) {

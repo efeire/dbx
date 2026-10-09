@@ -10,8 +10,7 @@ beforeEach(() => mocks.readLargeValueChunk.mockReset());
 describe("original-result LOB snapshot consumption", () => {
   it("preserves every binary byte and prefixes the assembled value exactly once", async () => {
     const hex = Array.from({ length: 256 }, (_, index) => index.toString(16).padStart(2, "0")).join("");
-    mocks.readLargeValueChunk.mockResolvedValueOnce({ ...response(hex.slice(0, 200), 100), value_kind: "binary" })
-      .mockResolvedValueOnce({ ...response(hex.slice(200), 256, true), value_kind: "binary" });
+    mocks.readLargeValueChunk.mockResolvedValueOnce({ ...response(hex.slice(0, 200), 100), value_kind: "binary" }).mockResolvedValueOnce({ ...response(hex.slice(200), 256, true), value_kind: "binary" });
     expect(await materializeLargeValueSnapshot(request, () => true)).toBe("0x" + hex);
   });
 
@@ -44,7 +43,10 @@ describe("original-result LOB snapshot consumption", () => {
 
   it("rejects changed context after await before any consumer sees the value", async () => {
     let current = true;
-    mocks.readLargeValueChunk.mockImplementation(async () => { current = false; return response("wrong context", 1, true); });
+    mocks.readLargeValueChunk.mockImplementation(async () => {
+      current = false;
+      return response("wrong context", 1, true);
+    });
     const consume = vi.fn();
     await expect(readLargeValueSnapshot(request, () => current, consume)).rejects.toThrow("context changed");
     expect(consume).not.toHaveBeenCalled();
@@ -57,8 +59,7 @@ describe("original-result LOB snapshot consumption", () => {
   });
 
   it("rejects expiry between chunks without returning the already fetched prefix", async () => {
-    mocks.readLargeValueChunk.mockResolvedValueOnce(response("前缀😀", 3))
-      .mockResolvedValueOnce({ ...response("", 3), status: "expired" });
+    mocks.readLargeValueChunk.mockResolvedValueOnce(response("前缀😀", 3)).mockResolvedValueOnce({ ...response("", 3), status: "expired" });
     await expect(materializeLargeValueSnapshot(request, () => true)).rejects.toThrow("expired");
     expect(mocks.readLargeValueChunk).toHaveBeenCalledTimes(2);
   });
@@ -70,16 +71,24 @@ describe("original-result LOB snapshot consumption", () => {
 
   it("uses each export result's original connection and column identity and leaves previews untouched", async () => {
     const result = {
-      columns: ["Payload", "PAYLOAD"], column_types: ["CLOB", "CLOB"], rows: [["a-preview", "b-preview"]],
-      affected_rows: 0, execution_time_ms: 0,
+      columns: ["Payload", "PAYLOAD"],
+      column_types: ["CLOB", "CLOB"],
+      rows: [["a-preview", "b-preview"]],
+      affected_rows: 0,
+      execution_time_ms: 0,
       large_value_cells: [{ row_index: 0, column_index: 1, original_bytes: 0, value_ref: "uppercase-column-ref" }],
       large_value_context: { connectionId: "other-ob", database: "OTHER", txnSessionId: "original-transaction" },
     };
     mocks.readLargeValueChunk.mockResolvedValue(response("完整😀", 3, true));
     expect(await materializeSnapshotResultRows(result, () => true)).toEqual([["a-preview", "完整😀"]]);
     expect(result.rows).toEqual([["a-preview", "b-preview"]]);
-    expect(mocks.readLargeValueChunk).toHaveBeenCalledWith(expect.objectContaining({
-      connectionId: "other-ob", database: "OTHER", txnSessionId: "original-transaction", valueRef: "uppercase-column-ref",
-    }));
+    expect(mocks.readLargeValueChunk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: "other-ob",
+        database: "OTHER",
+        txnSessionId: "original-transaction",
+        valueRef: "uppercase-column-ref",
+      }),
+    );
   });
 });
