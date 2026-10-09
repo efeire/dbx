@@ -1,9 +1,34 @@
-export interface OracleJobIdentity { owner: string; name: string }
-export interface OracleJobDefinition { jobType: string; jobAction: string; arguments: string[]; startDate: string; repeatInterval: string; endDate: string }
-export interface OracleJobChange { action: "create" | "update" | "enable" | "disable" | "drop"; identity: OracleJobIdentity; definition?: OracleJobDefinition }
-export interface OracleJobsRequest { operation: "list" | "read" | "readLegacy" | "preview" | "apply"; identity?: OracleJobIdentity; change?: OracleJobChange; revision?: string }
+export interface OracleJobIdentity {
+  owner: string;
+  name: string;
+}
+export interface OracleJobDefinition {
+  jobType: string;
+  jobAction: string;
+  arguments: string[];
+  startDate: string;
+  repeatInterval: string;
+  endDate: string;
+}
+export interface OracleJobChange {
+  action: "create" | "update" | "enable" | "disable" | "drop";
+  identity: OracleJobIdentity;
+  definition?: OracleJobDefinition;
+}
+export interface OracleJobsRequest {
+  operation: "list" | "read" | "readLegacy" | "preview" | "apply";
+  identity?: OracleJobIdentity;
+  change?: OracleJobChange;
+  revision?: string;
+}
 export type OracleJobRow = Record<string, string | number | boolean | null>;
-export interface OracleJobSection { availability: "available" | "denied" | "unsupported" | "unknown"; scope?: string; rows: OracleJobRow[]; warning?: string; error?: string }
+export interface OracleJobSection {
+  availability: "available" | "denied" | "unsupported" | "unknown";
+  scope?: string;
+  rows: OracleJobRow[];
+  warning?: string;
+  error?: string;
+}
 export interface OracleJobsResponse {
   capability?: { engine: string; version: string; canManage: boolean; jobTypes: string[] };
   scheduler?: OracleJobSection;
