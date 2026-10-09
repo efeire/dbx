@@ -1,6 +1,4 @@
 pub mod agents;
-pub mod oracle_user_admin;
-pub mod oracle_role_admin;
 pub mod ai;
 pub mod app_settings;
 pub mod cloud_sync;
@@ -25,6 +23,8 @@ pub mod mongodb_import_export;
 #[cfg(feature = "mq-admin")]
 pub mod mq;
 pub mod nacos;
+pub mod oracle_role_admin;
+pub mod oracle_user_admin;
 pub mod plugins;
 pub mod prompt_template;
 pub mod query;

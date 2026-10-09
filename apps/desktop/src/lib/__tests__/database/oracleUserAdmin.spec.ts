@@ -8,6 +8,10 @@ describe("Oracle user credential boundary", () => {
     expect(request).toEqual({ operation: "preview", change: { action: "password", name: 'Mixed."User' } });
     expect(JSON.stringify(request)).not.toContain("private-password");
   });
-  it.each(["", 'double"quote', "line\nbreak", "nul\0character"])("rejects unsupported password syntax without including the value in an error", (value) => { expect(validOraclePassword(value)).toBe(false); });
-  it("keeps supported quotes, punctuation and Unicode in a password", () => { expect(validOraclePassword("a'b;密码")).toBe(true); });
+  it.each(["", 'double"quote', "line\nbreak", "nul\0character"])("rejects unsupported password syntax without including the value in an error", (value) => {
+    expect(validOraclePassword(value)).toBe(false);
+  });
+  it("keeps supported quotes, punctuation and Unicode in a password", () => {
+    expect(validOraclePassword("a'b;密码")).toBe(true);
+  });
 });

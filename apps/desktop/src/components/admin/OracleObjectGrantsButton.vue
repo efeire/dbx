@@ -9,9 +9,14 @@ import type { ConnectionConfig } from "@/types/database";
 
 const props = defineProps<{ connection?: ConnectionConfig; owner?: string; objectName: string }>();
 const { locale } = useI18n();
-const title = computed(() => locale.value.startsWith("zh") ? "对象权限" : "Object grants");
+const title = computed(() => (locale.value.startsWith("zh") ? "对象权限" : "Object grants"));
 const open = ref(false);
-watch(() => [props.connection?.id, props.owner, props.objectName], () => { open.value = false; });
+watch(
+  () => [props.connection?.id, props.owner, props.objectName],
+  () => {
+    open.value = false;
+  },
+);
 </script>
 
 <template>
@@ -19,7 +24,9 @@ watch(() => [props.connection?.id, props.owner, props.objectName], () => { open.
     <Button size="sm" variant="outline" data-structure-object-grants @click="open = true">{{ title }}</Button>
     <Dialog v-model:open="open">
       <DialogContent class="max-h-[85vh] max-w-5xl overflow-auto">
-        <DialogHeader><DialogTitle>{{ title }} · {{ owner }}.{{ objectName }}</DialogTitle></DialogHeader>
+        <DialogHeader
+          ><DialogTitle>{{ title }} · {{ owner }}.{{ objectName }}</DialogTitle></DialogHeader
+        >
         <OracleSecurityAdmin v-if="open && connection" :key="`${connection.id}:${owner}:${objectName}`" :connection="connection" :object-scope="{ owner, name: objectName }" />
       </DialogContent>
     </Dialog>
