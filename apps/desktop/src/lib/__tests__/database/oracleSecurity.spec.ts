@@ -3,13 +3,20 @@ import type { ConnectionConfig, QueryResult } from "@/types/database";
 import { loadOracleSecurity, oracleGrantSources, oracleObjectGrantSources, oracleSecurityObjectMatches, supportsOracleSecurity, ORACLE_SECURITY_ROW_LIMIT } from "@/lib/database/oracleSecurity";
 import { connectionSupportsDatabaseUserAdmin } from "@/lib/database/databaseUserAdmin";
 
-const result = (columns: string[], rows: unknown[][] = []) => ({ columns, rows, affected_rows: 0, execution_time_ms: 0 } as QueryResult);
-const blankQuery = async (sql: string) => sql.includes("FROM DUAL") ? result(["USERNAME"], [["Reader"]]) : result([]);
+const result = (columns: string[], rows: unknown[][] = []) => ({ columns, rows, affected_rows: 0, execution_time_ms: 0 }) as QueryResult;
+const blankQuery = async (sql: string) => (sql.includes("FROM DUAL") ? result(["USERNAME"], [["Reader"]]) : result([]));
 
 describe("Oracle security dictionary reads", () => {
   it("uses only SELECTs and exposes exact quoted identities and grant options", async () => {
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes("FROM DBA_USERS")) return result(["USERNAME", "ACCOUNT_STATUS"], [["Reader", "OPEN"], ["READER", "LOCKED"]]);
+      if (sql.includes("FROM DBA_USERS"))
+        return result(
+          ["USERNAME", "ACCOUNT_STATUS"],
+          [
+            ["Reader", "OPEN"],
+            ["READER", "LOCKED"],
+          ],
+        );
       if (sql.includes("FROM DBA_TAB_PRIVS")) return result(["GRANTEE", "OWNER", "TABLE_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"], [["Reader", "Owner", "Mixed.Name", "Owner", "SELECT", "YES"]]);
       return blankQuery(sql);
     });
@@ -47,20 +54,39 @@ describe("Oracle security dictionary reads", () => {
   });
 
   it("does not treat a capped dictionary response as complete", async () => {
-    const snapshot = await loadOracleSecurity(async (sql) => sql.includes("FROM DBA_USERS") ? result(["USERNAME"], Array.from({ length: ORACLE_SECURITY_ROW_LIMIT }, (_, i) => [`U${i}`])) : blankQuery(sql));
+    const snapshot = await loadOracleSecurity(async (sql) =>
+      sql.includes("FROM DBA_USERS")
+        ? result(
+            ["USERNAME"],
+            Array.from({ length: ORACLE_SECURITY_ROW_LIMIT }, (_, i) => [`U${i}`]),
+          )
+        : blankQuery(sql),
+    );
     expect(snapshot.users).toMatchObject({ visibility: "limited", truncated: true });
+  });
+
+  it.each(["truncated", "has_more"] as const)("keeps short dictionary responses limited when the backend reports %s", async (flag) => {
+    const snapshot = await loadOracleSecurity(async (sql) => (sql.includes("FROM DBA_USERS") ? { ...result(["USERNAME"], [["Reader"]]), [flag]: true } : blankQuery(sql)));
+    expect(snapshot.users).toMatchObject({ state: "ok", visibility: "limited", truncated: true });
   });
 
   it("preserves direct, role and public paths and terminates role cycles", async () => {
     const snapshot = await loadOracleSecurity(blankQuery);
     snapshot.roleGrants.rows = [
-      { grantee: "Reader", role: "R1", adminOption: false }, { grantee: "R1", role: "R2", adminOption: false },
-      { grantee: "R2", role: "R1", adminOption: false }, { grantee: "PUBLIC", role: "R2", adminOption: false },
+      { grantee: "Reader", role: "R1", adminOption: false },
+      { grantee: "R1", role: "R2", adminOption: false },
+      { grantee: "R2", role: "R1", adminOption: false },
+      { grantee: "PUBLIC", role: "R2", adminOption: false },
     ];
     snapshot.systemGrants.rows = ["Reader", "R2", "PUBLIC"].map((grantee) => ({ grantee, privilege: "CREATE SESSION", adminOption: false }));
     const sources = oracleGrantSources(snapshot, "Reader");
     expect(sources.bounded).toBe(false);
-    expect(sources.grants.map((row) => [row.grant.grantee, row.source])).toEqual([["Reader", "direct"], ["R2", "role"], ["R2", "public"], ["PUBLIC", "public"]]);
+    expect(sources.grants.map((row) => [row.grant.grantee, row.source])).toEqual([
+      ["Reader", "direct"],
+      ["R2", "role"],
+      ["R2", "public"],
+      ["PUBLIC", "public"],
+    ]);
     expect(sources.grants[1].rolePath).toEqual(["R1", "R2"]);
     expect(sources.grants[2].rolePath).toEqual(["PUBLIC", "R2"]);
   });

@@ -10,12 +10,39 @@ export interface SecurityRead<T> {
   message?: string;
   truncated: boolean;
 }
-export interface OracleSecurityUser { name: string; accountStatus?: string; profile?: string; defaultTablespace?: string; temporaryTablespace?: string }
-export interface OracleSecurityRole { name: string; authentication?: string }
-export interface OracleRoleGrant { grantee: string; role: string; adminOption: boolean; defaultRole?: boolean }
-export interface OracleSystemGrant { grantee: string; privilege: string; adminOption: boolean }
-export interface OracleObjectGrant { grantee: string; owner: string; objectName: string; grantor: string; privilege: string; grantable: boolean }
-export interface OracleColumnGrant extends OracleObjectGrant { columnName: string }
+export interface OracleSecurityUser {
+  name: string;
+  accountStatus?: string;
+  profile?: string;
+  defaultTablespace?: string;
+  temporaryTablespace?: string;
+}
+export interface OracleSecurityRole {
+  name: string;
+  authentication?: string;
+}
+export interface OracleRoleGrant {
+  grantee: string;
+  role: string;
+  adminOption: boolean;
+  defaultRole?: boolean;
+}
+export interface OracleSystemGrant {
+  grantee: string;
+  privilege: string;
+  adminOption: boolean;
+}
+export interface OracleObjectGrant {
+  grantee: string;
+  owner: string;
+  objectName: string;
+  grantor: string;
+  privilege: string;
+  grantable: boolean;
+}
+export interface OracleColumnGrant extends OracleObjectGrant {
+  columnName: string;
+}
 export interface OracleSecuritySnapshot {
   currentUser: SecurityRead<string>;
   users: SecurityRead<OracleSecurityUser>;
@@ -57,8 +84,9 @@ async function readDictionary<T>(query: OracleSecurityQuery, primary: string, fa
   for (const [index, sql] of [primary, fallback].entries()) {
     if (!sql) break;
     try {
-      const raw = dictionaryRows(await query(sql));
-      const truncated = raw.length >= ORACLE_SECURITY_ROW_LIMIT;
+      const result = await query(sql);
+      const raw = dictionaryRows(result);
+      const truncated = result.truncated === true || result.has_more === true || raw.length >= ORACLE_SECURITY_ROW_LIMIT;
       return { state: raw.length ? "ok" : "empty", visibility: index || truncated ? "limited" : "complete", source: sql, rows: raw.map(parse), message, truncated };
     } catch (error) {
       const state = readState(error);
@@ -77,10 +105,20 @@ export async function loadOracleSecurity(query: OracleSecurityQuery): Promise<Or
     readDictionary(query, "SELECT USER AS USERNAME FROM DUAL", undefined, (row) => row.USERNAME),
     readDictionary(query, "SELECT USERNAME, ACCOUNT_STATUS, PROFILE, DEFAULT_TABLESPACE, TEMPORARY_TABLESPACE FROM DBA_USERS ORDER BY USERNAME", "SELECT USERNAME FROM ALL_USERS ORDER BY USERNAME", user),
     readDictionary(query, "SELECT ROLE, PASSWORD_REQUIRED FROM DBA_ROLES ORDER BY ROLE", "SELECT DISTINCT GRANTED_ROLE AS ROLE FROM USER_ROLE_PRIVS ORDER BY ROLE", role),
-    readDictionary(query, "SELECT GRANTEE, GRANTED_ROLE, ADMIN_OPTION, DEFAULT_ROLE FROM DBA_ROLE_PRIVS ORDER BY GRANTEE, GRANTED_ROLE", "SELECT USERNAME AS GRANTEE, GRANTED_ROLE, ADMIN_OPTION, DEFAULT_ROLE FROM USER_ROLE_PRIVS UNION SELECT ROLE AS GRANTEE, GRANTED_ROLE, ADMIN_OPTION, NULL AS DEFAULT_ROLE FROM ROLE_ROLE_PRIVS", roleGrant),
+    readDictionary(
+      query,
+      "SELECT GRANTEE, GRANTED_ROLE, ADMIN_OPTION, DEFAULT_ROLE FROM DBA_ROLE_PRIVS ORDER BY GRANTEE, GRANTED_ROLE",
+      "SELECT USERNAME AS GRANTEE, GRANTED_ROLE, ADMIN_OPTION, DEFAULT_ROLE FROM USER_ROLE_PRIVS UNION SELECT ROLE AS GRANTEE, GRANTED_ROLE, ADMIN_OPTION, NULL AS DEFAULT_ROLE FROM ROLE_ROLE_PRIVS",
+      roleGrant,
+    ),
     readDictionary(query, "SELECT GRANTEE, PRIVILEGE, ADMIN_OPTION FROM DBA_SYS_PRIVS ORDER BY GRANTEE, PRIVILEGE", "SELECT USERNAME AS GRANTEE, PRIVILEGE, ADMIN_OPTION FROM USER_SYS_PRIVS UNION SELECT ROLE AS GRANTEE, PRIVILEGE, ADMIN_OPTION FROM ROLE_SYS_PRIVS", systemGrant),
     readDictionary(query, "SELECT GRANTEE, OWNER, TABLE_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM DBA_TAB_PRIVS ORDER BY OWNER, TABLE_NAME, GRANTEE, PRIVILEGE", "SELECT GRANTEE, TABLE_SCHEMA AS OWNER, TABLE_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM ALL_TAB_PRIVS", objectGrant),
-    readDictionary(query, "SELECT GRANTEE, OWNER, TABLE_NAME, COLUMN_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM DBA_COL_PRIVS ORDER BY OWNER, TABLE_NAME, COLUMN_NAME, GRANTEE", "SELECT GRANTEE, TABLE_SCHEMA AS OWNER, TABLE_NAME, COLUMN_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM ALL_COL_PRIVS", (row): OracleColumnGrant => ({ ...objectGrant(row), columnName: row.COLUMN_NAME })),
+    readDictionary(
+      query,
+      "SELECT GRANTEE, OWNER, TABLE_NAME, COLUMN_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM DBA_COL_PRIVS ORDER BY OWNER, TABLE_NAME, COLUMN_NAME, GRANTEE",
+      "SELECT GRANTEE, TABLE_SCHEMA AS OWNER, TABLE_NAME, COLUMN_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM ALL_COL_PRIVS",
+      (row): OracleColumnGrant => ({ ...objectGrant(row), columnName: row.COLUMN_NAME }),
+    ),
   ]);
   return { currentUser, users, roles, roleGrants, systemGrants, objectGrants, columnGrants };
 }
@@ -103,12 +141,19 @@ export function oracleGrantSources(snapshot: OracleSecuritySnapshot, principal: 
       const parent = queue[index];
       for (const edge of snapshot.roleGrants.rows) {
         if (edge.grantee !== parent || paths.has(edge.role)) continue;
-        if (paths.size >= 1000) { bounded = true; continue; }
+        if (paths.size >= 1000) {
+          bounded = true;
+          continue;
+        }
         paths.set(edge.role, [...paths.get(parent)!, edge.role]);
         queue.push(edge.role);
       }
     }
-    for (const [kind, rows] of [["system", snapshot.systemGrants.rows], ["object", snapshot.objectGrants.rows], ["column", snapshot.columnGrants.rows]] as const) {
+    for (const [kind, rows] of [
+      ["system", snapshot.systemGrants.rows],
+      ["object", snapshot.objectGrants.rows],
+      ["column", snapshot.columnGrants.rows],
+    ] as const) {
       for (const grant of rows) {
         const path = paths.get(grant.grantee);
         if (!path) continue;

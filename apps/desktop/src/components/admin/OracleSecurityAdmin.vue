@@ -20,15 +20,23 @@ const objectName = ref("");
 const search = ref("");
 let generation = 0;
 const zh = computed(() => locale.value.startsWith("zh"));
-const label = (cn: string, en: string) => zh.value ? cn : en;
-const principals = computed(() => snapshot.value ? [...new Set([...snapshot.value.users.rows.map((row) => row.name), ...snapshot.value.roles.rows.map((row) => row.name), "PUBLIC"])].filter((name) => name.includes(search.value)) : []);
-const sources = computed(() => snapshot.value ? principal.value ? oracleGrantSources(snapshot.value, principal.value) : { grants: oracleObjectGrantSources(snapshot.value), bounded: false } : { grants: [], bounded: false });
-const grants = computed(() => sources.value.grants.filter((row) => !owner.value && !objectName.value || oracleSecurityObjectMatches(row.grant, owner.value, objectName.value)));
+const label = (cn: string, en: string) => (zh.value ? cn : en);
+const principals = computed(() => (snapshot.value ? [...new Set([...snapshot.value.users.rows.map((row) => row.name), ...snapshot.value.roles.rows.map((row) => row.name), "PUBLIC"])].filter((name) => name.includes(search.value)) : []));
+const sources = computed(() => (snapshot.value ? (principal.value ? oracleGrantSources(snapshot.value, principal.value) : { grants: oracleObjectGrantSources(snapshot.value), bounded: false }) : { grants: [], bounded: false }));
+const grants = computed(() => sources.value.grants.filter((row) => (!owner.value && !objectName.value) || oracleSecurityObjectMatches(row.grant, owner.value, objectName.value)));
 const memberships = computed(() => snapshot.value?.roleGrants.rows.filter((row) => !principal.value || row.grantee === principal.value || row.role === principal.value) ?? []);
-const sections = computed(() => snapshot.value ? Object.entries(snapshot.value) : []);
+const sections = computed(() => (snapshot.value ? Object.entries(snapshot.value) : []));
 const selectedUser = computed(() => snapshot.value?.users.rows.find((row) => row.name === principal.value));
 const selectedRole = computed(() => snapshot.value?.roles.rows.find((row) => row.name === principal.value));
-const stateLabel = (state: string) => ({ ok: label("已读取", "Loaded"), empty: label("当前范围为空", "Empty in visible scope"), denied: label("无权读取", "Permission denied"), unavailable: label("视图不存在或不可见", "View absent or inaccessible"), error: label("读取失败", "Read failed"), unsupported: label("不支持", "Unsupported") }[state] ?? state);
+const stateLabel = (state: string) =>
+  ({
+    ok: label("已读取", "Loaded"),
+    empty: label("当前范围为空", "Empty in visible scope"),
+    denied: label("无权读取", "Permission denied"),
+    unavailable: label("视图不存在或不可见", "View absent or inaccessible"),
+    error: label("读取失败", "Read failed"),
+    unsupported: label("不支持", "Unsupported"),
+  })[state] ?? state;
 
 async function refresh() {
   const request = ++generation;
@@ -47,7 +55,17 @@ async function refresh() {
     if (request === generation) busy.value = false;
   }
 }
-watch(() => props.connection.id, () => { snapshot.value = undefined; principal.value = ""; owner.value = ""; objectName.value = ""; void refresh(); }, { immediate: true });
+watch(
+  () => props.connection.id,
+  () => {
+    snapshot.value = undefined;
+    principal.value = "";
+    owner.value = "";
+    objectName.value = "";
+    void refresh();
+  },
+  { immediate: true },
+);
 defineExpose({ refresh });
 </script>
 
@@ -57,11 +75,15 @@ defineExpose({ refresh });
       <h2 class="text-sm font-semibold">{{ label("用户、角色与授权", "Users, roles and grants") }}</h2>
       <Button variant="outline" size="sm" :disabled="busy" @click="refresh">{{ busy ? t("grid.loading") : t("grid.refresh") }}</Button>
     </header>
-    <p class="text-xs text-muted-foreground">{{ label("显示当前账号可见的授予关系。继承来源不代表角色已在当前会话启用；受限范围无法证明其他授权不存在。", "Shows grants visible to the current account. Role inheritance does not imply that a role is enabled in this session. Limited visibility cannot prove the absence of other grants.") }}</p>
+    <p class="text-xs text-muted-foreground">
+      {{ label("显示当前账号可见的授予关系。继承来源不代表角色已在当前会话启用；受限范围无法证明其他授权不存在。", "Shows grants visible to the current account. Role inheritance does not imply that a role is enabled in this session. Limited visibility cannot prove the absence of other grants.") }}
+    </p>
     <p v-if="error" role="alert" class="text-sm text-destructive">{{ error }}</p>
     <div v-if="snapshot" class="grid gap-2 text-xs sm:grid-cols-2">
       <details v-for="[name, result] in sections" :key="name" class="rounded border p-2" :data-security-state="result.state">
-        <summary>{{ name }} · {{ stateLabel(result.state) }} · {{ result.rows.length }} · {{ result.visibility === "complete" ? label("完整字典范围", "Full dictionary scope") : label("可见范围受限", "Limited visibility") }}{{ result.truncated ? label("，已达读取上限", ", row limit reached") : "" }}</summary>
+        <summary>
+          {{ name }} · {{ stateLabel(result.state) }} · {{ result.rows.length }} · {{ result.visibility === "complete" ? label("完整字典范围", "Full dictionary scope") : label("可见范围受限", "Limited visibility") }}{{ result.truncated ? label("，已达读取上限", ", row limit reached") : "" }}
+        </summary>
         <p v-if="result.message" class="mt-2 whitespace-pre-wrap text-destructive">{{ result.message }}</p>
         <pre class="mt-2 overflow-auto whitespace-pre-wrap">{{ result.source }}</pre>
       </details>
@@ -79,11 +101,44 @@ defineExpose({ refresh });
     <p v-if="selectedRole" class="text-xs">{{ label("角色", "Role") }} {{ selectedRole.name }} · PASSWORD_REQUIRED: {{ selectedRole.authentication || label("不可见", "Unavailable") }}</p>
     <p v-if="sources.bounded" role="alert" class="text-xs text-destructive">{{ label("角色关系超过读取边界，以下来源不完整。", "Role traversal reached its limit; the following provenance is incomplete.") }}</p>
     <table class="w-full text-left text-xs">
-      <thead><tr class="border-b"><th class="p-2">{{ label("授权类型", "Kind") }}</th><th>{{ label("权限", "Privilege") }}</th><th>{{ label("对象", "Object") }}</th><th>{{ label("来源", "Source") }}</th><th>{{ label("可转授", "Grant option") }}</th></tr></thead>
-      <tbody><tr v-for="(row, index) in grants" :key="index" class="border-b"><td class="p-2">{{ row.kind }}</td><td>{{ row.grant.privilege }}</td><td>{{ 'owner' in row.grant ? `${row.grant.owner}.${row.grant.objectName}` : '—' }}{{ 'columnName' in row.grant ? `.${row.grant.columnName}` : '' }}</td><td>{{ row.source }} · {{ row.grant.grantee }}{{ row.rolePath.length ? ` (${row.rolePath.join(' → ')})` : '' }}{{ 'grantor' in row.grant ? ` · grantor: ${row.grant.grantor}` : '' }}</td><td>{{ 'adminOption' in row.grant ? row.grant.adminOption : row.grant.grantable }}</td></tr></tbody>
+      <thead>
+        <tr class="border-b">
+          <th class="p-2">{{ label("授权类型", "Kind") }}</th>
+          <th>{{ label("权限", "Privilege") }}</th>
+          <th>{{ label("对象", "Object") }}</th>
+          <th>{{ label("来源", "Source") }}</th>
+          <th>{{ label("可转授", "Grant option") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="(row, index) in grants" :key="index" class="border-b">
+          <td class="p-2">{{ row.kind }}</td>
+          <td>{{ row.grant.privilege }}</td>
+          <td>{{ "owner" in row.grant ? `${row.grant.owner}.${row.grant.objectName}` : "—" }}{{ "columnName" in row.grant ? `.${row.grant.columnName}` : "" }}</td>
+          <td>{{ row.source }} · {{ row.grant.grantee }}{{ row.rolePath.length ? ` (${row.rolePath.join(" → ")})` : "" }}{{ "grantor" in row.grant ? ` · grantor: ${row.grant.grantor}` : "" }}</td>
+          <td>{{ "adminOption" in row.grant ? row.grant.adminOption : row.grant.grantable }}</td>
+        </tr>
+      </tbody>
     </table>
     <p v-if="snapshot && !grants.length" class="text-xs text-muted-foreground">{{ label("当前可见结果与筛选范围内没有授权记录。", "No grants in the current visible result and filter scope.") }}</p>
     <h3 class="text-sm font-medium">{{ label("角色关系", "Role memberships") }}</h3>
-    <table class="w-full text-left text-xs"><thead><tr class="border-b"><th class="p-2">{{ label("主体", "Grantee") }}</th><th>{{ label("角色", "Role") }}</th><th>ADMIN OPTION</th><th>DEFAULT ROLE</th></tr></thead><tbody><tr v-for="(row, index) in memberships" :key="index" class="border-b"><td class="p-2">{{ row.grantee }}</td><td>{{ row.role }}</td><td>{{ row.adminOption }}</td><td>{{ row.defaultRole ?? label('不可见', 'Unavailable') }}</td></tr></tbody></table>
+    <table class="w-full text-left text-xs">
+      <thead>
+        <tr class="border-b">
+          <th class="p-2">{{ label("主体", "Grantee") }}</th>
+          <th>{{ label("角色", "Role") }}</th>
+          <th>ADMIN OPTION</th>
+          <th>DEFAULT ROLE</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="(row, index) in memberships" :key="index" class="border-b">
+          <td class="p-2">{{ row.grantee }}</td>
+          <td>{{ row.role }}</td>
+          <td>{{ row.adminOption }}</td>
+          <td>{{ row.defaultRole ?? label("不可见", "Unavailable") }}</td>
+        </tr>
+      </tbody>
+    </table>
   </section>
 </template>

@@ -7,19 +7,46 @@ const mocks = vi.hoisted(() => ({ ensureConnected: vi.fn().mockResolvedValue(und
 vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key, locale: ref("en") }) }));
 vi.mock("@/stores/connectionStore", () => ({ useConnectionStore: () => ({ ensureConnected: mocks.ensureConnected }) }));
 vi.mock("@/lib/backend/api", () => ({ executeQuery: mocks.executeQuery }));
-vi.mock("@/components/ui/button", () => ({ Button: defineComponent({ setup: (_, { attrs, slots }) => () => h("button", attrs, slots.default?.()) }) }));
-vi.mock("@/components/ui/input", () => ({ Input: defineComponent({ props: ["modelValue"], emits: ["update:modelValue"], setup: (props, { attrs, emit }) => () => h("input", { ...attrs, value: props.modelValue, onInput: (event: Event) => emit("update:modelValue", (event.target as HTMLInputElement).value) }) }) }));
+vi.mock("@/components/ui/button", () => ({
+  Button: defineComponent({
+    setup:
+      (_, { attrs, slots }) =>
+      () =>
+        h("button", attrs, slots.default?.()),
+  }),
+}));
+vi.mock("@/components/ui/input", () => ({
+  Input: defineComponent({
+    props: ["modelValue"],
+    emits: ["update:modelValue"],
+    setup:
+      (props, { attrs, emit }) =>
+      () =>
+        h("input", { ...attrs, value: props.modelValue, onInput: (event: Event) => emit("update:modelValue", (event.target as HTMLInputElement).value) }),
+  }),
+}));
 import OracleSecurityAdmin from "@/components/admin/OracleSecurityAdmin.vue";
 
 const cleanup: (() => void)[] = [];
-afterEach(() => { cleanup.splice(0).forEach((dispose) => dispose()); vi.clearAllMocks(); });
-async function settle() { for (let i = 0; i < 12; i++) { await Promise.resolve(); await nextTick(); } }
+afterEach(() => {
+  cleanup.splice(0).forEach((dispose) => dispose());
+  vi.clearAllMocks();
+});
+async function settle() {
+  for (let i = 0; i < 12; i++) {
+    await Promise.resolve();
+    await nextTick();
+  }
+}
 function mount() {
   const host = document.createElement("div");
   document.body.append(host);
   const app = createApp(OracleSecurityAdmin, { connection: { id: "oracle", db_type: "oracle" } as ConnectionConfig });
   app.mount(host);
-  cleanup.push(() => { app.unmount(); host.remove(); });
+  cleanup.push(() => {
+    app.unmount();
+    host.remove();
+  });
   return host;
 }
 describe("Oracle security page", () => {
@@ -27,7 +54,14 @@ describe("Oracle security page", () => {
     mocks.executeQuery.mockImplementation(async (_connection: string, _database: string, sql: string) => {
       if (sql.includes("DBA_USERS")) throw new Error("ORA-01031");
       if (sql.includes("ALL_USERS") || sql.includes("FROM DUAL")) return { columns: ["USERNAME"], rows: [["Reader"]] };
-      if (sql.includes("DBA_TAB_PRIVS")) return { columns: ["GRANTEE", "OWNER", "TABLE_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"], rows: [["Reader", "Owner", "T", "Owner", "SELECT", "NO"], ["Reader", "Other", "T", "Other", "UPDATE", "NO"]] };
+      if (sql.includes("DBA_TAB_PRIVS"))
+        return {
+          columns: ["GRANTEE", "OWNER", "TABLE_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"],
+          rows: [
+            ["Reader", "Owner", "T", "Owner", "SELECT", "NO"],
+            ["Reader", "Other", "T", "Other", "UPDATE", "NO"],
+          ],
+        };
       return { columns: [], rows: [] };
     });
     const host = mount();
