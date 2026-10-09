@@ -266,7 +266,12 @@ pub fn transfer_object_kinds_for_family(family: &TransferObjectFamily) -> Vec<Tr
 pub fn transfer_object_kinds(db_type: &DatabaseType) -> Vec<TransferObjectKind> {
     if matches!(db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) {
         let mut kinds = transfer_object_kinds_for_family(&TransferObjectFamily::Oracle);
-        kinds.extend([TransferObjectKind::Package, TransferObjectKind::PackageBody, TransferObjectKind::Synonym, TransferObjectKind::PublicSynonym]);
+        kinds.extend([
+            TransferObjectKind::Package,
+            TransferObjectKind::PackageBody,
+            TransferObjectKind::Synonym,
+            TransferObjectKind::PublicSynonym,
+        ]);
         return kinds;
     }
     match transfer_object_family(db_type) {
@@ -8683,7 +8688,13 @@ where
         request.object_selection_mode().selections().iter().map(|s| s.object_type).collect(),
     );
     for kind in order {
-        if matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody | TransferObjectKind::Synonym | TransferObjectKind::PublicSynonym) {
+        if matches!(
+            kind,
+            TransferObjectKind::Package
+                | TransferObjectKind::PackageBody
+                | TransferObjectKind::Synonym
+                | TransferObjectKind::PublicSynonym
+        ) {
             continue;
         }
         for name in selected_object_names(request.object_selection_mode().selections(), &kind) {
@@ -8738,7 +8749,8 @@ where
             }
         }
     }
-    let synonyms = oracle_synonyms::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
+    let synonyms =
+        oracle_synonyms::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
     outcome.transferred.extend(synonyms.transferred);
     outcome.skipped.extend(synonyms.skipped);
     outcome.failed.extend(synonyms.failed);
