@@ -1266,8 +1266,10 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     }
     if (!localOnlyMetadata && shouldLoadCompletionObjects(completionContext)) {
       const completionObjectScope = routineCompletionScopeForContext(completionContext, scope);
+      const refreshEpoch = completionEpoch;
       void listCompletionObjectsForContext(completionContext, scope)
         .then((objects) => {
+          if (refreshEpoch !== completionEpoch) return;
           const cachedObjects = completionObjectsForScope(completionObjectScope);
           const merged = mergeCompletionObjects(cachedObjects, objects);
           const changed = completionObjectsDiffer(cachedObjects, merged);
@@ -1370,12 +1372,18 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
   }
 
   function routineCompletionTargetForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope) {
-    return resolveSqlCompletionRoutineLookupTarget({
+    const target = resolveSqlCompletionRoutineLookupTarget({
       currentDatabase: scope.database,
       currentSchema: scope.schema,
       supportsDatabaseSchemaQualifier: supportsDatabaseSchemaQualifierCompletion(),
       completionContext,
     });
+    if (props.databaseType === "oceanbase-oracle" && completionContext.qualifier) {
+      const parts = completionContext.qualifierParts ?? completionContext.qualifier.split(".");
+      const index = parts.length - 1;
+      target.schema = completionContext.qualifierQuoted?.[index] ? parts[index]!.replaceAll('""', '"') : parts[index]!.toUpperCase();
+    }
+    return target;
   }
 
   function routineCompletionScopeForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope): CompletionMetadataScope {
@@ -1386,7 +1394,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
 
   function lookupLocalCompletionObjectsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope): SqlCompletionObject[] {
     if (!props.connectionId || props.database == null) return [];
-    if (usesPackageAwareRoutineCompletion()) {
+    if (usesPackageAwareRoutineCompletion() || (props.databaseType === "oceanbase-oracle" && !completionContext.qualifier)) {
       return connectionStore.lookupLocalCompletionObjects(props.connectionId, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES);
     }
     const target = routineCompletionTargetForContext(completionContext, scope);
@@ -1396,6 +1404,11 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
   async function listCompletionObjectsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope): Promise<SqlCompletionObject[]> {
     if (!props.connectionId || props.database == null) return [];
     const objectKinds = completionObjectKindsForContext(completionContext);
+    if (props.databaseType === "oceanbase-oracle") {
+      const parts = (completionContext.qualifierParts ?? completionContext.qualifier?.split(".") ?? []).map((part, index) => completionContext.qualifierQuoted?.[index] ? part.replaceAll('""', '"') : part.toUpperCase());
+      if (parts.length > 1) return [];
+      return connectionStore.listCompletionObjects(props.connectionId, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES, parts[0] ?? scope.schema, undefined, parts.length === 0, scope.schema, objectKinds, !!completionContext.prefixQuoted);
+    }
     if (!usesPackageAwareRoutineCompletion()) {
       const target = routineCompletionTargetForContext(completionContext, scope);
       return connectionStore.listCompletionObjects(props.connectionId, target.database, target.mask, MAX_COMPLETION_TABLES, target.schema, undefined, false, scope.schema, objectKinds);
