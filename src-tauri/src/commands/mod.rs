@@ -1,5 +1,4 @@
 pub mod agents;
-pub mod oracle_user_admin;
 pub mod ai;
 pub mod ai_multi_config;
 pub mod app_settings;
@@ -39,6 +38,7 @@ pub mod mq_cmd;
 #[cfg(feature = "mq-admin")]
 pub mod mqtt_cmd;
 pub mod nacos_cmd;
+pub mod oracle_user_admin;
 pub mod plugin_download;
 pub mod plugin_download_file;
 pub mod plugin_file;
