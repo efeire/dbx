@@ -6118,6 +6118,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "プライベートシノニム",
+    objectTypePublicSynonym: "パブリックシノニム",
+    synonymDependencyHint: "選択したシノニムのみ移行します。事前確認で対象オブジェクトと DBLink の依存関係を表示し、リモートには接続しません。パブリックシノニムには対応する権限が必要です。",
     objectTypePackage: "パッケージ仕様部",
     objectTypePackageBody: "パッケージ本体",
     objectConflictPolicy: "既存のプログラムオブジェクト",

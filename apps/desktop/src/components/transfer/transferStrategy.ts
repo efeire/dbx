@@ -1,6 +1,7 @@
 import type { TransferContent, TransferMode, TransferOwnershipPolicy, TransferOwnershipPreview, TransferRequest } from "@/lib/backend/api";
 import type { ConnectionConfig, DatabaseType } from "@/types/database";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
+import { requiresTransferSchemaObjectPlan } from "@/lib/database/transferObjectKinds";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 
 export type TransferStrategy = TransferMode | "rebuild";
@@ -108,7 +109,7 @@ export function createTransferSubmission(options: TransferSubmissionOptions) {
         // A structure-only transfer changes the target schema; never fall back to the plain
         // start confirmation when the backend did not say what it is going to run.
         if (request.content === "structureOnly" && !preview.structure) throw new Error(TRANSFER_STRUCTURE_PREVIEW_UNAVAILABLE);
-        const plannedObjects = request.objects.filter((selection) => (selection.objectType === "PACKAGE" || selection.objectType === "PACKAGE_BODY") && selection.names.length > 0);
+        const plannedObjects = request.objects.filter((selection) => requiresTransferSchemaObjectPlan(selection.objectType) && selection.names.length > 0);
         if (request.content !== "dataOnly" && plannedObjects.some((selection) => selection.names.some((name) => !preview.schemaObjects?.items.some((item) => item.objectType === selection.objectType && item.name === name)))) {
           throw new Error(TRANSFER_OBJECT_PREVIEW_UNAVAILABLE);
         }

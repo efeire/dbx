@@ -302,6 +302,22 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 FROM ALL_OBJECTS
                 WHERE OWNER = ? AND OBJECT_TYPE IN (%s)
                 """.stripIndent().trim();
+            if (objectTypes.contains("SYNONYM")) {
+                // Public synonyms can use OB's internal owner. Canonicalize before
+                // filtering/paging, keeping the private and public scopes separate.
+                baseSql = """
+                    SELECT OBJECT_NAME, OBJECT_TYPE
+                    FROM (
+                        SELECT OWNER, OBJECT_NAME, OBJECT_TYPE
+                        FROM ALL_OBJECTS WHERE OBJECT_TYPE <> 'SYNONYM'
+                        UNION
+                        SELECT CASE WHEN OWNER = '__public' THEN 'PUBLIC' ELSE OWNER END AS OWNER,
+                               SYNONYM_NAME AS OBJECT_NAME, 'SYNONYM' AS OBJECT_TYPE
+                        FROM ALL_SYNONYMS
+                    )
+                    WHERE OWNER = ? AND OBJECT_TYPE IN (%s)
+                    """.stripIndent().trim();
+            }
             MetadataSql query = oceanBaseMetadataSql(
                 String.format(baseSql, placeholders(objectTypes.size())),
                 "OBJECT_NAME, OBJECT_TYPE",

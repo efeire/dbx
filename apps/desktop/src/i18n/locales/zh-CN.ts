@@ -6894,6 +6894,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "私有同义词",
+    objectTypePublicSynonym: "公共同义词",
+    synonymDependencyHint: "仅迁移明确选择的同义词。目标对象及 DBLink 依赖会在预检中列出，不自动连接远端；公共同义词需要相应权限。",
     objectTypePackage: "包规格",
     objectTypePackageBody: "包体",
     objectConflictPolicy: "同名程序对象",

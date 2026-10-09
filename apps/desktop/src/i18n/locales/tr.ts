@@ -5934,6 +5934,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "Özel eş anlamlılar",
+    objectTypePublicSynonym: "Genel eş anlamlılar",
+    synonymDependencyHint: "Yalnızca seçilen eş anlamlılar taşınır. Ön kontrol, uzak bağlantı kurmadan nesne ve DBLink bağımlılıklarını listeler. Genel eş anlamlılar ilgili yetkileri gerektirir.",
     objectTypePackage: "Paket belirtimi",
     objectTypePackageBody: "Paket gövdesi",
     objectConflictPolicy: "Mevcut program nesneleri",

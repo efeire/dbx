@@ -100,15 +100,18 @@ describe("transferTaskStore", () => {
     expect(reloadedStore.getTask(tableAndView.id)?.config.objects).toEqual({ TABLE: ["orders"], VIEW: ["v_orders"] });
   });
 
-  it("round-trips separate package parts and their explicit conflict policy", async () => {
+  it.each([
+    { name: "packages", objects: { PACKAGE: ["Quoted Package"], PACKAGE_BODY: ["P"] } },
+    { name: "synonyms", objects: { SYNONYM: ["Case S"], PUBLIC_SYNONYM: ["Case S"] } },
+  ])("round-trips separate $name identities and their explicit conflict policy", async ({ name, objects }) => {
     const store = useTransferTaskStore();
-    const saved = await store.saveTask({ name: "packages", config: makeConfig({ objects: { PACKAGE: ["Quoted Package"], PACKAGE_BODY: ["P"] }, objectConflictPolicy: "replace" }) });
+    const saved = await store.saveTask({ name, config: makeConfig({ objects, objectConflictPolicy: "replace" }) });
     const persisted = vi.mocked(api.saveTransferTaskLibrary).mock.calls.at(-1)?.[0] as TransferTaskLibrary;
     vi.mocked(api.loadTransferTaskLibrary).mockResolvedValue(persisted);
     setActivePinia(createPinia());
     const reloaded = useTransferTaskStore();
     await reloaded.initFromStorage();
-    expect(reloaded.getTask(saved.id)?.config).toMatchObject({ objects: { PACKAGE: ["Quoted Package"], PACKAGE_BODY: ["P"] }, objectConflictPolicy: "replace", dropTargetConfirmed: false });
+    expect(reloaded.getTask(saved.id)?.config).toMatchObject({ objects, objectConflictPolicy: "replace", dropTargetConfirmed: false });
   });
 
   it("keeps target column quoting enabled for saved tasks created before the option existed", async () => {

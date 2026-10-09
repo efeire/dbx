@@ -33,7 +33,7 @@ import { ensureReadOnlyWriteAccess } from "@/lib/database/readOnlyWriteAccess";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 import * as api from "@/lib/backend/api";
 import type { TransferContent, TransferObjectKind, TransferTableNameCase } from "@/lib/backend/api";
-import { crossFamilyTransferableKinds, isSameTransferFamily, transferObjectKindsForDatabase } from "@/lib/database/transferObjectKinds";
+import { crossFamilyTransferableKinds, isSameTransferFamily, requiresTransferSchemaObjectPlan, transferObjectKindsForDatabase, transferObjectMetadataTarget } from "@/lib/database/transferObjectKinds";
 import ObjectSelectionTree from "@/components/transfer/ObjectSelectionTree.vue";
 import TransferTaskTree from "@/components/transfer/TransferTaskTree.vue";
 import DataTransferProgressDialog from "@/components/transfer/DataTransferProgressDialog.vue";
@@ -119,6 +119,8 @@ const OBJECT_KIND_LABEL_KEY: Record<TransferObjectKind, string> = {
   EVENT: "objectTypeEvent",
   PACKAGE: "objectTypePackage",
   PACKAGE_BODY: "objectTypePackageBody",
+  SYNONYM: "objectTypeSynonym",
+  PUBLIC_SYNONYM: "objectTypePublicSynonym",
 };
 
 const treeSelection = computed<Record<string, string[]>>({
@@ -204,6 +206,8 @@ const quoteTargetColumnNames = ref(true);
 const batchSize = ref(1000);
 const objectConflictPolicy = ref<api.TransferObjectConflictPolicy>("skip");
 const hasSelectedPackages = computed(() => transferContent.value !== "dataOnly" && ((selectedObjects.value.PACKAGE?.size ?? 0) > 0 || (selectedObjects.value.PACKAGE_BODY?.size ?? 0) > 0));
+const hasSelectedSynonyms = computed(() => transferContent.value !== "dataOnly" && ((selectedObjects.value.SYNONYM?.size ?? 0) > 0 || (selectedObjects.value.PUBLIC_SYNONYM?.size ?? 0) > 0));
+const hasSelectedSchemaObjects = computed(() => transferContent.value !== "dataOnly" && (Object.entries(selectedObjects.value) as [TransferObjectKind, Set<string>][]).some(([kind, names]) => requiresTransferSchemaObjectPlan(kind) && names.size > 0));
 const showSqlPreviewConfirm = ref(false);
 // Per-source-table filter: table name -> bare WHERE predicate or full SELECT.
 const tableFilters = ref<Record<string, string>>({});
@@ -542,11 +546,16 @@ async function loadObjects(isCancelled: () => boolean = () => false) {
           const tables = await api.listTables(connectionId, database, schema, undefined, undefined, undefined, undefined, catalog);
           groups.TABLE = tables.filter((t) => t.table_type === "TABLE" || t.table_type === "BASE TABLE").map((t) => t.name);
         } else {
-          const objects = await api.listObjects(connectionId, database, schema, [kind], undefined, undefined, undefined, catalog);
+          const metadata = transferObjectMetadataTarget(kind, schema);
+          if (!metadata) {
+            groups[kind] = [];
+            continue;
+          }
+          const objects = await api.listObjects(connectionId, database, metadata.schema, [metadata.objectType], undefined, undefined, undefined, catalog);
           groups[kind] = objects.map((o) => o.name);
         }
       } catch (error) {
-        if (!isStale() && (kind === "PACKAGE" || kind === "PACKAGE_BODY")) objectLoadErrors.value.push(`${t(`transfer.${OBJECT_KIND_LABEL_KEY[kind]}`)}: ${String(error)}`);
+        if (!isStale() && requiresTransferSchemaObjectPlan(kind)) objectLoadErrors.value.push(`${t(`transfer.${OBJECT_KIND_LABEL_KEY[kind]}`)}: ${String(error)}`);
         groups[kind] = [];
       }
     }
@@ -895,7 +904,7 @@ async function requestStartTransfer() {
     targetTableNameCase: targetTableNameCase.value,
     quoteTargetColumnNames: quoteTargetColumnNames.value,
     ownershipPolicy: "preserve",
-    objectConflictPolicy: hasSelectedPackages.value ? objectConflictPolicy.value : "skip",
+    objectConflictPolicy: hasSelectedSchemaObjects.value ? objectConflictPolicy.value : "skip",
     batchSize: batchSize.value,
     tableFilters: requestedTableFilters(),
     dropTargetConfirmed: false,
@@ -1508,6 +1517,7 @@ async function saveConfigTask() {
               <ObjectSelectionTree v-model="treeSelection" :groups="treeGroups" :disabled-groups="treeDisabledGroups" :disabled-hints="treeDisabledHints" :qualifiers="objectQualifiers" v-model:search="objectSearch" :loading="loadingObjects" class="min-h-0 flex-1" />
               <p v-if="objectLoadErrors.length" role="alert" class="whitespace-pre-line text-xs text-destructive">{{ objectLoadErrors.join("\n") }}</p>
               <p v-if="hasSelectedPackages" class="text-xs text-muted-foreground">{{ t("transfer.packageDependencyHint") }}</p>
+              <p v-if="hasSelectedSynonyms" class="text-xs text-muted-foreground">{{ t("transfer.synonymDependencyHint") }}</p>
               <!-- Per-table SQL filters (MySQL / PostgreSQL sources) -->
               <div v-if="tableFilterSupported && transferContent !== 'structureOnly' && selectedTableList.length" class="shrink-0 rounded-lg border border-border/60 bg-card/60 p-1.5">
                 <div class="flex items-center justify-between gap-2 px-1 pb-1">
@@ -1573,7 +1583,7 @@ async function saveConfigTask() {
                 </Select>
               </div>
               <p v-if="rebuildDisabledHint" class="text-xs text-muted-foreground">{{ rebuildDisabledHint }}</p>
-              <div v-if="hasSelectedPackages" class="flex items-center gap-3">
+              <div v-if="hasSelectedSchemaObjects" class="flex items-center gap-3">
                 <Label class="text-xs shrink-0">{{ t("transfer.objectConflictPolicy") }}</Label>
                 <Select v-model="objectConflictPolicy">
                   <SelectTrigger class="h-7 text-xs"><SelectValue /></SelectTrigger>
