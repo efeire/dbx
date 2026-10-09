@@ -456,11 +456,14 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         if (!members.isEmpty()) {
             String placeholders = String.join(",", Collections.nCopies(members.size(), "?"));
             String argumentSql = """
-                SELECT SUBPROGRAM_ID, POSITION, ARGUMENT_NAME, IN_OUT, DATA_TYPE,
-                    TYPE_OWNER, TYPE_NAME, TYPE_SUBNAME, DEFAULTED
-                FROM ALL_ARGUMENTS
-                WHERE OWNER = ? AND OBJECT_ID = ? AND DATA_LEVEL = 0 AND SUBPROGRAM_ID IN (%s)
-                ORDER BY SUBPROGRAM_ID, POSITION, SEQUENCE
+                SELECT a.SUBPROGRAM_ID, a.POSITION, a.ARGUMENT_NAME, a.IN_OUT, a.DATA_TYPE,
+                    a.TYPE_OWNER, a.TYPE_NAME, a.TYPE_SUBNAME, a.DEFAULTED, type_owner_object.OWNER AS TYPE_SCHEMA
+                FROM ALL_ARGUMENTS a
+                LEFT JOIN ALL_OBJECTS type_owner_object
+                    ON type_owner_object.OBJECT_TYPE = 'DATABASE'
+                    AND TO_CHAR(type_owner_object.OBJECT_ID) = TRIM(a.TYPE_OWNER)
+                WHERE a.OWNER = ? AND a.OBJECT_ID = ? AND a.DATA_LEVEL = 0 AND a.SUBPROGRAM_ID IN (%s)
+                ORDER BY a.SUBPROGRAM_ID, a.POSITION, a.SEQUENCE
                 """.formatted(placeholders);
             List<Object> argumentArgs = new ArrayList<>(List.of(owner, objectId));
             Map<String, PackageCompletionMember> byId = new LinkedHashMap<>();
@@ -475,8 +478,15 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                         PackageCompletionMember member = byId.get(rs.getString(1));
                         if (member == null) continue;
                         String typeName = rs.getString(7);
+                        String typeOwner = rs.getString(6);
+                        // OB can expose a padded database object ID instead of the schema name.
+                        if (typeOwner != null && typeOwner.matches("[0-9]+ +")) typeOwner = rs.getString(10);
+                        if (typeName != null && typeOwner == null) {
+                            member.signatureKnown = false;
+                            continue;
+                        }
                         String type = typeName == null ? rs.getString(5)
-                            : java.util.stream.Stream.of(rs.getString(6), typeName, rs.getString(8))
+                            : java.util.stream.Stream.of(typeOwner, typeName, rs.getString(8))
                                 .filter(value -> value != null && !value.isBlank())
                                 .map(OceanBaseOracleAgent::quotePackageCompletionIdentifier)
                                 .collect(java.util.stream.Collectors.joining("."));
