@@ -1245,7 +1245,7 @@ pub enum AgentMethod {
 }
 
 impl AgentMethod {
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 43] = [
         Self::Handshake,
         Self::Connect,
         Self::OpenSession,
