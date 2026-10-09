@@ -599,12 +599,11 @@ async fn guard_step(
     sql: &str,
 ) -> Result<(), String> {
     let Some(original) = &plan.current_constraint else { return Ok(()) };
-    if session.engine() == Engine::OceanBaseOracle
-        || sql == format!("ALTER TABLE {} DROP CONSTRAINT {} KEEP INDEX", table(change)?, identifier(&original.name)?)
+    if (session.engine() == Engine::OceanBaseOracle
+        || sql == format!("ALTER TABLE {} DROP CONSTRAINT {} KEEP INDEX", table(change)?, identifier(&original.name)?))
+        && read_key(session, change).await?.as_ref() != Some(original)
     {
-        if read_key(session, change).await?.as_ref() != Some(original) {
-            return Err("The original constraint changed during execution. Remaining DDL was stopped.".into());
-        }
+        return Err("The original constraint changed during execution. Remaining DDL was stopped.".into());
     }
     if let (Some(owner), Some(name)) = (&original.index_owner, &original.index_name) {
         if sql == format!("DROP INDEX {}.{}", identifier(owner)?, identifier(name)?) {
