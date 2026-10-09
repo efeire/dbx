@@ -91,16 +91,38 @@ function mountLargeValues(databaseType: DatabaseType, result: Ref<QueryResult>, 
           cloneRow: vi.fn(),
           cloneRows: vi.fn(),
         });
-        if (withEditor) editor = useDataGridEditor({
-          result: computed(() => result.value), editable: computed(() => true),
-          databaseType: computed(() => databaseType), connectionId: computed(() => `${databaseType}-1`), database: computed(() => "MAXIMO"),
-          tableMeta: computed(() => ({ schema: "public", tableName: "APP_DATA", columns: [{ name: "ID", data_type: "NUMBER" }, { name: "APP", data_type: "CLOB" }], primaryKeys: ["ID"] })),
-          sourceColumns: computed(() => ["ID", "APP"]), onExecuteSql: computed(() => undefined), sql: computed(() => undefined),
-          searchText: ref(""), dataGridQuickEntryEnabled: computed(() => false), whereFilterInput: ref(""), currentWhereInput: computed(() => undefined),
-          orderByInput: ref(""), rowStatusFilter: ref("all"), confirmDangerousRowDeletion: computed(() => false), pageSize: ref(100), currentPage: ref(1),
-          getRowItem: (rowId) => ({ id: rowId, sourceIndex: rowId, data: result.value.rows[rowId]!, isNew: false, isDeleted: false, isDirtyCol: [false, false], status: "normal" }),
-          prepareSaveBaseline: (changes) => largeValues!.prepareSaveBaseline(changes), emit: vi.fn(),
-        });
+        if (withEditor)
+          editor = useDataGridEditor({
+            result: computed(() => result.value),
+            editable: computed(() => true),
+            databaseType: computed(() => databaseType),
+            connectionId: computed(() => `${databaseType}-1`),
+            database: computed(() => "MAXIMO"),
+            tableMeta: computed(() => ({
+              schema: "public",
+              tableName: "APP_DATA",
+              columns: [
+                { name: "ID", data_type: "NUMBER" },
+                { name: "APP", data_type: "CLOB" },
+              ],
+              primaryKeys: ["ID"],
+            })),
+            sourceColumns: computed(() => ["ID", "APP"]),
+            onExecuteSql: computed(() => undefined),
+            sql: computed(() => undefined),
+            searchText: ref(""),
+            dataGridQuickEntryEnabled: computed(() => false),
+            whereFilterInput: ref(""),
+            currentWhereInput: computed(() => undefined),
+            orderByInput: ref(""),
+            rowStatusFilter: ref("all"),
+            confirmDangerousRowDeletion: computed(() => false),
+            pageSize: ref(100),
+            currentPage: ref(1),
+            getRowItem: (rowId) => ({ id: rowId, sourceIndex: rowId, data: result.value.rows[rowId]!, isNew: false, isDeleted: false, isDirtyCol: [false, false], status: "normal" }),
+            prepareSaveBaseline: (changes) => largeValues!.prepareSaveBaseline(changes),
+            emit: vi.fn(),
+          });
         return () => h("div");
       },
     }),
@@ -127,7 +149,10 @@ describe("useDataGridLargeValues", () => {
     const result = previewResult("CLOB", "preview", 1);
     result.value.rows.push([2, "second preview"]);
     result.value.large_value_context = { connectionId: "oracle-1", database: "MAXIMO" };
-    result.value.large_value_cells = [{ row_index: 0, column_index: 1, original_bytes: 1, value_ref: "first" }, { row_index: 1, column_index: 1, original_bytes: 1, value_ref: "second" }];
+    result.value.large_value_cells = [
+      { row_index: 0, column_index: 1, original_bytes: 1, value_ref: "first" },
+      { row_index: 1, column_index: 1, original_bytes: 1, value_ref: "second" },
+    ];
     const { editor } = mountLargeValues("oracle", result, true);
     editor!.newRows.value = [[3, "pending insert"]];
     editor!.applyCellValue(0, 1, "pending edit");
@@ -209,9 +234,13 @@ describe("useDataGridLargeValues", () => {
     ];
     result.value.large_value_refs = ["first-locator", "second-locator"];
     let finishFirst!: (chunk: unknown) => void;
-    mocks.readLargeValueChunk.mockImplementation(({ valueRef }) => valueRef === "first-locator"
-      ? new Promise((resolve) => { finishFirst = resolve; })
-      : Promise.resolve({ status: "ok", data: "second complete", next_offset: 15, eof: true, value_kind: "text" }));
+    mocks.readLargeValueChunk.mockImplementation(({ valueRef }) =>
+      valueRef === "first-locator"
+        ? new Promise((resolve) => {
+            finishFirst = resolve;
+          })
+        : Promise.resolve({ status: "ok", data: "second complete", next_offset: 15, eof: true, value_kind: "text" }),
+    );
     const { largeValues } = mountLargeValues("oracle", result);
     const preparation = largeValues.prepareSaveBaseline({ dirtyRows: new Map([[0, new Map([[1, null]])]]), deletedRows: new Set() });
     await expect(largeValues.hydrateLargeValueCell(1, 2)).resolves.toBe(true);

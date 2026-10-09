@@ -511,8 +511,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     const connectionId = options.connectionId.value;
     const executionDatabase = options.executionDatabase.value;
     const operation = options.resultLifecycle.beginOperation();
-    const isCurrent = () => options.result.value === sourceResult && options.connectionId.value === connectionId
-      && options.executionDatabase.value === executionDatabase && options.resultLifecycle.isCurrent(operation);
+    const isCurrent = () => options.result.value === sourceResult && options.connectionId.value === connectionId && options.executionDatabase.value === executionDatabase && options.resultLifecycle.isCurrent(operation);
     const resolved: ResolvedLargeValueCells = new Map();
     let snapshotBytes = 0;
     const requestedColumns = new Set(columnIndexes);
@@ -678,7 +677,9 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
       options.largeValueResolutionVersion.value += 1;
       options.clearCellFormatCache();
       options.invalidateResultEstimate(source);
-    } finally { snapshotExecutionIds.delete(executionId); }
+    } finally {
+      snapshotExecutionIds.delete(executionId);
+    }
   }
 
   return {

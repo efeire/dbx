@@ -2137,7 +2137,7 @@ export const useQueryStore = defineStore("query", () => {
     for (const result of results) {
       const context = result?.large_value_context;
       if (!context) continue;
-      const refs = new Set([...(result.large_value_refs ?? []), ...(result.large_value_cells ?? []).flatMap((cell) => cell.value_ref ? [cell.value_ref] : [])]);
+      const refs = new Set([...(result.large_value_refs ?? []), ...(result.large_value_cells ?? []).flatMap((cell) => (cell.value_ref ? [cell.value_ref] : []))]);
       for (const valueRef of refs) {
         if (released.has(valueRef)) continue;
         released.add(valueRef);
@@ -6422,7 +6422,12 @@ export const useQueryStore = defineStore("query", () => {
   function buildHiddenPrimaryKeyPreparation(tab: QueryTab, sql: string, databaseType: DatabaseType, loaded: LoadedEditableSource, primaryKeys: string[], declaredPrimaryKeys: string[], traceId: string, elapsed: () => string): EditableQueryExecutionPreparation {
     const metadataAnalysis = expandStarProjectionColumnsForSource(bindColumnsForSource(databaseType, loaded.analysis, loaded.source, loaded.tableMeta.columns), loaded.source, loaded.tableMeta.columns);
     const stableLobSource = databaseType === "oracle" || databaseType === "oceanbase-oracle" ? oracleRowIdIsSafeForQuery(tab, loaded) : databaseType === "db2";
-    const largeValuePreview = (databaseType === "oracle" || databaseType === "oceanbase-oracle" || databaseType === "db2") && primaryKeys.length > 0 && stableLobSource && columnsAllowDeferredLobMarkers(loaded.tableMeta.columns) && queryProjectsDeferredLob(databaseType, metadataAnalysis, loaded.source.key, loaded.tableMeta.columns);
+    const largeValuePreview =
+      (databaseType === "oracle" || databaseType === "oceanbase-oracle" || databaseType === "db2") &&
+      primaryKeys.length > 0 &&
+      stableLobSource &&
+      columnsAllowDeferredLobMarkers(loaded.tableMeta.columns) &&
+      queryProjectsDeferredLob(databaseType, metadataAnalysis, loaded.source.key, loaded.tableMeta.columns);
     const unchanged = { sql, metadataSql: sql, hiddenPrimaryKeys: [], largeValuePreview };
     const missingPrimaryKeys =
       declaredPrimaryKeys.length === 0
@@ -8015,9 +8020,7 @@ export const useQueryStore = defineStore("query", () => {
       const frontendTimeoutSecs = frontendQueryTimeoutSecsForSql(sqlToExecute, effectiveDbType, queryTimeoutSecs, sqlStatementParameterOptions);
       if (tab.mode === "data" && effectiveDbType === "oceanbase-oracle") {
         const meta = tableMetaForDataTab(tab);
-        useLargeValuePreview = !!meta && /^(?:BASE )?TABLE$/i.test(meta.tableType ?? "")
-          && columnsAllowDeferredLobMarkers(meta.columns)
-          && meta.columns.some((column) => /^(N?CLOB|BLOB)$/i.test(column.data_type.trim()));
+        useLargeValuePreview = !!meta && /^(?:BASE )?TABLE$/i.test(meta.tableType ?? "") && columnsAllowDeferredLobMarkers(meta.columns) && meta.columns.some((column) => /^(N?CLOB|BLOB)$/i.test(column.data_type.trim()));
       }
       const sourceLabelDatabase = targetDatabase || conn?.database;
       const executionClientSessionId = options?.pagination?.clientSessionId ?? (tab.mode === "query" || tab.mode === "data" ? tabClientSessionId(tab) : undefined);
@@ -8236,16 +8239,22 @@ export const useQueryStore = defineStore("query", () => {
       });
       for (const result of responseResults) {
         if (effectiveDbType === "oceanbase-oracle" && !useLargeValuePreview && result.column_types?.some((type) => /^(N?CLOB|BLOB)$/i.test(type.trim()))) {
-          result.messages = [...(result.messages ?? []), {
-            severity: "INFO", code: "LOB_COMPLETE_READ_FALLBACK",
-            message: "LOB values were read completely because this result does not have a verified single-table preview source.",
-          }];
+          result.messages = [
+            ...(result.messages ?? []),
+            {
+              severity: "INFO",
+              code: "LOB_COMPLETE_READ_FALLBACK",
+              message: "LOB values were read completely because this result does not have a verified single-table preview source.",
+            },
+          ];
         }
         if (result.large_value_cells?.some((cell) => cell.value_ref)) {
-          result.large_value_refs = result.large_value_cells.flatMap((cell) => cell.value_ref ? [cell.value_ref] : []);
+          result.large_value_refs = result.large_value_cells.flatMap((cell) => (cell.value_ref ? [cell.value_ref] : []));
           result.large_value_context = {
-            connectionId: executionConnectionId, database: executionDatabase,
-            clientSessionId: executionClientSessionId, txnSessionId: tab.autoCommit === false ? tab.txnSessionId : undefined,
+            connectionId: executionConnectionId,
+            database: executionDatabase,
+            clientSessionId: executionClientSessionId,
+            txnSessionId: tab.autoCommit === false ? tab.txnSessionId : undefined,
             catalog: executionCatalog,
           };
         }
