@@ -6469,8 +6469,13 @@ pub async fn execute_in_manual_transaction_with_options(
             .map(|session| Arc::clone(&session.connection))
             .ok_or(MANUAL_TRANSACTION_SESSION_NOT_FOUND_ERROR)?;
         let connection = connection.lock().await;
-        if !matches!(&*connection, TxnConnection::Agent { client, .. } if client.supports_capability(crate::db::agent_driver::AgentCapability::BlobBindStatementsV1))
-        {
+        let supported = match &*connection {
+            TxnConnection::Agent { client, .. } => {
+                client.lock().await.supports_capability(crate::db::agent_driver::AgentCapability::BlobBindStatementsV1)
+            }
+            _ => false,
+        };
+        if !supported {
             return Err("This Agent does not support bound BLOB saves; update the Agent before saving.".into());
         }
     }
@@ -6537,7 +6542,8 @@ pub async fn execute_in_manual_transaction_with_options(
             }
             TxnConnection::Agent { client, .. } => {
                 if let Some(bound) = options.bound_statements.as_ref() {
-                    match client
+                    let mut locked = client.lock().await;
+                    match locked
                         .execute_blob_bound_typed(
                             if database.is_empty() { None } else { Some(database) },
                             &statements,
