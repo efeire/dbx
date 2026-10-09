@@ -23,7 +23,7 @@ import SideBySideTextDiff, { type TextDiffSide } from "@/components/common/SideB
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { getSchemaDiffOptionsForDbType } from "@/lib/schema/schemaDiffOptions";
-import { finishSchemaDiffDeployment, schemaDiffRoutineExecutionStatements, schemaDiffRoutineExecutedSteps, type DeployTxResult } from "@/lib/schema/deployTxResult";
+import { finishSchemaDiffDeployment, schemaDiffRoutineExecutionStatements, schemaDiffRoutineExecutedSteps, schemaDiffRoutineExpectedDefinitions, type DeployTxResult } from "@/lib/schema/deployTxResult";
 import { getSchemaDiffNextProgressStep, isSchemaDiffPostgresLike, shouldLoadSchemaDiffExtraObjectPhase, type SchemaDiffProgressPhase } from "@/lib/schema/schemaDiffProgress";
 import { createSchemaDiffTableListLoader } from "@/lib/schema/schemaDiffTableList";
 import { countSchemaDiffActionableObjects, partitionSchemaDiffObjectsByResultTab, swapSchemaDiffRoutineMappings } from "@/lib/schema/schemaDiffRoutine";
@@ -828,6 +828,7 @@ function buildSchemaSyncPlanOptions(options: SchemaDiffCompareOptions) {
   const engineDbType = targetEngineDbType.value ?? getDbType();
   return {
     databaseType: engineDbType,
+    routineEndpoints: { sourceConnectionId: sourceConnectionId.value, sourceDatabase: sourceDatabase.value, targetConnectionId: targetConnectionId.value, targetDatabase: targetDatabase.value },
     sourceDatabaseType: sourceEngineDbType.value ?? (sourceDbType.value as DatabaseType),
     sourceSchema: sourceSchema.value,
     targetSchema: schemaDiffDeployTargetSchema(getDbType(), targetDatabase.value, targetSchema.value),
@@ -1015,10 +1016,25 @@ async function executeDeploySql() {
   executing.value = true;
   try {
     let programSteps = selectedRoutineSteps.value;
+    if (expected.length > 0 && !rollback) {
+      const options = normalizeSchemaDiffCompareOptions(activeConfig.value?.options, getDbType());
+      const plan = await api.generateSchemaSyncPlan({ diffs: [], functionDiffs: expected, sequenceDiffs: [], ruleDiffs: [], ownerDiffs: [] }, buildSchemaSyncPlanOptions(options));
+      const refreshed = plan.routineSteps ?? [];
+      schemaDiffRoutineExecutionStatements(refreshed);
+      if (JSON.stringify(refreshed) !== JSON.stringify(programSteps)) throw new Error("Program metadata or compatibility changed; refresh the preview before execution");
+      programSteps = refreshed;
+    }
     if (expected.length > 0 && rollback) {
+      const current = await api.listFunctions(connectionId, database, schema);
+      for (const diff of expected) {
+        const kind = (diff.source ?? diff.target)?.function_type;
+        const actual = current.find((info) => info.name === diff.name && info.function_type === kind);
+        if (diff.type === "added" && !actual) throw new Error("The added target routine is already missing; inspect partial execution before recovery");
+        diff.source = actual;
+      }
       const reverse = expected.map((diff): FunctionDiff => ({ ...diff, type: diff.type === "added" ? "removed" : diff.type === "removed" ? "added" : "modified", source: diff.target, target: diff.source }));
       const options = normalizeSchemaDiffCompareOptions(activeConfig.value?.options, getDbType());
-      const plan = await api.generateSchemaSyncPlan({ diffs: [], functionDiffs: reverse, sequenceDiffs: [], ruleDiffs: [], ownerDiffs: [] }, { ...buildSchemaSyncPlanOptions(options), sourceSchema: schema, targetSchema: schema });
+      const plan = await api.generateSchemaSyncPlan({ diffs: [], functionDiffs: reverse, sequenceDiffs: [], ruleDiffs: [], ownerDiffs: [] }, { ...buildSchemaSyncPlanOptions(options), sourceDatabaseType: targetEngineDbType.value ?? getDbType(), sourceSchema: schema, targetSchema: schema, routineEndpoints: { sourceConnectionId: connectionId, sourceDatabase: database, targetConnectionId: connectionId, targetDatabase: database, recovery: true } });
       programSteps = plan.routineSteps ?? [];
     }
     if (expected.length > 0 && programSteps.length !== expected.length) throw new Error(t("diff.routinePlanBlocked", { reason: t("diff.noObjectsSelected") }));
@@ -1032,7 +1048,7 @@ async function executeDeploySql() {
       execute: () => api.executeScriptWith2pc(connectionId, database, statements, schema, destructive),
     });
     if (txLog === undefined) return;
-    deployResult.value = await finishSchemaDiffDeployment(txLog, expected, (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input), t, rollback, schema);
+    deployResult.value = await finishSchemaDiffDeployment(txLog, schemaDiffRoutineExpectedDefinitions(expected, programSteps, rollback), (input) => api.validateSchemaDiffRoutines(connectionId, database, schema, input), t, rollback, schema);
     if (expected.length > 0) deployResult.value.executedSteps = schemaDiffRoutineExecutedSteps(programSteps, deployResult.value.executedCount ?? (txLog.status === "committed" ? statements.length : 0));
     showResultDialog.value = true;
   } catch (e: any) {

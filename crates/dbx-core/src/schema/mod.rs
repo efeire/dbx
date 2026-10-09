@@ -1,6 +1,6 @@
 pub mod table_structure_sql;
 mod oracle_routines;
-pub use oracle_routines::{validate_schema_diff_routines, RoutineValidation};
+pub use oracle_routines::{prepare_schema_diff_core, schema_diff_routine_context, validate_schema_diff_routines, RoutineValidation};
 pub mod oracle_types;
 
 pub use dbx_drivers::metadata::sqlite_ddl;

@@ -215,6 +215,7 @@ async function runSchemaDiffSession(session: SchemaDiffSession, dependencies: Sc
 
     publishProgress(session, { phase: "comparing" });
     const result = await api.prepareSchemaDiff({
+      routineEndpoints: { sourceConnectionId: input.sourceConnectionId, sourceDatabase: input.sourceDatabase, targetConnectionId: input.targetConnectionId, targetDatabase: input.targetDatabase },
       sourceTables,
       targetTables,
       sourceDetails,

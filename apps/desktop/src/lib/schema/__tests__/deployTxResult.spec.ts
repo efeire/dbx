@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildDeployTxResult, finishSchemaDiffDeployment, schemaDiffRoutineExecutionStatements, schemaDiffRoutineExecutedSteps } from "@/lib/schema/deployTxResult";
+import { buildDeployTxResult, finishSchemaDiffDeployment, schemaDiffRoutineExecutionStatements, schemaDiffRoutineExecutedSteps, schemaDiffRoutineExpectedDefinitions } from "@/lib/schema/deployTxResult";
 import type { FunctionDiff, SchemaDiffRoutineStep } from "@/lib/schema/schemaDiff";
 
 const t = (key: string, params?: Record<string, any>) => {
@@ -90,6 +90,29 @@ describe("buildDeployTxResult", () => {
 });
 
 describe("routine deployment readback", () => {
+  it("validates mapped type and body definitions without overwriting source or recovery snapshots", async () => {
+    const source = { name: "Same.Type", function_type: "TYPE", data_type: "", arguments: "", schema: "SRC", definition: 'CREATE EDITIONABLE TYPE "Same.Type" AS TABLE OF SRC.Parent;' };
+    const body = { ...source, function_type: "TYPE BODY", definition: 'CREATE TYPE BODY "Same.Type" AS MEMBER FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;' };
+    const diffs: FunctionDiff[] = [{ name: source.name, type: "modified", source, target: { ...source, schema: "DST", definition: "original target specification" } }, { name: source.name, type: "modified", source: body, target: { ...body, schema: "DST", definition: "original target body" } }];
+    const steps: SchemaDiffRoutineStep[] = [
+      { name: source.name, routineType: "TYPE", operation: "modified", sql: 'CREATE OR REPLACE TYPE "DST"."Same.Type" AS TABLE OF "DST".Parent;', dependencies: [] },
+      { name: source.name, routineType: "TYPE BODY", operation: "modified", sql: 'CREATE OR REPLACE TYPE BODY "DST"."Same.Type" AS MEMBER FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;', dependencies: [] },
+    ];
+    const forward = schemaDiffRoutineExpectedDefinitions(diffs, steps);
+    expect(forward[0]!.source!.definition).toBe(steps[0]!.sql);
+    expect(forward[1]!.source!.definition).toBe(steps[1]!.sql);
+    expect(forward[0]!.target!.definition).toBe("original target specification");
+    expect(diffs[0]!.source!.definition).toBe(source.definition);
+    const validate = vi.fn().mockResolvedValue([]);
+    await finishSchemaDiffDeployment({ status: "committed" }, forward, validate, t, false, "DST");
+    expect(validate).toHaveBeenCalledWith(forward);
+    const recoverySteps = steps.map((step) => ({ ...step, sql: `restore ${step.routineType}` }));
+    const recovery = schemaDiffRoutineExpectedDefinitions(diffs, recoverySteps, true);
+    expect(recovery[0]!.target!.definition).toBe("restore TYPE");
+    expect(recovery[1]!.target!.definition).toBe("restore TYPE BODY");
+    expect(recovery[0]!.source!.definition).toBe(source.definition);
+    expect(diffs[0]!.target!.definition).toBe("original target specification");
+  });
   it("keeps compound trigger bodies intact and applies status separately in plan order", () => {
     const ddl = "CREATE OR REPLACE TRIGGER T COMPOUND TRIGGER BEFORE STATEMENT IS BEGIN NULL; END BEFORE STATEMENT; END;";
     const steps: SchemaDiffRoutineStep[] = [

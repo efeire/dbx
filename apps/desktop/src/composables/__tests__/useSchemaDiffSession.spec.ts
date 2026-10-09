@@ -498,6 +498,8 @@ test.each([
   assert.equal(options.databaseType, targetDbType);
   assert.equal(options.sourceSchema, "SRC");
   assert.equal(options.targetSchema, "DST");
+  assert.deepEqual(options.routineEndpoints, { sourceConnectionId: "routine-source", sourceDatabase: "db", targetConnectionId: "routine-target", targetDatabase: "db" });
+  assert.equal(options.routineContext, undefined);
   assert.deepEqual(options.sourceFunctions, programs);
 });
 

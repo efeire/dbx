@@ -1,6 +1,6 @@
 use dbx_sql_core::value_literals::quote_string_literal;
 mod oracle_routines;
-pub use oracle_routines::{add_oracle_routines_to_plan, comparable_oracle_routine, is_oracle_routine_database, oracle_routine_steps, RoutineStep};
+pub use oracle_routines::{add_oracle_routines_to_plan, add_oracle_routines_to_plan_with_context, comparable_oracle_routine, is_oracle_routine_database, oracle_routine_steps, oracle_routine_steps_with_context, RoutineEndpoints, RoutineStep};
 use dbx_sql_dialect::postgres_index_key::decorate_postgres_index_key;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -488,6 +488,10 @@ pub struct SchemaDiffTableMapping {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaDiffPreparationOptions {
+    #[serde(default)]
+    pub routine_endpoints: Option<RoutineEndpoints>,
+    #[serde(skip)]
+    pub routine_context: Option<dbx_sql_core::oracle_program_compatibility::OracleProgramContext>,
     #[serde(default)]
     pub source_database_type: Option<DatabaseType>,
     #[serde(default)]
@@ -1994,6 +1998,8 @@ impl Default for SchemaDiffPreparationOptions {
     fn default() -> Self {
         Self {
             source_database_type: None,
+            routine_endpoints: None,
+            routine_context: None,
             source_schema: None,
             source_tables: Vec::new(),
             target_tables: Vec::new(),
@@ -2258,7 +2264,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
     };
 
     let mut routine_plan = SchemaSyncSqlPlan { sync_sql, rollback_sync_sql, rollback_completeness, missing_rollback_objects, routine_steps: Vec::new() };
-    add_oracle_routines_to_plan(&mut routine_plan, &function_diffs, options.database_type, options.target_schema.as_deref(), options.source_database_type, options.source_schema.as_deref());
+    add_oracle_routines_to_plan_with_context(&mut routine_plan, &function_diffs, options.database_type, options.target_schema.as_deref(), options.source_database_type, options.source_schema.as_deref(), options.routine_context.as_ref());
 
     let permission_diffs = if !options.source_permissions.is_empty() || !options.target_permissions.is_empty() {
         diff_permissions(&options.source_permissions, &options.target_permissions)

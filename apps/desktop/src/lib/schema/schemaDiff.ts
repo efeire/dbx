@@ -236,6 +236,7 @@ export interface FieldMappingEntry {
 }
 
 export interface SchemaDiffPreparationOptions {
+  routineEndpoints?: SchemaDiffRoutineEndpoints;
   sourceTables: TableInfo[];
   targetTables: TableInfo[];
   sourceDetails: TableSchemaDetail[];
@@ -348,6 +349,7 @@ export interface MissingRollbackObject {
 export type RollbackCompleteness = "complete" | "incomplete";
 
 export interface SchemaDiffRoutineStep {
+  compatibilityWarnings?: string[];
   name: string;
   sourceSchema?: string;
   targetSchema?: string;
@@ -398,7 +400,16 @@ export interface SchemaSyncSqlPlan {
   missingRollbackObjects: MissingRollbackObject[];
 }
 
+export interface SchemaDiffRoutineEndpoints {
+  recovery?: boolean;
+  sourceConnectionId: string;
+  sourceDatabase: string;
+  targetConnectionId: string;
+  targetDatabase: string;
+}
+
 export interface GenerateSchemaSyncPlanOptions {
+  routineEndpoints?: SchemaDiffRoutineEndpoints;
   databaseType: DatabaseType;
   sourceDatabaseType?: DatabaseType;
   sourceSchema?: string;
@@ -428,6 +439,7 @@ export type DiffOperationType = "modify" | "create" | "delete" | "none";
 export type DiffObjectKind = "table" | "view" | "function" | "sequence" | "rule" | "owner" | "column" | "index" | "trigger" | "foreignKey" | "tableOption";
 
 export interface SchemaDiffObject {
+  compatibilityWarnings?: string[];
   id: string;
   operationType: DiffOperationType;
   objectKind: DiffObjectKind;
@@ -817,6 +829,7 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
       sourceSchema: diff.source?.schema,
       targetSchema: diff.target?.schema,
       blockedReason: routineStep?.blockedReason,
+      compatibilityWarnings: routineStep?.compatibilityWarnings,
       dependencies: routineStep?.dependencies,
       sourceName: diff.type === "added" ? undefined : diff.name,
       targetName: diff.type === "removed" ? undefined : diff.name,

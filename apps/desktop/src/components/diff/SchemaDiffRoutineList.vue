@@ -109,8 +109,9 @@ function onRowActivate(object: SchemaDiffObject) {
           </template>
           <span v-else class="text-muted-foreground">—</span>
         </div>
-        <div v-if="row.object.blockedReason || row.object.dependencies?.length || row.object.incomingDependencies?.length || row.object.sourceTrigger || row.object.targetTrigger || row.typeMetadata.length" class="col-span-full space-y-1 break-words text-xs">
+        <div v-if="row.object.blockedReason || row.object.compatibilityWarnings?.length || row.object.dependencies?.length || row.object.incomingDependencies?.length || row.object.sourceTrigger || row.object.targetTrigger || row.typeMetadata.length" class="col-span-full space-y-1 break-words text-xs">
           <p v-if="row.object.blockedReason" class="text-amber-700 dark:text-amber-400">{{ t("diff.routinePlanBlocked", { reason: row.object.blockedReason }) }}</p>
+          <p v-for="warning in row.object.compatibilityWarnings ?? []" :key="warning" class="text-amber-700 dark:text-amber-400">{{ warning }}</p>
           <p v-if="row.object.dependencies?.length" class="text-muted-foreground">{{ t("diff.routineDependencies", { dependencies: row.object.dependencies.join(", ") }) }}</p>
           <p v-if="row.object.incomingDependencies?.length" class="text-amber-700 dark:text-amber-400">{{ t("diff.routineIncomingDependencies", { dependencies: row.object.incomingDependencies.map((item) => `${item.objectType} ${item.owner}.${item.name}`).join(", ") }) }}</p>
           <template v-for="metadata in row.typeMetadata" :key="metadata.side">
