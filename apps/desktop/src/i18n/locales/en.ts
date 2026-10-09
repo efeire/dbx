@@ -5570,6 +5570,7 @@ export default {
     triggerStatement: "Trigger statement",
     editTriggerDefinition: "Edit trigger definition",
     triggerOwnerUnknown: "The trigger owner could not be identified. Refresh its metadata before editing; the table owner cannot identify the trigger owner.",
+    triggerPendingDrafts: "Save or discard pending trigger additions, edits, and deletions before editing a complete definition or refreshing triggers.",
     triggerRecoveryTargetUnknown: "This record has no saved target table identity. Check the catalog before restoring it.",
     triggerStructuredMode: "Structured fields",
     triggerSourceMode: "Complete source",

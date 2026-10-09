@@ -4814,6 +4814,10 @@ const triggerDefinitionSchema = ref("");
 const canEditFullTriggerDefinition = computed(() => databaseType.value === "oracle" || databaseType.value === "oceanbase-oracle");
 function openTriggerDefinition(trigger: EditableStructureTrigger) {
   if (!trigger.original || trigger.markedForDrop || triggersLoading.value) return;
+  if (triggers.value.some(triggerChanged)) {
+    errorMessage.value = t("structureEditor.triggerPendingDrafts");
+    return;
+  }
   const owner = oracleTriggerOwner(trigger.original);
   if (!owner) {
     errorMessage.value = t("structureEditor.triggerOwnerUnknown");
@@ -4824,6 +4828,10 @@ function openTriggerDefinition(trigger: EditableStructureTrigger) {
   triggerDefinitionOpen.value = true;
 }
 async function refreshAfterTriggerDefinitionSave() {
+  if (triggers.value.some(triggerChanged)) {
+    errorMessage.value = t("structureEditor.triggerPendingDrafts");
+    return;
+  }
   await loadStructure(true, visibleTableStructureRefreshScope("triggers"), false, { forceDdl: true, forceMetadata: true });
 }
 const isSqlServerTriggerEditor = computed(() => structureDialect.value === "sqlserver");
