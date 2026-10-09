@@ -123,8 +123,11 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             // Mixed failures can include reset/network errors; keep their original classification.
             if (current.getSuppressed().length != 0) return error;
             if (current instanceof SQLException sqlError) {
-                if (permission != null || sqlError.getNextException() != null
-                    || !(sqlError instanceof java.sql.SQLTransientConnectionException)
+                boolean expectedWrapper = permission == null
+                    ? sqlError instanceof java.sql.SQLTransientConnectionException
+                    : sqlError.getClass() == SQLException.class
+                        || sqlError.getClass() == com.oceanbase.jdbc.internal.util.exceptions.OceanBaseSqlException.class;
+                if (sqlError.getNextException() != null || !expectedWrapper
                     || !"HY000".equals(sqlError.getSQLState()) || sqlError.getErrorCode() != 1031
                     || sqlError.getMessage() == null || !sqlError.getMessage().contains("ORA-01031:")) {
                     return error;

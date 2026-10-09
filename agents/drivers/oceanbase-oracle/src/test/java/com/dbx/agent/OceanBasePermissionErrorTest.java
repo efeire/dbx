@@ -18,6 +18,40 @@ class OceanBasePermissionErrorTest {
     private static final String MESSAGE = "(conn=3221636949) ORA-01031: insufficient privileges";
 
     @Test
+    void actualDriverPermissionCauseChainKeepsDiagnosticsForBothExecutionEntries() {
+        for (boolean paged : new boolean[]{false, true}) {
+            SQLException base = new SQLException("ORA-01031: insufficient privileges", "HY000", 1031);
+            SQLException wrapped = com.oceanbase.jdbc.internal.util.exceptions.OceanBaseSqlException.of(base, "ALTER PROCEDURE P COMPILE");
+            SQLException top = new SQLTransientConnectionException(MESSAGE, "HY000", 1031, wrapped);
+            JsonObject data = executeFailure(top, paged);
+            assertEquals("sql", data.get("category").getAsString());
+            assertEquals("HY000", data.get("sqlState").getAsString());
+            assertEquals(1031, data.get("vendorCode").getAsInt());
+            assertEquals(SQLTransientConnectionException.class.getName(), data.get("exceptionClass").getAsString());
+            assertEquals("quarantine", data.get("sessionDisposition").getAsString());
+            assertEquals("unknown", data.get("operationOutcome").getAsString());
+            assertFalse(data.get("retryable").getAsBoolean());
+        }
+    }
+
+    @Test
+    void innerDriverCauseMustStillBeTheSamePermissionError() {
+        for (SQLException base : new SQLException[]{
+            new SQLException("connection lost", "08006", 1031),
+            new SQLException("ORA-20001: application error", "HY000", 20001),
+            new SQLException("different error", "HY000", 1031),
+            new SQLRecoverableException("ORA-01031: insufficient privileges", "HY000", 1031)
+        }) {
+            SQLException wrapped = new com.oceanbase.jdbc.internal.util.exceptions.OceanBaseSqlException(
+                "ORA-01031: insufficient privileges", "ALTER PROCEDURE P COMPILE", "HY000", 1031, base);
+            SQLException top = new SQLTransientConnectionException(MESSAGE, "HY000", 1031, wrapped);
+            for (boolean paged : new boolean[]{false, true}) {
+                assertEquals("connection", executeFailure(top, paged).get("category").getAsString());
+            }
+        }
+    }
+
+    @Test
     void capturedPermissionFailureKeepsDiagnosticsAndUnsafeConnectionDisposition() {
         for (boolean paged : new boolean[]{false, true}) {
             SQLException cause = new SQLTransientConnectionException(MESSAGE, "HY000", 1031);
