@@ -4,8 +4,9 @@ use dbx_core::connection::AppState;
 use dbx_core::data::sql_file_import::{execute_sql_file_content, execute_sql_file_paths};
 use dbx_core::models::connection::{ConnectionConfig, DatabaseType};
 use dbx_core::query::{
-    begin_manual_transaction, commit_manual_transaction, execute_in_manual_transaction_with_options,
-    execute_sql_statement, rollback_manual_transaction, ManualTransactionExecutionOptions,
+    begin_manual_transaction, commit_manual_transaction, execute_blob_bound_statements,
+    execute_in_manual_transaction_with_options, execute_sql_statement, rollback_manual_transaction,
+    ManualTransactionExecutionOptions,
 };
 use dbx_core::sql::{SqlFileRequest, SqlFileStatus};
 use std::time::{Duration, Instant};
@@ -260,6 +261,26 @@ async fn live_oceanbase_bound_manual_savepoint_and_user_rollback() {
         rollback_manual_transaction(&state, &session).await?;
         if state.transaction_sessions.read().await.contains_key(&session) || query(&state, "bound-reader", &database, &select).await?.rows != original { return Err("User ROLLBACK after success did not fully restore fixture".into()); }
         checks.push(serde_json::json!({"phase": phase, "passed": true}));
+        phase = "default pooled typed batch rolls back earlier writes on late conflict";
+        let batch = vec![make_bound(2, "010203", "AABBCC"), make_bound(3, "FFFFFF", "DDEEFF")];
+        let previews = batch.iter().map(|s| s.preview_sql.clone()).collect::<Vec<_>>();
+        let error = execute_blob_bound_statements(&state, "bound-writer", &database, &previews, &batch, Some(&database), false, Some(30))
+            .await.err().ok_or("Default pooled batch must reject the second stale target")?;
+        if !error.contains("DBX bound stale row") || !error.contains("\"sessionDisposition\":\"keep\"") || query(&state, "bound-reader", &database, &select).await?.rows != original {
+            return Err(format!("Default pooled typed batch left partial writes or lost known SQL classification: {error}"));
+        }
+        checks.push(serde_json::json!({"phase": phase, "error": error, "independentRows": original}));
+        phase = "default pooled typed batch commits successful writes and restores auto-commit";
+        let batch = vec![make_bound(2, "010203", "AABBCC"), make_bound(3, "010203", "DDEEFF")];
+        let previews = batch.iter().map(|s| s.preview_sql.clone()).collect::<Vec<_>>();
+        execute_blob_bound_statements(&state, "bound-writer", &database, &previews, &batch, Some(&database), false, Some(30)).await?;
+        let mut committed = original.clone();
+        committed[1][2] = serde_json::json!("AABBCC"); committed[2][2] = serde_json::json!("DDEEFF");
+        if normalize(&query(&state, "bound-reader", &database, &select).await?.rows) != normalize(&committed) { return Err("Successful default typed batch did not commit its complete changes".into()); }
+        query(&state, "bound-writer", &database, &format!("UPDATE {table} SET VAL = 12 WHERE ID = 1")).await?;
+        committed[0][1] = serde_json::json!(12);
+        if normalize(&query(&state, "bound-reader", &database, &select).await?.rows) != normalize(&committed) { return Err("Pooled connection auto-commit was not restored after typed batch".into()); }
+        checks.push(serde_json::json!({"phase": phase, "independentRows": committed}));
         Ok(())
     }.await;
     let remaining: Vec<String> = state.transaction_sessions.read().await.keys().cloned().collect();
