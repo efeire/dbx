@@ -56,6 +56,7 @@ import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
 import OraclePrimaryKeyEditor from "./OraclePrimaryKeyEditor.vue";
 import OracleForeignKeyEditor from "./OracleForeignKeyEditor.vue";
+import OracleUniqueEditor from "./OracleUniqueEditor.vue";
 import { useQueryStore } from "@/stores/queryStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { matchesShortcut } from "@/lib/editor/keyboardShortcuts";
@@ -6562,6 +6563,20 @@ watch(
             class="col-start-1 row-start-2 structure-card-scroller m-0 min-h-0 flex-1 overflow-auto p-[var(--structure-cell-px)]"
             @scroll.passive="onStructureContentScroll('constraints', $event)"
           >
+            <OracleUniqueEditor
+              v-if="(databaseType === 'oracle' || databaseType === 'oceanbase-oracle') && !isCreateMode && !connection?.read_only"
+              :connection-id="connectionId"
+              :database="database"
+              :schema="metadataSchema"
+              :table-name="tableName"
+              :columns="columns.map((column) => column.name)"
+              :names="constraints.filter((item) => item.constraint_type.toUpperCase() === 'UNIQUE').map((item) => item.name)"
+              :oceanbase="databaseType === 'oceanbase-oracle'"
+              :disabled="saving || loading || constraintsLoading || hasPendingStructureChanges || ddlDirty"
+              :confirm="confirmPrimaryKeyChange"
+              @busy="saving = $event"
+              @changed="primaryKeyChanged"
+            />
             <OraclePrimaryKeyEditor
               v-if="(databaseType === 'oracle' || databaseType === 'oceanbase-oracle') && !isCreateMode && !connection?.read_only"
               :oceanbase="databaseType === 'oceanbase-oracle'"

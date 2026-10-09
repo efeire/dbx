@@ -6,6 +6,8 @@ use crate::{connection::AppState, db, models::connection::DatabaseType};
 
 mod foreign_key;
 pub use foreign_key::*;
+mod unique;
+pub use unique::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

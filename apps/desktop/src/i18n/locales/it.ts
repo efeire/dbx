@@ -4550,6 +4550,18 @@ export default withEnglishFallback({
     invalid: "non valido",
     refreshDiscardConfirm: "L'aggiornamento eliminerà le modifiche non salvate al codice sorgente. Continuare?",
   },
+  uniqueEditor: {
+    title: "Modifica vincoli UNIQUE",
+    add: "Aggiungi UNIQUE",
+    existing: "Seleziona UNIQUE",
+    edit: "Modifica UNIQUE selezionato",
+    drop: "Elimina questo UNIQUE",
+    index: "Indice associato",
+    oracleHint: "Vincoli e indici sono oggetti distinti. Gli indici univoci conservati continuano a imporre l'unicità.",
+    oceanbaseHint: "OceanBase gestisce UNIQUE tramite il relativo indice univoco. Eliminando il vincolo si elimina l'indice; opzioni di stato e differimento non disponibili.",
+    missing: "Il vincolo UNIQUE non è più visibile.",
+    current: "UNIQUE attuale",
+  },
   foreignKeyEditor: {
     title: "Modifica chiavi esterne",
     add: "Aggiungi chiave esterna",

@@ -320,6 +320,45 @@ pub struct ForeignKeyChangeRequest {
     pub revision: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UniqueChangeRequest {
+    pub connection_id: String,
+    pub database: String,
+    pub change: dbx_core::schema::oracle_constraint_change::UniqueChange,
+    pub revision: Option<String>,
+}
+pub async fn preview_unique_change(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<UniqueChangeRequest>,
+) -> Result<Json<dbx_core::schema::oracle_constraint_change::UniqueChangePreview>, AppError> {
+    dbx_core::schema::oracle_constraint_change::preview_unique_change(
+        &state.app,
+        &req.connection_id,
+        &req.database,
+        req.change,
+    )
+    .await
+    .map(Json)
+    .map_err(AppError::from)
+}
+pub async fn apply_unique_change(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<UniqueChangeRequest>,
+) -> Result<Json<dbx_core::schema::oracle_constraint_change::UniqueChangeResult>, AppError> {
+    let revision = req.revision.ok_or_else(|| AppError::from("A preview revision is required.".to_string()))?;
+    dbx_core::schema::oracle_constraint_change::apply_unique_change(
+        &state.app,
+        &req.connection_id,
+        &req.database,
+        req.change,
+        &revision,
+    )
+    .await
+    .map(Json)
+    .map_err(AppError::from)
+}
+
 pub async fn preview_foreign_key_change(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ForeignKeyChangeRequest>,

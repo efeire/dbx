@@ -5,6 +5,34 @@ export interface PrimaryKeyChange {
   dropPreviousIndex?: boolean;
 }
 
+export interface UniqueDefinition {
+  name: string;
+  columns: string[];
+  enabled: boolean;
+  validated: boolean;
+  deferrable: boolean;
+  initiallyDeferred: boolean;
+  rely: boolean;
+}
+export interface UniqueSnapshot extends UniqueDefinition {
+  indexOwner: string | null;
+  indexName: string | null;
+}
+export interface UniqueChange {
+  schema: string;
+  tableName: string;
+  originalName: string | null;
+  desired: UniqueDefinition | null;
+  dropPreviousIndex: boolean;
+}
+export interface UniqueChangePreview extends Omit<ConstraintChangePreview, "currentConstraint"> {
+  currentConstraint: UniqueSnapshot | null;
+}
+export interface UniqueChangeResult extends Omit<ConstraintChangeResult, "currentConstraint"> {
+  currentConstraint: UniqueSnapshot | null;
+  originalConstraint: UniqueSnapshot | null;
+}
+
 export interface ForeignKeyDefinition {
   name: string;
   columns: string[];
