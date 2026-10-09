@@ -4025,6 +4025,8 @@ export default withEnglishFallback({
     routineRenameStepFailed: "将「{oldName}」改为「{newName}」时在第 {step} 步停止：{message}。已执行的 DDL 不会自动回滚。请检查两个对象，修复或移除新对象后再重试。",
     routineRenameOriginalNotDropped: "尚未发送删除旧对象的步骤。",
     routineRenameFinalStateUnknown: "最后一步可能已改变数据库。恢复前请读回两个名称的对象、编译状态、授权和依赖。",
+    oceanbaseViewRenameWarning: "重命名不可回滚。现有授权随视图保留，依赖对象可能失效，其源码不会自动改写。跨所有者操作需要直接授予 ALTER ANY TABLE 且视图元数据可见；无法核验仅通过角色取得的权限。",
+    renamedSourceSnapshot: "对象已重命名。当前文本保留为只读快照；请重新打开改名后的对象编辑其当前定义。",
     renameDatabase: "重命名数据库",
     renameDatabaseTitle: "重命名数据库",
     renameDatabaseNotOwner: "只有数据库所有者才能重命名「{name}」。",

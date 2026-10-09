@@ -69,6 +69,7 @@ export interface SavedOpenTab {
   objectBrowser?: QueryTab["objectBrowser"];
   objectSource?: QueryTab["objectSource"];
   sourceView?: boolean;
+  sourceSnapshot?: boolean;
   ddlViewer?: QueryTab["ddlViewer"];
   tableComment?: QueryTab["tableComment"];
   tableMeta?: QueryTab["tableMeta"];
@@ -217,6 +218,7 @@ export function serializeOpenTabs(tabs: QueryTab[]): SavedOpenTab[] {
     objectBrowser: tab.objectBrowser,
     objectSource: tab.objectSource,
     ...(tab.sourceView ? { sourceView: true } : {}),
+    ...(tab.sourceSnapshot ? { sourceSnapshot: true } : {}),
     ...(tab.ddlViewer ? { ddlViewer: { ...tab.ddlViewer } } : {}),
     ...(tab.tableComment !== undefined ? { tableComment: tab.tableComment } : {}),
     tableMeta: tab.tableMeta,

@@ -3805,6 +3805,8 @@ export default withEnglishFallback({
     routineRenameStepFailed: "將「{oldName}」改為「{newName}」時在第 {step} 步停止：{message}。已執行的 DDL 不會自動回復。請檢查兩個物件，修復或移除新物件後再重試。",
     routineRenameOriginalNotDropped: "尚未傳送刪除舊物件的步驟。",
     routineRenameFinalStateUnknown: "最後一步可能已改變資料庫。復原前請讀回兩個名稱的物件、編譯狀態、授權和相依關係。",
+    oceanbaseViewRenameWarning: "重新命名無法回復交易。現有授權隨檢視保留，相依物件可能失效，其原始碼不會自動改寫。跨擁有者操作需要直接授予 ALTER ANY TABLE 且檢視中繼資料可見；無法核驗僅透過角色取得的權限。",
+    renamedSourceSnapshot: "物件已重新命名。目前文字保留為唯讀快照；請重新開啟改名後的物件以編輯目前定義。",
     renameDatabase: "重新命名資料庫",
     renameDatabaseTitle: "重新命名資料庫",
     renameDatabaseNotOwner: "只有資料庫擁有者才能重新命名「{name}」。",

@@ -1835,6 +1835,15 @@ async function confirmRename() {
       if (!executed) return;
     }
     renameApplied = true;
+    if (effectiveDatabaseType.value === "oceanbase-oracle" && row.type === "VIEW") {
+      queryStore.invalidateRenamedViewTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: "VIEW" });
+      if (sourceRow.value?.id === row.id) closeSource();
+      invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
+      await Promise.all([row.name, newName].flatMap((tableName) => [
+        invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }),
+        invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName }),
+      ]));
+    }
     toast(t("contextMenu.renameObjectSuccess", { oldName: row.name, newName }));
     showRenameDialog.value = false;
     if (sourceRow.value?.id === row.id) closeSource();
@@ -4586,6 +4595,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       </DialogHeader>
       <div class="grid gap-3">
         <Input v-model="renameInput" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" @keydown.enter.prevent="confirmRename" />
+        <p v-if="effectiveDatabaseType === 'oceanbase-oracle' && renameTarget?.type === 'VIEW'" class="text-sm text-muted-foreground">{{ t("contextMenu.oceanbaseViewRenameWarning") }}</p>
         <pre v-if="renamePreviewSqlText" class="max-h-32 min-w-0 max-w-full overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(renamePreviewSqlText)"></pre>
         <p v-if="renameError" class="min-w-0 max-w-full overflow-x-auto text-sm text-destructive">{{ renameError }}</p>
       </div>
