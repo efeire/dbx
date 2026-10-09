@@ -560,11 +560,11 @@ mod tests {
         let mut mapped = unchanged.clone();
         mapped.schema = Some("TARGET".into());
         mapped.definition = mapped.definition.replace("SOURCE.same", "TARGET.same");
-        assert!(super::super::diff_functions(&[unchanged.clone()], &[mapped]).is_empty());
+        assert!(super::super::diff_functions(std::slice::from_ref(&unchanged), &[mapped]).is_empty());
         let changed = routine("same", "CREATE PROCEDURE SOURCE.same IS BEGIN x := 'a  b'; END;");
-        let diffs = super::super::diff_functions(&[changed], &[unchanged.clone()]);
+        let diffs = super::super::diff_functions(&[changed], std::slice::from_ref(&unchanged));
         assert_eq!(diffs[0].diff_type, "modified");
-        assert_eq!(super::super::diff_functions(&[unchanged.clone()], &[])[0].diff_type, "added");
+        assert_eq!(super::super::diff_functions(std::slice::from_ref(&unchanged), &[])[0].diff_type, "added");
         assert_eq!(super::super::diff_functions(&[], &[unchanged])[0].diff_type, "removed");
     }
 
@@ -674,14 +674,14 @@ mod tests {
     fn trigger_state_is_separate_from_body_and_same_name_tables_do_not_merge() {
         let enabled = trigger_info("tr", "t", "ENABLED");
         let disabled = trigger_info("tr", "t", "DISABLED");
-        let diffs = super::super::diff_functions(&[disabled], &[enabled.clone()]);
+        let diffs = super::super::diff_functions(&[disabled], std::slice::from_ref(&enabled));
         assert_eq!(diffs[0].diff_type, "modified");
         let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
         assert!(steps[0].sql.as_ref().unwrap().contains("'a  b'"));
         assert!(steps[0].sql.as_ref().unwrap().contains("DISABLE BEGIN"));
         assert!(steps[0].post_sql.is_empty());
         let enabled_steps = oracle_routine_steps(
-            &super::super::diff_functions(&[enabled.clone()], &[]),
+            &super::super::diff_functions(std::slice::from_ref(&enabled), &[]),
             DatabaseType::Oracle,
             Some("TARGET"),
             Some(DatabaseType::Oracle),
@@ -698,7 +698,7 @@ mod tests {
     fn package_cross_engine_and_typed_cycles_are_blocked_without_losing_source() {
         let a = package("p", false);
         let cross = oracle_routine_steps(
-            &super::super::diff_functions(&[a.clone()], &[]),
+            &super::super::diff_functions(std::slice::from_ref(&a), &[]),
             DatabaseType::OceanbaseOracle,
             Some("TARGET"),
             Some(DatabaseType::Oracle),
