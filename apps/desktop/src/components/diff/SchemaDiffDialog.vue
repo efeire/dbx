@@ -1487,7 +1487,16 @@ const targetConnectionInfo = computed(() => {
               <Splitpanes horizontal class="min-h-0 flex-1" @resized="handleSplitpanesResized">
                 <Pane :size="splitpanesSize" min-size="20">
                   <div class="h-full overflow-auto">
-                    <SchemaDiffRoutineList :objects="routineDiffObjects" :source-schema="sourceSchema" :target-schema="targetSchema" :viewing-object-id="selectedRoutineObjectId" :selectable="canDeployRoutines" :empty-text="t('diff.noDifferences')" @toggle-selection="handleToggleObjectSelection" @view-diff="handleViewRoutineDiff" />
+                    <SchemaDiffRoutineList
+                      :objects="routineDiffObjects"
+                      :source-schema="sourceSchema"
+                      :target-schema="targetSchema"
+                      :viewing-object-id="selectedRoutineObjectId"
+                      :selectable="canDeployRoutines"
+                      :empty-text="t('diff.noDifferences')"
+                      @toggle-selection="handleToggleObjectSelection"
+                      @view-diff="handleViewRoutineDiff"
+                    />
                   </div>
                 </Pane>
                 <Pane :size="100 - splitpanesSize" min-size="20">

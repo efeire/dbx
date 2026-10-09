@@ -674,7 +674,15 @@ function buildSequenceDdl(seq: SequenceInfo): string {
   return parts.join("\n");
 }
 
-export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiffs: FunctionDiff[] = [], sequenceDiffs: SequenceDiff[] = [], ruleDiffs: RuleDiff[] = [], ownerDiffs: OwnerDiff[] = [], renameCandidates?: RenameCandidate[], routineSteps: SchemaDiffRoutineStep[] = []): SchemaDiffObject[] {
+export function convertToSchemaDiffObjects(
+  tableDiffs: TableDiff[],
+  functionDiffs: FunctionDiff[] = [],
+  sequenceDiffs: SequenceDiff[] = [],
+  ruleDiffs: RuleDiff[] = [],
+  ownerDiffs: OwnerDiff[] = [],
+  renameCandidates?: RenameCandidate[],
+  routineSteps: SchemaDiffRoutineStep[] = [],
+): SchemaDiffObject[] {
   const objects: SchemaDiffObject[] = [];
 
   for (const diff of tableDiffs) {

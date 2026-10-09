@@ -34,7 +34,14 @@ pub fn generate_schema_sync_sql(
         &field_mappings.unwrap_or_default(),
         false,
     );
-    dbx_core::schema_diff::add_oracle_routines_to_plan(&mut plan, function_diffs.as_deref().unwrap_or_default(), database_type, target_schema.as_deref(), source_database_type, source_schema.as_deref());
+    dbx_core::schema_diff::add_oracle_routines_to_plan(
+        &mut plan,
+        function_diffs.as_deref().unwrap_or_default(),
+        database_type,
+        target_schema.as_deref(),
+        source_database_type,
+        source_schema.as_deref(),
+    );
     Ok(plan.sync_sql)
 }
 
@@ -68,7 +75,14 @@ pub fn generate_schema_sync_plan(
         &field_mappings.unwrap_or_default(),
         enable_rollback.unwrap_or(false),
     );
-    dbx_core::schema_diff::add_oracle_routines_to_plan(&mut plan, function_diffs.as_deref().unwrap_or_default(), database_type, target_schema.as_deref(), source_database_type, source_schema.as_deref());
+    dbx_core::schema_diff::add_oracle_routines_to_plan(
+        &mut plan,
+        function_diffs.as_deref().unwrap_or_default(),
+        database_type,
+        target_schema.as_deref(),
+        source_database_type,
+        source_schema.as_deref(),
+    );
     Ok(plan)
 }
 

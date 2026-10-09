@@ -1,7 +1,10 @@
 use dbx_sql_core::value_literals::quote_string_literal;
 mod oracle_routines;
-pub use oracle_routines::{add_oracle_routines_to_plan, comparable_oracle_routine, is_oracle_routine_database, oracle_routine_steps, RoutineStep};
 use dbx_sql_dialect::postgres_index_key::decorate_postgres_index_key;
+pub use oracle_routines::{
+    add_oracle_routines_to_plan, comparable_oracle_routine, is_oracle_routine_database, oracle_routine_steps,
+    RoutineStep,
+};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use log;
@@ -2257,8 +2260,21 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         RollbackCompleteness::Incomplete
     };
 
-    let mut routine_plan = SchemaSyncSqlPlan { sync_sql, rollback_sync_sql, rollback_completeness, missing_rollback_objects, routine_steps: Vec::new() };
-    add_oracle_routines_to_plan(&mut routine_plan, &function_diffs, options.database_type, options.target_schema.as_deref(), options.source_database_type, options.source_schema.as_deref());
+    let mut routine_plan = SchemaSyncSqlPlan {
+        sync_sql,
+        rollback_sync_sql,
+        rollback_completeness,
+        missing_rollback_objects,
+        routine_steps: Vec::new(),
+    };
+    add_oracle_routines_to_plan(
+        &mut routine_plan,
+        &function_diffs,
+        options.database_type,
+        options.target_schema.as_deref(),
+        options.source_database_type,
+        options.source_schema.as_deref(),
+    );
 
     let permission_diffs = if !options.source_permissions.is_empty() || !options.target_permissions.is_empty() {
         diff_permissions(&options.source_permissions, &options.target_permissions)
@@ -6073,7 +6089,13 @@ pub fn generate_schema_sync_sql_plan(
         RollbackCompleteness::Incomplete
     };
 
-    SchemaSyncSqlPlan { sync_sql, rollback_sync_sql, rollback_completeness, missing_rollback_objects, routine_steps: Vec::new() }
+    SchemaSyncSqlPlan {
+        sync_sql,
+        rollback_sync_sql,
+        rollback_completeness,
+        missing_rollback_objects,
+        routine_steps: Vec::new(),
+    }
 }
 
 /// Names of the objects a diff's own statements reference.

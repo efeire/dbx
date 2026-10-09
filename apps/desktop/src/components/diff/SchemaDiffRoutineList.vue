@@ -84,7 +84,17 @@ function onRowActivate(object: SchemaDiffObject) {
         @keydown.enter.prevent="onRowActivate(row.object)"
         @keydown.space.prevent="onRowActivate(row.object)"
       >
-        <input v-if="showSelection" type="checkbox" class="accent-primary justify-self-center" :checked="row.selection.checked" :indeterminate="row.selection.indeterminate" :disabled="!!row.object.blockedReason" :aria-label="row.sourceLabel || row.targetLabel" @click.stop @change="onCheckboxChange(row.object, $event)" />
+        <input
+          v-if="showSelection"
+          type="checkbox"
+          class="accent-primary justify-self-center"
+          :checked="row.selection.checked"
+          :indeterminate="row.selection.indeterminate"
+          :disabled="!!row.object.blockedReason"
+          :aria-label="row.sourceLabel || row.targetLabel"
+          @click.stop
+          @change="onCheckboxChange(row.object, $event)"
+        />
         <div class="min-w-0 truncate font-mono" :title="row.sourceLabel || undefined">
           <span v-if="row.sourceLabel" :class="row.object.operationType === 'create' ? 'text-green-600 dark:text-green-400' : ''">{{ row.sourceLabel }}</span>
           <span v-else class="text-muted-foreground">—</span>

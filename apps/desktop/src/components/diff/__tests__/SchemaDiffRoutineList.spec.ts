@@ -20,8 +20,14 @@ it("shows both routine owners and dependencies while blocked rows remain inspect
   const view = vi.fn();
   const host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, onToggleSelection: toggle, onViewDiff: view }) });
-  app.use(createI18n({ legacy: false, locale: "en", messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", noDifferences: "No differences", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}" } } } }));
+  app = createApp({ render: () => h(SchemaDiffRoutineList, { objects, selectable: true, onToggleSelection: toggle, onViewDiff: view }) });
+  app.use(
+    createI18n({
+      legacy: false,
+      locale: "en",
+      messages: { en: { diff: { sourceObject: "Source", targetObject: "Target", routineDiffPoints: "Changes", noDifferences: "No differences", routineDiffStats: "{added}/{removed}/{modified}", routinePlanBlocked: "Blocked: {reason}", routineDependencies: "Dependencies: {dependencies}" } } },
+    }),
+  );
   app.mount(host);
   await nextTick();
   expect(host.textContent).toContain("PROCEDURE SRC.P_SYNC");

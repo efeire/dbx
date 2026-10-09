@@ -52,7 +52,12 @@ function createDuplicateForeignKeyPreparation(): SchemaDiffPreparation {
 describe("schema diff SQL selection projections", () => {
   it("keeps blocked routine source visible but excludes it from selected plans", () => {
     const source = { name: "P_BLOCKED", function_type: "PROCEDURE", data_type: "", arguments: "", definition: "CREATE PROCEDURE P_BLOCKED AS BEGIN NULL; END;", schema: "SRC" };
-    const result: SchemaDiffPreparation = { diffs: [], functionDiffs: [{ name: source.name, type: "added", source }], syncSql: "", routineSteps: [{ name: source.name, routineType: "PROCEDURE", operation: "added", blockedReason: "Cross-engine routine compatibility is unverified", dependencies: ["SRC.T_INPUT"] }] };
+    const result: SchemaDiffPreparation = {
+      diffs: [],
+      functionDiffs: [{ name: source.name, type: "added", source }],
+      syncSql: "",
+      routineSteps: [{ name: source.name, routineType: "PROCEDURE", operation: "added", blockedReason: "Cross-engine routine compatibility is unverified", dependencies: ["SRC.T_INPUT"] }],
+    };
     const objects = convertToSchemaDiffObjects([], result.functionDiffs, [], [], [], undefined, result.routineSteps);
     expect(objects[0]).toMatchObject({ selected: false, sourceDdl: source.definition, sourceSchema: "SRC", blockedReason: result.routineSteps![0]!.blockedReason, dependencies: ["SRC.T_INPUT"] });
     expect(setSchemaDiffObjectSelected(objects, objects[0]!.id, true)).toBe(false);
