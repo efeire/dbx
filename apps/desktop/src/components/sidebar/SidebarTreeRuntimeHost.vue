@@ -3396,6 +3396,7 @@ async function executeTreeNodeSqlWithProductionGuard(
     beforeExecute?: () => Promise<void>;
     markDispatched?: () => void;
     execute?: (timeoutSecs: number | undefined) => ReturnType<typeof api.executeQuery>;
+    timeoutSecs?: number;
   } = {},
 ) {
   if (!node.connectionId) return undefined;
@@ -3421,8 +3422,8 @@ async function executeTreeNodeSqlWithProductionGuard(
       await options.beforeExecute?.();
       if (options.isCancelledBeforeDispatch?.()) throw new Error("Operation cancelled before it was sent to the database.");
       options.markDispatched?.();
-      if (options.execute) return options.execute(timeoutSecs);
-      return options.executeAsScript ? api.executeScript(node.connectionId!, database, sql, options.schema ?? node.schema) : api.executeQuery(node.connectionId!, database, sql, options.schema ?? node.schema, executionId, { timeoutSecs });
+      if (options.execute) return options.execute(options.timeoutSecs ?? timeoutSecs);
+      return options.executeAsScript ? api.executeScript(node.connectionId!, database, sql, options.schema ?? node.schema) : api.executeQuery(node.connectionId!, database, sql, options.schema ?? node.schema, executionId, { timeoutSecs: options.timeoutSecs ?? timeoutSecs });
     },
   });
 }
@@ -4861,7 +4862,7 @@ async function confirmPasteTable() {
           identifierQuote: connectionStore.connectionIdentifierQuote?.(entry.connectionId),
           ...dataCopyColumnOptions,
         });
-        const dataExecuted = await executeTreeNodeSqlWithProductionGuard(entry, dataSql, { database: entry.database, schema: entry.schema });
+        const dataExecuted = await executeTreeNodeSqlWithProductionGuard(entry, dataSql, { database: entry.database, schema: entry.schema, timeoutSecs: 0 });
         if (!dataExecuted) {
           pasteCancelled = true;
           break;
