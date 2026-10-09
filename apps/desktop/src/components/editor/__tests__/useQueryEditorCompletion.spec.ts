@@ -110,7 +110,7 @@ describe.each([false, true])("OceanBase standalone routine completion (semantic=
   it("loads a quoted owner exactly and inserts a case-sensitive routine identifier", async () => {
     const sql = 'CALL "Mixed.Owner".';
     const { provide, store, currentView } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", database: "OB", schema: "APP", modelValue: sql }, undefined, semanticCompletionEnabled);
-    store.listCompletionObjects.mockResolvedValue([{ name: "Do.Work", schema: "Mixed.Owner", type: "procedure" }]);
+    store.listCompletionObjects.mockResolvedValue([{ name: "Do.Work", schema: "Mixed.Owner", type: "procedure", signature: "" }]);
     const result = await provide();
     expect(store.listCompletionObjects).toHaveBeenCalledWith("connection", "OB", "", 100, "Mixed.Owner", undefined, false, "APP", expect.any(Array), false);
     const option = result!.options.find((candidate) => candidate.label === "Do.Work")!;
@@ -118,6 +118,35 @@ describe.each([false, true])("OceanBase standalone routine completion (semantic=
     if (typeof option.apply === "function") option.apply(currentView, option, result!.from, currentView.state.doc.length);
     else currentView.dispatch(insertCompletionText(currentView.state, option.apply ?? option.label, result!.from, currentView.state.doc.length));
     expect(currentView.state.doc.toString()).toBe('CALL "Mixed.Owner"."Do.Work"()');
+  });
+
+  it.each([
+    ["CALL pkg.", "APP", "PKG", "CALL pkg.\"Do.Work\"()"],
+    ['CALL "Mixed.Owner"."Mixed.Package".', "Mixed.Owner", "Mixed.Package", 'CALL "Mixed.Owner"."Mixed.Package"."Do.Work"()'],
+  ])("loads package members for %s and inserts only the member", async (sql, owner, packageName, expected) => {
+    const { provide, store, currentView } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", database: "OB", schema: "APP", modelValue: sql }, undefined, semanticCompletionEnabled);
+    store.listCompletionObjects.mockImplementation(async (...args: unknown[]) => args[5] === packageName
+      ? [{ name: "Do.Work", schema: owner, parentSchema: owner, parentName: packageName, type: "procedure", signature: "", routineId: "101:1" }]
+      : []);
+    const result = await provide();
+    expect(store.listCompletionObjects).toHaveBeenCalledWith("connection", "OB", "", 100, owner, packageName, false, "APP", expect.any(Array), false);
+    const option = result!.options.find((candidate) => candidate.label === "Do.Work")!;
+    expect(option).toBeDefined();
+    if (typeof option.apply === "function") option.apply(currentView, option, result!.from, currentView.state.doc.length);
+    else currentView.dispatch(insertCompletionText(currentView.state, option.apply ?? option.label, result!.from, currentView.state.doc.length));
+    expect(currentView.state.doc.toString()).toBe(expected);
+  });
+
+  it("keeps unknown overloads separate and does not invent empty argument lists", async () => {
+    const { provide, store, currentView } = createHarness({ databaseType: "oceanbase-oracle", dialect: "oracle", database: "OB", schema: "APP", modelValue: "CALL APP.PKG." }, undefined, semanticCompletionEnabled);
+    store.listCompletionObjects.mockResolvedValue([1, 2].map((id) => ({ name: "RUN", schema: "APP", parentSchema: "APP", parentName: "PKG", type: "procedure", routineId: `101:${id}` })));
+    const result = await provide();
+    const options = result!.options.filter((candidate) => candidate.label === "RUN");
+    expect(options).toHaveLength(2);
+    const option = options[0]!;
+    if (typeof option.apply === "function") option.apply(currentView, option, result!.from, currentView.state.doc.length);
+    else currentView.dispatch(insertCompletionText(currentView.state, option.apply ?? option.label, result!.from, currentView.state.doc.length));
+    expect(currentView.state.doc.toString()).toBe("CALL APP.PKG.RUN");
   });
 
   it("drops a routine response when the request is invalidated", async () => {

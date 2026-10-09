@@ -580,7 +580,7 @@ export function useQueryEditorCompletionMetadata(options: QueryEditorCompletionM
   }
 
   function completionObjectIdentityKey(object: SqlCompletionObject): string {
-    const key = JSON.stringify([object.type, object.schema, object.name, object.parentName, object.signature?.trim()]);
+    const key = JSON.stringify([object.type, object.schema, object.name, object.parentName, object.routineId ?? object.signature?.trim()]);
     return props.databaseType === "oceanbase-oracle" ? key : key.toLowerCase();
   }
 

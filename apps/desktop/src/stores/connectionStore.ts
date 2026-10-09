@@ -8123,6 +8123,8 @@ export const useConnectionStore = defineStore("connection", () => {
           });
           const targetNode = treeNodeLoadTarget(load);
           if (!targetNode) return;
+          if (databaseType === "oceanbase-oracle" && response.fallback_used) throw new Error("OceanBase agent does not support package member completion; update the agent");
+          if (databaseType === "oceanbase-oracle" && response.incomplete) throw new Error("Package has more than 1000 members; use a member prefix in SQL completion to narrow the results");
           setChildren(targetNode, buildPackageMemberNodes(targetNode, response.candidates, databaseType));
           targetNode.isExpanded = true;
         },
@@ -8271,6 +8273,7 @@ export const useConnectionStore = defineStore("connection", () => {
           parentName: candidate.parent_name ?? undefined,
           dataType,
           signature: candidate.signature ?? undefined,
+          routineId: candidate.routine_id ?? undefined,
           comment: candidate.comment ?? null,
           applyName: completionCandidateApplyName(candidate.name, candidate.schema, preferredSchema),
           boost: oracleMetadata ? completionCandidateSchemaBoost(candidate.schema, preferredSchema) : completionRoutineSchemaBoost(candidate.schema, preferredSchema),
@@ -9140,7 +9143,9 @@ export const useConnectionStore = defineStore("connection", () => {
     const cacheFilter = caseSensitive ? filter.trim() : normalizedFilter;
     const databaseType = getConfig(connectionId)?.db_type;
     const filteredRoutineAssistant = !!databaseType && FILTERED_ROUTINE_COMPLETION_DATABASES.has(databaseType) && (!!normalizedFilter || typeof limit === "number" || !!parentName || globalSearch);
-    const cacheKey = filteredRoutineAssistant
+    const cacheKey = databaseType === "oceanbase-oracle" && filteredRoutineAssistant
+      ? `${connectionId}:${database}:${JSON.stringify([schema, parentName, cacheFilter, limit, globalSearch, currentSchema, [...objectKinds].sort(), caseSensitive])}`
+      : filteredRoutineAssistant
       ? `${connectionId}:${database}:${schema ?? ""}:${parentName ?? ""}:${cacheFilter}:${limit ?? ""}:${globalSearch ? "global" : "scoped"}:${currentSchema ?? ""}:${[...objectKinds].sort().join(",")}:${caseSensitive ? "case-sensitive" : "case-insensitive"}`
       : `${connectionId}:${database}:${schema ?? ""}`;
     if (!completionObjectsCache.value[cacheKey]) {
@@ -9192,6 +9197,7 @@ export const useConnectionStore = defineStore("connection", () => {
         if (object.type !== "procedure" && object.type !== "function") return false;
         if (!objectKinds.includes("routine") && !objectKinds.includes(object.type)) return false;
         if (schema && !globalSearch && object.schema !== schema) return false;
+        if (parentName && object.parentName !== parentName) return false;
         if (caseSensitive) return object.name.includes(filter.trim());
       }
       return !normalizedFilter || fuzzyCompletionObjectMatch(object, normalizedFilter);
@@ -9260,7 +9266,7 @@ export const useConnectionStore = defineStore("connection", () => {
     const seen = new Set<string>();
     const deduped: SqlCompletionObject[] = [];
     for (const object of objects) {
-      const key = JSON.stringify([object.type, object.schema, object.name, object.parentName, object.signature?.trim()]);
+      const key = JSON.stringify([object.type, object.schema, object.name, object.parentName, object.routineId ?? object.signature?.trim()]);
       if (seen.has(key)) continue;
       seen.add(key);
       deduped.push(object);
