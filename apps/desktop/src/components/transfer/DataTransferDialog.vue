@@ -8,6 +8,9 @@ import { buildTransferObjectSelectionField, countTransferObjects } from "./trans
 import { createTaskLoadTracker } from "./taskLoadTracker";
 import { describeTransferStructureOperation, summarizeTransferStructureOperations } from "./structurePlanSummary";
 import { describeTransferSchemaObjects } from "./schemaObjectPlanSummary";
+import TransferDatabaseLinkEditor from "./TransferDatabaseLinkEditor.vue";
+import { clearTransferDatabaseLinkCredentials, savedTransferDatabaseLinks, transferDatabaseLinkConfig, transferDatabaseLinkKey, transferDatabaseLinkPayload } from "./transferDatabaseLinks";
+import type { OracleDatabaseLink } from "@/lib/database/oracleDatabaseLinks";
 import {
   confirmTransferWithProductionSafety,
   createTransferSubmission,
@@ -121,6 +124,8 @@ const OBJECT_KIND_LABEL_KEY: Record<TransferObjectKind, string> = {
   PACKAGE_BODY: "objectTypePackageBody",
   SYNONYM: "objectTypeSynonym",
   PUBLIC_SYNONYM: "objectTypePublicSynonym",
+  DB_LINK: "objectTypeDatabaseLink",
+  PUBLIC_DB_LINK: "objectTypePublicDatabaseLink",
 };
 
 const treeSelection = computed<Record<string, string[]>>({
@@ -208,6 +213,28 @@ const objectConflictPolicy = ref<api.TransferObjectConflictPolicy>("skip");
 const hasSelectedPackages = computed(() => transferContent.value !== "dataOnly" && ((selectedObjects.value.PACKAGE?.size ?? 0) > 0 || (selectedObjects.value.PACKAGE_BODY?.size ?? 0) > 0));
 const hasSelectedSynonyms = computed(() => transferContent.value !== "dataOnly" && ((selectedObjects.value.SYNONYM?.size ?? 0) > 0 || (selectedObjects.value.PUBLIC_SYNONYM?.size ?? 0) > 0));
 const hasSelectedSchemaObjects = computed(() => transferContent.value !== "dataOnly" && (Object.entries(selectedObjects.value) as [TransferObjectKind, Set<string>][]).some(([kind, names]) => requiresTransferSchemaObjectPlan(kind) && names.size > 0));
+const databaseLinkConfigs = ref<Record<string, api.TransferDatabaseLinkConfig>>({});
+const databaseLinkPasswords = ref<Record<string, string>>({});
+let pendingDatabaseLinkCredentials: api.TransferDatabaseLinkCredential[] = [];
+const selectedDatabaseLinkKeys = computed(() => transferContent.value === "dataOnly" ? [] : (["DB_LINK", "PUBLIC_DB_LINK"] as const).filter((kind) => !treeDisabledGroups.value.includes(kind)).flatMap((kind) => [...(selectedObjects.value[kind] ?? [])].map((name) => transferDatabaseLinkKey(kind, name))));
+const selectedDatabaseLinkConfigs = computed(() => selectedDatabaseLinkKeys.value.flatMap((key) => databaseLinkConfigs.value[key] ? [databaseLinkConfigs.value[key]!] : []));
+const oceanbaseLinkTarget = computed(() => store.getConfig(targetConnectionId.value)?.db_type === "oceanbase-oracle");
+
+watch([sourceConnectionId, sourceDatabase, sourceSchema, targetConnectionId, targetDatabase, targetSchema], () => {
+  databaseLinkPasswords.value = {};
+  clearTransferDatabaseLinkCredentials(pendingDatabaseLinkCredentials);
+}, { flush: "sync" });
+watch(targetConnectionId, () => {
+  for (const config of Object.values(databaseLinkConfigs.value)) {
+    config.targetScope = "";
+    config.protocol = undefined;
+    config.tenant = "";
+    config.cluster = "";
+  }
+}, { flush: "sync" });
+watch([sourceConnectionId, sourceDatabase], () => {
+  databaseLinkConfigs.value = {};
+}, { flush: "sync" });
 const showSqlPreviewConfirm = ref(false);
 // Per-source-table filter: table name -> bare WHERE predicate or full SELECT.
 const tableFilters = ref<Record<string, string>>({});
@@ -540,9 +567,19 @@ async function loadObjects(isCancelled: () => boolean = () => false) {
     const schema = needsSchema && schemaValue ? schemaValue : database;
     const kinds = transferObjectKindsForDatabase(transferDatabaseTypeForConnection(config));
     const groups: Partial<Record<TransferObjectKind, string[]>> = {};
+    let links: OracleDatabaseLink[] | undefined;
     for (const kind of kinds) {
       try {
-        if (kind === "TABLE") {
+        if (kind === "DB_LINK" || kind === "PUBLIC_DB_LINK") {
+          links ??= await store.listOracleDatabaseLinks(connectionId, database);
+          if (isStale()) return;
+          const configs = links.map(transferDatabaseLinkConfig).filter((config) => config.objectType === kind);
+          groups[kind] = configs.map((config) => config.name);
+          for (const config of configs) {
+            const key = transferDatabaseLinkKey(config.objectType, config.name);
+            databaseLinkConfigs.value[key] = databaseLinkConfigs.value[key]?.sourceOwner === config.sourceOwner ? databaseLinkConfigs.value[key]! : config;
+          }
+        } else if (kind === "TABLE") {
           const tables = await api.listTables(connectionId, database, schema, undefined, undefined, undefined, undefined, catalog);
           groups.TABLE = tables.filter((t) => t.table_type === "TABLE" || t.table_type === "BASE TABLE").map((t) => t.name);
         } else {
@@ -783,6 +820,9 @@ function resetState(cancelTaskLoad = true) {
   quoteTargetColumnNames.value = true;
   batchSize.value = 1000;
   objectConflictPolicy.value = "skip";
+  databaseLinkConfigs.value = {};
+  databaseLinkPasswords.value = {};
+  clearTransferDatabaseLinkCredentials(pendingDatabaseLinkCredentials);
   objectLoadErrors.value = [];
   tableFilters.value = {};
   filterDialogOpen.value = false;
@@ -881,6 +921,10 @@ async function requestStartTransfer() {
   if (!canStart.value || isSubmitting.value) return;
   isSubmitting.value = true;
 
+  const linkPayload = transferDatabaseLinkPayload(selectedDatabaseLinkConfigs.value, databaseLinkPasswords.value);
+  clearTransferDatabaseLinkCredentials(pendingDatabaseLinkCredentials);
+  pendingDatabaseLinkCredentials = linkPayload.credentials;
+
   const effectiveSourceSchema = sourceSchema.value || sourceDatabaseName.value;
   const effectiveTargetSchema = targetSchema.value || targetDatabaseName.value;
   const sourceDatabase = sourceDatabaseName.value;
@@ -905,6 +949,7 @@ async function requestStartTransfer() {
     quoteTargetColumnNames: quoteTargetColumnNames.value,
     ownershipPolicy: "preserve",
     objectConflictPolicy: hasSelectedSchemaObjects.value ? objectConflictPolicy.value : "skip",
+    databaseLinks: linkPayload.databaseLinks,
     batchSize: batchSize.value,
     tableFilters: requestedTableFilters(),
     dropTargetConfirmed: false,
@@ -916,6 +961,7 @@ async function requestStartTransfer() {
     const message = error instanceof Error ? error.message : String(error);
     toast(transferPreviewFailureMessage(message), 5000);
   } finally {
+    if (pendingDatabaseLinkCredentials === linkPayload.credentials) clearTransferDatabaseLinkCredentials(pendingDatabaseLinkCredentials);
     if (pendingTransferId.value === request.transferId) {
       pendingTransferId.value = null;
       isSubmitting.value = false;
@@ -925,7 +971,10 @@ async function requestStartTransfer() {
 
 function runTransfer(request: api.TransferRequest, shouldRefreshTargetTree: boolean) {
   isSubmitting.value = true;
+  const credentials = pendingDatabaseLinkCredentials;
+  pendingDatabaseLinkCredentials = [];
   startDataTransferTask(request, `${request.sourceDatabase} → ${request.targetDatabase}`, {
+    databaseLinkCredentials: credentials,
     formatOverlapError: (tables) => t("transfer.targetTableBusy", { tables: tables.join(", ") }),
     onStarted: () => toast(t("transfer.backgroundStarted")),
     onOpen: () => openDataTransferTask(request.transferId),
@@ -989,6 +1038,7 @@ function currentConfig(): TransferTaskConfig {
     quoteTargetColumnNames: quoteTargetColumnNames.value,
     batchSize: batchSize.value,
     objectConflictPolicy: objectConflictPolicy.value,
+    databaseLinks: savedTransferDatabaseLinks(selectedDatabaseLinkConfigs.value),
     tableFilters: requestedTableFilters(),
     dropTargetConfirmed: false,
   };
@@ -1013,10 +1063,14 @@ const canSaveConfig = computed(() => !!sourceConnectionId.value && isTransferDat
 // including a task switch whose new values happen to equal the previous task.
 watch(() => configSnapshot(currentConfig()), cancelPendingTransfer, { flush: "sync" });
 watch(activeTaskId, cancelPendingTransfer, { flush: "sync" });
+watch(databaseLinkPasswords, cancelPendingTransfer, { deep: true, flush: "sync" });
 watch(
   open,
   (isOpen) => {
-    if (!isOpen) cancelPendingTransfer();
+    if (!isOpen) {
+      databaseLinkPasswords.value = {};
+      cancelPendingTransfer();
+    }
   },
   { flush: "sync" },
 );
@@ -1028,7 +1082,10 @@ watch(
   cancelPendingTransfer,
   { flush: "sync" },
 );
-onBeforeUnmount(cancelPendingTransfer);
+onBeforeUnmount(() => {
+  databaseLinkPasswords.value = {};
+  cancelPendingTransfer();
+});
 
 /** Applies a saved task to the form, loading catalogs/databases/schemas/objects with explicit awaits. */
 async function loadTaskIntoForm(task: TransferTask) {
@@ -1117,6 +1174,10 @@ async function loadTaskIntoForm(task: TransferTask) {
   }
 
   if (isTaskLoadStale()) return;
+  for (const link of savedTransferDatabaseLinks(config.databaseLinks)) {
+    const key = transferDatabaseLinkKey(link.objectType, link.name);
+    if (databaseLinkConfigs.value[key]?.sourceOwner === link.sourceOwner) databaseLinkConfigs.value[key] = link;
+  }
   savedConfigSnapshot.value = configSnapshot(currentConfig());
 }
 
@@ -1282,6 +1343,7 @@ function resolveStartDecision(confirmed: boolean) {
 }
 
 function cancelPendingTransfer() {
+  clearTransferDatabaseLinkCredentials(pendingDatabaseLinkCredentials);
   transferSubmission.cancel();
   const scopeId = pendingTransferId.value;
   pendingTransferId.value = null;
@@ -1592,6 +1654,11 @@ async function saveConfigTask() {
                     <SelectItem value="replace">{{ t("transfer.objectActionReplace") }}</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div v-if="selectedDatabaseLinkKeys.length" class="max-h-96 space-y-2 overflow-auto">
+                <template v-for="key in selectedDatabaseLinkKeys" :key="key">
+                  <TransferDatabaseLinkEditor v-if="databaseLinkConfigs[key]" :model-value="databaseLinkConfigs[key]!" @update:model-value="databaseLinkConfigs[key] = $event" v-model:password="databaseLinkPasswords[key]" :oceanbase-target="oceanbaseLinkTarget" />
+                </template>
               </div>
               <div class="flex items-center gap-3">
                 <Label class="text-xs shrink-0">{{ t("transfer.targetTableNameCase") }}</Label>

@@ -52,6 +52,13 @@ import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
 public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
+    @Override
+    public boolean supportsSecureDatabaseLink() { return true; }
+
+    @Override
+    public Map<String, Object> createDatabaseLinkSecure(com.google.gson.JsonObject params) {
+        return com.dbx.agent.SecureDatabaseLink.executeOceanBase(getConnection(), params);
+    }
     private static final long MICROS_PER_SECOND = 1_000_000L;
     private static final long UNLIMITED_QUERY_TIMEOUT_MICROS = 3_216_672_000_000_000L;
     private static final String COMPATIBLE_OJDBC_VERSION = "compatibleOjdbcVersion";

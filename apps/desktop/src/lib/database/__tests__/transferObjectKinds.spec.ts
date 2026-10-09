@@ -33,7 +33,7 @@ describe("transferObjectKinds", () => {
   it("returns per-family object kinds", () => {
     expect(transferObjectKindsForDatabase("mysql")).toEqual(["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"]);
     expect(transferObjectKindsForDatabase("postgres")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE"]);
-    expect(transferObjectKindsForDatabase("oracle")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "PACKAGE", "PACKAGE_BODY", "SYNONYM", "PUBLIC_SYNONYM"]);
+    expect(transferObjectKindsForDatabase("oracle")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "PACKAGE", "PACKAGE_BODY", "SYNONYM", "PUBLIC_SYNONYM", "DB_LINK", "PUBLIC_DB_LINK"]);
     expect(transferObjectKindsForDatabase("sqlserver")).toEqual(["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE"]);
   });
 

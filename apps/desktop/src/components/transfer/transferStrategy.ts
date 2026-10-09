@@ -36,6 +36,7 @@ function freezeTransferRequest(request: TransferRequest): TransferRequest {
     ...transferStrategyOptions(resolveTransferStrategy(request)),
     tables: [...request.tables],
     objects: request.objects.map((selection) => ({ ...selection, names: [...selection.names] })),
+    databaseLinks: request.databaseLinks?.map((config) => ({ ...config })),
     dropTargetConfirmed: false,
   };
   Object.freeze(snapshot.tables);
@@ -44,6 +45,8 @@ function freezeTransferRequest(request: TransferRequest): TransferRequest {
     Object.freeze(selection);
   }
   Object.freeze(snapshot.objects);
+  for (const config of snapshot.databaseLinks ?? []) Object.freeze(config);
+  if (snapshot.databaseLinks) Object.freeze(snapshot.databaseLinks);
   return Object.freeze(snapshot);
 }
 
@@ -115,6 +118,7 @@ export function createTransferSubmission(options: TransferSubmissionOptions) {
         }
         if (!(await options.confirm(request, preview)) || !isCurrent()) return false;
         if (preview.schemaObjects?.canExecute === false || preview.schemaObjects?.items.some((item) => item.action === "blocked")) return false;
+        if (request.databaseLinks?.some((config) => !config.credentialAvailable)) return false;
         options.execute(Object.freeze({ ...request, dropTargetConfirmed: request.dropTargetBeforeCreate }));
         return true;
       } catch (error) {

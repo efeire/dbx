@@ -1020,6 +1020,8 @@ mod tests {
             quote_target_column_names: true,
             ownership_policy: TransferOwnershipPolicy::Preserve,
             object_conflict_policy: Default::default(),
+            database_links: Vec::new(),
+            database_link_credentials: Vec::new(),
             batch_size: 500,
             table_filters: HashMap::from([
                 ("orders".to_string(), format!("WHERE note = '{filter_secret}'")),
