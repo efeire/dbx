@@ -7,7 +7,7 @@ describe("editable query hidden primary keys", () => {
     for (const [sql, expected] of [
       ['SELECT * FROM "Owner"."Items" "i"', 'SELECT "i".*, ROWIDTOCHAR(ROWID) AS "__DBX_PK_1" FROM "Owner"."Items" "i"'],
       ['SELECT "i".* FROM "Owner"."Items" "i"', 'SELECT "i".*, ROWIDTOCHAR(ROWID) AS "__DBX_PK_1" FROM "Owner"."Items" "i"'],
-      ['SELECT /*+ FULL(t) */ * -- columns\nFROM APP.ITEMS t', 'SELECT /*+ FULL(t) */ t.*, ROWIDTOCHAR(ROWID) AS "__DBX_PK_1" -- columns\nFROM APP.ITEMS t'],
+      ["SELECT /*+ FULL(t) */ * -- columns\nFROM APP.ITEMS t", 'SELECT /*+ FULL(t) */ t.*, ROWIDTOCHAR(ROWID) AS "__DBX_PK_1" -- columns\nFROM APP.ITEMS t'],
     ]) {
       const result = buildQueryWithHiddenPrimaryKeys({ sql, databaseType, primaryKeys: ["__DBX_ROWID"], existingResultNames: ["rowid", "__DBX_PK_0"], sourceExpressions: { __DBX_ROWID: "ROWIDTOCHAR(ROWID)" } });
       expect(result?.sql).toBe(expected);

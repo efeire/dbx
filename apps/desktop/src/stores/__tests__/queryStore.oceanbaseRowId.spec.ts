@@ -93,12 +93,25 @@ describe("OceanBase Oracle query ROWID preparation", () => {
   ])("adds a hidden identity to a safe star query: %s", async (originalSql, projection) => {
     const { analyzeEditableQueryEditability } = await import("@/lib/sql/sqlAnalysis");
     mocks.analyze.mockImplementation(async (sql: string) => analyzeEditableQueryEditability(sql));
-    mocks.executeMulti.mockResolvedValue([{ columns: ["TASKNAME", "__DBX_PK_0"], rows: [["duplicate", "ROW-A"], ["duplicate", "ROW-B"]], affected_rows: 0, execution_time_ms: 1 }]);
+    mocks.executeMulti.mockResolvedValue([
+      {
+        columns: ["TASKNAME", "__DBX_PK_0"],
+        rows: [
+          ["duplicate", "ROW-A"],
+          ["duplicate", "ROW-B"],
+        ],
+        affected_rows: 0,
+        execution_time_ms: 1,
+      },
+    ]);
     const { store, id, sql } = await executedQuery(originalSql);
     expect(sql).toBe(`${projection}, ROWIDTOCHAR(ROWID) AS "__DBX_PK_0"${originalSql.slice(originalSql.indexOf(" from "))}`);
     const tab = store.tabs.find((item) => item.id === id)!;
     expect(tab.result?.hidden_column_indexes).toEqual([1]);
-    expect(tab.result?.rows).toEqual([["duplicate", "ROW-A"], ["duplicate", "ROW-B"]]);
+    expect(tab.result?.rows).toEqual([
+      ["duplicate", "ROW-A"],
+      ["duplicate", "ROW-B"],
+    ]);
     await vi.waitFor(() => expect(tab.querySourceColumns).toEqual(["TASKNAME", "__DBX_ROWID"]));
     expect(tab.tableMeta?.primaryKeys).toEqual(["__DBX_ROWID"]);
   });
