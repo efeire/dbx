@@ -38,10 +38,10 @@ async function settle() {
     await nextTick();
   }
 }
-function mount() {
+function mount(db_type: "oracle" | "oceanbase-oracle" = "oracle") {
   const host = document.createElement("div");
   document.body.append(host);
-  const app = createApp(OracleSecurityAdmin, { connection: { id: "oracle", db_type: "oracle" } as ConnectionConfig });
+  const app = createApp(OracleSecurityAdmin, { connection: { id: "oracle", db_type } as ConnectionConfig });
   app.mount(host);
   cleanup.push(() => {
     app.unmount();
@@ -85,5 +85,19 @@ describe("Oracle security page", () => {
     expect(host.querySelectorAll('[data-security-state="error"]').length).toBe(7);
     expect(host.textContent).toContain("Read failed");
     expect(host.textContent).not.toContain("Empty in visible scope");
+  });
+
+  it("uses the OceanBase fallback dialect when opening a restricted connection", async () => {
+    mocks.executeQuery.mockImplementation(async (_connection: string, _database: string, sql: string) => {
+      if (/FROM DBA_/.test(sql)) throw new Error("ORA-00942");
+      if (sql.includes("FROM USER_ROLE_PRIVS UNION") && !sql.startsWith("SELECT GRANTEE,")) throw new Error("ORA-00904");
+      if (sql.includes("FROM ALL_COL_PRIVS") && !sql.startsWith("SELECT GRANTEE, OWNER,")) throw new Error("ORA-00904");
+      return { columns: [], rows: [] };
+    });
+    const host = mount("oceanbase-oracle");
+    await settle();
+    expect(host.textContent).not.toContain("ORA-00904");
+    expect(host.querySelectorAll('[data-security-state="error"]').length).toBe(0);
+    expect(host.textContent).toContain("Limited visibility");
   });
 });

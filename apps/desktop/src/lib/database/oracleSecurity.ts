@@ -100,7 +100,10 @@ async function readDictionary<T>(query: OracleSecurityQuery, primary: string, fa
 }
 
 /** Only fixed SELECTs: loading or filtering this snapshot never grants permissions. */
-export async function loadOracleSecurity(query: OracleSecurityQuery): Promise<OracleSecuritySnapshot> {
+export async function loadOracleSecurity(query: OracleSecurityQuery, connection?: ConnectionConfig): Promise<OracleSecuritySnapshot> {
+  const oceanbase = effectiveDatabaseTypeForConnection(connection) === "oceanbase-oracle";
+  const roleGrantee = oceanbase ? "GRANTEE" : "USERNAME AS GRANTEE";
+  const columnOwner = oceanbase ? "OWNER" : "TABLE_SCHEMA AS OWNER";
   const [currentUser, users, roles, roleGrants, systemGrants, objectGrants, columnGrants] = await Promise.all([
     readDictionary(query, "SELECT USER AS USERNAME FROM DUAL", undefined, (row) => row.USERNAME),
     readDictionary(query, "SELECT USERNAME, ACCOUNT_STATUS, PROFILE, DEFAULT_TABLESPACE, TEMPORARY_TABLESPACE FROM DBA_USERS ORDER BY USERNAME", "SELECT USERNAME FROM ALL_USERS ORDER BY USERNAME", user),
@@ -108,7 +111,7 @@ export async function loadOracleSecurity(query: OracleSecurityQuery): Promise<Or
     readDictionary(
       query,
       "SELECT GRANTEE, GRANTED_ROLE, ADMIN_OPTION, DEFAULT_ROLE FROM DBA_ROLE_PRIVS ORDER BY GRANTEE, GRANTED_ROLE",
-      "SELECT USERNAME AS GRANTEE, GRANTED_ROLE, ADMIN_OPTION, DEFAULT_ROLE FROM USER_ROLE_PRIVS UNION SELECT ROLE AS GRANTEE, GRANTED_ROLE, ADMIN_OPTION, NULL AS DEFAULT_ROLE FROM ROLE_ROLE_PRIVS",
+      `SELECT ${roleGrantee}, GRANTED_ROLE, ADMIN_OPTION, DEFAULT_ROLE FROM USER_ROLE_PRIVS UNION SELECT ROLE AS GRANTEE, GRANTED_ROLE, ADMIN_OPTION, NULL AS DEFAULT_ROLE FROM ROLE_ROLE_PRIVS`,
       roleGrant,
     ),
     readDictionary(query, "SELECT GRANTEE, PRIVILEGE, ADMIN_OPTION FROM DBA_SYS_PRIVS ORDER BY GRANTEE, PRIVILEGE", "SELECT USERNAME AS GRANTEE, PRIVILEGE, ADMIN_OPTION FROM USER_SYS_PRIVS UNION SELECT ROLE AS GRANTEE, PRIVILEGE, ADMIN_OPTION FROM ROLE_SYS_PRIVS", systemGrant),
@@ -116,7 +119,7 @@ export async function loadOracleSecurity(query: OracleSecurityQuery): Promise<Or
     readDictionary(
       query,
       "SELECT GRANTEE, OWNER, TABLE_NAME, COLUMN_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM DBA_COL_PRIVS ORDER BY OWNER, TABLE_NAME, COLUMN_NAME, GRANTEE",
-      "SELECT GRANTEE, TABLE_SCHEMA AS OWNER, TABLE_NAME, COLUMN_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM ALL_COL_PRIVS",
+      `SELECT GRANTEE, ${columnOwner}, TABLE_NAME, COLUMN_NAME, GRANTOR, PRIVILEGE, GRANTABLE FROM ALL_COL_PRIVS`,
       (row): OracleColumnGrant => ({ ...objectGrant(row), columnName: row.COLUMN_NAME }),
     ),
   ]);

@@ -53,6 +53,46 @@ describe("Oracle security dictionary reads", () => {
     expect(query.mock.calls.some(([sql]) => sql.includes("FROM USER_SYS_PRIVS"))).toBe(false);
   });
 
+  it.each(["oracle", "oceanbase-oracle"] as const)("reads restricted role and column dictionaries with %s column names", async (db_type) => {
+    const oceanbase = db_type === "oceanbase-oracle";
+    const snapshot = await loadOracleSecurity(
+      async (sql) => {
+        if (/FROM DBA_/.test(sql)) throw new Error("ORA-00942");
+        if (sql.includes("FROM USER_ROLE_PRIVS UNION")) {
+          const expected = oceanbase ? "SELECT GRANTEE," : "SELECT USERNAME AS GRANTEE,";
+          if (!sql.startsWith(expected)) throw new Error("ORA-00904: invalid role grantee");
+          return result(
+            ["GRANTEE", "GRANTED_ROLE", "ADMIN_OPTION", "DEFAULT_ROLE"],
+            [
+              ["Reader", "R1", "NO", "YES"],
+              ["R1", "R2", "NO", null],
+            ],
+          );
+        }
+        if (sql.includes("FROM ALL_COL_PRIVS")) {
+          const expected = oceanbase ? "SELECT GRANTEE, OWNER," : "SELECT GRANTEE, TABLE_SCHEMA AS OWNER,";
+          if (!sql.startsWith(expected)) throw new Error("ORA-00904: invalid column owner");
+          return result(["GRANTEE", "OWNER", "TABLE_NAME", "COLUMN_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"], [["R2", "Owner", "Quoted.Table", "Mixed.Col", "Owner", "UPDATE", "NO"]]);
+        }
+        if (sql.includes("FROM ALL_TAB_PRIVS")) {
+          expect(sql).toContain("TABLE_SCHEMA AS OWNER");
+          return result(["GRANTEE", "OWNER", "TABLE_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"], [["Reader", "Owner", "Quoted.Table", "Owner", "SELECT", "YES"]]);
+        }
+        return blankQuery(sql);
+      },
+      { db_type } as ConnectionConfig,
+    );
+    expect(snapshot.roleGrants).toMatchObject({ state: "ok", visibility: "limited" });
+    expect(snapshot.columnGrants).toMatchObject({ state: "ok", visibility: "limited" });
+    expect(snapshot.columnGrants.message).toContain("ORA-00942");
+    expect(oracleGrantSources(snapshot, "Reader").grants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "role", rolePath: ["R1", "R2"], grant: expect.objectContaining({ owner: "Owner", objectName: "Quoted.Table", columnName: "Mixed.Col", privilege: "UPDATE" }) }),
+        expect.objectContaining({ source: "direct", grant: expect.objectContaining({ privilege: "SELECT", grantable: true }) }),
+      ]),
+    );
+  });
+
   it("does not treat a capped dictionary response as complete", async () => {
     const snapshot = await loadOracleSecurity(async (sql) =>
       sql.includes("FROM DBA_USERS")
