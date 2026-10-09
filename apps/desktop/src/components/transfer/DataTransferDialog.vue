@@ -224,25 +224,39 @@ const hasSelectedSchemaObjects = computed(() => transferContent.value !== "dataO
 const databaseLinkConfigs = ref<Record<string, api.TransferDatabaseLinkConfig>>({});
 const databaseLinkPasswords = ref<Record<string, string>>({});
 let pendingDatabaseLinkCredentials: api.TransferDatabaseLinkCredential[] = [];
-const selectedDatabaseLinkKeys = computed(() => transferContent.value === "dataOnly" ? [] : (["DB_LINK", "PUBLIC_DB_LINK"] as const).filter((kind) => !treeDisabledGroups.value.includes(kind)).flatMap((kind) => [...(selectedObjects.value[kind] ?? [])].map((name) => transferDatabaseLinkKey(kind, name))));
-const selectedDatabaseLinkConfigs = computed(() => selectedDatabaseLinkKeys.value.flatMap((key) => databaseLinkConfigs.value[key] ? [databaseLinkConfigs.value[key]!] : []));
+const selectedDatabaseLinkKeys = computed(() =>
+  transferContent.value === "dataOnly" ? [] : (["DB_LINK", "PUBLIC_DB_LINK"] as const).filter((kind) => !treeDisabledGroups.value.includes(kind)).flatMap((kind) => [...(selectedObjects.value[kind] ?? [])].map((name) => transferDatabaseLinkKey(kind, name))),
+);
+const selectedDatabaseLinkConfigs = computed(() => selectedDatabaseLinkKeys.value.flatMap((key) => (databaseLinkConfigs.value[key] ? [databaseLinkConfigs.value[key]!] : [])));
 const oceanbaseLinkTarget = computed(() => store.getConfig(targetConnectionId.value)?.db_type === "oceanbase-oracle");
 
-watch([sourceConnectionId, sourceDatabase, sourceSchema, targetConnectionId, targetDatabase, targetSchema], () => {
-  databaseLinkPasswords.value = {};
-  clearTransferDatabaseLinkCredentials(pendingDatabaseLinkCredentials);
-}, { flush: "sync" });
-watch(targetConnectionId, () => {
-  for (const config of Object.values(databaseLinkConfigs.value)) {
-    config.targetScope = "";
-    config.protocol = undefined;
-    config.tenant = "";
-    config.cluster = "";
-  }
-}, { flush: "sync" });
-watch([sourceConnectionId, sourceDatabase], () => {
-  databaseLinkConfigs.value = {};
-}, { flush: "sync" });
+watch(
+  [sourceConnectionId, sourceDatabase, sourceSchema, targetConnectionId, targetDatabase, targetSchema],
+  () => {
+    databaseLinkPasswords.value = {};
+    clearTransferDatabaseLinkCredentials(pendingDatabaseLinkCredentials);
+  },
+  { flush: "sync" },
+);
+watch(
+  targetConnectionId,
+  () => {
+    for (const config of Object.values(databaseLinkConfigs.value)) {
+      config.targetScope = "";
+      config.protocol = undefined;
+      config.tenant = "";
+      config.cluster = "";
+    }
+  },
+  { flush: "sync" },
+);
+watch(
+  [sourceConnectionId, sourceDatabase],
+  () => {
+    databaseLinkConfigs.value = {};
+  },
+  { flush: "sync" },
+);
 const showSqlPreviewConfirm = ref(false);
 // Per-source-table filter: table name -> bare WHERE predicate or full SELECT.
 const tableFilters = ref<Record<string, string>>({});
@@ -1770,7 +1784,17 @@ async function saveConfigTask() {
     </DialogContent>
   </Dialog>
 
-  <DangerConfirmDialog v-model:open="showSqlPreviewConfirm" :sql="confirmationSql" :title="confirmationTitle" :message="confirmationDangerMessage" :details-text="confirmationDetails" :confirm-label="t('transfer.start')" :confirm-disabled="confirmationPreview?.schemaObjects?.canExecute === false || confirmationPreview?.schemaObjects?.items.some((item) => item.action === 'blocked')" :close-on-confirm="false" @confirm="resolveStartDecision(true)" />
+  <DangerConfirmDialog
+    v-model:open="showSqlPreviewConfirm"
+    :sql="confirmationSql"
+    :title="confirmationTitle"
+    :message="confirmationDangerMessage"
+    :details-text="confirmationDetails"
+    :confirm-label="t('transfer.start')"
+    :confirm-disabled="confirmationPreview?.schemaObjects?.canExecute === false || confirmationPreview?.schemaObjects?.items.some((item) => item.action === 'blocked')"
+    :close-on-confirm="false"
+    @confirm="resolveStartDecision(true)"
+  />
 
   <Dialog v-model:open="ownershipDialogOpen">
     <DialogContent class="sm:max-w-[520px]" @interact-outside.prevent>
