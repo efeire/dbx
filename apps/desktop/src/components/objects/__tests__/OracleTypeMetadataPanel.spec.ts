@@ -12,7 +12,12 @@ vi.mock("@/lib/backend/api", () => ({
   cancelQuery: (...args: unknown[]) => mocks.cancelQuery(...args),
 }));
 vi.mock("@/components/ui/button", () => ({
-  Button: defineComponent({ setup: (_, { attrs, slots }) => () => h("button", attrs, slots.default?.()) }),
+  Button: defineComponent({
+    setup:
+      (_, { attrs, slots }) =>
+      () =>
+        h("button", attrs, slots.default?.()),
+  }),
 }));
 
 type Target = { connectionId: string; database: string; schema: string; name: string; objectType: "TYPE" | "TYPE_BODY" };
@@ -33,7 +38,10 @@ function details(overrides: Partial<OracleTypeDetails> = {}): OracleTypeDetails 
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (cause: Error) => void;
-  const promise = new Promise<T>((accept, decline) => { resolve = accept; reject = decline; });
+  const promise = new Promise<T>((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
   return { promise, resolve, reject };
 }
 
@@ -72,9 +80,39 @@ afterEach(() => {
   app?.unmount();
   root?.remove();
   app = undefined;
+  vi.unstubAllGlobals();
 });
 
 describe("OracleTypeMetadataPanel", () => {
+  it("loads metadata without randomUUID in an HTTP context and clears loading", async () => {
+    vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    const pending = deferred<OracleTypeDetails>();
+    mocks.getOracleTypeDetails.mockReturnValueOnce(pending.promise);
+    mount();
+    await flush();
+    expect(mocks.getOracleTypeDetails).toHaveBeenCalledOnce();
+    expect(mocks.getOracleTypeDetails.mock.calls[0][5]).toMatch(/^oracle-type-[\da-f-]{36}$/);
+    expect(root.querySelector('[role="status"]')?.textContent).toBe("Loading");
+    pending.resolve(details());
+    await flush();
+    expect(root.textContent).toContain("INVALID");
+    expect(root.querySelector('[role="status"]')).toBeNull();
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("shows initialization failure and clears loading before a backend request", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: () => {
+        throw new Error("Random source unavailable");
+      },
+    });
+    mount();
+    await flush();
+    expect(mocks.getOracleTypeDetails).not.toHaveBeenCalled();
+    expect(root.querySelector('[role="alert"]')?.textContent).toBe("Random source unavailable");
+    expect(root.querySelector('[role="status"]')).toBeNull();
+  });
+
   it("preserves exact owner, name and specification/body identity at the backend boundary", async () => {
     mocks.getOracleTypeDetails.mockResolvedValue(details());
     const props = mount();
@@ -88,13 +126,15 @@ describe("OracleTypeMetadataPanel", () => {
   });
 
   it("distinguishes unknown status, unavailable dependencies and an empty visible grant list", async () => {
-    mocks.getOracleTypeDetails.mockResolvedValue(details({
-      status: null,
-      paired_object: null,
-      pairing_state: "unknown",
-      dependencies: { state: "denied", rows: [], message: "ORA-01031: insufficient privileges" },
-      grants: { state: "empty", rows: [] },
-    }));
+    mocks.getOracleTypeDetails.mockResolvedValue(
+      details({
+        status: null,
+        paired_object: null,
+        pairing_state: "unknown",
+        dependencies: { state: "denied", rows: [], message: "ORA-01031: insufficient privileges" },
+        grants: { state: "empty", rows: [] },
+      }),
+    );
     mount();
     await flush();
     expect(root.textContent).toContain("Status: Unknown");
@@ -107,10 +147,12 @@ describe("OracleTypeMetadataPanel", () => {
   });
 
   it("shows the visible target, remote link and grant option without conflating them with effective permissions", async () => {
-    mocks.getOracleTypeDetails.mockResolvedValue(details({
-      dependencies: { state: "available", rows: [{ schema: initialTarget.schema, name: initialTarget.name, object_type: "TYPE", referenced_schema: "Other.Owner", referenced_name: 'Type"Name', referenced_type: "TYPE", referenced_link: "REMOTE", dependency_type: "HARD" }] },
-      grants: { state: "available", rows: [{ grantor: initialTarget.schema, grantee: "Some Role", privilege: "EXECUTE", grantable: null }] },
-    }));
+    mocks.getOracleTypeDetails.mockResolvedValue(
+      details({
+        dependencies: { state: "available", rows: [{ schema: initialTarget.schema, name: initialTarget.name, object_type: "TYPE", referenced_schema: "Other.Owner", referenced_name: 'Type"Name', referenced_type: "TYPE", referenced_link: "REMOTE", dependency_type: "HARD" }] },
+        grants: { state: "available", rows: [{ grantor: initialTarget.schema, grantee: "Some Role", privilege: "EXECUTE", grantable: null }] },
+      }),
+    );
     mount();
     await flush();
     expect(root.textContent).toContain('Other.Owner.Type"Name (TYPE) @REMOTE');
