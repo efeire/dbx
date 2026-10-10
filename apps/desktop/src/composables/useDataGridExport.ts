@@ -854,6 +854,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     allSourceColumns,
     visibleColumnIndexes,
     columnTypes,
+    allColumnTypes: allColumnTypesOption,
     extractorOptions: extractorOptionsOption,
     databaseType,
     identifierQuote,
