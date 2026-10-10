@@ -4220,6 +4220,9 @@ export default withEnglishFallback({
     objectDropRefreshFailed: "对象已删除，但侧边栏刷新失败：{message}",
     duplicateNameTitle: "克隆为新表",
     duplicateNamePlaceholder: "新表名",
+    oceanbaseCloneTargetSchema: "目标 schema（精确名称）",
+    oceanbaseClonePreview:
+      "确认创建 {target}？名称按输入内容加双引号保留。\n\n复制内容：\n{copied}\n\n不复制的对象：\n{excluded}\n\n不复制外键、触发器、CHECK/UNIQUE 约束、特殊索引、分区和物理属性。默认表达式按原文保留，可能仍引用源序列或函数。本次结构创建不复制数据。\n\nDDL 会逐条提交。后续步骤失败时，已创建对象会保留，需要人工恢复。",
     copyTable: "复制表",
     pasteTable: "粘贴表",
     pasteOptionStructureAndData: "结构和数据",

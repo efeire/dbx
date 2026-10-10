@@ -4127,6 +4127,9 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "パスワードを含めてコピー",
     copyPasswordConfirmMessage: "コピーされるテキストには保存済みのパスワードが平文で含まれます。続行しますか？",
     copyPasswordConfirmAction: "コピー",
+    oceanbaseCloneTargetSchema: "対象スキーマ（正確な名前）",
+    oceanbaseClonePreview:
+      "{target} を作成しますか？名前は入力内容を二重引用符で囲んで保持します。\n\nコピーする内容：\n{copied}\n\nコピーしないオブジェクト：\n{excluded}\n\n外部キー、トリガー、CHECK/UNIQUE 制約、特殊索引、パーティション、物理属性はコピーしません。デフォルト式は原文のまま保持され、元のシーケンスや関数を参照し続ける可能性があります。この構造作成ではデータをコピーしません。\n\nDDL は文ごとにコミットされます。後続の手順が失敗すると、作成済みオブジェクトは残り、手動の復旧が必要です。",
   },
   visibleDatabases: {
     title: "表示するデータベース",

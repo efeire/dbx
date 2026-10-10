@@ -4287,6 +4287,9 @@ export default {
     objectDropRefreshFailed: "Objects were deleted, but refreshing the sidebar failed: {message}",
     duplicateNameTitle: "Clone as New Table",
     duplicateNamePlaceholder: "New table name",
+    oceanbaseCloneTargetSchema: "Target schema (exact name)",
+    oceanbaseClonePreview:
+      "Create {target}? Names are quoted exactly as entered.\n\nCopied:\n{copied}\n\nExcluded objects:\n{excluded}\n\nForeign keys, triggers, CHECK/UNIQUE constraints, special indexes, partitions and physical attributes are not copied. Defaults are kept verbatim and may still reference source sequences or functions. No data is copied by this structure step.\n\nDDL commits independently. A later failure leaves completed objects in place; recovery is manual.",
     copyTable: "Copy Table",
     pasteTable: "Paste Table",
     pasteOptionStructureAndData: "Structure and Data",

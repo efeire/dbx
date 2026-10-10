@@ -4104,6 +4104,9 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "Copia con password",
     copyPasswordConfirmMessage: "Il testo copiato conterrà la password salvata in chiaro. Continuare?",
     copyPasswordConfirmAction: "Copia",
+    oceanbaseCloneTargetSchema: "Schema di destinazione (nome esatto)",
+    oceanbaseClonePreview:
+      "Creare {target}? I nomi vengono racchiusi tra virgolette doppie e conservati come inseriti.\n\nContenuto copiato:\n{copied}\n\nOggetti esclusi:\n{excluded}\n\nNon vengono copiati chiavi esterne, trigger, vincoli CHECK/UNIQUE, indici speciali, partizioni o attributi fisici. Le espressioni predefinite restano invariate e possono ancora riferirsi a sequenze o funzioni di origine. Questa creazione della struttura non copia dati.\n\nOgni istruzione DDL viene confermata separatamente. Se un passaggio successivo fallisce, gli oggetti creati restano e richiedono ripristino manuale.",
   },
   visibleDatabases: {
     title: "Database Visibili",
