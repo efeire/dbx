@@ -650,7 +650,7 @@ pub async fn start_transfer(
                     &mut object_outcome,
                     "Schema object stage did not complete; this selected object was not executed",
                     history.as_ref(),
-                    tables_blocked_objects || exact_object_progress,
+                    exact_object_progress,
                 )
                 .await;
                 if let Some(journal) = history.as_ref() {

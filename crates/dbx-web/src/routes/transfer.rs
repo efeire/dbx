@@ -446,6 +446,7 @@ pub async fn start_transfer(
                     status: TransferStatus::Error,
                     error: Some(e),
                     terminal: true,
+                    object_result: None,
                 };
                 send_transfer_progress(&progress_channel, &progress);
                 finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -696,7 +697,7 @@ pub async fn start_transfer(
                     "Schema object stage did not complete; this selected object was not executed",
                     &progress_channel,
                     history.as_ref(),
-                    tables_blocked_objects || exact_object_progress,
+                    exact_object_progress,
                 )
                 .await;
                 if let Some(journal) = history.as_ref() {
