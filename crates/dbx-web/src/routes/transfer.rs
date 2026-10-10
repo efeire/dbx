@@ -972,6 +972,13 @@ mod tests {
     async fn demo_mode_transfer_does_not_write_task_history() {
         let (mut state, dir) = test_web_state().await;
         Arc::get_mut(&mut state).unwrap().demo_mode = true;
+        let src = sqlite_config("src", &dir.join("src.db").to_string_lossy());
+        let dst = sqlite_config("dst", &dir.join("dst.db").to_string_lossy());
+        std::fs::write(dir.join("src.db"), b"").unwrap();
+        std::fs::write(dir.join("dst.db"), b"").unwrap();
+        std::fs::write(dir.join("main.db"), b"").unwrap();
+        state.app.configs.write().await.insert("src".to_string(), src);
+        state.app.configs.write().await.insert("dst".to_string(), dst);
         let req = transfer_request("src", "dst", &dir);
         let transfer_id = req.transfer_id.clone();
         let _ = start_transfer(State(state.clone()), Json(StartTransferRequest { request: req })).await.unwrap();
