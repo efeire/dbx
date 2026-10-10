@@ -80,6 +80,8 @@ pub async fn start_transfer(
     .await?;
 
     dbx_core::transfer::ensure_transfer_source_types_supported(&state, &request, &source_pool_key).await?;
+    dbx_core::transfer::ensure_transfer_schema_objects_ready(&state, &request, &source_pool_key, &target_pool_key)
+        .await?;
 
     let history = match TransferTaskJournal::accept(&state.storage, &state, &request, TaskLifecycleOwner::Tauri).await {
         Ok(history) => history,
@@ -187,6 +189,7 @@ pub async fn start_transfer(
                             status: TransferStatus::Cancelled,
                             error: None,
                             terminal: true,
+                            object_result: None,
                         },
                     )
                     .await;
@@ -207,6 +210,7 @@ pub async fn start_transfer(
                             status: TransferStatus::Error,
                             error: Some(e),
                             terminal: true,
+                            object_result: None,
                         },
                     )
                     .await;
@@ -249,6 +253,7 @@ pub async fn start_transfer(
                             status: TransferStatus::Cancelled,
                             error: None,
                             terminal: true,
+                            object_result: None,
                         },
                     )
                     .await;
@@ -269,6 +274,7 @@ pub async fn start_transfer(
                             status: TransferStatus::Error,
                             error: Some(e),
                             terminal: true,
+                            object_result: None,
                         },
                     )
                     .await;
@@ -303,6 +309,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Error,
                         error: Some(e),
                         terminal: true,
+                        object_result: None,
                     },
                 )
                 .await;
@@ -326,6 +333,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Cancelled,
                         error: None,
                         terminal: true,
+                        object_result: None,
                     },
                 )
                 .await;
@@ -397,6 +405,7 @@ pub async fn start_transfer(
                             status: TransferStatus::TableDone,
                             error: None,
                             terminal: false,
+                            object_result: None,
                         },
                     );
                 }
@@ -425,6 +434,7 @@ pub async fn start_transfer(
                                 status: TransferStatus::Cancelled,
                                 error: None,
                                 terminal: true,
+                                object_result: None,
                             },
                         )
                         .await;
@@ -449,6 +459,7 @@ pub async fn start_transfer(
                             status: TransferStatus::Error,
                             error: Some(e),
                             terminal: false,
+                            object_result: None,
                         },
                     );
                 }
@@ -514,6 +525,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Cancelled,
                         error: None,
                         terminal: true,
+                        object_result: None,
                     },
                 )
                 .await;
@@ -537,6 +549,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Error,
                         error: Some(e),
                         terminal: false,
+                        object_result: None,
                     },
                 );
             }
@@ -605,6 +618,7 @@ pub async fn start_transfer(
                     ))
                 },
                 terminal: true,
+                object_result: None,
             },
         )
         .await;

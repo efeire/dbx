@@ -24,8 +24,10 @@ mod iris_tests;
 
 mod db2;
 mod ddl_plan;
+mod oracle_packages;
 mod overwrite_clear;
 mod structure_plan;
+pub use oracle_packages::{TransferObjectConflictPolicy, TransferSchemaObjectPlan, TransferSchemaObjectResult};
 
 pub use overwrite_clear::clear_foreign_key_linked_overwrite_targets;
 
@@ -206,6 +208,8 @@ pub enum TransferObjectKind {
     Trigger,
     Sequence,
     Event,
+    Package,
+    PackageBody,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -257,6 +261,11 @@ pub fn transfer_object_kinds_for_family(family: &TransferObjectFamily) -> Vec<Tr
 }
 
 pub fn transfer_object_kinds(db_type: &DatabaseType) -> Vec<TransferObjectKind> {
+    if matches!(db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) {
+        let mut kinds = transfer_object_kinds_for_family(&TransferObjectFamily::Oracle);
+        kinds.extend([TransferObjectKind::Package, TransferObjectKind::PackageBody]);
+        return kinds;
+    }
     match transfer_object_family(db_type) {
         Some(family) => transfer_object_kinds_for_family(&family),
         None => Vec::new(),
@@ -289,6 +298,8 @@ pub struct TransferRequest {
     pub quote_target_column_names: bool,
     #[serde(default)]
     pub ownership_policy: TransferOwnershipPolicy,
+    #[serde(default)]
+    pub object_conflict_policy: TransferObjectConflictPolicy,
     pub batch_size: usize,
     /// Optional per-table source filter for this transfer.
     ///
@@ -326,6 +337,8 @@ pub struct TransferOwnershipPreview {
     /// re-reads source and target metadata before executing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub structure: Option<TransferStructurePreview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_objects: Option<TransferSchemaObjectPlan>,
 }
 
 /// SQL plan preview for a `drop_target_before_create` (rebuild) transfer.
@@ -507,6 +520,8 @@ pub struct TransferProgress {
     pub status: TransferStatus,
     pub error: Option<String>,
     pub terminal: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_result: Option<TransferSchemaObjectResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -647,7 +662,8 @@ pub fn validate_transfer_target_table_names(request: &TransferRequest) -> Result
 pub fn cross_family_transferable_object_kinds(source: &DatabaseType, target: &DatabaseType) -> Vec<TransferObjectKind> {
     use TransferObjectKind::*;
     if is_same_transfer_family(source, target) {
-        return transfer_object_kinds(source);
+        let target_kinds = transfer_object_kinds(target);
+        return transfer_object_kinds(source).into_iter().filter(|kind| target_kinds.contains(kind)).collect();
     }
     // Narrow the matrix to validated directions: MySQL, SQL Server and
     // Oracle/Dameng may act as either side. Postgres (and anything else) is
@@ -8350,6 +8366,8 @@ pub fn ordered_transfer_object_kinds(kinds: Vec<TransferObjectKind>) -> Vec<Tran
         TransferObjectKind::Procedure => 4,
         TransferObjectKind::Trigger => 5,
         TransferObjectKind::Event => 6,
+        TransferObjectKind::Package => 3,
+        TransferObjectKind::PackageBody => 4,
     };
     let mut kinds = kinds;
     kinds.sort_by_key(rank);
@@ -8362,6 +8380,8 @@ pub struct TransferObjectOutcome {
     pub transferred: Vec<String>,
     pub skipped: Vec<String>,
     pub failed: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub object_results: Vec<TransferSchemaObjectResult>,
 }
 
 pub fn selected_object_names(selections: &[TransferObjectSelection], kind: &TransferObjectKind) -> Vec<String> {
@@ -8513,8 +8533,8 @@ where
     // types at the request boundary, but requests can also arrive from older
     // clients or be crafted directly).
     let mut filtered_request = request.clone();
-    if let Some(family) = transfer_object_family(&source_db_type) {
-        let supported = transfer_object_kinds_for_family(&family);
+    if transfer_object_family(&source_db_type).is_some() {
+        let supported = transfer_object_kinds(&source_db_type);
         filtered_request.objects = request.object_selection_mode().filter_supported(&supported);
     }
     match transfer_object_family(&source_db_type) {
@@ -8556,6 +8576,16 @@ where
     }
 }
 
+/// Run selected package preflight before any table or object is mutated.
+pub async fn ensure_transfer_schema_objects_ready(
+    state: &AppState,
+    request: &TransferRequest,
+    source_pool_key: &str,
+    target_pool_key: &str,
+) -> Result<(), String> {
+    oracle_packages::ensure_ready(state, request, source_pool_key, target_pool_key).await
+}
+
 async fn transfer_mysql_schema_objects<F>(
     state: &AppState,
     request: &TransferRequest,
@@ -8590,6 +8620,7 @@ where
                     status,
                     error,
                     terminal: false,
+                    object_result: None,
                 });
             };
             // skip if the target already has it
@@ -8638,13 +8669,17 @@ async fn transfer_oracle_schema_objects<F>(
 where
     F: FnMut(TransferProgress),
 {
-    let mut outcome = TransferObjectOutcome::default();
+    let mut outcome =
+        oracle_packages::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
     let source_schema = resolve_oracle_schema(&request.source_schema, &request.source_database);
     let target_schema = resolve_oracle_schema(&request.target_schema, &request.target_database);
     let order = ordered_transfer_object_kinds(
         request.object_selection_mode().selections().iter().map(|s| s.object_type).collect(),
     );
     for kind in order {
+        if matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody) {
+            continue;
+        }
         for name in selected_object_names(request.object_selection_mode().selections(), &kind) {
             if is_cancelled(&request.transfer_id).await {
                 return Err("Cancelled".to_string());
@@ -8661,6 +8696,7 @@ where
                     status,
                     error,
                     terminal: false,
+                    object_result: None,
                 });
             };
             // skip if the target already has it (ALL_OBJECTS works for both Oracle and Dameng)
@@ -8734,6 +8770,7 @@ where
                     status,
                     error,
                     terminal: false,
+                    object_result: None,
                 });
             };
             let exists_sql = target_object_exists_sql(&DatabaseType::SqlServer, &target_schema, &name, &kind)?;
@@ -8828,6 +8865,7 @@ where
                     status,
                     error,
                     terminal: false,
+                    object_result: None,
                 });
             };
             let exists_sql = target_object_exists_sql(&target_db_type, &target_schema, &name, &kind)?;
@@ -9680,7 +9718,8 @@ pub async fn preview_transfer_ownership(
         None
     };
 
-    Ok(TransferOwnershipPreview { missing_owners, target_owner, rebuild, structure })
+    let schema_objects = oracle_packages::preview(state, request, source_pool_key, target_pool_key).await?;
+    Ok(TransferOwnershipPreview { missing_owners, target_owner, rebuild, structure, schema_objects })
 }
 
 fn postgres_transfer_grant_statements_sql(
@@ -10270,6 +10309,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
 
         if row_count < batch_size {
@@ -10760,6 +10800,7 @@ where
                 status: TransferStatus::Running,
                 error: None,
                 terminal: false,
+                object_result: None,
             });
 
             log::info!("[transfer] rename pre-pass: renaming {target_table} to backup {backup_name}");
@@ -11612,6 +11653,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         return Ok(TransferTableResult { moved_rows: copied, source_row_count: total_rows });
     }
@@ -11666,6 +11708,7 @@ where
                     status: TransferStatus::Running,
                     error: None,
                     terminal: false,
+                    object_result: None,
                 });
             },
         )
@@ -11685,6 +11728,7 @@ where
                     status: TransferStatus::Running,
                     error: None,
                     terminal: false,
+                    object_result: None,
                 });
             }
             Err(error) if error == "Cancelled" => return Err(error),
@@ -11957,6 +12001,7 @@ where
                 status: TransferStatus::Running,
                 error: None,
                 terminal: false,
+                object_result: None,
             });
 
             if ctid_pager.is_some() {
@@ -12546,6 +12591,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         execute_on_pool(state, target_pool_key, &generate_postgres_extension_ddl(&extension, &request.target_schema))
             .await
@@ -12567,6 +12613,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         execute_on_pool(state, target_pool_key, &generate_postgres_enum_ddl(&enum_type, &request.target_schema))
             .await
@@ -12588,6 +12635,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         execute_on_pool(state, target_pool_key, &generate_postgres_domain_ddl(&domain, &request.target_schema))
             .await
@@ -12614,6 +12662,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         execute_on_pool(
             state,
@@ -12749,6 +12798,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
 
         let rewritten_source = match object.object_type {
@@ -12809,6 +12859,7 @@ where
                 status: TransferStatus::Running,
                 error: None,
                 terminal: false,
+                object_result: None,
             });
             execute_on_pool(state, target_pool_key, &statement)
                 .await
@@ -12843,6 +12894,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         let full_table = qualified_table(&trigger.table_name, &request.target_schema, &DatabaseType::Postgres, None);
         let drop_sql = format!(
@@ -12863,6 +12915,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         let create_sql = rewrite_postgres_trigger_table_schema(
             &ensure_sql_statement_terminated(&trigger.source),
@@ -12891,6 +12944,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         execute_on_pool(state, target_pool_key, &statement)
             .await
@@ -12912,6 +12966,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         let ownership_owner = if matches!(request.ownership_policy, TransferOwnershipPolicy::ReassignMissing)
             && !ownership_existing_roles.contains(&statement.owner)
@@ -12943,6 +12998,7 @@ where
             status: TransferStatus::Running,
             error: None,
             terminal: false,
+            object_result: None,
         });
         execute_on_pool(state, target_pool_key, &statement)
             .await
@@ -13917,6 +13973,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
             target_table_name_case: TransferTableNameCase::Preserve,
             quote_target_column_names: true,
             ownership_policy: TransferOwnershipPolicy::Preserve,
+            object_conflict_policy: Default::default(),
             batch_size: 1000,
             drop_target_before_create: false,
             drop_target_confirmed: false,
@@ -14004,6 +14061,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
                 target_table_name_case: TransferTableNameCase::Preserve,
                 quote_target_column_names: true,
                 ownership_policy: TransferOwnershipPolicy::Preserve,
+                object_conflict_policy: TransferObjectConflictPolicy::Skip,
                 batch_size: 1000,
                 table_filters: std::collections::HashMap::new(),
                 drop_target_before_create: false,
@@ -14074,6 +14132,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
                 target_table_name_case: TransferTableNameCase::Preserve,
                 quote_target_column_names: true,
                 ownership_policy: TransferOwnershipPolicy::Preserve,
+                object_conflict_policy: Default::default(),
                 batch_size: 1000,
                 content: TransferContent::DataOnly,
                 objects: Some(Vec::new()),
@@ -14115,6 +14174,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
                 target_table_name_case: TransferTableNameCase::Preserve,
                 quote_target_column_names: true,
                 ownership_policy: TransferOwnershipPolicy::Preserve,
+                object_conflict_policy: Default::default(),
                 batch_size: 1000,
                 content: TransferContent::StructureAndData,
                 objects: Some(Vec::new()),
@@ -15278,6 +15338,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
             target_table_name_case: TransferTableNameCase::Preserve,
             quote_target_column_names: true,
             ownership_policy: TransferOwnershipPolicy::Preserve,
+            object_conflict_policy: Default::default(),
             batch_size: 1000,
             drop_target_before_create: false,
             drop_target_confirmed: false,
@@ -20952,6 +21013,7 @@ CREATE INDEX items_name_idx ON public.items (id);"#;
                     status: TransferStatus::Running,
                     error: None,
                     terminal: false,
+                    object_result: None,
                 },
             );
         }

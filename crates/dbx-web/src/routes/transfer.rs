@@ -44,6 +44,7 @@ fn terminal_transfer_error(req: &TransferRequest, error: impl ToString) -> trans
         status: TransferStatus::Error,
         error: Some(error.to_string()),
         terminal: true,
+        object_result: None,
     }
 }
 
@@ -201,6 +202,13 @@ pub async fn start_transfer(
             finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
             return;
         }
+        if let Err(e) =
+            transfer::ensure_transfer_schema_objects_ready(&app, &req, &source_pool_key, &target_pool_key).await
+        {
+            send_transfer_progress(&progress_channel, &terminal_transfer_error(&req, e));
+            finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
+            return;
+        }
 
         let tables = req.tables.clone();
         // Sort by FK dependency so referenced tables are transferred first, and
@@ -289,6 +297,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Cancelled,
                         error: None,
                         terminal: true,
+                        object_result: None,
                     };
                     send_transfer_progress(&progress_channel, &progress);
                     finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -305,6 +314,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Error,
                         error: Some(e),
                         terminal: true,
+                        object_result: None,
                     };
                     send_transfer_progress(&progress_channel, &progress);
                     finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -342,6 +352,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Cancelled,
                         error: None,
                         terminal: true,
+                        object_result: None,
                     };
                     send_transfer_progress(&progress_channel, &progress);
                     finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -358,6 +369,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Error,
                         error: Some(e),
                         terminal: true,
+                        object_result: None,
                     };
                     send_transfer_progress(&progress_channel, &progress);
                     finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -389,6 +401,7 @@ pub async fn start_transfer(
                     status: TransferStatus::Error,
                     error: Some(e),
                     terminal: true,
+                    object_result: None,
                 };
                 send_transfer_progress(&progress_channel, &progress);
                 finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -408,6 +421,7 @@ pub async fn start_transfer(
                     status: TransferStatus::Cancelled,
                     error: None,
                     terminal: true,
+                    object_result: None,
                 };
                 send_transfer_progress(&progress_channel, &progress);
                 finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -479,6 +493,7 @@ pub async fn start_transfer(
                         status: TransferStatus::TableDone,
                         error: None,
                         terminal: false,
+                        object_result: None,
                     };
                     send_transfer_progress(&progress_channel, &progress);
                 }
@@ -504,6 +519,7 @@ pub async fn start_transfer(
                             status: TransferStatus::Cancelled,
                             error: None,
                             terminal: true,
+                            object_result: None,
                         };
                         send_transfer_progress(&progress_channel, &progress);
                         finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -525,6 +541,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Error,
                         error: Some(e),
                         terminal: false,
+                        object_result: None,
                     };
                     send_transfer_progress(&progress_channel, &progress);
                 }
@@ -584,6 +601,7 @@ pub async fn start_transfer(
                     status: TransferStatus::Cancelled,
                     error: None,
                     terminal: true,
+                    object_result: None,
                 };
                 send_transfer_progress(&progress_channel, &progress);
                 finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -604,6 +622,7 @@ pub async fn start_transfer(
                     status: TransferStatus::Error,
                     error: Some(e),
                     terminal: false,
+                    object_result: None,
                 };
                 send_transfer_progress(&progress_channel, &progress);
             }
@@ -670,6 +689,7 @@ pub async fn start_transfer(
                 ))
             },
             terminal: true,
+            object_result: None,
         };
         send_transfer_progress(&progress_channel, &done);
         finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -881,6 +901,7 @@ mod tests {
             target_table_name_case: TransferTableNameCase::Preserve,
             quote_target_column_names: true,
             ownership_policy: TransferOwnershipPolicy::Preserve,
+            object_conflict_policy: Default::default(),
             batch_size: 1000,
         }
     }

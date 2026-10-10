@@ -2489,6 +2489,7 @@ export interface TransferTaskConfig {
   mode: TransferMode;
   targetTableNameCase: TransferTableNameCase;
   quoteTargetColumnNames: boolean;
+  objectConflictPolicy?: "skip" | "replace";
   batchSize: number;
   /** Optional per-source-table transfer filter (bare WHERE or a full SELECT). */
   tableFilters?: Record<string, string>;
