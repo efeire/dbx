@@ -35,6 +35,23 @@ async fn oceanbase_transfer_uses_editor_source_rpc_when_get_ddl_is_unavailable()
         "P": {"source": "CREATE OR REPLACE PROCEDURE P AS BEGIN NULL; END;\n/"},
         "T": {"source": "CREATE OR REPLACE TRIGGER \"SRC\".\"T\" BEFORE INSERT ON \"SRC\".\"BASE\" BEGIN NULL; END;\n/\nALTER TRIGGER \"SRC\".\"T\" DISABLE;"}
     }).to_string()).unwrap();
+    std::fs::write(fixture.control_path("transfer-targets"), json!({
+        "S": {"object_type": "SEQUENCE", "source": "CREATE SEQUENCE \"DST\".\"S\" START WITH 7;"},
+        "V": {"object_type": "VIEW", "source": "SELECT 1 FROM DUAL"},
+        "M": {"object_type": "MATERIALIZED VIEW", "source": "CREATE MATERIALIZED VIEW \"DST\".\"M\" REFRESH COMPLETE ON DEMAND AS SELECT 1 X FROM DUAL;"},
+        "F": {"object_type": "FUNCTION", "source": "CREATE OR REPLACE FUNCTION \"DST\".\"F\" RETURN NUMBER AS BEGIN RETURN 1; END;\n/"},
+        "P": {"object_type": "PROCEDURE", "source": "CREATE OR REPLACE PROCEDURE \"DST\".\"P\" AS BEGIN NULL; END;\n/"},
+        "T": {"object_type": "TRIGGER", "source": "CREATE OR REPLACE TRIGGER \"DST\".\"T\" BEFORE INSERT ON \"DST\".\"BASE\" BEGIN NULL; END;\n/\nALTER TRIGGER \"DST\".\"T\" DISABLE;"}
+    }).to_string()).unwrap();
+    std::fs::write(
+        fixture.control_path("transfer-sequences"),
+        json!({
+            "SRC": {"S": [1, 999999, 1, "N", "N", 20]},
+            "DST": {"S": [1, 999999, 1, "N", "N", 20]}
+        })
+        .to_string(),
+    )
+    .unwrap();
     let request = object_transfer_request(json!([
         {"objectType": "TRIGGER", "names": ["T"]}, {"objectType": "PROCEDURE", "names": ["P"]},
         {"objectType": "FUNCTION", "names": ["F"]}, {"objectType": "MATERIALIZED_VIEW", "names": ["M"]},
@@ -44,7 +61,30 @@ async fn oceanbase_transfer_uses_editor_source_rpc_when_get_ddl_is_unavailable()
     let outcome = transfer_schema_objects(&fixture.state, &request, &key, &key, |_| {}).await.unwrap();
     assert_eq!(outcome.transferred.len(), 6);
     assert!(outcome.failed.is_empty());
-    assert_eq!(fixture.requests("get_object_source").len(), 6);
+    assert!(outcome.skipped.is_empty());
+    let sources = fixture.requests("get_object_source");
+    for schema in ["SRC", "DST"] {
+        let identities = sources
+            .iter()
+            .filter(|request| request["params"]["schema"] == schema)
+            .map(|request| {
+                (request["params"]["name"].as_str().unwrap(), request["params"]["object_type"].as_str().unwrap())
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            identities,
+            std::collections::BTreeSet::from([
+                ("S", "SEQUENCE"),
+                ("V", "VIEW"),
+                ("M", "MATERIALIZED_VIEW"),
+                ("F", "FUNCTION"),
+                ("P", "PROCEDURE"),
+                ("T", "TRIGGER")
+            ])
+        );
+        assert_eq!(sources.iter().filter(|request| request["params"]["schema"] == schema).count(), 6);
+    }
+    assert_eq!(sources.len(), 12);
     let sqls = fixture
         .requests("execute_query")
         .into_iter()
@@ -56,7 +96,77 @@ async fn oceanbase_transfer_uses_editor_source_rpc_when_get_ddl_is_unavailable()
     assert!(ddl[0].starts_with("CREATE SEQUENCE \"DST\".\"S\""));
     assert!(ddl.iter().any(|sql| sql.contains("VIEW \"DST\".\"V\" (\"Alias\")")));
     assert!(ddl.last().unwrap().contains("ALTER TRIGGER \"DST\".\"T\" DISABLE"));
+    assert_eq!(sqls.iter().filter(|sql| sql.starts_with("SELECT 1 FROM ALL_OBJECTS")).count(), 6);
+    assert_eq!(sqls.iter().filter(|sql| sql.starts_with("SELECT OBJECT_NAME, OBJECT_TYPE, STATUS")).count(), 6);
+    let error_queries = sqls.iter().filter(|sql| sql.contains("FROM ALL_ERRORS")).collect::<Vec<_>>();
+    assert_eq!(error_queries.len(), 3);
+    for (name, kind) in [("F", "FUNCTION"), ("P", "PROCEDURE"), ("T", "TRIGGER")] {
+        assert!(error_queries
+            .iter()
+            .any(|sql| sql.contains(&format!("OWNER='DST' AND NAME='{name}' AND TYPE='{kind}'"))));
+    }
+    assert_eq!(sqls.iter().filter(|sql| sql.contains("FROM ALL_SEQUENCES")).count(), 2);
     fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn oceanbase_transfer_rejects_invalid_missing_or_different_target_after_successful_ddl() {
+    for (override_target, expected) in [
+        (json!({"status": "INVALID"}), "not VALID"),
+        (json!({"missing": true}), "identity is missing"),
+        (json!({"object_type": "PROCEDURE"}), "identity is missing"),
+        (json!({"errors": [[3, 1, "PLS-00201"]]}), "compiler errors"),
+        (
+            json!({"source": "CREATE OR REPLACE FUNCTION \"DST\".\"F\" RETURN NUMBER AS BEGIN RETURN 2; END;\n/"}),
+            "definition differs",
+        ),
+    ] {
+        let fixture = AgentFixture::new(DatabaseType::OceanbaseOracle).await;
+        std::fs::write(
+            fixture.control_path("transfer-sources"),
+            json!({
+                "F": {"source": "CREATE OR REPLACE FUNCTION F RETURN NUMBER AS BEGIN RETURN 1; END;\n/"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut target = json!({"object_type": "FUNCTION", "status": "VALID",
+            "source": "CREATE OR REPLACE FUNCTION \"DST\".\"F\" RETURN NUMBER AS BEGIN RETURN 1; END;\n/"});
+        target.as_object_mut().unwrap().extend(override_target.as_object().unwrap().clone());
+        std::fs::write(fixture.control_path("transfer-targets"), json!({"F": target}).to_string()).unwrap();
+        let request = object_transfer_request(json!([{"objectType": "FUNCTION", "names": ["F"]}]));
+        let key = fixture.state.get_or_create_pool_for_session("conn", Some("configured"), None).await.unwrap();
+        let mut errors = vec![];
+        let outcome =
+            crate::data::transfer::transfer_schema_objects(&fixture.state, &request, &key, &key, |progress| {
+                if let Some(error) = progress.error {
+                    errors.push(error);
+                }
+            })
+            .await
+            .unwrap();
+        assert!(outcome.transferred.is_empty());
+        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.failed, vec!["Function:F"]);
+        assert!(
+            errors.iter().any(|error| error.contains(expected)
+                && error.contains("after 1 completed DDL statements")
+                && error.contains("target retained for inspection")),
+            "{errors:?}"
+        );
+        assert_eq!(
+            fixture
+                .requests("execute_query")
+                .iter()
+                .filter(|request| request["params"]["sql"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("CREATE OR REPLACE FUNCTION \"DST\".\"F\""))
+                .count(),
+            1
+        );
+        fixture.shutdown().await;
+    }
 }
 
 #[tokio::test]

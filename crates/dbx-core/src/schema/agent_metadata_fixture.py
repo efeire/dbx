@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import pathlib
+import re
 import sys
 import threading
 
@@ -9,6 +10,7 @@ sessions = {}
 output_lock = threading.Lock()
 session_locks = {}
 cancelled = {}
+created_objects = set()
 
 
 def respond(request, result=None, error=None):
@@ -46,13 +48,17 @@ def handle(request):
             cancelled[session].set()
         sessions.pop(session, None)
     elif method == 'get_object_source':
-        sources = json.loads((root / 'transfer-sources').read_text())
+        owner = params.get('schema')
+        source_file = root / ('transfer-targets' if owner == 'DST' else 'transfer-sources')
+        sources = json.loads(source_file.read_text()) if owner in ('SRC', 'DST') and source_file.exists() else {}
         source = sources.get(params['name'], {'error': 'object source missing'})
+        if source.get('object_type', params['object_type'].replace('_', ' ')) != params['object_type'].replace('_', ' '):
+            source = {'error': 'object source identity mismatch'}
         if 'error' in source:
             error = rpc_error('sql')
             error['message'] = source['error']
         else:
-            result = {'name': params['name'], 'schema': 'SRC', 'object_type': params['object_type'], 'source': source['source']}
+            result = {'name': params['name'], 'schema': params['schema'], 'object_type': params['object_type'], 'source': source['source']}
     elif method == 'get_columns' and (root / 'transfer-sources').exists():
         result = [{'name': 'Alias', 'data_type': 'NUMBER', 'is_nullable': True,
                    'column_default': None, 'is_primary_key': False, 'extra': ''}]
@@ -78,6 +84,34 @@ def handle(request):
             error['message'] = 'fixture target DDL permission failure'
         else:
             result = {'columns': [], 'rows': [], 'affected_rows': 0, 'execution_time_ms': 0}
+            targets_file = root / 'transfer-targets'
+            targets = json.loads(targets_file.read_text()) if targets_file.exists() else {}
+            created = re.match(r'^CREATE (?:OR REPLACE )?(SEQUENCE|VIEW|MATERIALIZED VIEW|FUNCTION|PROCEDURE|TRIGGER) "DST"\."([^"]+)"', sql)
+            if created:
+                created_objects.add((created[1], created[2]))
+            identity = re.fullmatch(r"SELECT OBJECT_NAME, OBJECT_TYPE, STATUS FROM ALL_OBJECTS WHERE OWNER='DST' AND OBJECT_NAME='([^']+)' AND OBJECT_TYPE='([^']+)'", sql)
+            errors = re.fullmatch(r"SELECT LINE, POSITION, TEXT FROM ALL_ERRORS WHERE OWNER='DST' AND NAME='([^']+)' AND TYPE='(FUNCTION|PROCEDURE|TRIGGER)' AND ATTRIBUTE='ERROR' ORDER BY SEQUENCE", sql)
+            sequence = re.fullmatch(r"SELECT MIN_VALUE, MAX_VALUE, INCREMENT_BY, CYCLE_FLAG, ORDER_FLAG, CACHE_SIZE FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER='(SRC|DST)' AND SEQUENCE_NAME='([^']+)'", sql)
+            if identity:
+                name, kind = identity.groups()
+                target = targets.get(name, {})
+                result['columns'] = ['OBJECT_NAME', 'OBJECT_TYPE', 'STATUS']
+                if (kind, name) in created_objects and target.get('object_type') == kind and not target.get('missing', False):
+                    result['rows'] = [[name, kind, target.get('status', 'VALID')]]
+            elif errors:
+                name, kind = errors.groups()
+                target = targets.get(name, {})
+                result['columns'] = ['LINE', 'POSITION', 'TEXT']
+                if (kind, name) in created_objects and target.get('object_type') == kind:
+                    result['rows'] = target.get('errors', [])
+            elif sequence:
+                owner, name = sequence.groups()
+                sequences_file = root / 'transfer-sequences'
+                sequences = json.loads(sequences_file.read_text()) if sequences_file.exists() else {}
+                result['columns'] = ['MIN_VALUE', 'MAX_VALUE', 'INCREMENT_BY', 'CYCLE_FLAG', 'ORDER_FLAG', 'CACHE_SIZE']
+                values = sequences.get(owner, {}).get(name)
+                if values is not None and (owner == 'SRC' or ('SEQUENCE', name) in created_objects):
+                    result['rows'] = [values]
     elif method in ('execute_query', 'get_table_ddl'):
         with session_locks[session]:
             if method == 'get_table_ddl':
