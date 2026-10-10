@@ -73,8 +73,8 @@ export type SchemaDiffRoutineKind = "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACK
 
 export function schemaDiffRoutineType(type = ""): SchemaDiffRoutineKind {
   const kind = type.toUpperCase().replaceAll("_", " ");
-  if (kind === "PACKAGE" || kind === "PACKAGE BODY" || kind === "TRIGGER") return kind;
-  return kind.includes("PROC") ? "PROCEDURE" : "FUNCTION";
+  if (kind === "PACKAGE" || kind === "PACKAGE BODY" || kind === "TRIGGER" || kind === "FUNCTION" || kind === "PROCEDURE") return kind;
+  throw new Error("Unknown routine kind; reload comparison before selecting a plan");
 }
 
 export function schemaDiffRoutineKeyFromFunction(fn: Pick<FunctionInfo, "name" | "arguments"> & Partial<Pick<FunctionInfo, "function_type" | "trigger" | "schema">>): string {

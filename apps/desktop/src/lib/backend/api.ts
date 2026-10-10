@@ -1,3 +1,4 @@
+import { functionInfoRequestArguments, functionInfoResponse } from "@/lib/backend/functionInfoTransport";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import type * as TauriModule from "@/lib/backend/tauri";
 import { appendDebugLog } from "@/lib/backend/debugLog";
@@ -32,12 +33,12 @@ function forward<K extends keyof Backend>(name: K): Backend[K] {
     appendDebugLog("debug", "[DBX][api:start]", operation);
     const b = await getBackend();
     try {
-      const result = await (b[name] as (...a: unknown[]) => unknown)(...args);
+      const result = await (b[name] as (...a: unknown[]) => unknown)(...functionInfoRequestArguments(operation, args));
       appendDebugLog("debug", "[DBX][api:success]", {
         operation,
         elapsedMs: Math.round(performance.now() - startedAt),
       });
-      return result;
+      return functionInfoResponse(operation, result);
     } catch (error) {
       appendDebugLog("error", "[DBX][api:error]", {
         operation,
