@@ -4329,6 +4329,16 @@ export default withEnglishFallback({
     valid: "有效",
     invalid: "無效",
     refreshDiscardConfirm: "重新整理將捨棄未儲存的原始碼修改，是否繼續？",
+    rowsStatus_not_collected: "未採集統計",
+    rowsStatus_permission_denied: "無統計讀取權限",
+    rowsStatus_unsupported: "不支援此統計",
+    rowsStatus_error: "統計查詢失敗",
+    rowsStatus_unknown: "未知",
+    rowsSource: "估計值來源",
+    rowsLastAnalyzed: "統計採集時間",
+    rowsFreshness: "最佳化器統計時效",
+    rowsStale: "估計值已過期",
+    rowsNotStale: "未標記過期（非即時列數）",
   },
   structureEditor: {
     mysqlDataTypeHelp: {
