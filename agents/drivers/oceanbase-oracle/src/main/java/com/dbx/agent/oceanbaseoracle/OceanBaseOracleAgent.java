@@ -36,6 +36,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Types;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -346,7 +347,61 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         if (hasTableLikeCompletionKind(request.getObject_kinds())) {
             return unchecked(() -> completionAssistantTables(request));
         }
+        if (request.getObject_kinds().stream().anyMatch(kind -> kind == CompletionAssistantObjectKind.ROUTINE
+            || kind == CompletionAssistantObjectKind.PROCEDURE || kind == CompletionAssistantObjectKind.FUNCTION)) {
+            return unchecked(() -> completionAssistantRoutines(request));
+        }
         return super.completionAssistantSearch(request);
+    }
+
+    private CompletionAssistantResponse completionAssistantRoutines(CompletionAssistantRequest request) throws SQLException {
+        if (firstNonBlank(request.getParent_name()) != null) {
+            throw new SQLFeatureNotSupportedException("Package routine completion is not supported");
+        }
+        int limit = boundedCompletionLimit(request.getMax_results());
+        String preferredSchema = preferredCompletionSchema(request);
+        List<CompletionAssistantObjectKind> kinds = request.getObject_kinds();
+        List<Object> args = new ArrayList<>();
+        String types = kinds.contains(CompletionAssistantObjectKind.ROUTINE)
+            || (kinds.contains(CompletionAssistantObjectKind.PROCEDURE) && kinds.contains(CompletionAssistantObjectKind.FUNCTION))
+            ? "'PROCEDURE', 'FUNCTION'"
+            : kinds.contains(CompletionAssistantObjectKind.PROCEDURE) ? "'PROCEDURE'" : "'FUNCTION'";
+        if (kinds.contains(CompletionAssistantObjectKind.SEQUENCE)) types += ", 'SEQUENCE'";
+        String pattern = completionLikePattern(request.getMask(), request.getMatch_mode());
+        args.add(request.getCase_sensitive() ? pattern : pattern.toUpperCase(Locale.ROOT));
+        String ownerFilter = "";
+        if (!request.getGlobal_search()) {
+            ownerFilter = " AND OWNER = ?";
+            args.add(firstNonBlank(request.getParent_schema(), request.getSchema(), preferredSchema));
+        }
+        args.add(preferredSchema);
+        args.add(limit + 1);
+        String sql = """
+            SELECT OWNER, OBJECT_NAME, OBJECT_TYPE FROM (
+                SELECT OWNER, OBJECT_NAME, OBJECT_TYPE FROM ALL_OBJECTS
+                WHERE OBJECT_TYPE IN (%s) AND %s%s
+                ORDER BY CASE WHEN OWNER = ? THEN 0 ELSE 1 END, OBJECT_NAME, OWNER, OBJECT_TYPE
+            ) WHERE ROWNUM <= ?
+            """.formatted(types, completionNamePredicate("OBJECT_NAME", request.getCase_sensitive()), ownerFilter);
+        List<CompletionAssistantCandidate> candidates = new ArrayList<>();
+        boolean incomplete = false;
+        try (PreparedStatement stmt = requireConnection().prepareStatement(sql)) {
+            bindCompletionArgs(stmt, args);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    if (candidates.size() == limit) {
+                        incomplete = true;
+                        break;
+                    }
+                    String objectType = rs.getString(3);
+                    candidates.add(new CompletionAssistantCandidate(rs.getString(2),
+                        "PROCEDURE".equals(objectType) ? CompletionAssistantCandidateKind.PROCEDURE
+                            : "SEQUENCE".equals(objectType) ? CompletionAssistantCandidateKind.SEQUENCE : CompletionAssistantCandidateKind.FUNCTION,
+                        blankToNull(request.getDatabase()), rs.getString(1), null, null, null, objectType));
+                }
+            }
+        }
+        return new CompletionAssistantResponse(candidates, incomplete, false, true);
     }
 
     private CompletionAssistantResponse completionAssistantTables(CompletionAssistantRequest request) throws SQLException {

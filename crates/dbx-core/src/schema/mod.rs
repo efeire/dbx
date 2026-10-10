@@ -5505,6 +5505,22 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn routine_completion_wire_distinguishes_legacy_agents_from_empty_searches() {
+        let legacy: super::AgentCompletionAssistantResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [], "incomplete": false, "fallback_used": false
+        }))
+        .unwrap();
+        assert!(!legacy.routine_search_supported);
+        let current: super::AgentCompletionAssistantResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [], "incomplete": false, "fallback_used": false, "routine_search_supported": true
+        }))
+        .unwrap();
+        assert!(current.routine_search_supported);
+        assert!(current.response.candidates.is_empty());
+        assert!(!current.response.incomplete);
+    }
+
+    #[test]
     fn detects_unsupported_agent_completion_assistant_errors() {
         assert!(super::is_agent_completion_assistant_unsupported(
             "Agent RPC error (-1): Unknown method: completion_assistant_search_v1"
@@ -6696,6 +6712,14 @@ async fn close_ephemeral_agent_metadata_session(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct AgentCompletionAssistantResponse {
+    #[serde(flatten)]
+    response: db::CompletionAssistantResponse,
+    #[serde(default)]
+    routine_search_supported: bool,
+}
+
 pub async fn completion_assistant_search_core(
     state: &AppState,
     request: db::CompletionAssistantRequest,
@@ -6783,13 +6807,25 @@ pub async fn completion_assistant_search_core(
                 let db_config = connection_config(state, &request.connection_id).await;
                 let mut client = client.lock().await;
                 match client
-                    .completion_assistant_search::<db::CompletionAssistantResponse>(
+                    .completion_assistant_search::<AgentCompletionAssistantResponse>(
                         &request,
                         agent_metadata_timeout(db_config.as_ref()),
                     )
                     .await
                 {
-                    Ok(mut response) => {
+                    Ok(agent_response) => {
+                        if db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::OceanbaseOracle)
+                            && request.object_kinds.iter().any(db::CompletionAssistantObjectKind::is_routine_like)
+                            && !agent_response.routine_search_supported
+                        {
+                            // Older JDBC agents return a successful empty list for routine requests.
+                            // Let the frontend retain its existing schema-list fallback only there.
+                            return Err(
+                                "OceanBase agent does not support filtered routine completion; update the agent"
+                                    .to_string(),
+                            );
+                        }
+                        let mut response = agent_response.response;
                         response.fallback_used = false;
                         return Ok(response);
                     }
