@@ -412,9 +412,10 @@ async fn core_oracle_target_editions_gate_only_cross_engine_conversion() {
             .any(|r| r["params"]["sql"].as_str().is_some_and(|s| s.contains("EDITIONS_ENABLED"))));
         fixture.shutdown().await;
     }
-    let fixture = Fixture::new(json!({"editions":"Y"})).await;
+    let package_source = "CREATE OR REPLACE PACKAGE P AS PROCEDURE RUN; END;";
+    let fixture = Fixture::new(json!({"editions":"Y", "source_spec":package_source})).await;
     fixture.state.configs.write().await.get_mut("target").unwrap().db_type = DatabaseType::Oracle;
-    let mut package = routine("PACKAGE", "SRC", "CREATE OR REPLACE PACKAGE P AS PROCEDURE RUN; END;");
+    let mut package = routine("PACKAGE", "SRC", package_source);
     package.name = "P".into();
     package.type_info = None;
     let options = serde_json::from_value(json!({
@@ -426,6 +427,9 @@ async fn core_oracle_target_editions_gate_only_cross_engine_conversion() {
     let plan = prepare_schema_diff_core(&fixture.state, options).await.unwrap();
     assert!(plan.routine_steps[0].blocked_reason.is_none());
     assert!(plan.routine_steps[0].sql.is_some());
+    assert!(fixture.requests().iter().any(|request| request["params"]["sql"]
+        .as_str()
+        .is_some_and(|sql| sql.contains("DBMS_METADATA.GET_DDL('PACKAGE', 'P', 'SRC')"))));
     fixture.shutdown().await;
     // Missing endpoints remain a legacy planning-only path: no live dictionary guarantee.
     let fixture = Fixture::new(json!({})).await;

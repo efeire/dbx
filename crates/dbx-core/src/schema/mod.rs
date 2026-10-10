@@ -12369,7 +12369,7 @@ mod object_source_tests {
         assert!(sql.contains("'PACKAGE BODY'"));
         assert!(sql.contains("'SEQUENCE'"));
         assert!(sql.contains("CASE object_type WHEN 'PACKAGE BODY' THEN 'PACKAGE_BODY'"));
-        assert!(sql.contains("owner = 'HR'"));
+        assert!(sql.contains("owner = 'hr'"));
     }
 
     #[test]
