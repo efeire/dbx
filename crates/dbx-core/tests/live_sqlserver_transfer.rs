@@ -1087,6 +1087,9 @@ async fn live_sqlserver_transfer_overwrite_replaces_tables_linked_by_foreign_key
         target_table_name_case: TransferTableNameCase::Preserve,
         quote_target_column_names: true,
         ownership_policy: TransferOwnershipPolicy::Preserve,
+        object_conflict_policy: Default::default(),
+        database_links: Vec::new(),
+        database_link_credentials: Vec::new(),
         batch_size: 1000,
     };
 
