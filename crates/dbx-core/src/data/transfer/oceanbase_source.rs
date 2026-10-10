@@ -231,9 +231,14 @@ fn reject_shadowed_owner(tokens: &[TokenWithSpan], owner: &str) -> Result<(), St
                 reference -= 2;
             }
         }
-        let table_alias = reference
-            .checked_sub(1)
-            .is_some_and(|previous| word(tokens.get(previous), "FROM") || word(tokens.get(previous), "JOIN"));
+        // Derived-table aliases follow ')'; comma-separated references have the
+        // same alias ambiguity as FROM/JOIN. Block these bindings conservatively.
+        let table_alias = index.checked_sub(1).is_some_and(|previous| matches!(tokens[previous].token, Token::RParen))
+            || reference.checked_sub(1).is_some_and(|previous| {
+                word(tokens.get(previous), "FROM")
+                    || word(tokens.get(previous), "JOIN")
+                    || matches!(tokens[previous].token, Token::Comma)
+            });
         if local || table_alias {
             return Err(format!("Ambiguous source owner {owner}: a local binding or table alias shadows the schema; automatic owner mapping is blocked"));
         }
@@ -486,6 +491,22 @@ mod tests {
         assert!(prepare(source, "SRC", "DST", "OBJ", TransferObjectKind::View, &[]).is_ok());
         let source = "CREATE PROCEDURE SRC.OBJ AS SRC NUMBER; BEGIN NULL; END;";
         assert!(prepare(source, "SRC", "DST", "OBJ", TransferObjectKind::Procedure, &[]).is_ok());
+    }
+
+    #[test]
+    fn schema_mapping_rejects_derived_table_alias_before_ddl() {
+        let source = "CREATE VIEW SRC.OBJ AS SELECT SRC.ID FROM (SELECT ID FROM SRC.T) SRC";
+        let error = prepare(source, "SRC", "DST", "OBJ", TransferObjectKind::View, &[]).unwrap_err();
+        assert!(error.contains("shadows the schema"));
+        assert!(prepare(source, "SRC", "SRC", "OBJ", TransferObjectKind::View, &[]).is_ok());
+    }
+
+    #[test]
+    fn schema_mapping_rejects_comma_table_alias_before_ddl() {
+        let source = "CREATE VIEW SRC.OBJ AS SELECT SRC.ID FROM SRC.T T, OTHER.T SRC";
+        let error = prepare(source, "SRC", "DST", "OBJ", TransferObjectKind::View, &[]).unwrap_err();
+        assert!(error.contains("shadows the schema"));
+        assert!(prepare(source, "SRC", "SRC", "OBJ", TransferObjectKind::View, &[]).is_ok());
     }
 
     #[test]
