@@ -785,7 +785,8 @@ export function convertToSchemaDiffObjects(
   for (const diff of functionDiffs) {
     const args = diff.source?.arguments || diff.target?.arguments || "";
     const functionType = (diff.source?.function_type || diff.target?.function_type || "").toUpperCase();
-    const routineType: "PROCEDURE" | "FUNCTION" = functionType.includes("PROC") ? "PROCEDURE" : "FUNCTION";
+    if (functionType !== "PROCEDURE" && functionType !== "FUNCTION") throw new Error("Unknown routine kind; reload comparison before selecting a plan");
+    const routineType: "PROCEDURE" | "FUNCTION" = functionType;
     const routineStep = routineSteps.find((step) => step.name === diff.name && step.routineType === routineType);
     objects.push({
       id: `func-${diff.name}-${args}`,
