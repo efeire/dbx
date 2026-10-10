@@ -548,16 +548,9 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
             };
             if let Err(error) = written {
                 result.source_verified = Some(false);
-                if let (Some(original), Some(path)) = (&existing, backup_path) {
-                    let restored = execute_on_pool(state, target_pool, &ddl(original)?).await.is_ok()
-                        && verify(state, target_pool, original).await.is_ok();
+                if let Some(path) = backup_path {
                     result.recovery = Some(format!(
-                        "{}; backup retained at {path}",
-                        if restored {
-                            "Target synonym restored and verified"
-                        } else {
-                            "Automatic restoration incomplete; manual recovery required"
-                        }
+                        "Complete target synonym backup retained at {path}; target state is unverified. No automatic restoration was executed; inspect the current definition and explicitly confirm manual recovery"
                     ));
                 } else {
                     result.recovery = Some("New synonym retained for inspection; no DROP was executed".into());
@@ -599,6 +592,74 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_replacement_retains_backup_for_manual_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = crate::persistence::test_storage::open(&directory.path().join("storage.db")).await.unwrap();
+        let state = AppState::new(storage);
+        for (id, pool_key) in [("s", "source"), ("t", "target")] {
+            let config: ConnectionConfig = serde_json::from_value(serde_json::json!({
+                "id":id,"name":id,"db_type":"oracle","host":"127.0.0.1","port":1521,
+                "username":"","password":"","database":"TEST"
+            }))
+            .unwrap();
+            state.configs.write().await.insert(id.into(), config);
+            let pool = crate::db::sqlite::connect_path_create_if_missing(
+                directory.path().join(format!("{pool_key}.db")).to_str().unwrap(),
+            )
+            .await
+            .unwrap();
+            state
+                .update_connection_pools(|pools| {
+                    pools.insert(pool_key.into(), PoolKind::Sqlite(pool));
+                })
+                .await;
+            execute_on_pool(&state, pool_key, "CREATE TABLE ALL_SYNONYMS (OWNER TEXT, SYNONYM_NAME TEXT, TABLE_OWNER TEXT, TABLE_NAME TEXT, DB_LINK TEXT)").await.unwrap();
+            execute_on_pool(
+                &state,
+                pool_key,
+                "CREATE TABLE ALL_OBJECTS (OWNER TEXT, OBJECT_NAME TEXT, OBJECT_TYPE TEXT)",
+            )
+            .await
+            .unwrap();
+            execute_on_pool(&state, pool_key, "CREATE TABLE SESSION_PRIVS (PRIVILEGE TEXT)").await.unwrap();
+            execute_on_pool(&state, pool_key, "INSERT INTO SESSION_PRIVS VALUES ('CREATE PUBLIC SYNONYM')")
+                .await
+                .unwrap();
+        }
+        execute_on_pool(
+            &state,
+            "source",
+            "INSERT INTO ALL_SYNONYMS VALUES ('PUBLIC','PUB','EXTERNAL','NEW_TARGET','')",
+        )
+        .await
+        .unwrap();
+        execute_on_pool(
+            &state,
+            "target",
+            "INSERT INTO ALL_SYNONYMS VALUES ('PUBLIC','PUB','EXTERNAL','OLD_TARGET','')",
+        )
+        .await
+        .unwrap();
+        execute_on_pool(&state, "target", "INSERT INTO ALL_OBJECTS VALUES ('EXTERNAL','NEW_TARGET','TABLE')")
+            .await
+            .unwrap();
+        let mut request: TransferRequest = serde_json::from_value(serde_json::json!({
+            "transferId":"synonym-failed-replacement","sourceConnectionId":"s","sourceDatabase":"S","sourceSchema":"S",
+            "targetConnectionId":"t","targetDatabase":"T","targetSchema":"T","tables":[],"createTable":true,"batchSize":10,
+            "objects":[{"objectType":"PUBLIC_SYNONYM","names":["PUB"]}]
+        })).unwrap();
+        request.object_conflict_policy = TransferObjectConflictPolicy::Replace;
+        // The local catalog permits production preflight; SQLite rejects Oracle DDL at the write boundary.
+        let outcome = execute(&state, &request, "source", "target", &mut |_| {}).await.unwrap();
+        assert_eq!(outcome.object_results.len(), 1);
+        let result = &outcome.object_results[0];
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.source_verified, Some(false));
+        assert!(result.recovery.as_ref().unwrap().contains("No automatic restoration was executed"));
+        assert_eq!(read(&state, "target", "PUBLIC", "PUB").await.unwrap().unwrap().table_name, "OLD_TARGET");
+    }
 
     fn request() -> TransferRequest {
         serde_json::from_value(serde_json::json!({"transferId":"s","sourceConnectionId":"s","sourceDatabase":"S","sourceSchema":"S","targetConnectionId":"t","targetDatabase":"T","targetSchema":"T","tables":["TAB"],"createTable":true,"batchSize":10,"objects":[{"objectType":"SYNONYM","names":["NEXT"]},{"objectType":"PUBLIC_SYNONYM","names":["PUB"]}]})).unwrap()
