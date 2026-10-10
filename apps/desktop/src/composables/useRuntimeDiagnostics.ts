@@ -1,6 +1,22 @@
 import { onScopeDispose, ref, shallowRef, watch, type Ref } from "vue";
 import { createRuntimeDiagnostics, diagnosticErrorStatus, type DiagnosticContext, type DiagnosticStatus, type OracleDiagnosticTarget, type RuntimeDiagnosticRecord } from "@/lib/database/runtimeDiagnostics";
 
+async function waitForHistory<T>(action: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new Error("Diagnostic cancelled");
+  let rejectCancelled!: (error: Error) => void;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    rejectCancelled = reject;
+  });
+  const cancel = () => rejectCancelled(new Error("Diagnostic cancelled"));
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    // History transport may still finish; cancellation only ends local waiting.
+    return await Promise.race([action(), cancelled]);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
 export function useRuntimeDiagnostics(context: Readonly<Ref<DiagnosticContext | null>>, service = createRuntimeDiagnostics()) {
   const targets = shallowRef<OracleDiagnosticTarget[]>([]);
   const records = shallowRef<RuntimeDiagnosticRecord[]>([]);
@@ -65,19 +81,20 @@ export function useRuntimeDiagnostics(context: Readonly<Ref<DiagnosticContext | 
       if (!current()) return;
       unsavedRecord.value = record;
       try {
-        await service.save(record);
+        await waitForHistory(() => service.save(record), signal);
         if (current()) {
           records.value = [record, ...records.value];
           unsavedRecord.value = null;
         }
-      } catch {
+      } catch (cause) {
+        if (signal.aborted) throw cause;
         if (current()) error.value = "save_failed";
       }
     });
   }
   async function load(more = false) {
-    await run(async (snapshot, _signal, current) => {
-      const page = await service.load(snapshot, more ? nextCursor.value : undefined);
+    await run(async (snapshot, signal, current) => {
+      const page = await waitForHistory(() => service.load(snapshot, more ? nextCursor.value : undefined), signal);
       if (current()) {
         records.value = more ? [...records.value, ...page.records] : page.records;
         nextCursor.value = page.cursor;
