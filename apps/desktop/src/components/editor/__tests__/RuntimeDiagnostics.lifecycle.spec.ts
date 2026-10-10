@@ -205,7 +205,7 @@ describe("actual diagnostic SFC backend contracts", () => {
     await vi.waitFor(() => expect(backend.searchHistory).toHaveBeenCalledTimes(2));
     await nextTick();
     expect(backend.searchHistory.mock.calls[1][0]).toMatchObject({ cursor, limit: 100, connections: [{ connection_id: "A", connection_name: "" }] });
-    expect([...host.querySelectorAll("button")].filter((b) => b.textContent?.includes("· Collected"))).toHaveLength(101);
+    await vi.waitFor(() => expect([...host.querySelectorAll("button")].filter((b) => b.textContent?.includes("· Collected"))).toHaveLength(101));
     expect(host.textContent).not.toContain("Load older");
     expect(backend.executeQuery).not.toHaveBeenCalled();
   });
@@ -251,7 +251,7 @@ describe("actual diagnostic SFC backend contracts", () => {
     await nextTick();
     await nextTick();
     expect(backend.searchHistory.mock.calls[1][0].connections[0].connection_id).toBe("B");
-    expect([...host.querySelectorAll("button")].filter((b) => b.textContent?.includes("· Collected"))).toHaveLength(1);
+    await vi.waitFor(() => expect([...host.querySelectorAll("button")].filter((b) => b.textContent?.includes("· Collected"))).toHaveLength(1));
     expect(host.textContent).toContain("request 2");
     expect(host.textContent).not.toContain("request 1");
     expect(backend.executeQuery).not.toHaveBeenCalled();
