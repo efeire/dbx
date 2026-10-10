@@ -4733,6 +4733,8 @@ export default withEnglishFallback({
     valid: "válido",
     invalid: "inválido",
     refreshDiscardConfirm: "Actualizar descartará los cambios sin guardar en el código fuente, ¿deseas continuar?",
+    pagedRegexUnsupported: "La búsqueda paginada de objetos no admite expresiones regulares. Introduzca un nombre o un comentario.",
+    pagedOrder: "Se han cargado {count} objetos en el orden de la base de datos. Actualice después de modificar los objetos.",
   },
   structureEditor: {
     mysqlDataTypeHelp: {
@@ -5064,6 +5066,17 @@ export default withEnglishFallback({
     partitionSqlPreview: "SQL que se ejecutará",
     partitionNameRequired: "Introduce el nombre de la partición.",
     notNull: "No nulo",
+    editTriggerDefinition: "Editar definición del disparador",
+    triggerStructuredMode: "Campos estructurados",
+    triggerSourceMode: "Código completo",
+    triggerPreviewDefinition: "Vista previa del DDL completo",
+    triggerOriginalDefinition: "Definición anterior al guardado",
+    triggerReplacementWarning:
+      "Guardar reemplaza la definición directamente. La nueva definición permanece deshabilitada hasta superar las verificaciones de compilación y destino; después se restaura su estado de habilitación original. El DDL no se revierte automáticamente. Revise la definición completa antes de guardar.",
+    triggerRecoveryWarning: "Esta definición se leyó antes de guardar. Verifique el disparador actual y el error antes de recuperar manualmente; vuelva a comprobar la compilación y el estado de habilitación.",
+    triggerOwnerUnknown: "No se puede confirmar el propietario del disparador. Actualice los metadatos y reintente. No se usará el propietario de la tabla como sustituto.",
+    triggerPendingDrafts: "Guarde o descarte los borradores de creación, edición y eliminación de disparadores antes de editar la definición completa o actualizar los disparadores.",
+    triggerRecoveryTargetUnknown: "Este registro no guarda la identidad de la tabla de destino. Consulte el diccionario antes de recuperar.",
   },
   diagram: {
     title: "Diagrama de relaciones",

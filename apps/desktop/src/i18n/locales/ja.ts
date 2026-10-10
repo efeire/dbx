@@ -4615,6 +4615,8 @@ export default withEnglishFallback({
     valid: "有効",
     invalid: "無効",
     refreshDiscardConfirm: "更新すると、保存されていないソースコードの変更が破棄されます。続行しますか？",
+    pagedRegexUnsupported: "ページ分割されたオブジェクト検索では正規表現を使用できません。名前またはコメントを入力してください。",
+    pagedOrder: "データベースの順序で {count} 個のオブジェクトを読み込みました。オブジェクトを変更した後は更新してください。",
   },
   structureEditor: {
     mysqlDataTypeHelp: {
@@ -4946,6 +4948,16 @@ export default withEnglishFallback({
     partitionSqlPreview: "実行される SQL",
     partitionNameRequired: "パーティション名を入力してください。",
     notNull: "NOT NULL",
+    editTriggerDefinition: "トリガー定義を編集",
+    triggerStructuredMode: "構造化フィールド",
+    triggerSourceMode: "完全なソース",
+    triggerPreviewDefinition: "完全な DDL をプレビュー",
+    triggerOriginalDefinition: "保存前の定義",
+    triggerReplacementWarning: "保存すると定義が直接置き換わります。新しい定義はコンパイルと対象の検証が完了するまで無効のままとし、その後元の有効状態に戻します。DDL は自動的にロールバックされません。保存前に完全な定義を確認してください。",
+    triggerRecoveryWarning: "これは今回の保存前に取得した定義です。現在のトリガーとエラーを確認してから手動で復旧し、コンパイル状態と有効状態を再確認してください。",
+    triggerOwnerUnknown: "トリガーの所有者を確認できません。メタデータを更新して再試行してください。テーブルの所有者をトリガーの所有者の代わりには使用しません。",
+    triggerPendingDrafts: "完全な定義の編集やトリガーの更新を行う前に、トリガーの追加・編集・削除の下書きを保存または破棄してください。",
+    triggerRecoveryTargetUnknown: "この記録には対象テーブルの識別情報が保存されていません。復旧前に辞書を照会して確認してください。",
   },
   diagram: {
     title: "リレーション図",

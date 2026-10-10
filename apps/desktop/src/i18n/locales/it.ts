@@ -4552,6 +4552,8 @@ export default withEnglishFallback({
     valid: "valido",
     invalid: "non valido",
     refreshDiscardConfirm: "L'aggiornamento eliminerà le modifiche non salvate al codice sorgente. Continuare?",
+    pagedRegexUnsupported: "La ricerca paginata degli oggetti non supporta espressioni regolari. Inserire un nome o un commento.",
+    pagedOrder: "Caricati {count} oggetti nell’ordine del database. Aggiornare dopo le modifiche agli oggetti.",
   },
   structureEditor: {
     mysqlDataTypeHelp: {
@@ -4878,6 +4880,17 @@ export default withEnglishFallback({
     partitionSqlPreview: "SQL da eseguire",
     partitionNameRequired: "Inserisci il nome della partizione.",
     notNull: "Non NULL",
+    editTriggerDefinition: "Modifica definizione del trigger",
+    triggerStructuredMode: "Campi strutturati",
+    triggerSourceMode: "Codice completo",
+    triggerPreviewDefinition: "Anteprima DDL completo",
+    triggerOriginalDefinition: "Definizione prima del salvataggio",
+    triggerReplacementWarning:
+      "Il salvataggio sostituisce direttamente la definizione. La nuova definizione resta disabilitata finché compilazione e destinazione non sono verificate, poi viene ripristinato lo stato di abilitazione originale. Il DDL non viene annullato automaticamente. Visualizzare la definizione completa prima di salvare.",
+    triggerRecoveryWarning: "Questa definizione è stata letta prima del salvataggio. Verificare il trigger corrente e l’errore prima del ripristino manuale, poi ricontrollare compilazione e stato di abilitazione.",
+    triggerOwnerUnknown: "Impossibile confermare il proprietario del trigger. Aggiornare i metadati e riprovare. Il proprietario della tabella non verrà usato al suo posto.",
+    triggerPendingDrafts: "Salvare o scartare le bozze di creazione, modifica ed eliminazione dei trigger prima di modificare la definizione completa o aggiornare i trigger.",
+    triggerRecoveryTargetUnknown: "Questo record non contiene l’identità della tabella di destinazione. Verificarla nel dizionario prima del ripristino.",
   },
   diagram: {
     title: "Diagramma delle Relazioni",
