@@ -2081,6 +2081,7 @@ mod tests {
         SchemaDiffPreparation {
             diffs: vec![],
             function_diffs: vec![],
+            routine_steps: vec![],
             sequence_diffs: vec![],
             rule_diffs: vec![],
             owner_diffs: vec![],

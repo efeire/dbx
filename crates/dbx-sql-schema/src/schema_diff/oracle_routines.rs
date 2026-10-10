@@ -618,11 +618,11 @@ mod tests {
         let mut mapped = unchanged.clone();
         mapped.schema = Some("TARGET".into());
         mapped.definition = mapped.definition.replace("SOURCE.same", "TARGET.same");
-        assert!(super::super::diff_functions(&[unchanged.clone()], &[mapped]).is_empty());
+        assert!(super::super::diff_functions(std::slice::from_ref(&unchanged), &[mapped]).is_empty());
         let changed = routine("same", "CREATE PROCEDURE SOURCE.same IS BEGIN x := 'a  b'; END;");
-        let diffs = super::super::diff_functions(&[changed], &[unchanged.clone()]);
+        let diffs = super::super::diff_functions(&[changed], std::slice::from_ref(&unchanged));
         assert_eq!(diffs[0].diff_type, "modified");
-        assert_eq!(super::super::diff_functions(&[unchanged.clone()], &[])[0].diff_type, "added");
+        assert_eq!(super::super::diff_functions(std::slice::from_ref(&unchanged), &[])[0].diff_type, "added");
         assert_eq!(super::super::diff_functions(&[], &[unchanged])[0].diff_type, "removed");
     }
 
@@ -732,7 +732,7 @@ mod tests {
     fn trigger_state_is_separate_from_body_and_same_name_tables_do_not_merge() {
         let enabled = trigger_info("tr", "t", "ENABLED");
         let disabled = trigger_info("tr", "t", "DISABLED");
-        let diffs = super::super::diff_functions(&[disabled], &[enabled.clone()]);
+        let diffs = super::super::diff_functions(&[disabled], std::slice::from_ref(&enabled));
         assert_eq!(diffs[0].diff_type, "modified");
         let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
         assert!(steps[0].sql.as_ref().unwrap().contains("'a  b'"));
@@ -747,7 +747,7 @@ mod tests {
     fn package_cross_engine_and_typed_cycles_are_blocked_without_losing_source() {
         let a = package("p", false);
         let cross = oracle_routine_steps(
-            &super::super::diff_functions(&[a.clone()], &[]),
+            &super::super::diff_functions(std::slice::from_ref(&a), &[]),
             DatabaseType::OceanbaseOracle,
             Some("TARGET"),
             Some(DatabaseType::Oracle),
@@ -823,7 +823,7 @@ mod tests {
         let mut target = original.clone();
         target.schema = Some("TARGET".into());
         target.definition = target.definition.replace("TYPE T", "TYPE \"TARGET\".\"T\"");
-        assert!(super::super::diff_functions(&[original.clone()], &[target.clone()]).is_empty());
+        assert!(super::super::diff_functions(std::slice::from_ref(&original), &[target.clone()]).is_empty());
         for definition in [
             original
                 .definition
@@ -931,7 +931,7 @@ mod tests {
     #[test]
     fn type_recovery_uses_target_risks_instead_of_source_table_references() {
         let source = user_type("T", false);
-        let diffs = super::super::diff_functions(&[source.clone()], &[]);
+        let diffs = super::super::diff_functions(std::slice::from_ref(&source), &[]);
         let mut plan = SchemaSyncSqlPlan {
             routine_steps: Vec::new(),
             sync_sql: String::new(),
