@@ -10721,9 +10721,10 @@ function binaryDownloadSubmenu(detail: DataGridCellDetail | null): ContextMenuIt
       label: t("grid.downloadSnapshotValue"),
       icon: Download,
       action: async () => {
+        const sourceResult = props.result;
         const defaultFileName = `lob-row-${detail.rowNumber}.txt`;
         const path = isTauriRuntime() ? await promptExportSavePath({ defaultFileName, filters: [{ name: "Text", extensions: ["txt"] }] }) : defaultFileName;
-        if (!path) return;
+        if (!path || props.result !== sourceResult) return;
         try {
           await largeValueRuntimeInstance.downloadSnapshotCell(detail.rowId, detail.colIndex, path);
           toast(isTauriRuntime() ? t("grid.downloadSaved", { path }) : t("grid.downloadStarted", { fileName: defaultFileName }));

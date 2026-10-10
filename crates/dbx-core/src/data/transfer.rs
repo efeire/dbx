@@ -8483,6 +8483,29 @@ pub fn mark_unexecuted_transfer_objects(
 mod unexecuted_object_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn blocked_database_link_does_not_start_type_prerequisites() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = crate::persistence::test_storage::open(&directory.path().join("storage.db")).await.unwrap();
+        let state = AppState::new(storage);
+        for id in ["s", "t"] {
+            let config = serde_json::from_value(serde_json::json!({"id":id,"name":id,"db_type":"oracle","host":"unused","port":1521,"username":"APP","password":""})).unwrap();
+            state.configs.write().await.insert(id.into(), config);
+        }
+        let request: TransferRequest = serde_json::from_value(serde_json::json!({
+            "transferId":"blocked-link", "sourceConnectionId":"s", "sourceDatabase":"S", "sourceSchema":"S",
+            "targetConnectionId":"t", "targetDatabase":"T", "targetSchema":"T", "tables":[], "createTable":true, "batchSize":10,
+            "objects":[{"objectType":"DB_LINK","names":["REMOTE"]},{"objectType":"TYPE","names":["T"]}]
+        })).unwrap();
+        // The link's execution-time configuration is unavailable. No pool is
+        // installed: even a metadata read for the later TYPE must not occur.
+        let outcome = transfer_schema_prerequisites(&state, &request, "source", "target", |_| {}).await.unwrap();
+        assert!(outcome.failed.is_empty());
+        assert_eq!(outcome.object_results.len(), 1);
+        assert_eq!(outcome.object_results[0].status, "not_started");
+        assert!(has_transfer_object_blockers(&outcome));
+    }
+
     #[test]
     fn unexecuted_results_preserve_exact_identity_and_success_without_fake_failure() {
         for (spec, body) in [
@@ -8744,6 +8767,7 @@ pub async fn ensure_transfer_schema_objects_ready(
     oracle_database_links::ensure_ready(state, request, source_pool_key, target_pool_key).await?;
     oracle_types::ensure_ready(state, request, source_pool_key, target_pool_key).await?;
     oracle_packages::ensure_ready(state, request, source_pool_key, target_pool_key).await?;
+    oracle_packages::execution_order(state, request, source_pool_key).await?;
     oracle_synonyms::ensure_ready(state, request, source_pool_key, target_pool_key).await
 }
 
@@ -8761,7 +8785,7 @@ pub async fn transfer_schema_prerequisites<F: FnMut(TransferProgress)>(
     }
     let mut outcome =
         oracle_database_links::execute(state, request, source_pool_key, target_pool_key, &mut progress).await?;
-    if !outcome.failed.is_empty() {
+    if has_transfer_object_blockers(&outcome) {
         return Ok(outcome);
     }
     let types = oracle_types::execute(
@@ -8866,20 +8890,13 @@ async fn transfer_oracle_schema_objects<F>(
 where
     F: FnMut(TransferProgress),
 {
+    let order = oracle_packages::execution_order(state, request, source_pool_key).await?;
+    oracle_packages::ensure_ready(state, request, source_pool_key, target_pool_key).await?;
     let mut outcome = if oracle_types::has_selection(request) {
         TransferObjectOutcome::default()
     } else {
         oracle_database_links::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?
     };
-    if has_transfer_object_blockers(&outcome) {
-        return Ok(outcome);
-    }
-    let packages =
-        oracle_packages::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
-    outcome.transferred.extend(packages.transferred);
-    outcome.skipped.extend(packages.skipped);
-    outcome.failed.extend(packages.failed);
-    outcome.object_results.extend(packages.object_results);
     if has_transfer_object_blockers(&outcome) {
         return Ok(outcome);
     }
@@ -8900,10 +8917,47 @@ where
     } else {
         resolve_oracle_schema(&request.target_schema, &request.target_database)
     };
-    let order = ordered_transfer_object_kinds(
-        request.object_selection_mode().selections().iter().map(|s| s.object_type).collect(),
-    );
-    for kind in order {
+    for (kind, name) in order {
+        if matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody) {
+            if has_transfer_object_blockers(&outcome) {
+                return Ok(outcome);
+            }
+            let mut package_request = request.clone();
+            package_request.objects = Some(
+                request
+                    .object_selection_mode()
+                    .selections()
+                    .iter()
+                    .filter_map(|selection| {
+                        if matches!(
+                            selection.object_type,
+                            TransferObjectKind::Package | TransferObjectKind::PackageBody
+                        ) {
+                            (selection.object_type == kind && selection.names.contains(&name))
+                                .then(|| TransferObjectSelection { object_type: kind, names: vec![name.clone()] })
+                        } else {
+                            Some(selection.clone())
+                        }
+                    })
+                    .collect(),
+            );
+            let packages = oracle_packages::execute(
+                state,
+                &package_request,
+                source_pool_key,
+                target_pool_key,
+                &mut progress_callback,
+            )
+            .await?;
+            outcome.transferred.extend(packages.transferred);
+            outcome.skipped.extend(packages.skipped);
+            outcome.failed.extend(packages.failed);
+            outcome.object_results.extend(packages.object_results);
+            if has_transfer_object_blockers(&outcome) {
+                return Ok(outcome);
+            }
+            continue;
+        }
         if matches!(
             kind,
             TransferObjectKind::Package
@@ -8917,100 +8971,98 @@ where
         ) {
             continue;
         }
-        for name in selected_object_names(request.object_selection_mode().selections(), &kind) {
-            if is_cancelled(&request.transfer_id).await {
-                return Err("Cancelled".to_string());
-            }
-            let table = format!("schema object: {name}");
-            let mut progress = |outcome: &mut TransferObjectOutcome, status: TransferStatus, error: Option<String>| {
-                let key = format!("{kind:?}:{name}");
-                let result = TransferSchemaObjectResult {
-                    object_type: kind,
-                    name: name.clone(),
-                    schema: target_schema.clone(),
-                    status: if outcome.skipped.contains(&key) {
-                        "skipped"
-                    } else if outcome.failed.contains(&key) {
-                        "failed"
-                    } else {
-                        "transferred"
-                    }
-                    .into(),
-                    compile_status: None,
-                    source_verified: None,
-                    error: error.clone(),
-                    recovery: None,
-                };
-                outcome.object_results.push(result.clone());
-                progress_callback(TransferProgress {
-                    transfer_id: request.transfer_id.clone(),
-                    table: table.clone(),
-                    table_index: request.tables.len(),
-                    total_tables: request.tables.len(),
-                    rows_transferred: (outcome.transferred.len() + outcome.skipped.len()) as u64,
-                    total_rows: None,
-                    status,
-                    error,
-                    terminal: false,
-                    object_result: Some(result),
-                });
-            };
-            // skip if the target already has it (ALL_OBJECTS works for both Oracle and Dameng)
-            let exists_sql = target_object_exists_sql(&DatabaseType::Oracle, &target_schema, &name, &kind)?;
-            let exists = !execute_on_pool(state, target_pool_key, &exists_sql).await?.rows.is_empty();
-            if exists {
-                outcome.skipped.push(format!("{kind:?}:{name}"));
-                progress(&mut outcome, TransferStatus::Running, None);
-                continue;
-            }
-            if oceanbase_source {
-                match oceanbase_source::execute(
-                    state,
-                    request,
-                    source_pool_key,
-                    target_pool_key,
-                    &target_schema,
-                    &name,
-                    kind,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        outcome.transferred.push(format!("{kind:?}:{name}"));
-                        progress(&mut outcome, TransferStatus::Running, None);
-                    }
-                    Err(error) => {
-                        if is_cancelled(&request.transfer_id).await {
-                            return Err(error);
-                        }
-                        outcome.failed.push(format!("{kind:?}:{name}"));
-                        progress(&mut outcome, TransferStatus::Error, Some(error));
-                    }
+        if is_cancelled(&request.transfer_id).await {
+            return Err("Cancelled".to_string());
+        }
+        let table = format!("schema object: {name}");
+        let mut progress = |outcome: &mut TransferObjectOutcome, status: TransferStatus, error: Option<String>| {
+            let key = format!("{kind:?}:{name}");
+            let result = TransferSchemaObjectResult {
+                object_type: kind,
+                name: name.clone(),
+                schema: target_schema.clone(),
+                status: if outcome.skipped.contains(&key) {
+                    "skipped"
+                } else if outcome.failed.contains(&key) {
+                    "failed"
+                } else {
+                    "transferred"
                 }
-                continue;
-            }
-            let query = oracle_object_source_query(&kind, &source_schema, &name)?;
-            let result = execute_on_pool(state, source_pool_key, &query).await?;
-            // DBMS_METADATA.GET_DDL resolves against the session's current
-            // schema; if the pool session is not the owner schema the query
-            // may return no row and the object is reported as failed (v1).
-            let ddl = result
-                .rows
-                .first()
-                .and_then(|row| row.first())
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| format!("No DDL returned for Oracle {:?} {name}", kind))?
-                .to_string();
-            let ddl = rewrite_oracle_schema_qualifier(&ddl, &source_schema, &target_schema);
-            match execute_on_pool(state, target_pool_key, &ddl).await {
-                Ok(_) => {
+                .into(),
+                compile_status: None,
+                source_verified: None,
+                error: error.clone(),
+                recovery: None,
+            };
+            outcome.object_results.push(result.clone());
+            progress_callback(TransferProgress {
+                transfer_id: request.transfer_id.clone(),
+                table: table.clone(),
+                table_index: request.tables.len(),
+                total_tables: request.tables.len(),
+                rows_transferred: (outcome.transferred.len() + outcome.skipped.len()) as u64,
+                total_rows: None,
+                status,
+                error,
+                terminal: false,
+                object_result: Some(result),
+            });
+        };
+        // skip if the target already has it (ALL_OBJECTS works for both Oracle and Dameng)
+        let exists_sql = target_object_exists_sql(&DatabaseType::Oracle, &target_schema, &name, &kind)?;
+        let exists = !execute_on_pool(state, target_pool_key, &exists_sql).await?.rows.is_empty();
+        if exists {
+            outcome.skipped.push(format!("{kind:?}:{name}"));
+            progress(&mut outcome, TransferStatus::Running, None);
+            continue;
+        }
+        if oceanbase_source {
+            match oceanbase_source::execute(
+                state,
+                request,
+                source_pool_key,
+                target_pool_key,
+                &target_schema,
+                &name,
+                kind,
+            )
+            .await
+            {
+                Ok(()) => {
                     outcome.transferred.push(format!("{kind:?}:{name}"));
                     progress(&mut outcome, TransferStatus::Running, None);
                 }
-                Err(e) => {
+                Err(error) => {
+                    if is_cancelled(&request.transfer_id).await {
+                        return Err(error);
+                    }
                     outcome.failed.push(format!("{kind:?}:{name}"));
-                    progress(&mut outcome, TransferStatus::Error, Some(e));
+                    progress(&mut outcome, TransferStatus::Error, Some(error));
                 }
+            }
+            continue;
+        }
+        let query = oracle_object_source_query(&kind, &source_schema, &name)?;
+        let result = execute_on_pool(state, source_pool_key, &query).await?;
+        // DBMS_METADATA.GET_DDL resolves against the session's current
+        // schema; if the pool session is not the owner schema the query
+        // may return no row and the object is reported as failed (v1).
+        let ddl = result
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| format!("No DDL returned for Oracle {:?} {name}", kind))?
+            .to_string();
+        let ddl = rewrite_oracle_schema_qualifier(&ddl, &source_schema, &target_schema);
+        match execute_on_pool(state, target_pool_key, &ddl).await {
+            Ok(_) => {
+                outcome.transferred.push(format!("{kind:?}:{name}"));
+                progress(&mut outcome, TransferStatus::Running, None);
+            }
+            Err(e) => {
+                outcome.failed.push(format!("{kind:?}:{name}"));
+                progress(&mut outcome, TransferStatus::Error, Some(e));
             }
         }
     }
