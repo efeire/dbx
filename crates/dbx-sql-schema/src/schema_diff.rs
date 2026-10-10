@@ -13443,6 +13443,8 @@ mod tests {
             source_owners: vec![],
             target_owners: vec![],
             database_type: db,
+            source_database_type: Some(_src_db),
+            source_schema: None,
             target_schema: None,
             ignore_comments: false,
             cascade_delete: false,
