@@ -19,6 +19,8 @@ struct Fixture {
     index_status: Option<String>,
     ambiguous: bool,
     readback_error_after: Option<usize>,
+    name_bytes: Option<u64>,
+    name_parser_accepts: bool,
 }
 struct Session {
     engine: Engine,
@@ -75,6 +77,8 @@ fn fixture_session(engine: Engine, request: &UniqueChange) -> Session {
             index_status: Some("VALID".into()),
             ambiguous: false,
             readback_error_after: None,
+            name_bytes: None,
+            name_parser_accepts: true,
         }),
     }
 }
@@ -86,6 +90,17 @@ impl ConstraintSession for Session {
     async fn query(&self, sql: &str) -> Result<db::QueryResult, String> {
         let mut fixture = self.fixture.lock().unwrap();
         fixture.queries.push(sql.into());
+        if sql.starts_with("SELECT LENGTHB(") {
+            return Ok(rows(vec![vec![json!(fixture.name_bytes.unwrap_or_else(|| fixture
+                .desired
+                .as_ref()
+                .unwrap()
+                .name
+                .len() as u64))]]));
+        }
+        if sql.starts_with("SELECT 1 AS ") {
+            return if fixture.name_parser_accepts { Ok(rows(vec![vec![json!(1)]])) } else { Err("ORA-00972".into()) };
+        }
         if sql.starts_with("SELECT c.CONSTRAINT_NAME") {
             if fixture.readback_error_after.is_some_and(|count| fixture.writes.len() >= count) {
                 return Err("dictionary unavailable".into());
@@ -234,6 +249,52 @@ impl ConstraintSession for Session {
         }
         Err(format!("Unexpected query: {sql}"))
     }
+}
+
+#[tokio::test]
+async fn unique_names_are_validated_before_any_index_or_constraint_ddl() {
+    for (engine, name, bytes, parser_accepts, accepted) in [
+        (Engine::OceanBaseOracle, "U".repeat(129), 129, true, false),
+        (Engine::OceanBaseOracle, "汉".repeat(43), 129, true, false),
+        (Engine::OceanBaseOracle, "汉".repeat(42) + "XX", 128, true, true),
+        (Engine::Oracle, "U".repeat(31), 31, false, false),
+        (Engine::Oracle, "U".repeat(128), 128, true, true),
+        (Engine::Oracle, "é".repeat(128), 128, true, true),
+    ] {
+        let mut request = request();
+        request.desired.as_mut().unwrap().name = name.clone();
+        let session = fixture_session(engine, &request);
+        {
+            let mut fixture = session.fixture.lock().unwrap();
+            fixture.name_bytes = Some(bytes);
+            fixture.name_parser_accepts = parser_accepts;
+        }
+        let preview = preview_unique(&session, &request).await;
+        assert_eq!(preview.is_ok(), accepted, "{engine:?} {bytes}");
+        if !accepted {
+            assert!(apply_unique(&session, &request, "untrusted revision").await.is_err());
+        }
+        let fixture = session.fixture.lock().unwrap();
+        assert!(fixture.writes.is_empty());
+        assert_eq!(fixture.current.as_ref().unwrap().definition, key());
+        assert!(fixture.index_exists);
+        assert_eq!(fixture.index_name, if engine == Engine::Oracle { "User Index" } else { "UQ \"old\"" });
+        let probe = if engine == Engine::Oracle {
+            format!("SELECT 1 AS {} FROM DUAL", identifier(&name).unwrap())
+        } else {
+            format!("SELECT LENGTHB({}) FROM DUAL", literal(&name))
+        };
+        assert!(fixture.queries.contains(&probe));
+    }
+    let request = request();
+    let session = fixture_session(Engine::Oracle, &request);
+    let preview = preview_unique(&session, &request).await.unwrap();
+    session.fixture.lock().unwrap().name_parser_accepts = false;
+    assert!(apply_unique(&session, &request, &preview.revision).await.is_err());
+    let fixture = session.fixture.lock().unwrap();
+    assert!(fixture.writes.is_empty());
+    assert!(fixture.index_exists);
+    assert_eq!(fixture.index_name, "User Index");
 }
 
 #[tokio::test]

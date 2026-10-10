@@ -161,6 +161,18 @@ async fn preview_unique(
     }
     if let Some(desired) = &change.desired {
         unique_sql(engine, change, desired, None)?;
+        // Respect the database charset and Oracle's COMPATIBLE-dependent parser limit.
+        let name_identifier = identifier(&desired.name)?;
+        let name_probe = match engine {
+            Engine::OceanBaseOracle => format!("SELECT LENGTHB({}) FROM DUAL", literal(&desired.name)),
+            Engine::Oracle => format!("SELECT 1 AS {name_identifier} FROM DUAL"),
+        };
+        let name_length = count(session, &name_probe)
+            .await
+            .map_err(|error| format!("Cannot confirm a valid constraint name; no DDL was executed. {error}"))?;
+        if oceanbase && name_length > 128 {
+            return Err("The constraint name exceeds OceanBase Oracle's 128-byte limit; no DDL was executed.".into());
+        }
     }
     let stamp = require_table(session, &change.schema, &change.table_name).await?;
     let identity = read(session, "SELECT USER FROM DUAL").await?;
