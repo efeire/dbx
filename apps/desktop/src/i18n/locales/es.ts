@@ -4733,6 +4733,8 @@ export default withEnglishFallback({
     valid: "válido",
     invalid: "inválido",
     refreshDiscardConfirm: "Actualizar descartará los cambios sin guardar en el código fuente, ¿deseas continuar?",
+    pagedRegexUnsupported: "La búsqueda paginada de objetos aún no admite expresiones regulares; introduzca un nombre o texto de comentario.",
+    pagedOrder: "Se han cargado {count} objetos, ordenados en el orden de la base de datos. Actualice después de modificar los objetos.",
   },
   structureEditor: {
     mysqlDataTypeHelp: {

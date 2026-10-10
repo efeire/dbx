@@ -4598,6 +4598,8 @@ export default withEnglishFallback({
     sortDesc: "내림차순",
     sortBy: "정렬 기준",
     refreshDiscardConfirm: "새로 고침하면 저장되지 않은 소스 코드 변경 사항이 삭제됩니다. 계속하시겠습니까?",
+    pagedRegexUnsupported: "페이징 개체 검색은 아직 정규식을 지원하지 않습니다. 이름이나 주석 텍스트를 입력하세요.",
+    pagedOrder: "{count}개의 개체를 로드했으며 데이터베이스 순서로 정렬되어 있습니다. 개체가 변경되면 새로 고침하세요.",
   },
   structureEditor: {
     createTitle: "테이블 만들기",
