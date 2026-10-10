@@ -1663,6 +1663,43 @@ describe("connectionStore completion assistant", () => {
     expect(listCompletionObjects).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves OceanBase package overload identities and isolates quoted package caches", async () => {
+    const completionAssistantSearch = vi.fn(async (request: { parent_name: string; parent_schema: string }) => ({
+      candidates: [1, 2].map((id) => ({ name: "RUN", kind: "procedure", schema: request.parent_schema, parent_schema: request.parent_schema, parent_name: request.parent_name, routine_id: `${request.parent_name}:${id}`, signature: id === 1 ? "" : null })),
+      incomplete: false,
+      fallback_used: false,
+    }));
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+    vi.doMock("@/lib/backend/api", () => ({ checkConnectionHealth: vi.fn(), completionAssistantSearch }));
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    store.connections = [oceanBaseOracleConnection()];
+    store.connectedIds.add("oceanbase-oracle-1");
+    const upper = await store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "R", 20, "APP", "PKG");
+    const mixed = await store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "R", 20, "APP", "Pkg");
+    expect(upper.map((object) => [object.routineId, object.signature])).toEqual([
+      ["PKG:1", ""],
+      ["PKG:2", undefined],
+    ]);
+    expect(mixed.map((object) => object.routineId)).toEqual(["Pkg:1", "Pkg:2"]);
+    expect(completionAssistantSearch).toHaveBeenCalledTimes(2);
+    expect(await store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "R", 20, "APP", "PKG")).toEqual(upper);
+    expect(completionAssistantSearch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not turn an OceanBase package query failure into standalone routines", async () => {
+    const completionAssistantSearch = vi.fn().mockRejectedValue(new Error("package dictionary permission denied"));
+    const listCompletionObjects = vi.fn();
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+    vi.doMock("@/lib/backend/api", () => ({ checkConnectionHealth: vi.fn(), completionAssistantSearch, listCompletionObjects }));
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    store.connections = [oceanBaseOracleConnection()];
+    store.connectedIds.add("oceanbase-oracle-1");
+    await expect(store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "R", 20, "APP", "PKG")).rejects.toThrow("package dictionary permission denied");
+    expect(listCompletionObjects).not.toHaveBeenCalled();
+  });
+
   it("does not restore invalidated OceanBase routine results or their local index", async () => {
     const stale = deferred<{ candidates: Array<{ name: string; kind: string; schema: string }>; incomplete: boolean; fallback_used: boolean }>();
     const completionAssistantSearch = vi

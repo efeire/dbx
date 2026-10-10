@@ -559,6 +559,130 @@ class OceanBaseOracleAgentTest {
     }
 
     @Test
+    void packageCompletionKeepsNoArgumentMembersAndBoundedOverloadsWithCompleteSignatures() {
+        List<String> sql = new ArrayList<>();
+        List<String> params = new ArrayList<>();
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(sql, params,
+            resultSet(new String[]{"OBJECT_ID"}, new Object[][]{{101}}),
+            resultSet(new String[]{"PROCEDURE_NAME", "SUBPROGRAM_ID", "ROUTINE_KIND"},
+                new Object[][]{{"RUN", 1, "PROCEDURE"}, {"RUN", 2, "FUNCTION"}, {"RUN", 3, "FUNCTION"}}),
+            resultSet(new String[]{"SUBPROGRAM_ID", "POSITION", "ARGUMENT_NAME", "IN_OUT", "DATA_TYPE", "TYPE_OWNER", "TYPE_NAME", "TYPE_SUBNAME", "DEFAULTED"},
+                new Object[][]{
+                    {2, 0, null, "OUT", "NUMBER", null, null, null, "N"},
+                    {2, 1, "INPUT", "IN", "NUMBER", null, null, null, "Y"},
+                    {2, 2, "RESULT", "IN/OUT", "PL/SQL RECORD", "Mixed.Owner", "Types", "Payload", "N"}
+                })
+        ));
+        CompletionAssistantRequest request = completionRequest("APP", "Mixed.Owner", "Ru_%", false);
+        setField(request, "object_kinds", List.of(CompletionAssistantObjectKind.ROUTINE));
+        setField(request, "parent_name", "Mixed.Package");
+        setField(request, "case_sensitive", true);
+        setField(request, "max_results", 2);
+        CompletionAssistantResponse response = agent.completionAssistantSearch(request);
+
+        Assertions.assertTrue(response.getIncomplete());
+        Assertions.assertEquals(2, response.getCandidates().size());
+        var procedure = response.getCandidates().get(0);
+        var function = response.getCandidates().get(1);
+        Assertions.assertEquals("", procedure.getSignature());
+        Assertions.assertEquals("INPUT IN NUMBER DEFAULT, RESULT IN/OUT \"Mixed.Owner\".\"Types\".\"Payload\"", function.getSignature());
+        Assertions.assertEquals("NUMBER", function.getData_type());
+        Assertions.assertEquals("Mixed.Owner", function.getParent_schema());
+        Assertions.assertEquals("Mixed.Package", function.getParent_name());
+        Assertions.assertNotEquals(procedure.getRoutine_id(), function.getRoutine_id());
+        Assertions.assertTrue(sql.get(0).contains("OBJECT_TYPE = 'PACKAGE'"));
+        Assertions.assertTrue(sql.get(1).contains("p.OBJECT_ID = ?"));
+        Assertions.assertTrue(sql.get(1).contains("ROWNUM <= ?"));
+        Assertions.assertTrue(sql.get(2).contains("DATA_LEVEL = 0"));
+        Assertions.assertTrue(sql.get(2).contains("SUBPROGRAM_ID IN (?,?)"));
+        Assertions.assertFalse(sql.get(2).contains("ROWNUM"));
+        Assertions.assertTrue(params.contains("Ru\\_\\%%"));
+        var wire = new com.google.gson.Gson().toJsonTree(response).getAsJsonObject().getAsJsonArray("candidates");
+        Assertions.assertEquals("", wire.get(0).getAsJsonObject().get("signature").getAsString());
+        Assertions.assertEquals(function.getRoutine_id(), wire.get(1).getAsJsonObject().get("routine_id").getAsString());
+    }
+
+    @Test
+    void packageCompletionResolvesInternalTypeOwnerThroughDatabaseIdentity() {
+        List<String> sql = new ArrayList<>();
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(sql,
+            resultSet(new String[]{"OBJECT_ID"}, new Object[][]{{101}}),
+            resultSet(new String[]{"PROCEDURE_NAME", "SUBPROGRAM_ID", "ROUTINE_KIND"}, new Object[][]{{"OBJ", 6, "PROCEDURE"}}),
+            resultSet(new String[]{"SUBPROGRAM_ID", "POSITION", "ARGUMENT_NAME", "IN_OUT", "DATA_TYPE", "TYPE_OWNER", "TYPE_NAME", "TYPE_SUBNAME", "DEFAULTED", "TYPE_SCHEMA"},
+                new Object[][]{{6, 1, "X", "IN", "EXT", "514099   ", "Base.Type", null, "N", " Actual.Owner "}})
+        ));
+        CompletionAssistantRequest request = completionRequest("APP", "APP", "", false);
+        setField(request, "object_kinds", List.of(CompletionAssistantObjectKind.ROUTINE));
+        setField(request, "parent_name", "PKG");
+        Assertions.assertEquals("X IN \" Actual.Owner \".\"Base.Type\"", agent.completionAssistantSearch(request).getCandidates().get(0).getSignature());
+        Assertions.assertTrue(sql.get(2).contains("type_owner_object.OBJECT_TYPE = 'DATABASE'"));
+        Assertions.assertTrue(sql.get(2).contains("TO_CHAR(type_owner_object.OBJECT_ID) = TRIM(a.TYPE_OWNER)"));
+    }
+
+    @Test
+    void packageCompletionKeepsLiteralNumericTypeOwner() {
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(new ArrayList<>(),
+            resultSet(new String[]{"OBJECT_ID"}, new Object[][]{{101}}),
+            resultSet(new String[]{"PROCEDURE_NAME", "SUBPROGRAM_ID", "ROUTINE_KIND"}, new Object[][]{{"OBJ", 6, "PROCEDURE"}}),
+            resultSet(new String[]{"SUBPROGRAM_ID", "POSITION", "ARGUMENT_NAME", "IN_OUT", "DATA_TYPE", "TYPE_OWNER", "TYPE_NAME", "TYPE_SUBNAME", "DEFAULTED"},
+                new Object[][]{{6, 1, "X", "IN", "EXT", "514099", "Base.Type", null, "N"}})
+        ));
+        CompletionAssistantRequest request = completionRequest("APP", "APP", "", false);
+        setField(request, "object_kinds", List.of(CompletionAssistantObjectKind.ROUTINE));
+        setField(request, "parent_name", "PKG");
+        Assertions.assertEquals("X IN \"514099\".\"Base.Type\"", agent.completionAssistantSearch(request).getCandidates().get(0).getSignature());
+    }
+
+    @Test
+    void packageCompletionDoesNotInventUnresolvedInternalTypeOwner() {
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(new ArrayList<>(),
+            resultSet(new String[]{"OBJECT_ID"}, new Object[][]{{101}}),
+            resultSet(new String[]{"PROCEDURE_NAME", "SUBPROGRAM_ID", "ROUTINE_KIND"}, new Object[][]{{"OBJ", 6, "PROCEDURE"}}),
+            resultSet(new String[]{"SUBPROGRAM_ID", "POSITION", "ARGUMENT_NAME", "IN_OUT", "DATA_TYPE", "TYPE_OWNER", "TYPE_NAME", "TYPE_SUBNAME", "DEFAULTED", "TYPE_SCHEMA"},
+                new Object[][]{{6, 1, "X", "IN", "EXT", "514099   ", "Base.Type", null, "N", null}})
+        ));
+        CompletionAssistantRequest request = completionRequest("APP", "APP", "", false);
+        setField(request, "object_kinds", List.of(CompletionAssistantObjectKind.ROUTINE));
+        setField(request, "parent_name", "PKG");
+        Assertions.assertNull(agent.completionAssistantSearch(request).getCandidates().get(0).getSignature());
+    }
+
+    @Test
+    void packageCompletionDoesNotInventMissingParameterMetadata() {
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(new ArrayList<>(),
+            resultSet(new String[]{"OBJECT_ID"}, new Object[][]{{101}}),
+            resultSet(new String[]{"PROCEDURE_NAME", "SUBPROGRAM_ID", "ROUTINE_KIND"}, new Object[][]{{"RUN", 1, "PROCEDURE"}}),
+            resultSet(new String[]{"SUBPROGRAM_ID", "POSITION", "ARGUMENT_NAME", "IN_OUT", "DATA_TYPE", "TYPE_OWNER", "TYPE_NAME", "TYPE_SUBNAME", "DEFAULTED"},
+                new Object[][]{{1, 1, "P", "IN", null, null, null, null, "N"}})
+        ));
+        CompletionAssistantRequest request = completionRequest("APP", "APP", "", false);
+        setField(request, "object_kinds", List.of(CompletionAssistantObjectKind.ROUTINE));
+        setField(request, "parent_name", "PKG");
+        Assertions.assertNull(agent.completionAssistantSearch(request).getCandidates().get(0).getSignature());
+    }
+
+    @Test
+    void packageCompletionDistinguishesVisibleEmptyPackageFromInvisiblePackage() {
+        CompletionAssistantRequest request = completionRequest("APP", "APP", "", false);
+        setField(request, "object_kinds", List.of(CompletionAssistantObjectKind.ROUTINE));
+        setField(request, "parent_name", "PKG");
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(new ArrayList<>(),
+            resultSet(new String[]{"OBJECT_ID"}, new Object[][]{{101}}),
+            resultSet(new String[]{"PROCEDURE_NAME", "SUBPROGRAM_ID", "ROUTINE_KIND"}, new Object[][]{})));
+        Assertions.assertTrue(agent.completionAssistantSearch(request).getCandidates().isEmpty());
+        TestSupport.setPrivateConnection(agent, preparedConnection(new ArrayList<>(),
+            resultSet(new String[]{"OBJECT_ID"}, new Object[][]{})));
+        RuntimeException error = Assertions.assertThrows(RuntimeException.class, () -> agent.completionAssistantSearch(request));
+        Assertions.assertTrue(error.toString().contains("Package is not visible"));
+    }
+
+    @Test
     void completionAssistantSearchReturnsGlobalTableCandidates() {
         List<String> sql = new ArrayList<>();
         OceanBaseOracleAgent agent = new OceanBaseOracleAgent();

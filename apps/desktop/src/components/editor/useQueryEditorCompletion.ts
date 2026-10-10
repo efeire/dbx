@@ -1364,7 +1364,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
    * extra package-style queries entirely.
    */
   function usesPackageAwareRoutineCompletion(): boolean {
-    if (props.databaseType === "oracle") return true;
+    if (props.databaseType === "oracle" || props.databaseType === "oceanbase-oracle") return true;
     if (props.databaseType !== "opengauss") return false;
     const mode = connectionStore.databaseCompatibilityMode(props.connectionId, props.database)?.trim().toUpperCase();
     return mode === undefined || mode === "A";
@@ -1419,8 +1419,19 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     const objectKinds = completionObjectKindsForContext(completionContext);
     if (props.databaseType === "oceanbase-oracle") {
       const parts = (completionContext.qualifierParts ?? completionContext.qualifier?.split(".") ?? []).map((part, index) => (completionContext.qualifierQuoted?.[index] ? part.replaceAll('""', '"') : part.toUpperCase()));
-      if (parts.length > 1) return [];
-      return connectionStore.listCompletionObjects(props.connectionId, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES, parts[0] ?? scope.schema, undefined, parts.length === 0, scope.schema, objectKinds, !!completionContext.prefixQuoted);
+      const list = (schema: string | undefined, parentName?: string, globalSearch = false) =>
+        connectionStore.listCompletionObjects(props.connectionId!, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES, schema, parentName, globalSearch, scope.schema, objectKinds, !!completionContext.prefixQuoted);
+      if (parts.length === 0) return list(scope.schema, undefined, true);
+      if (parts.length === 2) return list(parts[0], parts[1]);
+      if (parts.length > 2) return [];
+      // One qualifier can name a schema or a package in the current schema.
+      const groups = await Promise.allSettled([list(parts[0]), list(scope.schema, parts[0])]);
+      let objects: SqlCompletionObject[] = [];
+      for (const group of groups) {
+        if (group.status === "fulfilled") objects = mergeCompletionObjects(objects, group.value);
+        else if (!/Package is not visible:/.test(String(group.reason))) throw group.reason;
+      }
+      return objects;
     }
     if (!usesPackageAwareRoutineCompletion()) {
       const target = routineCompletionTargetForContext(completionContext, scope);
