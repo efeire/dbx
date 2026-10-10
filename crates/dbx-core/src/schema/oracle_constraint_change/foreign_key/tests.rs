@@ -13,6 +13,8 @@ struct Fixture {
     eligible: bool,
     privilege: bool,
     truncated: bool,
+    name_bytes: u64,
+    name_parser_accepts: bool,
 }
 struct Session {
     engine: Engine,
@@ -63,6 +65,8 @@ fn session(engine: Engine, request: &ForeignKeyChange) -> Session {
             eligible: true,
             privilege: true,
             truncated: false,
+            name_bytes: request.desired.as_ref().map_or(0, |key| key.name.len() as u64),
+            name_parser_accepts: true,
         }),
     }
 }
@@ -75,7 +79,14 @@ impl ConstraintSession for Session {
     async fn query(&self, sql: &str) -> Result<db::QueryResult, String> {
         let mut fixture = self.fixture.lock().unwrap();
         fixture.queries.push(sql.into());
-        let mut result = if sql.starts_with("SELECT c.CONSTRAINT_NAME,c.STATUS,c.VALIDATED") {
+        let mut result = if sql.starts_with("SELECT LENGTHB(") {
+            rows(vec![vec![json!(fixture.name_bytes)]])
+        } else if sql.starts_with("SELECT 1 AS ") {
+            if !fixture.name_parser_accepts {
+                return Err("ORA-00972: identifier is too long".into());
+            }
+            rows(vec![vec![json!(1)]])
+        } else if sql.starts_with("SELECT c.CONSTRAINT_NAME,c.STATUS,c.VALIDATED") {
             rows(
                 fixture
                     .current
@@ -163,6 +174,43 @@ impl ConstraintSession for Session {
 }
 
 #[tokio::test]
+async fn requested_name_uses_engine_byte_rules_before_any_drop() {
+    for (engine, name, database_bytes, parser_accepts, valid) in [
+        (Engine::OceanBaseOracle, "X".repeat(129), 129, true, false),
+        (Engine::OceanBaseOracle, "X".repeat(128), 128, true, true),
+        (Engine::OceanBaseOracle, "汉".repeat(43), 129, true, false),
+        (Engine::Oracle, "X".repeat(31), 31, false, false),
+        (Engine::Oracle, "X".repeat(128), 128, true, true),
+        // A single-byte database charset can represent this as 128 bytes, not UTF-8's 256.
+        (Engine::Oracle, "é".repeat(128), 128, true, true),
+    ] {
+        let mut request = change();
+        request.desired.as_mut().unwrap().name = name.clone();
+        let session = session(engine, &request);
+        {
+            let mut fixture = session.fixture.lock().unwrap();
+            fixture.name_bytes = database_bytes;
+            fixture.name_parser_accepts = parser_accepts;
+        }
+        let preview = preview_foreign_key(&session, &request).await;
+        if valid {
+            assert_eq!(preview.unwrap().statements.len(), 2);
+        } else {
+            assert!(preview.is_err(), "invalid name produced a DROP plan: {engine:?}");
+            assert!(apply_foreign_key(&session, &request, "old-revision").await.is_err());
+        }
+        let fixture = session.fixture.lock().unwrap();
+        assert!(fixture.writes.is_empty());
+        assert_eq!(fixture.current, Some(key()));
+        let expected_probe = match engine {
+            Engine::OceanBaseOracle => format!("SELECT LENGTHB({}) FROM DUAL", literal(&name)),
+            Engine::Oracle => format!("SELECT 1 AS {} FROM DUAL", identifier(&name).unwrap()),
+        };
+        assert!(fixture.queries.contains(&expected_probe));
+    }
+}
+
+#[tokio::test]
 async fn composite_quoted_cross_schema_replacement_preserves_order_and_reads_actual_result() {
     for engine in [Engine::Oracle, Engine::OceanBaseOracle] {
         let request = change();
@@ -188,6 +236,8 @@ struct PermissionSession {
     system_grant: Result<u64, &'static str>,
     granted_roles: Result<u64, &'static str>,
     role_alter: Result<u64, &'static str>,
+    reference_table_grant: u64,
+    reference_column_grants: Vec<String>,
     queries: Mutex<Vec<String>>,
 }
 impl PermissionSession {
@@ -198,6 +248,8 @@ impl PermissionSession {
             system_grant: Ok(0),
             granted_roles: Ok(0),
             role_alter: Ok(0),
+            reference_table_grant: 1,
+            reference_column_grants: vec![],
             queries: Mutex::new(vec![]),
         }
     }
@@ -211,6 +263,23 @@ impl ConstraintSession for PermissionSession {
         self.queries.lock().unwrap().push(sql.into());
         if sql == "SELECT USER FROM DUAL" {
             return Ok(rows(vec![vec![json!("Visitor")]]));
+        }
+        if sql.contains("FROM ALL_TAB_PRIVS") && sql.contains("PRIVILEGE='REFERENCES'") {
+            return Ok(rows(vec![vec![json!(self.reference_table_grant)]]));
+        }
+        if sql.contains("FROM ALL_COL_PRIVS") {
+            let owner_column = match self.engine() {
+                Engine::Oracle => "TABLE_SCHEMA",
+                Engine::OceanBaseOracle => "OWNER",
+            };
+            if !sql.contains(&format!("WHERE {owner_column}=")) {
+                return Err("ORA-00904: invalid column in ALL_COL_PRIVS".into());
+            }
+            let granted = self
+                .reference_column_grants
+                .iter()
+                .any(|column| sql.contains(&format!("COLUMN_NAME={}", literal(column))));
+            return Ok(rows(vec![vec![json!(u64::from(granted))]]));
         }
         let grant = if sql.contains("SESSION_PRIVS") || sql.contains("SESSION_ROLES") {
             if self.engine() == Engine::OceanBaseOracle {
@@ -231,6 +300,34 @@ impl ConstraintSession for PermissionSession {
             return self.inner.query(sql).await;
         };
         grant.map(|value| rows(vec![vec![json!(value)]])).map_err(str::to_owned)
+    }
+}
+
+#[tokio::test]
+async fn cross_owner_column_references_use_engine_dictionary_and_require_every_column_without_writes() {
+    for engine in [Engine::Oracle, Engine::OceanBaseOracle] {
+        for columns in [vec![], vec!["x"], vec!["x", "y"]] {
+            let request = change();
+            let mut session = PermissionSession::new(engine, &request);
+            session.object_grant = Ok(1);
+            session.reference_table_grant = 0;
+            session.reference_column_grants = columns.iter().map(|column| (*column).into()).collect();
+            let result = preview_foreign_key(&session, &request).await;
+            if columns.len() == 2 {
+                assert_eq!(result.unwrap().statements.len(), 2);
+            } else {
+                assert!(result.unwrap_err().contains("direct REFERENCES grant"));
+            }
+            let queries = session.queries.lock().unwrap();
+            assert!(queries.iter().any(|sql| sql.contains("FROM ALL_COL_PRIVS")));
+            assert!(queries.iter().filter(|sql| sql.contains("FROM ALL_COL_PRIVS")).all(|sql| {
+                sql.contains("TABLE_NAME='Parent Table'")
+                    && sql.contains("PRIVILEGE='REFERENCES'")
+                    && sql.contains("GRANTEE IN ('Visitor','PUBLIC')")
+            }));
+            assert!(session.inner.fixture.lock().unwrap().writes.is_empty());
+            assert_eq!(session.inner.fixture.lock().unwrap().current, Some(key()));
+        }
     }
 }
 
