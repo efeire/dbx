@@ -1,5 +1,8 @@
 use super::*;
 use crate::schema_diff::{comparable_oracle_routine, FunctionDiff};
+use sqlparser::dialect::OracleDialect;
+use sqlparser::parser::Parser;
+use sqlparser::tokenizer::{Token, Tokenizer};
 
 #[cfg(all(test, unix))]
 #[path = "oracle_routine_context_tests.rs"]
@@ -497,6 +500,165 @@ async fn status(
     .await?;
     Ok(result.rows.first().map(|row| cell(row, 0)))
 }
+fn dictionary_type_declaration_end(code: &[&Token], schema: &str, name: &str, start: usize) -> Result<usize, String> {
+    let matches = |index: usize, expected: &str| matches!(code.get(index), Some(Token::Word(value)) if if value.quote_style.is_some() { value.value == expected } else { value.value.to_ascii_uppercase() == expected });
+    if matches!(code.get(start + 1), Some(Token::Period)) {
+        if matches(start, schema) && matches(start + 2, name) {
+            return Ok(start + 3);
+        }
+    } else if matches(start, name) {
+        return Ok(start + 1);
+    }
+    Err("TYPE dictionary declaration differs from its exact owner/name identity".into())
+}
+
+fn complete_dictionary_type_boundary(code: &[&Token], schema: &str, name: &str) -> Result<(), String> {
+    let word = |index: usize, expected: &str| matches!(code.get(index), Some(Token::Word(value)) if value.quote_style.is_none() && value.value.eq_ignore_ascii_case(expected));
+    let header = dictionary_type_declaration_end(code, schema, name, 1)?;
+    let mut depth = 0i32;
+    for token in code {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err("TYPE dictionary parentheses are incomplete".into());
+                }
+            }
+            Token::SemiColon => return Err("TYPE dictionary specification contains an extra statement boundary".into()),
+            _ => (),
+        }
+    }
+    if depth != 0 {
+        return Err("TYPE dictionary parentheses are incomplete".into());
+    }
+    if (word(header, "AS") || word(header, "IS")) && word(header + 1, "OBJECT") || word(header, "UNDER") {
+        let open = code
+            .iter()
+            .position(|token| matches!(token, Token::LParen))
+            .ok_or("TYPE dictionary attribute list is missing")?;
+        depth = 0;
+        let mut close = None;
+        for (index, token) in code.iter().enumerate().skip(open) {
+            match token {
+                Token::LParen => depth += 1,
+                Token::RParen => depth -= 1,
+                _ => (),
+            }
+            if depth == 0 {
+                close = Some(index);
+                break;
+            }
+        }
+        let mut index = close.ok_or("TYPE dictionary attribute list is incomplete")? + 1;
+        while index < code.len() {
+            if word(index, "NOT") {
+                index += 1;
+            }
+            if !word(index, "FINAL") && !word(index, "INSTANTIABLE") {
+                return Err("TYPE dictionary object tail is incomplete or unsupported".into());
+            }
+            index += 1;
+        }
+        return Ok(());
+    }
+    if !word(header, "AS") && !word(header, "IS") {
+        return Err("TYPE dictionary declaration is incomplete or unsupported".into());
+    }
+    let mut index = header + 1;
+    if word(index, "VARRAY") || word(index, "VARYING") && word(index + 1, "ARRAY") {
+        index += if word(index, "VARRAY") { 1 } else { 2 };
+        if !matches!(code.get(index), Some(Token::LParen))
+            || !matches!(code.get(index + 1), Some(Token::Number(_, _)))
+            || !matches!(code.get(index + 2), Some(Token::RParen))
+        {
+            return Err("TYPE dictionary VARRAY bound is incomplete".into());
+        }
+        index += 3;
+    } else if word(index, "TABLE") {
+        index += 1;
+    } else {
+        return Err("TYPE dictionary form is unsupported".into());
+    }
+    if !word(index, "OF") {
+        return Err("TYPE dictionary element declaration is missing".into());
+    }
+    index += 1;
+    let mut end = code.len();
+    if end >= index + 2 && word(end - 2, "NOT") && word(end - 1, "NULL") {
+        end -= 2;
+    }
+    let datatype = &code[index..end];
+    let tokens = datatype.iter().map(|token| (*token).clone()).collect::<Vec<_>>();
+    let mut parser = Parser::new(&OracleDialect {}).with_tokens(tokens);
+    let parsed = parser.parse_data_type().is_ok() && parser.peek_token().token == Token::EOF;
+    // sqlparser's Oracle datatype parser does not yet consume Oracle's interval
+    // qualifiers or LOCAL TIME ZONE. Validate those complete forms explicitly.
+    let temporal = regex::Regex::new(r"(?ix)\A(?:TIMESTAMP\s*(?:\(\s*\d+\s*\))?\s+WITH\s+LOCAL\s+TIME\s+ZONE|INTERVAL\s+YEAR\s*(?:\(\s*\d+\s*\))?\s+TO\s+MONTH|INTERVAL\s+DAY\s*(?:\(\s*\d+\s*\))?\s+TO\s+SECOND\s*(?:\(\s*\d+\s*\))?)\z").unwrap();
+    let text = datatype.iter().map(|token| token.to_string()).collect::<Vec<_>>().join(" ");
+    if !parsed && !temporal.is_match(&text) {
+        return Err("TYPE dictionary collection datatype is incomplete or unsupported".into());
+    }
+    Ok(())
+}
+
+fn complete_dictionary_body(
+    rows: &[Vec<serde_json::Value>],
+    schema: &str,
+    name: &str,
+    kind: &str,
+) -> Result<String, String> {
+    let number = |value: &serde_json::Value| value.as_u64().or_else(|| value.as_str()?.parse().ok());
+    if rows.is_empty() {
+        return Err("Complete routine dictionary source is unavailable".into());
+    }
+    let mut body = String::new();
+    for (index, row) in rows.iter().enumerate() {
+        if row.len() != 6
+            || cell(row, 0) != schema
+            || cell(row, 1) != name
+            || cell(row, 2) != kind
+            || number(&row[3]) != Some(index as u64 + 1)
+            || number(&row[5]) != Some(rows.len() as u64)
+        {
+            return Err("Routine dictionary source identity or line sequence is incomplete".into());
+        }
+        body.push_str(row[4].as_str().ok_or("Routine dictionary source text is unavailable")?);
+    }
+    let declaration =
+        regex::Regex::new(r"(?is)^\s*(PROCEDURE|FUNCTION|PACKAGE\s+BODY|PACKAGE|TRIGGER|TYPE\s+BODY|TYPE)\b").unwrap();
+    let actual_kind = declaration
+        .captures(&body)
+        .map(|matched| matched[1].split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_uppercase());
+    if actual_kind.as_deref() != Some(kind) {
+        return Err("Routine dictionary declaration and identity disagree".into());
+    }
+    let tokens = Tokenizer::new(&OracleDialect {}, &body)
+        .tokenize()
+        .map_err(|_| "Routine dictionary source cannot be tokenized")?;
+    let mut code = tokens.iter().filter(|token| !matches!(token, Token::Whitespace(_))).collect::<Vec<_>>();
+    if matches!(code.last(), Some(Token::SemiColon)) {
+        code.pop();
+    }
+    if kind == "TYPE BODY" {
+        dictionary_type_declaration_end(&code, schema, name, 2)?;
+    }
+    let end = |token: &&Token| matches!(token, Token::Word(word) if word.quote_style.is_none() && word.value.eq_ignore_ascii_case("END"));
+    let named_end = matches!(code.last(), Some(Token::Word(word)) if word.value == name || word.quote_style.is_none() && word.value.eq_ignore_ascii_case(name))
+        && code.len() > 1
+        && end(&code[code.len() - 2]);
+    if kind == "TYPE" {
+        complete_dictionary_type_boundary(&code, schema, name)?;
+    } else if !code.last().is_some_and(end) && !named_end {
+        return Err("The complete dictionary routine has no outer END boundary".into());
+    }
+    let ddl = crate::object_source_sql::ensure_oracle_ddl_terminated(&format!("CREATE OR REPLACE {body}"));
+    if crate::sql::split_sql_statements_for_database(&ddl, DatabaseType::Oracle).len() != 1 {
+        return Err("Routine dictionary source contains multiple statements".into());
+    }
+    Ok(body)
+}
+
 async fn source(
     state: &AppState,
     connection: &str,
@@ -506,12 +668,63 @@ async fn source(
     kind: &str,
 ) -> Result<String, String> {
     let (_, source_kind) = schema_diff_routine_kind(kind).ok_or("Unsupported routine type")?;
-    let source = get_object_source_core(state, connection, database, schema, name, source_kind, None, None).await?;
-    if source.source.trim().is_empty() {
+    let original =
+        get_object_source_core(state, connection, database, schema, name, source_kind, None, None).await?.source;
+    if original.trim().is_empty() {
         return Err("Complete source is unavailable; comparison stopped".into());
     }
-    Ok(source.source)
+    if !connection_config(state, connection).await.is_some_and(|config| config.db_type == DatabaseType::OceanbaseOracle)
+        || original.trim_end().ends_with(';')
+    {
+        return Ok(original);
+    }
+    // OB may omit the final terminator in GET_DDL and ALL_SOURCE. Only a complete,
+    // stable VALID dictionary object can supply the executable replacement.
+    let identity_sql = format!("SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS'), STATUS FROM ALL_OBJECTS WHERE OWNER={} AND OBJECT_NAME={} AND OBJECT_TYPE={}", literal(schema), literal(name), literal(kind));
+    let before = dictionary_query(state, connection, database, schema, &identity_sql).await?;
+    if before.rows.len() != 1
+        || before.rows[0].len() != 6
+        || cell(&before.rows[0], 0) != schema
+        || cell(&before.rows[0], 1) != name
+        || cell(&before.rows[0], 2) != kind
+        || before.rows[0][3].is_null()
+        || cell(&before.rows[0], 4).is_empty()
+    {
+        return Err("Routine dictionary identity is missing or ambiguous".into());
+    }
+    if cell(&before.rows[0], 5) != "VALID" {
+        return Ok(original);
+    }
+    let rows = dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, NAME, TYPE, LINE, TEXT, COUNT(*) OVER () FROM ALL_SOURCE WHERE OWNER={} AND NAME={} AND TYPE={} ORDER BY LINE", literal(schema), literal(name), literal(kind))).await?;
+    let body = complete_dictionary_body(&rows.rows, schema, name, kind)?;
+    let errors = dictionary_query(
+        state,
+        connection,
+        database,
+        schema,
+        &format!(
+            "SELECT LINE, POSITION, TEXT FROM ALL_ERRORS WHERE OWNER={} AND NAME={} AND TYPE={} ORDER BY SEQUENCE",
+            literal(schema),
+            literal(name),
+            literal(kind)
+        ),
+    )
+    .await?;
+    let after = dictionary_query(state, connection, database, schema, &identity_sql).await?;
+    if before.rows != after.rows {
+        return Err("Routine changed during complete source collection; reload comparison".into());
+    }
+    if !errors.rows.is_empty() {
+        return Ok(original);
+    }
+    let edition = regex::Regex::new(r"(?is)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(NONEDITIONABLE|EDITIONABLE)\b")
+        .unwrap()
+        .captures(&original)
+        .map(|matched| format!("{} ", matched[1].to_ascii_uppercase()))
+        .unwrap_or_default();
+    Ok(crate::object_source_sql::ensure_oracle_ddl_terminated(&format!("CREATE OR REPLACE {edition}{body}")))
 }
+
 async fn trigger(
     state: &AppState,
     connection: &str,
@@ -851,6 +1064,96 @@ pub async fn validate_schema_diff_routines(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_ob_type_dictionary_preserves_object_collection_and_body_boundaries() {
+        let rows = |kind: &str, text: &str| {
+            vec![vec![
+                serde_json::json!("Mixed Owner"),
+                serde_json::json!("Mixed.Type"),
+                serde_json::json!(kind),
+                serde_json::json!(1),
+                serde_json::json!(text),
+                serde_json::json!(1),
+            ]]
+        };
+        for text in [
+            "TYPE \"Mixed.Type\" AS OBJECT(a NUMBER,b VARCHAR2(10))",
+            "TYPE \"Mixed Owner\".\"Mixed.Type\" AS OBJECT(a NUMBER)",
+            "TYPE \"Mixed.Type\" AS TABLE OF \"Other.Type\"",
+            "TYPE \"Mixed.Type\" AS VARRAY(5) OF NUMBER(10,2)",
+            "TYPE \"Mixed.Type\" AS TABLE OF TIMESTAMP(6) WITH TIME ZONE",
+            "TYPE \"Mixed.Type\" AS TABLE OF TIMESTAMP WITH LOCAL TIME ZONE",
+            "TYPE \"Mixed.Type\" AS TABLE OF INTERVAL YEAR(4) TO MONTH",
+            "TYPE \"Mixed.Type\" AS VARRAY(5) OF INTERVAL DAY(3) TO SECOND(2)",
+            "TYPE \"Mixed.Type\" UNDER BASE(a NUMBER) NOT FINAL",
+        ] {
+            assert_eq!(
+                complete_dictionary_body(&rows("TYPE", text), "Mixed Owner", "Mixed.Type", "TYPE").unwrap(),
+                text
+            );
+        }
+        let body = "TYPE BODY \"Mixed.Type\" AS MEMBER FUNCTION F RETURN NUMBER IS BEGIN RETURN 11; END; END";
+        assert_eq!(
+            complete_dictionary_body(&rows("TYPE BODY", body), "Mixed Owner", "Mixed.Type", "TYPE BODY").unwrap(),
+            body
+        );
+        for text in [
+            "TYPE \"Other.Type\" AS OBJECT(a NUMBER)",
+            "TYPE \"Other Owner\".\"Mixed.Type\" AS OBJECT(a NUMBER)",
+            "TYPE \"Mixed.Type\" AS OBJECT(a NUMBER",
+            "TYPE \"Mixed.Type\" AS OBJECT(a NUMBER); DROP TABLE T",
+            "TYPE \"Mixed.Type\" AS TABLE OF",
+            "TYPE \"Mixed.Type\" AS VARRAY(5) OF",
+            "TYPE \"Mixed.Type\" AS TABLE OF NUMBER DROP TABLE T",
+            "TYPE \"Mixed.Type\" AS TABLE OF TIMESTAMP WITH TIME",
+            "TYPE \"Mixed.Type\" AS TABLE OF INTERVAL YEAR TO",
+            "TYPE \"Mixed.Type\" AS TABLE OF INTERVAL DAY TO SECOND DROP TABLE T",
+        ] {
+            assert!(complete_dictionary_body(&rows("TYPE", text), "Mixed Owner", "Mixed.Type", "TYPE").is_err());
+        }
+        for text in [
+            "TYPE BODY \"Other.Type\" AS BEGIN NULL; END",
+            "TYPE BODY \"Mixed.Type\" AS MEMBER FUNCTION F RETURN NUMBER IS BEGIN RETURN 'END'",
+            "TYPE BODY \"Mixed.Type\" AS BEGIN NULL; -- END",
+            "TYPE BODY \"Mixed.Type\" AS BEGIN NULL; END; DROP TABLE T;",
+        ] {
+            assert!(
+                complete_dictionary_body(&rows("TYPE BODY", text), "Mixed Owner", "Mixed.Type", "TYPE BODY").is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn complete_ob_dictionary_rows_preserve_body_and_reject_missing_identity_lines_or_multiple_statements() {
+        let text = "FUNCTION \"F Mixed\" RETURN NUMBER IS BEGIN RETURN 42; END";
+        let rows = vec![vec![
+            serde_json::json!("Mixed Owner"),
+            serde_json::json!("F Mixed"),
+            serde_json::json!("FUNCTION"),
+            serde_json::json!(1),
+            serde_json::json!(text),
+            serde_json::json!(1),
+        ]];
+        assert_eq!(complete_dictionary_body(&rows, "Mixed Owner", "F Mixed", "FUNCTION").unwrap(), text);
+        assert!(complete_dictionary_body(&rows, "OTHER", "F Mixed", "FUNCTION").is_err());
+        assert!(complete_dictionary_body(&rows, "Mixed Owner", "OTHER", "FUNCTION").is_err());
+        assert!(complete_dictionary_body(&rows, "Mixed Owner", "F Mixed", "PROCEDURE").is_err());
+        for (index, value) in [
+            (3, serde_json::json!(2)),
+            (5, serde_json::json!(2)),
+            (4, serde_json::Value::Null),
+            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42;")),
+            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42; -- END")),
+            (4, serde_json::json!("FUNCTION F RETURN VARCHAR2 IS BEGIN RETURN 'END'")),
+            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42; END; DROP TABLE T;")),
+        ] {
+            let mut invalid = rows.clone();
+            invalid[0][index] = value;
+            assert!(complete_dictionary_body(&invalid, "Mixed Owner", "F Mixed", "FUNCTION").is_err());
+        }
+        assert!(complete_dictionary_body(&[], "Mixed Owner", "F Mixed", "FUNCTION").is_err());
+    }
 
     #[test]
     fn caller_readback_uses_target_inventory_and_keeps_owner_and_kind_identity() {
