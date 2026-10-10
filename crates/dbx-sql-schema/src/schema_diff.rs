@@ -13547,8 +13547,6 @@ mod tests {
         let options = SchemaDiffPreparationOptions {
             routine_context: None,
             routine_endpoints: None,
-            source_database_type: None,
-            source_schema: None,
             source_tables: vec![TableInfo {
                 name: "t".into(),
                 table_type: "BASE TABLE".into(),
