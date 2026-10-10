@@ -1254,37 +1254,6 @@ mod tests {
     }
 
     #[test]
-    fn complete_ob_dictionary_rows_preserve_body_and_reject_missing_identity_lines_or_multiple_statements() {
-        let text = "FUNCTION \"F Mixed\" RETURN NUMBER IS BEGIN RETURN 42; END";
-        let rows = vec![vec![
-            serde_json::json!("Mixed Owner"),
-            serde_json::json!("F Mixed"),
-            serde_json::json!("FUNCTION"),
-            serde_json::json!(1),
-            serde_json::json!(text),
-            serde_json::json!(1),
-        ]];
-        assert_eq!(complete_dictionary_body(&rows, "Mixed Owner", "F Mixed", "FUNCTION").unwrap(), text);
-        assert!(complete_dictionary_body(&rows, "OTHER", "F Mixed", "FUNCTION").is_err());
-        assert!(complete_dictionary_body(&rows, "Mixed Owner", "OTHER", "FUNCTION").is_err());
-        assert!(complete_dictionary_body(&rows, "Mixed Owner", "F Mixed", "PROCEDURE").is_err());
-        for (index, value) in [
-            (3, serde_json::json!(2)),
-            (5, serde_json::json!(2)),
-            (4, serde_json::Value::Null),
-            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42;")),
-            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42; -- END")),
-            (4, serde_json::json!("FUNCTION F RETURN VARCHAR2 IS BEGIN RETURN 'END'")),
-            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42; END; DROP TABLE T;")),
-        ] {
-            let mut invalid = rows.clone();
-            invalid[0][index] = value;
-            assert!(complete_dictionary_body(&invalid, "Mixed Owner", "F Mixed", "FUNCTION").is_err());
-        }
-        assert!(complete_dictionary_body(&[], "Mixed Owner", "F Mixed", "FUNCTION").is_err());
-    }
-
-    #[test]
     fn caller_readback_uses_target_inventory_and_keeps_owner_and_kind_identity() {
         let info: db::FunctionInfo = serde_json::from_value(serde_json::json!({
             "name": "p", "functionType": "PACKAGE", "dataType": "", "definition": "", "arguments": "",

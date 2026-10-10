@@ -98,6 +98,12 @@ pub(super) fn selected(request: &TransferRequest) -> Vec<(TransferObjectKind, St
 }
 
 fn dictionary_kind(kind: TransferObjectKind) -> &'static str {
+    if kind == TransferObjectKind::Function {
+        return "FUNCTION";
+    }
+    if kind == TransferObjectKind::Procedure {
+        return "PROCEDURE";
+    }
     if kind == TransferObjectKind::Type {
         return "TYPE";
     }
@@ -299,6 +305,90 @@ async fn read_metadata(state: &AppState, pool: &str, sql: &str) -> Result<db::Qu
     Ok(result)
 }
 
+/// Keep legacy ordering unless packages are selected, then order the selected
+/// program objects together. A package specification may be needed by a function
+/// that is itself needed by that package's body.
+pub(super) async fn execution_order(
+    state: &AppState,
+    request: &TransferRequest,
+    source_pool: &str,
+) -> Result<Vec<(TransferObjectKind, String)>, String> {
+    if request.content == TransferContent::DataOnly {
+        return Ok(Vec::new());
+    }
+    let mut pending = selected(request);
+    let has_packages = !pending.is_empty();
+    for kind in ordered_transfer_object_kinds(
+        request.object_selection_mode().selections().iter().map(|s| s.object_type).collect(),
+    ) {
+        if !is_package(kind) {
+            for name in selected_object_names(request.object_selection_mode().selections(), &kind) {
+                let key = (kind, name);
+                if !pending.contains(&key) {
+                    pending.push(key);
+                }
+            }
+        }
+    }
+    if !has_packages {
+        return Ok(pending);
+    }
+    let owner = resolve_oracle_schema(&request.source_schema, &request.source_database);
+    let mut dependencies = HashMap::new();
+    for (kind, name) in &pending {
+        if !matches!(
+            kind,
+            TransferObjectKind::Package
+                | TransferObjectKind::PackageBody
+                | TransferObjectKind::Function
+                | TransferObjectKind::Procedure
+        ) {
+            continue;
+        }
+        let sql = format!("SELECT REFERENCED_OWNER, REFERENCED_NAME, REFERENCED_TYPE, REFERENCED_LINK_NAME FROM ALL_DEPENDENCIES WHERE OWNER = {} AND NAME = {} AND TYPE = {}", quote_string_literal(&owner), quote_string_literal(name), quote_string_literal(dictionary_kind(*kind)));
+        let rows = read_metadata(state, source_pool, &sql).await?.rows;
+        let key = (*kind, name.clone());
+        let mut required = Vec::new();
+        for row in rows {
+            if text(&row, 0) != owner || !text(&row, 3).is_empty() {
+                continue;
+            }
+            if let Some(dependency) = pending.iter().find(|(dependency_kind, dependency_name)| {
+                matches!(
+                    dependency_kind,
+                    TransferObjectKind::Package
+                        | TransferObjectKind::PackageBody
+                        | TransferObjectKind::Function
+                        | TransferObjectKind::Procedure
+                ) && *dependency_name == text(&row, 1)
+                    && dictionary_kind(*dependency_kind) == text(&row, 2)
+            }) {
+                if dependency != &key && !required.contains(dependency) {
+                    required.push(dependency.clone());
+                }
+            }
+        }
+        let specification = (TransferObjectKind::Package, name.clone());
+        if *kind == TransferObjectKind::PackageBody
+            && pending.contains(&specification)
+            && !required.contains(&specification)
+        {
+            required.push(specification);
+        }
+        dependencies.insert(key, required);
+    }
+    let mut ordered = Vec::new();
+    while !pending.is_empty() {
+        let Some(index) = pending.iter().position(|key| {
+            dependencies.get(key).is_none_or(|required| required.iter().all(|dependency| !pending.contains(dependency)))
+        }) else {
+            return Err("Selected packages and standalone programs contain a dependency cycle; migrate the cycle explicitly before retrying".into());
+        };
+        ordered.push(pending.remove(index));
+    }
+    Ok(ordered)
+}
+
 async fn dependencies(
     state: &AppState,
     request: &TransferRequest,
@@ -349,6 +439,12 @@ async fn dependencies(
             if owner == source_schema && (!explicit || selected_type) { target_schema.clone() } else { owner };
         let planned = target_owner == target_schema
             && ((object_type == "PACKAGE" && selected.contains(&(TransferObjectKind::Package, dependency.clone())))
+                || (matches!(object_type.as_str(), "FUNCTION" | "PROCEDURE")
+                    && request.object_selection_mode().selections().iter().any(|selection| {
+                        matches!(selection.object_type, TransferObjectKind::Function | TransferObjectKind::Procedure)
+                            && dictionary_kind(selection.object_type) == object_type
+                            && selection.names.contains(&dependency)
+                    }))
                 || (object_type == "TYPE"
                     && request.object_selection_mode().selections().iter().any(|selection| {
                         selection.object_type == TransferObjectKind::Type && selection.names.contains(&dependency)
@@ -359,8 +455,14 @@ async fn dependencies(
         } else {
             None
         };
-        let available =
-            link.is_empty() && dependency_available(planned, status.as_deref(), request.object_conflict_policy);
+        // Standalone programs retain the existing transfer policy: an existing
+        // target is skipped even when package replacement was requested.
+        let policy = if matches!(object_type.as_str(), "FUNCTION" | "PROCEDURE") {
+            TransferObjectConflictPolicy::Skip
+        } else {
+            request.object_conflict_policy
+        };
+        let available = link.is_empty() && dependency_available(planned, status.as_deref(), policy);
         result.push(TransferSchemaObjectDependency {
             owner: target_owner,
             name: dependency,
@@ -920,6 +1022,111 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn package_preflight_accepts_selected_standalone_program_dependencies() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = crate::persistence::test_storage::open(&directory.path().join("storage.db")).await.unwrap();
+        let state = AppState::new(storage);
+        let pool =
+            crate::db::sqlite::connect_path_create_if_missing(directory.path().join("catalog.db").to_str().unwrap())
+                .await
+                .unwrap();
+        state
+            .update_connection_pools(|connections| {
+                connections.insert("catalog".into(), PoolKind::Sqlite(pool));
+            })
+            .await;
+        execute_on_pool(&state, "catalog", "CREATE TABLE ALL_DEPENDENCIES (OWNER TEXT, NAME TEXT, TYPE TEXT, REFERENCED_OWNER TEXT, REFERENCED_NAME TEXT, REFERENCED_TYPE TEXT, REFERENCED_LINK_NAME TEXT)").await.unwrap();
+        execute_on_pool(
+            &state,
+            "catalog",
+            "CREATE TABLE ALL_OBJECTS (OWNER TEXT, OBJECT_NAME TEXT, OBJECT_TYPE TEXT, STATUS TEXT)",
+        )
+        .await
+        .unwrap();
+        execute_on_pool(&state, "catalog", "INSERT INTO ALL_DEPENDENCIES VALUES ('S','P','PACKAGE BODY','S','F','FUNCTION',NULL),('S','P','PACKAGE BODY','S','RUN','PROCEDURE',NULL)").await.unwrap();
+        let mut request: TransferRequest = serde_json::from_value(serde_json::json!({
+            "transferId":"package-programs", "sourceConnectionId":"s", "sourceDatabase":"S", "sourceSchema":"S",
+            "targetConnectionId":"t", "targetDatabase":"T", "targetSchema":"T", "tables":[], "createTable":true, "batchSize":10,
+            "objects":[{"objectType":"PACKAGE","names":["P"]},{"objectType":"PACKAGE_BODY","names":["P"]},{"objectType":"FUNCTION","names":["F"]},{"objectType":"PROCEDURE","names":["RUN"]}]
+        })).unwrap();
+        let source = "CREATE PACKAGE BODY P AS PROCEDURE WORK IS BEGIN RUN; x := F(); END; END;";
+        let mut ddl = map_header(source, TransferObjectKind::PackageBody, "P", "T").unwrap();
+        let deps = dependencies(
+            &state,
+            &request,
+            "catalog",
+            "catalog",
+            TransferObjectKind::PackageBody,
+            "P",
+            &selected(&request),
+            source,
+            &mut ddl,
+        )
+        .await
+        .unwrap();
+        assert!(deps.iter().all(|dependency| dependency.available), "{deps:?}");
+        execute_on_pool(&state, "catalog", "INSERT INTO ALL_DEPENDENCIES VALUES ('S','F','FUNCTION','S','P','PACKAGE',NULL),('S','RUN','PROCEDURE','S','F','FUNCTION',NULL)").await.unwrap();
+        assert_eq!(
+            execution_order(&state, &request, "catalog").await.unwrap(),
+            vec![
+                (TransferObjectKind::Package, "P".into()),
+                (TransferObjectKind::Function, "F".into()),
+                (TransferObjectKind::Procedure, "RUN".into()),
+                (TransferObjectKind::PackageBody, "P".into()),
+            ]
+        );
+        execute_on_pool(
+            &state,
+            "catalog",
+            "INSERT INTO ALL_DEPENDENCIES VALUES ('S','P','PACKAGE','S','F','FUNCTION',NULL)",
+        )
+        .await
+        .unwrap();
+        assert!(execution_order(&state, &request, "catalog").await.unwrap_err().contains("dependency cycle"));
+        request.content = TransferContent::DataOnly;
+        assert!(execution_order(&state, &request, "missing-pool").await.unwrap().is_empty());
+        request.content = TransferContent::StructureAndData;
+        execute_on_pool(&state, "catalog", "INSERT INTO ALL_OBJECTS VALUES ('T','F','FUNCTION','INVALID')")
+            .await
+            .unwrap();
+        request.object_conflict_policy = TransferObjectConflictPolicy::Replace;
+        let deps = dependencies(
+            &state,
+            &request,
+            "catalog",
+            "catalog",
+            TransferObjectKind::PackageBody,
+            "P",
+            &selected(&request),
+            source,
+            &mut ddl,
+        )
+        .await
+        .unwrap();
+        assert!(!deps.iter().find(|dependency| dependency.name == "F").unwrap().available);
+        request.objects.as_mut().unwrap().retain(|selection| {
+            !matches!(selection.object_type, TransferObjectKind::Function | TransferObjectKind::Procedure)
+        });
+        let deps = dependencies(
+            &state,
+            &request,
+            "catalog",
+            "catalog",
+            TransferObjectKind::PackageBody,
+            "P",
+            &selected(&request),
+            source,
+            &mut ddl,
+        )
+        .await
+        .unwrap();
+        assert!(deps
+            .iter()
+            .filter(|dependency| matches!(dependency.object_type.as_str(), "FUNCTION" | "PROCEDURE"))
+            .all(|dependency| !dependency.available));
+    }
+
     #[tokio::test]
     async fn package_execution_rechecks_real_link_catalog_instead_of_remote_object_status() {
         let directory = tempfile::tempdir().unwrap();
