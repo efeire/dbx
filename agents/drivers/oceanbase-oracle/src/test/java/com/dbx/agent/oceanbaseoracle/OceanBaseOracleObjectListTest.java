@@ -57,8 +57,8 @@ class OceanBaseOracleObjectListTest {
     @Test
     void tableAndViewCommentsSurviveObjectListing() {
         JdbcFixture jdbc = new JdbcFixture();
-        jdbc.rows(row("T", "TABLE", "订单备注"), row("V", "VIEW", "Customer view"),
-            row("EMPTY", "TABLE", ""), row("NO_COMMENT", "VIEW", null));
+        jdbc.rows(row("T", "TABLE", null, "订单备注"), row("V", "VIEW", null, "Customer view"),
+            row("EMPTY", "TABLE", null, ""), row("NO_COMMENT", "VIEW", null, null));
 
         assertEquals(List.of(
             new ObjectInfo("T", "TABLE", "APP", "订单备注"),
@@ -72,7 +72,7 @@ class OceanBaseOracleObjectListTest {
     @ValueSource(strings = {"订单", "Customer", "'", "%", "_", "\\"})
     void commentOnlyMatchesAreBoundBeforePaging(String filter) {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(row("Z_LATE", "TABLE", "prefix " + filter + " suffix"));
+        JdbcCall call = jdbc.rows(row("Z_LATE", "TABLE", null, "prefix " + filter + " suffix"));
         MetadataListConstraints constraints = constraints(filter, 1, 2, "TABLE");
 
         assertEquals(List.of(new ObjectInfo("Z_LATE", "TABLE", "Mixed.Owner", "prefix " + filter + " suffix")),

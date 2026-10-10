@@ -3721,6 +3721,7 @@ export default withEnglishFallback({
     noDatabasesFound: "Tidak ada database yang ditemukan",
   },
   contextMenu: {
+    oracleInvalidObjects: "Objek tidak valid",
     openConnection: "Buka Koneksi",
     closeConnection: "Tutup Koneksi",
     closeSelectedConnections: "Tutup {count} Koneksi Terpilih",

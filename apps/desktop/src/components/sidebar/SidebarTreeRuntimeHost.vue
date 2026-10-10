@@ -2097,6 +2097,17 @@ async function openOracleJobs() {
   }
 }
 
+async function openOracleInvalidObjects() {
+  const connectionId = activeNode.value.connectionId;
+  if (!connectionId) return;
+  try {
+    await connectionStore.ensureConnected(connectionId);
+    queryStore.openOracleInvalidObjects(connectionId);
+  } catch (error) {
+    toast(t("connection.connectFailed", { message: translateBackendError(t, error) }), 5000);
+  }
+}
+
 function scheduleOpenData(node: TreeNode) {
   emit("open-data", node, true, "default", openData);
 }
@@ -6074,6 +6085,7 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
     if (currentDatabaseType() === "oracle" || currentDatabaseType() === "oceanbase-oracle") {
       items.push({ label: t("tree.types"), action: openOracleTypeEditor, icon: Wrench });
       items.push({ label: t("tree.schedulerJobs"), action: openOracleJobs, icon: CalendarClock });
+      items.push({ label: t("contextMenu.oracleInvalidObjects"), action: openOracleInvalidObjects, icon: Wrench });
     }
     if (canCopyFinalProxyPort.value) {
       items.push({ label: t("contextMenu.copyFinalProxyPort"), action: copyFinalProxyPort, icon: Network });
