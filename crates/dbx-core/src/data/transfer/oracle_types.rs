@@ -1017,7 +1017,7 @@ mod tests {
     }
     #[test]
     fn type_specs_and_independent_bodies_precede_tables_but_dependent_bodies_follow_programs() {
-        let request: TransferRequest = serde_json::from_value(serde_json::json!({"transferId":"t","sourceConnectionId":"s","sourceDatabase":"SRC","targetConnectionId":"t","targetDatabase":"DST","tables":["PAYLOAD"],"createTable":true,"batchSize":10,"objects":[{"objectType":"PACKAGE","names":["P"]}]})).unwrap();
+        let request: TransferRequest = serde_json::from_value(serde_json::json!({"transferId":"t","sourceConnectionId":"s","sourceDatabase":"SRC","sourceSchema":"SRC","targetConnectionId":"t","targetDatabase":"DST","targetSchema":"DST","tables":["PAYLOAD"],"createTable":true,"batchSize":10,"objects":[{"objectType":"PACKAGE","names":["P"]}]})).unwrap();
         let spec = item(TransferObjectKind::Type, "T");
         let independent = item(TransferObjectKind::TypeBody, "B");
         let mut dependent = item(TransferObjectKind::TypeBody, "T");
