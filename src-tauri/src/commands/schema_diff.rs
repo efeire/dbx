@@ -59,6 +59,7 @@ pub async fn generate_schema_sync_sql(
         source_dialect,
         &field_mappings.unwrap_or_default(),
         false,
+        false,
     );
     dbx_core::schema_diff::add_oracle_routines_to_plan_with_context(
         &mut plan,
@@ -90,6 +91,9 @@ pub async fn generate_schema_sync_plan(
     source_database_type: Option<dbx_core::models::connection::DatabaseType>,
     source_schema: Option<String>,
     routine_endpoints: Option<dbx_core::schema_diff::RoutineEndpoints>,
+    // Wrap the generated forward and rollback scripts in MySQL's FOREIGN_KEY_CHECKS
+    // toggle. Ignored for targets that are not MySQL.
+    ignore_foreign_key_checks: Option<bool>,
 ) -> Result<dbx_core::schema_diff::SchemaSyncSqlPlan, String> {
     let source_objects =
         function_diffs.as_deref().unwrap_or_default().iter().filter_map(|diff| diff.source.clone()).collect::<Vec<_>>();
@@ -126,6 +130,7 @@ pub async fn generate_schema_sync_plan(
         source_dialect,
         &field_mappings.unwrap_or_default(),
         enable_rollback.unwrap_or(false),
+        ignore_foreign_key_checks.unwrap_or(false),
     );
     dbx_core::schema_diff::add_oracle_routines_to_plan_with_context(
         &mut plan,
