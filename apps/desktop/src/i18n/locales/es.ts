@@ -4277,6 +4277,17 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "Copiar con contraseña",
     copyPasswordConfirmMessage: "El texto copiado contendrá la contraseña guardada en texto sin formato. ¿Continuar?",
     copyPasswordConfirmAction: "Copiar",
+    routineRenameStepFailed: "El cambio de «{oldName}» a «{newName}» se detuvo en el paso {step}: {message}. El DDL ejecutado no se revierte automáticamente. Revise ambos objetos y repare o elimine el nuevo antes de reintentar.",
+    routineRenameOriginalNotDropped: "Aún no se ha enviado el paso de eliminación del objeto original.",
+    routineRenameRecoveryTitle: "Definición anterior al cambio de nombre: {name}",
+    oceanbaseRoutineRenameWarning:
+      "Se realizará una comprobación previa, se creará el objeto, se verificará su compilación, se copiarán los permisos y se comprobarán las dependencias antes de eliminar el original. El DDL no se revierte automáticamente. Si falla la verificación de compilación, permisos o dependencias, se conservará el original y puede quedar el nuevo. Las dependencias no se reescriben; si no pueden leerse por completo, no se eliminará el original. Al confirmar, la definición original se guardará en una pestaña de solo lectura para su revisión y recuperación manual. Los permisos deben comprobarse por separado.",
+    routineRenameFinalStateUnknown: "El último paso puede haber modificado la base de datos. Antes de recuperar, vuelva a leer ambos objetos, su estado de compilación, permisos y dependencias.",
+    oceanbaseViewRenameWarning:
+      "El cambio de nombre no se puede revertir. Los permisos existentes se conservan con la vista; los objetos dependientes pueden quedar inválidos y su código no se reescribe. Las operaciones entre propietarios requieren ALTER ANY TABLE concedido directamente y metadatos visibles de la vista; no se pueden verificar permisos obtenidos solo mediante roles.",
+    viewRenameResponseLost: "Se perdió la respuesta al cambio de nombre. La lectura del diccionario confirma que el nuevo nombre existe y el anterior no. El código anterior se conserva como instantánea que no se puede guardar; vuelva a abrir el nuevo objeto.",
+    viewRenameStateUnknown: "Se envió la solicitud de cambio de nombre, pero no se pudo confirmar el estado de ambos nombres. El código anterior se conserva como instantánea que no se puede guardar. Restablezca la conexión y vuelva a leer el objeto antes de editar.",
+    renamedSourceSnapshot: "Tras la operación de cambio de nombre, el texto se conserva como instantánea de solo lectura. Verifique el objeto en la base de datos y vuelva a abrir su definición actual para editar.",
   },
   visibleDatabases: {
     title: "Bases de datos visibles",

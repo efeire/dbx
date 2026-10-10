@@ -4097,6 +4097,17 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "Copia con password",
     copyPasswordConfirmMessage: "Il testo copiato conterrà la password salvata in chiaro. Continuare?",
     copyPasswordConfirmAction: "Copia",
+    routineRenameStepFailed: "La rinomina da «{oldName}» a «{newName}» si è fermata al passaggio {step}: {message}. Il DDL eseguito non viene annullato automaticamente. Verificare entrambi gli oggetti e correggere o rimuovere quello nuovo prima di riprovare.",
+    routineRenameOriginalNotDropped: "Il passaggio di eliminazione dell’oggetto originale non è ancora stato inviato.",
+    routineRenameRecoveryTitle: "Definizione prima della rinomina: {name}",
+    oceanbaseRoutineRenameWarning:
+      "Verranno eseguiti controllo preliminare, creazione, verifica della compilazione, copia delle autorizzazioni e verifica delle dipendenze prima di eliminare l’originale. Il DDL non viene annullato automaticamente. Se compilazione, autorizzazioni o dipendenze non superano la verifica, l’originale viene conservato e il nuovo può rimanere. Le dipendenze non vengono riscritte; se non sono leggibili completamente, l’originale non viene eliminato. Dopo la conferma, la definizione originale viene salvata in una scheda di sola lettura per la verifica e il ripristino manuale. Le autorizzazioni vanno verificate separatamente.",
+    routineRenameFinalStateUnknown: "L’ultimo passaggio potrebbe aver modificato il database. Prima del ripristino, rileggere entrambi gli oggetti, lo stato di compilazione, le autorizzazioni e le dipendenze.",
+    oceanbaseViewRenameWarning:
+      "La rinomina non può essere annullata. Le autorizzazioni esistenti restano associate alla vista; gli oggetti dipendenti possono diventare non validi e il codice non viene riscritto. Le operazioni tra proprietari richiedono ALTER ANY TABLE concesso direttamente e metadati della vista visibili; non è possibile verificare autorizzazioni ottenute solo tramite ruoli.",
+    viewRenameResponseLost: "Risposta alla rinomina persa. La rilettura del dizionario conferma che il nuovo nome esiste e il vecchio no. Il codice precedente resta come istantanea non salvabile; riaprire il nuovo oggetto.",
+    viewRenameStateUnknown: "La richiesta di rinomina è stata inviata, ma non è possibile confermare lo stato dei due nomi. Il codice precedente resta come istantanea non salvabile. Ripristinare la connessione e rileggere l’oggetto prima di modificarlo.",
+    renamedSourceSnapshot: "Dopo l’operazione di rinomina, il testo resta come istantanea di sola lettura. Verificare l’oggetto nel database e riaprire la definizione corrente per modificarla.",
   },
   visibleDatabases: {
     title: "Database Visibili",
