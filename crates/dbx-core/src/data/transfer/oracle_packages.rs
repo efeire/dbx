@@ -70,6 +70,13 @@ struct PackageBackup {
     definitions: Vec<(String, String)>,
 }
 
+fn manual_recovery(backup: &PackageBackup, path: &str) -> String {
+    format!(
+        "No automatic restoration was executed. Wait for pending DDL to finish and compare current source before explicitly restoring the backup on connection {} in schema {}; verify VALID, ALL_ERRORS and full source afterward. Backup retained at {path}",
+        backup.connection_id, backup.schema
+    )
+}
+
 fn is_package(kind: TransferObjectKind) -> bool {
     matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody)
 }
@@ -247,6 +254,37 @@ async fn object_status(
     );
     let result = read_metadata(state, pool, &sql).await?;
     Ok(result.rows.first().and_then(|r| r.first()).and_then(|v| v.as_str()).map(str::to_string))
+}
+
+async fn validate_execution_dependency(
+    state: &AppState,
+    request: &TransferRequest,
+    target_pool: &str,
+    dependency: &TransferSchemaObjectDependency,
+) -> Result<(), String> {
+    let available = if dependency.object_type == "DATABASE LINK (remote object unverified)" {
+        oracle_database_links::dependency_available(
+            state,
+            request,
+            target_pool,
+            &dependency.owner,
+            &dependency.name,
+            false,
+        )
+        .await?
+    } else {
+        object_status(state, target_pool, &dependency.owner, &dependency.name, &dependency.object_type)
+            .await?
+            .as_deref()
+            == Some("VALID")
+    };
+    if !available {
+        return Err(format!(
+            "Dependency is no longer available: {}.{} ({})",
+            dependency.owner, dependency.name, dependency.object_type,
+        ));
+    }
+    Ok(())
 }
 
 fn text(row: &[serde_json::Value], index: usize) -> String {
@@ -769,16 +807,7 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
             // Planned dependencies may have been skipped or changed since preflight.
             // Read them again after their execution and before mutating this object.
             for dependency in &item.dependencies {
-                if object_status(state, target_pool, &dependency.owner, &dependency.name, &dependency.object_type)
-                    .await?
-                    .as_deref()
-                    != Some("VALID")
-                {
-                    return Err(format!(
-                        "Dependency is no longer VALID: {}.{} ({})",
-                        dependency.owner, dependency.name, dependency.object_type
-                    ));
-                }
+                validate_execution_dependency(state, request, target_pool, dependency).await?;
             }
             let expected_signature = if item.object_type == TransferObjectKind::Package {
                 Some(signature(state, source_pool, &item.source_schema, &item.name).await?)
@@ -810,7 +839,7 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
                 result.recovery = Some(format!("Complete target definition backup retained at {path}"));
             }
             if let Err(error) = written {
-                // Keep the failed definition's status, even if recovery restores a VALID one.
+                // Keep the failed definition's observed status for manual recovery.
                 result.compile_status = object_status(
                     state,
                     target_pool,
@@ -830,34 +859,9 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
                         backup_path.map_or(String::new(), |path| format!("Existing definitions backed up at {path}"))
                     ));
                 } else if let Some(path) = backup_path {
-                    let mut restored = true;
-                    for (kind, ddl) in &backup.definitions {
-                        if item.object_type == TransferObjectKind::PackageBody && kind == "PACKAGE" {
-                            continue;
-                        }
-                        let kind = if kind == "PACKAGE BODY" {
-                            TransferObjectKind::PackageBody
-                        } else {
-                            TransferObjectKind::Package
-                        };
-                        let ddl = map_header(ddl, kind, &item.name, &item.target_schema)?;
-                        if execute_on_pool(state, target_pool, &ddl).await.is_err() {
-                            restored = false;
-                            continue;
-                        }
-                        let recovery_item = TransferSchemaObjectItem { object_type: kind, ddl, ..item.clone() };
-                        if verify(state, request, target_pool, &recovery_item).await.is_err() {
-                            restored = false;
-                        }
-                    }
-                    result.recovery = Some(format!(
-                        "{}; backup retained at {path}",
-                        if restored {
-                            "Target definitions restored and verified"
-                        } else {
-                            "Automatic restoration incomplete; manual recovery required"
-                        }
-                    ));
+                    // Failed or timed-out DDL may still be running; recovery must not
+                    // overwrite that write or a concurrent definition.
+                    result.recovery = Some(manual_recovery(&backup, &path));
                 } else {
                     result.recovery =
                         Some("New target definition retained for inspection; no DROP was executed".into());
@@ -916,6 +920,86 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn package_execution_rechecks_real_link_catalog_instead_of_remote_object_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = crate::persistence::test_storage::open(&directory.path().join("storage.db")).await.unwrap();
+        let state = AppState::new(storage);
+        let pool =
+            crate::db::sqlite::connect_path_create_if_missing(directory.path().join("target.db").to_str().unwrap())
+                .await
+                .unwrap();
+        state
+            .update_connection_pools(|connections| {
+                connections.insert("target".into(), PoolKind::Sqlite(pool));
+            })
+            .await;
+        // SQLite supplies a strict local catalog fixture; no remote database is queried.
+        execute_on_pool(&state, "target", "CREATE TABLE ALL_DB_LINKS (OWNER TEXT, DB_LINK TEXT)").await.unwrap();
+        let request: TransferRequest = serde_json::from_value(serde_json::json!({"transferId":"x","sourceConnectionId":"s","sourceDatabase":"S","sourceSchema":"S","targetConnectionId":"t","targetDatabase":"T","targetSchema":"T","tables":[],"createTable":true,"batchSize":100,"objects":[{"objectType":"DB_LINK","names":["REMOTE"]}],"databaseLinks":[{"objectType":"DB_LINK","name":"REMOTE","sourceOwner":"S","targetName":"REMOTE","targetScope":"private","authentication":"fixedUser","username":"U","host":"remote","credentialAvailable":true}]})).unwrap();
+        let dependency = TransferSchemaObjectDependency {
+            owner: "T".into(),
+            name: "REMOTE".into(),
+            object_type: "DATABASE LINK (remote object unverified)".into(),
+            available: true,
+        };
+        // A planned credential-ready link passes preview, but cannot stand in for execution readback.
+        assert!(oracle_database_links::dependency_available(&state, &request, "target", "T", "REMOTE", true)
+            .await
+            .unwrap());
+        assert!(validate_execution_dependency(&state, &request, "target", &dependency).await.is_err());
+        execute_on_pool(&state, "target", "INSERT INTO ALL_DB_LINKS VALUES ('T', 'REMOTE')").await.unwrap();
+        assert!(validate_execution_dependency(&state, &request, "target", &dependency).await.is_ok());
+        execute_on_pool(&state, "target", "DELETE FROM ALL_DB_LINKS").await.unwrap();
+        execute_on_pool(&state, "target", "INSERT INTO ALL_DB_LINKS VALUES ('PUBLIC', 'REMOTE')").await.unwrap();
+        assert!(validate_execution_dependency(&state, &request, "target", &dependency).await.is_ok());
+        execute_on_pool(
+            &state,
+            "target",
+            "CREATE TABLE ALL_OBJECTS (OWNER TEXT, OBJECT_NAME TEXT, OBJECT_TYPE TEXT, STATUS TEXT)",
+        )
+        .await
+        .unwrap();
+        execute_on_pool(&state, "target", "INSERT INTO ALL_OBJECTS VALUES ('T', 'LOCAL', 'PACKAGE', 'INVALID')")
+            .await
+            .unwrap();
+        let local = TransferSchemaObjectDependency {
+            owner: "T".into(),
+            name: "LOCAL".into(),
+            object_type: "PACKAGE".into(),
+            available: true,
+        };
+        assert!(validate_execution_dependency(&state, &request, "target", &local).await.is_err());
+        execute_on_pool(&state, "target", "UPDATE ALL_OBJECTS SET STATUS = 'VALID'").await.unwrap();
+        assert!(validate_execution_dependency(&state, &request, "target", &local).await.is_ok());
+    }
+
+    #[test]
+    fn uncertain_failed_write_preserves_both_definitions_for_explicit_recovery() {
+        let backup = PackageBackup {
+            connection_id: "target-connection".into(),
+            schema: "Mixed.Target".into(),
+            name: "P".into(),
+            definitions: vec![
+                ("PACKAGE".into(), "PACKAGE P AS END;".into()),
+                ("PACKAGE BODY".into(), "PACKAGE BODY P AS secret varchar2(20) := 'private'; END;".into()),
+            ],
+        };
+        // Producing failure guidance has no pool/executor, and leaves the exact old
+        // specification/body available for recovery after the pending write finishes.
+        let before = serde_json::to_value(&backup).unwrap();
+        let guidance = manual_recovery(&backup, "backup.json");
+        assert_eq!(serde_json::to_value(&backup).unwrap(), before);
+        assert!(guidance.contains("No automatic restoration was executed"));
+        assert!(guidance.contains("Wait for pending DDL to finish and compare current source"));
+        assert!(
+            guidance.contains("explicitly restoring the backup on connection target-connection in schema Mixed.Target")
+        );
+        assert!(guidance.contains("VALID, ALL_ERRORS and full source"));
+        assert!(guidance.contains("backup.json"));
+        assert!(!guidance.contains("private"));
+    }
+
     #[test]
     fn maps_only_the_package_header() {
         let source = "CREATE OR REPLACE PACKAGE BODY \"S\".\"P\" AS\nPROCEDURE x IS BEGIN dbms_output.put_line(q'[\"S\".x]'); END; END;\n/";
