@@ -6824,6 +6824,9 @@ export default withEnglishFallback({
     totalFiles: "{count} arquivos",
   },
   diff: {
+    routineIncomingDependencies: "Chamadores potencialmente afetados: {dependencies}",
+    routineRecoveryHint: "Parte do DDL pode já ter sido aplicada. Verifique as etapas executadas e o estado do dicionário antes de usar o plano de recuperação; a reversão automática não é garantida.",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle também comparam especificações e corpos de pacotes e gatilhos.",
     routinePlanBlocked: "Implantação bloqueada: {reason}",
     routineDependencies: "Dependências: {dependencies}",
     routineValidationTitle: "Compilação e releitura do código-fonte",
@@ -7074,6 +7077,7 @@ export default withEnglishFallback({
     dependencyGraph: "Grafo de dependências",
     copySourceDdl: "Copiar DDL de origem",
     copyTargetDdl: "Copiar DDL de destino",
+    routinePreviewReadOnly: "O SQL dos objetos de programa é somente leitura. O plano gerado é executado; os gatilhos só são habilitados após a verificação por releitura.",
   },
   rollbackComparison: {
     title: "Comparação de Reversão",

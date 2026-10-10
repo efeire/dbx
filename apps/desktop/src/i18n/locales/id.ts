@@ -7364,6 +7364,9 @@ export default withEnglishFallback({
     fileFilterHint: "Gunakan pola glob seperti *.sql atau *.sh, atau ekspresi reguler seperti {regex}.",
   },
   diff: {
+    routineIncomingDependencies: "Pemanggil yang mungkin terdampak: {dependencies}",
+    routineRecoveryHint: "Sebagian DDL mungkin telah diterapkan. Periksa langkah yang dijalankan dan status kamus sebelum menggunakan rencana pemulihan; rollback otomatis tidak dijamin.",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle juga membandingkan spesifikasi paket, isi paket, dan pemicu.",
     routinePlanBlocked: "Penerapan diblokir: {reason}",
     routineDependencies: "Dependensi: {dependencies}",
     routineValidationTitle: "Kompilasi dan pembacaan ulang sumber",

@@ -48,6 +48,7 @@ const props = defineProps<{
   missingRollbackObjects?: MissingRollbackObject[];
   canExecute?: boolean;
   destructiveStatementCount?: number;
+  readOnly?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -59,6 +60,7 @@ const emit = defineEmits<{
 
 const editorContainer = ref<HTMLDivElement>();
 const editorView = shallowRef<any>(null);
+const readOnlyCompartment = shallowRef<any>(null);
 const isEditorReady = ref(false);
 const selectedObjectId = ref<string | null>(null);
 
@@ -151,6 +153,7 @@ async function initEditor() {
 
   const themeComp = new Compartment();
   const fontComp = new Compartment();
+  readOnlyCompartment.value = new Compartment();
 
   const editorTheme = settingsStore.editorSettings.theme;
   const appAppearance = isDark.value ? "dark" : "light";
@@ -169,8 +172,9 @@ async function initEditor() {
       langSql.sql({ dialect }),
       themeComp.of(themeExt),
       fontComp.of(fontExt),
+      readOnlyCompartment.value.of([EditorState.readOnly.of(!!props.readOnly), EditorView.editable.of(!props.readOnly)]),
       EditorView.updateListener.of((update: any) => {
-        if (update.docChanged) {
+        if (update.docChanged && !props.readOnly) {
           emit("update:deploySql", update.state.doc.toString());
         }
       }),
@@ -190,6 +194,14 @@ watch(
         changes: { from: 0, to: editorView.value.state.doc.length, insert: newVal },
       });
     }
+  },
+);
+
+watch(
+  () => props.readOnly,
+  async (readOnly) => {
+    const [{ EditorState }, { EditorView }] = await Promise.all([import("@codemirror/state"), import("@codemirror/view")]);
+    editorView.value?.dispatch({ effects: readOnlyCompartment.value.reconfigure([EditorState.readOnly.of(!!readOnly), EditorView.editable.of(!readOnly)]) });
   },
 );
 
@@ -344,6 +356,7 @@ function getObjectIconColor(kind: DiffObjectKind): string {
       </ul>
     </div>
     <!-- Content -->
+    <p v-if="readOnly" class="px-3 py-1.5 border-b text-xs text-muted-foreground">{{ t("diff.routinePreviewReadOnly") }}</p>
     <Splitpanes class="flex-1 min-h-0">
       <Pane size="30" min-size="20">
         <div class="h-full overflow-auto p-2 space-y-0.5">

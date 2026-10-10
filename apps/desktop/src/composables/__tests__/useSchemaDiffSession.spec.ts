@@ -484,7 +484,8 @@ test.each([
 ] as const)("compares %s to %s routines with both schemas and actual engines", async (sourceDbType, targetDbType) => {
   vi.clearAllMocks();
   const source = { name: "P_SYNC", function_type: "PROCEDURE", data_type: "", arguments: "", definition: "CREATE PROCEDURE P_SYNC AS BEGIN NULL; END;", schema: "SRC", status: "VALID", dependencies: ["SRC.T_INPUT"] };
-  apiMock.listFunctions.mockResolvedValueOnce([source]).mockResolvedValueOnce([]);
+  const programs = [source, { ...source, function_type: "PACKAGE" }, { ...source, function_type: "PACKAGE BODY" }, { ...source, function_type: "TRIGGER", trigger: { tableOwner: "SRC", tableName: "T_INPUT", timing: "BEFORE", event: "INSERT", status: "DISABLED", baseObjectType: "TABLE" } }];
+  apiMock.listFunctions.mockResolvedValueOnce(programs).mockResolvedValueOnce([]);
   apiMock.prepareSchemaDiff.mockResolvedValue({ diffs: [], functionDiffs: [{ name: "P_SYNC", type: "added", source }], syncSql: "" });
   const tableListLoader = { load: vi.fn() };
   const session = startSchemaDiffSession(
@@ -503,7 +504,9 @@ test.each([
   assert.equal(options.databaseType, targetDbType);
   assert.equal(options.sourceSchema, "SRC");
   assert.equal(options.targetSchema, "DST");
-  assert.deepEqual(options.sourceFunctions, [source]);
+  assert.deepEqual(options.routineEndpoints, { sourceConnectionId: "routine-source", sourceDatabase: "db", targetConnectionId: "routine-target", targetDatabase: "db" });
+  assert.equal(options.routineContext, undefined);
+  assert.deepEqual(options.sourceFunctions, programs);
 });
 
 test("fails a routine compare on source read errors before generating a removal plan", async () => {

@@ -6853,6 +6853,9 @@ export default withEnglishFallback({
     totalFiles: "{count} ファイル",
   },
   diff: {
+    routineIncomingDependencies: "影響を受ける可能性がある呼び出し元: {dependencies}",
+    routineRecoveryHint: "一部の DDL は適用済みの場合があります。復元計画を使う前に実行済み手順と辞書の状態を確認してください。自動ロールバックは保証されません。",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle ではパッケージ仕様、パッケージ本体、トリガーも比較します。",
     routinePlanBlocked: "デプロイできません: {reason}",
     routineDependencies: "依存オブジェクト: {dependencies}",
     routineValidationTitle: "コンパイル状態とソースの再取得",
@@ -7103,6 +7106,7 @@ export default withEnglishFallback({
     dependencyGraph: "依存関係グラフ",
     copySourceDdl: "ソース DDL をコピー",
     copyTargetDdl: "ターゲット DDL をコピー",
+    routinePreviewReadOnly: "プログラムオブジェクトの SQL は読み取り専用です。生成された計画を実行し、トリガーは再取得による検証後にのみ有効化します。",
   },
   rollbackComparison: {
     title: "ロールバック比較",

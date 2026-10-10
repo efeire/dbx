@@ -10174,6 +10174,10 @@ pub async fn list_functions(pool: &Pool, schema: &str) -> Result<Vec<FunctionInf
                 .replace(&format!("CREATE OR REPLACE FUNCTION \"{}\".", schema), "CREATE OR REPLACE FUNCTION ")
                 .replace(&format!("CREATE OR REPLACE FUNCTION {}.", schema), "CREATE OR REPLACE FUNCTION ");
             FunctionInfo {
+                trigger: None,
+                dependency_objects: Vec::new(),
+                incoming_dependencies: Vec::new(),
+                paired_object_present: None,
                 schema: None,
                 status: None,
                 dependencies: Vec::new(),

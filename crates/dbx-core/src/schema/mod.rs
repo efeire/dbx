@@ -1,7 +1,9 @@
 pub mod oracle_constraint_change;
 mod oracle_routines;
 pub mod table_structure_sql;
-pub use oracle_routines::{validate_schema_diff_routines, RoutineValidation};
+pub use oracle_routines::{
+    prepare_schema_diff_core, schema_diff_routine_context, validate_schema_diff_routines, RoutineValidation,
+};
 
 pub use dbx_drivers::metadata::sqlite_ddl;
 
@@ -9113,7 +9115,13 @@ async fn list_functions_via_objects(
 
 fn schema_diff_routine_kind(object_type: &str) -> Option<(&'static str, db::ObjectSourceKind)> {
     let object_type_upper = object_type.to_ascii_uppercase();
-    if object_type_upper.contains("PROC") {
+    if object_type_upper == "PACKAGE" {
+        Some(("PACKAGE", db::ObjectSourceKind::Package))
+    } else if matches!(object_type_upper.as_str(), "PACKAGE BODY" | "PACKAGE_BODY") {
+        Some(("PACKAGE BODY", db::ObjectSourceKind::PackageBody))
+    } else if object_type_upper == "TRIGGER" {
+        Some(("TRIGGER", db::ObjectSourceKind::Trigger))
+    } else if object_type_upper.contains("PROC") {
         Some(("PROCEDURE", db::ObjectSourceKind::Procedure))
     } else if object_type_upper.contains("FUNC") {
         Some(("FUNCTION", db::ObjectSourceKind::Function))
@@ -9171,6 +9179,10 @@ async fn load_function_info_via_object(
     };
 
     Some(db::FunctionInfo {
+        trigger: None,
+        dependency_objects: Vec::new(),
+        incoming_dependencies: Vec::new(),
+        paired_object_present: None,
         schema: None,
         status: None,
         dependencies: Vec::new(),

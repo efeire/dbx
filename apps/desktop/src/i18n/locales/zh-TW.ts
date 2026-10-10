@@ -6169,6 +6169,9 @@ export default withEnglishFallback({
     runInBackground: "背景執行",
   },
   diff: {
+    routineIncomingDependencies: "可能失效的呼叫端：{dependencies}",
+    routineRecoveryHint: "部分 DDL 可能已生效。請核對已執行步驟與字典狀態後使用復原計畫，不能假定已自動回復。",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle 亦可比較套件規格、套件主體與觸發程序。",
     routinePlanBlocked: "無法部署：{reason}",
     routineDependencies: "相依物件：{dependencies}",
     routineValidationTitle: "編譯狀態與原始碼讀回",
@@ -6419,6 +6422,7 @@ export default withEnglishFallback({
     dependencyGraph: "依賴圖",
     copySourceDdl: "複製來源 DDL",
     copyTargetDdl: "複製目標 DDL",
+    routinePreviewReadOnly: "程式物件 SQL 為唯讀。執行使用產生的計畫，觸發器通過讀回驗證後才啟用。",
   },
   rollbackComparison: {
     title: "回溯對比",

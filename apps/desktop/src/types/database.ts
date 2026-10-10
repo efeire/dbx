@@ -1262,6 +1262,21 @@ export interface SubpartitionInfo {
   partition_key: string;
 }
 
+export interface SchemaDiffDependencyObject {
+  owner: string;
+  name: string;
+  objectType: string;
+}
+
+export interface SchemaDiffTriggerInfo {
+  tableOwner: string;
+  tableName: string;
+  timing: string;
+  event: string;
+  status: string;
+  baseObjectType: string;
+}
+
 export interface FunctionInfo {
   name: string;
   function_type: string;
@@ -1271,6 +1286,10 @@ export interface FunctionInfo {
   schema?: string;
   status?: string;
   dependencies?: string[];
+  trigger?: SchemaDiffTriggerInfo;
+  dependencyObjects?: SchemaDiffDependencyObject[];
+  incomingDependencies?: SchemaDiffDependencyObject[];
+  pairedObjectPresent?: boolean;
 }
 
 export interface SequenceInfo {

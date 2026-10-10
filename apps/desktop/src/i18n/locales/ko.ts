@@ -6665,6 +6665,9 @@ export default withEnglishFallback({
     fileFilterHint: "*.sql 또는 *.sh 같은 와일드카드나 {regex} 같은 정규식을 사용할 수 있습니다.",
   },
   diff: {
+    routineIncomingDependencies: "영향을 받을 수 있는 호출자: {dependencies}",
+    routineRecoveryHint: "일부 DDL이 이미 적용되었을 수 있습니다. 복구 계획을 사용하기 전에 실행된 단계와 사전 상태를 확인하세요. 자동 롤백은 보장되지 않습니다.",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle은 패키지 명세, 패키지 본문 및 트리거도 비교합니다.",
     routinePlanBlocked: "배포 차단: {reason}",
     routineDependencies: "종속 객체: {dependencies}",
     routineValidationTitle: "컴파일 상태 및 소스 재조회",
@@ -6915,6 +6918,7 @@ export default withEnglishFallback({
     routineDdlCopied: "DDL을 복사했습니다",
     copySourceDdl: "소스 DDL 복사",
     copyTargetDdl: "대상 DDL 복사",
+    routinePreviewReadOnly: "프로그램 객체 SQL은 읽기 전용입니다. 생성된 계획을 실행하며 트리거는 다시 읽어 검증한 후에만 활성화됩니다.",
   },
   rollbackComparison: {
     title: "롤백 비교",

@@ -4731,9 +4731,7 @@ test("schema-qualified table completions follow identifierCase (#11400)", () => 
 });
 
 test("table completions with applyName follow identifierCase (#11400)", () => {
-  const tablesWithApplyName = [
-    { name: "DEPT_DICT", schema: "COMM", applyName: "COMM.DEPT_DICT", type: "table" as const },
-  ];
+  const tablesWithApplyName = [{ name: "DEPT_DICT", schema: "COMM", applyName: "COMM.DEPT_DICT", type: "table" as const }];
   const items = buildSqlCompletionItems("select * from d", "select * from d".length, {
     tables: tablesWithApplyName,
     columnsByTable: new Map(),
@@ -4757,4 +4755,3 @@ test("CTE table completions follow identifierCase (#11400)", () => {
   assert.ok(cteItem, "should provide lowercase CTE table label");
   assert.equal(cteItem?.apply, "my_cte", "should apply lowercase CTE name");
 });
-

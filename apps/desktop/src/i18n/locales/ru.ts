@@ -8065,6 +8065,9 @@ export default withEnglishFallback({
     fileFilterHint: "Используйте шаблон, например *.sql или *.sh, либо регулярное выражение, например {regex}.",
   },
   diff: {
+    routineIncomingDependencies: "Возможно затронутые вызывающие объекты: {dependencies}",
+    routineRecoveryHint: "Часть DDL уже могла примениться. Перед восстановлением проверьте выполненные шаги и состояние словаря; автоматический откат не гарантирован.",
+    routineOracleKindsHint: "Oracle / OceanBase Oracle также сравнивают спецификации и тела пакетов и триггеры.",
     routinePlanBlocked: "Развертывание заблокировано: {reason}",
     routineDependencies: "Зависимости: {dependencies}",
     routineValidationTitle: "Компиляция и повторное чтение исходного кода",
@@ -8316,6 +8319,7 @@ export default withEnglishFallback({
     deployMixedTitle: "Частично развёрнуто",
     deployRolledBackTitle: "Откатано",
     deployMixedWarning: "Некоторые инструкции могли уже примениться, а другие завершились ошибкой. База данных может находиться в несогласованном состоянии. Проверьте журнал транзакций и выполните ручные исправления перед повторной попыткой.",
+    routinePreviewReadOnly: "SQL программных объектов доступен только для чтения. Выполняется сгенерированный план; триггеры включаются только после проверки повторным чтением.",
   },
   rollbackComparison: {
     title: "Сравнение отката",

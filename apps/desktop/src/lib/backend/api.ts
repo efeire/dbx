@@ -1,3 +1,4 @@
+import { functionInfoRequestArguments, functionInfoResponse } from "@/lib/backend/functionInfoTransport";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import type * as TauriModule from "@/lib/backend/tauri";
 import { appendDebugLog } from "@/lib/backend/debugLog";

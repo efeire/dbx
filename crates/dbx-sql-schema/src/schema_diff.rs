@@ -2,8 +2,8 @@ use dbx_sql_core::value_literals::quote_string_literal;
 mod oracle_routines;
 use dbx_sql_dialect::postgres_index_key::decorate_postgres_index_key;
 pub use oracle_routines::{
-    add_oracle_routines_to_plan, comparable_oracle_routine, is_oracle_routine_database, oracle_routine_steps,
-    RoutineStep,
+    add_oracle_routines_to_plan, add_oracle_routines_to_plan_with_context, comparable_oracle_routine,
+    is_oracle_routine_database, oracle_routine_steps, oracle_routine_steps_with_context, RoutineEndpoints, RoutineStep,
 };
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -491,6 +491,10 @@ pub struct SchemaDiffTableMapping {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaDiffPreparationOptions {
+    #[serde(default)]
+    pub routine_endpoints: Option<RoutineEndpoints>,
+    #[serde(skip)]
+    pub routine_context: Option<dbx_sql_core::oracle_program_compatibility::OracleProgramContext>,
     #[serde(default)]
     pub source_database_type: Option<DatabaseType>,
     #[serde(default)]
@@ -1997,6 +2001,8 @@ impl Default for SchemaDiffPreparationOptions {
     fn default() -> Self {
         Self {
             source_database_type: None,
+            routine_endpoints: None,
+            routine_context: None,
             source_schema: None,
             source_tables: Vec::new(),
             target_tables: Vec::new(),
@@ -2267,13 +2273,14 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         missing_rollback_objects,
         routine_steps: Vec::new(),
     };
-    add_oracle_routines_to_plan(
+    add_oracle_routines_to_plan_with_context(
         &mut routine_plan,
         &function_diffs,
         options.database_type,
         options.target_schema.as_deref(),
         options.source_database_type,
         options.source_schema.as_deref(),
+        options.routine_context.as_ref(),
     );
 
     let permission_diffs = if !options.source_permissions.is_empty() || !options.target_permissions.is_empty() {
@@ -4033,8 +4040,22 @@ pub fn normalize_definition(def: &str) -> String {
         .join("\n")
 }
 
-fn routine_identity(info: &FunctionInfo) -> (&str, &str, &str) {
-    (&info.name, &info.arguments, if info.schema.is_some() { &info.function_type } else { "" })
+fn routine_identity(info: &FunctionInfo) -> (&str, &str, &str, &str, &str) {
+    let (table_owner, table_name) = info
+        .trigger
+        .as_ref()
+        .map(|trigger| {
+            (
+                if Some(trigger.table_owner.as_str()) == info.schema.as_deref() {
+                    ""
+                } else {
+                    trigger.table_owner.as_str()
+                },
+                trigger.table_name.as_str(),
+            )
+        })
+        .unwrap_or(("", ""));
+    (&info.name, &info.arguments, if info.schema.is_some() { &info.function_type } else { "" }, table_owner, table_name)
 }
 
 pub fn diff_functions(source: &[FunctionInfo], target: &[FunctionInfo]) -> Vec<FunctionDiff> {
@@ -4070,6 +4091,17 @@ pub fn diff_functions(source: &[FunctionInfo], target: &[FunctionInfo]) -> Vec<F
         };
         if definitions_differ {
             changes.push("definition changed".to_string());
+        }
+        if source_fn
+            .trigger
+            .as_ref()
+            .map(|trigger| (&trigger.timing, &trigger.event, &trigger.status, &trigger.base_object_type))
+            != target_fn
+                .trigger
+                .as_ref()
+                .map(|trigger| (&trigger.timing, &trigger.event, &trigger.status, &trigger.base_object_type))
+        {
+            changes.push("trigger timing, event or enabled state changed".to_string());
         }
         if !changes.is_empty() {
             diffs.push(FunctionDiff {
@@ -8241,6 +8273,10 @@ mod tests {
             diff_type: "modified".into(),
             name: "next_value".into(),
             source: Some(FunctionInfo {
+                trigger: None,
+                dependency_objects: Vec::new(),
+                incoming_dependencies: Vec::new(),
+                paired_object_present: None,
                 schema: None,
                 status: None,
                 dependencies: Vec::new(),
@@ -8580,6 +8616,10 @@ mod tests {
             diff_type: "modified".into(),
             name: "next_value".into(),
             source: Some(FunctionInfo {
+                trigger: None,
+                dependency_objects: Vec::new(),
+                incoming_dependencies: Vec::new(),
+                paired_object_present: None,
                 schema: None,
                 status: None,
                 dependencies: Vec::new(),
@@ -8630,6 +8670,10 @@ mod tests {
             diff_type: "added".into(),
             name: "pg_only".into(),
             source: Some(FunctionInfo {
+                trigger: None,
+                dependency_objects: Vec::new(),
+                incoming_dependencies: Vec::new(),
+                paired_object_present: None,
                 schema: None,
                 status: None,
                 dependencies: Vec::new(),
@@ -13498,6 +13542,10 @@ mod tests {
         let Some(db) = kind_to_db(target_kind) else { return String::new() };
         let _src_db = kind_to_db(source_kind).unwrap_or(DatabaseType::Mysql);
         let options = SchemaDiffPreparationOptions {
+            routine_context: None,
+            routine_endpoints: None,
+            source_database_type: None,
+            source_schema: None,
             source_tables: vec![TableInfo {
                 name: "t".into(),
                 table_type: "BASE TABLE".into(),
@@ -14930,6 +14978,10 @@ mod tests {
             diff_type: "added".into(),
             name: "f1".into(),
             source: Some(FunctionInfo {
+                trigger: None,
+                dependency_objects: Vec::new(),
+                incoming_dependencies: Vec::new(),
+                paired_object_present: None,
                 schema: None,
                 status: None,
                 dependencies: Vec::new(),
@@ -15003,6 +15055,10 @@ mod tests {
             diff_type: "added".into(),
             name: "armor".into(),
             source: Some(FunctionInfo {
+                trigger: None,
+                dependency_objects: Vec::new(),
+                incoming_dependencies: Vec::new(),
+                paired_object_present: None,
                 schema: None,
                 status: None,
                 dependencies: Vec::new(),
@@ -15051,6 +15107,10 @@ mod tests {
             diff_type: "added".into(),
             name: "f1".into(),
             source: Some(FunctionInfo {
+                trigger: None,
+                dependency_objects: Vec::new(),
+                incoming_dependencies: Vec::new(),
+                paired_object_present: None,
                 schema: None,
                 status: None,
                 dependencies: Vec::new(),
