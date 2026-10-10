@@ -1126,7 +1126,7 @@ async function handleSelectObject(reviewObject: SchemaDiffObject) {
 
   if (obj.objectKind !== "function") return;
 
-  const preferredKind: ObjectSourceKind = obj.routineType === "PACKAGE BODY" ? "PACKAGE_BODY" : (obj.routineType ?? "FUNCTION");
+  const preferredKind: ObjectSourceKind = obj.routineType === "PACKAGE BODY" ? "PACKAGE_BODY" : obj.routineType === "TYPE BODY" ? "TYPE_BODY" : (obj.routineType ?? "FUNCTION");
 
   async function fetchRoutineDdl(connectionId: string, database: string, schema: string, name: string, tableName?: string): Promise<string | undefined> {
     try {
@@ -1736,8 +1736,8 @@ const targetConnectionInfo = computed(() => {
             <div v-if="deployResult?.routineValidations?.length" class="mt-3 space-y-2 text-xs">
               <p class="font-medium">{{ t("diff.routineValidationTitle") }}</p>
               <ul class="max-h-48 space-y-2 overflow-auto">
-                <li v-for="item in deployResult.routineValidations" :key="JSON.stringify([item.routineType, item.name, item.trigger?.tableOwner, item.trigger?.tableName])" :class="item.success ? 'text-green-600 dark:text-green-400' : 'text-destructive'">
-                  <span class="font-mono">{{ item.routineType }} {{ item.name }}</span>
+                <li v-for="item in deployResult.routineValidations" :key="JSON.stringify([item.schema, item.routineType, item.name, item.trigger?.tableOwner, item.trigger?.tableName])" :class="item.success ? 'text-green-600 dark:text-green-400' : 'text-destructive'">
+                  <span class="font-mono">{{ item.routineType }} {{ item.schema ? `${item.schema}.` : "" }}{{ item.name }}</span>
                   <span v-if="item.trigger" class="font-mono"> · {{ item.trigger.tableOwner }}.{{ item.trigger.tableName }} · {{ item.trigger.status }}</span>
                   <pre class="whitespace-pre-wrap">{{ item.message }}</pre>
                 </li>

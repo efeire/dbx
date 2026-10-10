@@ -332,6 +332,7 @@ mod tests {
         let opts = SchemaDiffPreparationOptions {
             source_functions: vec![
                 FunctionInfo {
+                    type_info: None,
                     trigger: None,
                     dependency_objects: Vec::new(),
                     incoming_dependencies: Vec::new(),
@@ -346,6 +347,7 @@ mod tests {
                     arguments: "".into(),
                 },
                 FunctionInfo {
+                    type_info: None,
                     trigger: None,
                     dependency_objects: Vec::new(),
                     incoming_dependencies: Vec::new(),

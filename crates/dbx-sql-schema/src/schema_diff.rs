@@ -8273,6 +8273,7 @@ mod tests {
             diff_type: "modified".into(),
             name: "next_value".into(),
             source: Some(FunctionInfo {
+                type_info: None,
                 trigger: None,
                 dependency_objects: Vec::new(),
                 incoming_dependencies: Vec::new(),
@@ -8616,6 +8617,7 @@ mod tests {
             diff_type: "modified".into(),
             name: "next_value".into(),
             source: Some(FunctionInfo {
+                type_info: None,
                 trigger: None,
                 dependency_objects: Vec::new(),
                 incoming_dependencies: Vec::new(),
@@ -8670,6 +8672,7 @@ mod tests {
             diff_type: "added".into(),
             name: "pg_only".into(),
             source: Some(FunctionInfo {
+                type_info: None,
                 trigger: None,
                 dependency_objects: Vec::new(),
                 incoming_dependencies: Vec::new(),
@@ -14978,6 +14981,7 @@ mod tests {
             diff_type: "added".into(),
             name: "f1".into(),
             source: Some(FunctionInfo {
+                type_info: None,
                 trigger: None,
                 dependency_objects: Vec::new(),
                 incoming_dependencies: Vec::new(),
@@ -15055,6 +15059,7 @@ mod tests {
             diff_type: "added".into(),
             name: "armor".into(),
             source: Some(FunctionInfo {
+                type_info: None,
                 trigger: None,
                 dependency_objects: Vec::new(),
                 incoming_dependencies: Vec::new(),
@@ -15107,6 +15112,7 @@ mod tests {
             diff_type: "added".into(),
             name: "f1".into(),
             source: Some(FunctionInfo {
+                type_info: None,
                 trigger: None,
                 dependency_objects: Vec::new(),
                 incoming_dependencies: Vec::new(),

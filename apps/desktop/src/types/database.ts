@@ -1277,6 +1277,14 @@ export interface SchemaDiffTriggerInfo {
   baseObjectType: string;
 }
 
+export interface SchemaDiffTypeInfo {
+  pairingState: import("@/types/oracleTypes").OracleMetadataReadState;
+  dependencyState: import("@/types/oracleTypes").OracleMetadataReadState;
+  incomingState: import("@/types/oracleTypes").OracleMetadataReadState;
+  referencedColumns: { owner: string; tableName: string; columnName: string }[];
+  metadataMessage?: string;
+}
+
 export interface FunctionInfo {
   name: string;
   function_type: string;
@@ -1290,6 +1298,7 @@ export interface FunctionInfo {
   dependencyObjects?: SchemaDiffDependencyObject[];
   incomingDependencies?: SchemaDiffDependencyObject[];
   pairedObjectPresent?: boolean;
+  typeInfo?: SchemaDiffTypeInfo;
 }
 
 export interface SequenceInfo {

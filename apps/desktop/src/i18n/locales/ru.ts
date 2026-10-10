@@ -8108,6 +8108,16 @@ export default withEnglishFallback({
     routinePlanBlocked: "Развертывание заблокировано: {reason}",
     routineDependencies: "Зависимости: {dependencies}",
     routineValidationTitle: "Компиляция и повторное чтение исходного кода",
+    typeReferencedColumns: "Столбцы, ссылающиеся на тип: {columns}",
+    typeMetadataState: "Связь: {pairing}; исходящие зависимости: {outgoing}; входящие: {incoming}",
+    typeReadState: {
+      available: "Доступно",
+      empty: "Нет видимых записей",
+      unknown: "Неизвестно",
+      unsupported: "Не поддерживается",
+      denied: "Нет доступа",
+      error: "Ошибка чтения",
+    },
     routineValidationFailed: "DDL выполнен, но проверка компиляции или исходного кода завершилась ошибкой либо не завершена. Примененные изменения не были отменены.",
     progress: {
       loadingObjects: "Чтение объектов исходной и целевой баз данных...",

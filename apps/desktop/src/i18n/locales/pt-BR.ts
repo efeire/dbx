@@ -6867,6 +6867,16 @@ export default withEnglishFallback({
     routinePlanBlocked: "Implantação bloqueada: {reason}",
     routineDependencies: "Dependências: {dependencies}",
     routineValidationTitle: "Compilação e releitura do código-fonte",
+    typeReferencedColumns: "Colunas que referenciam o tipo: {columns}",
+    typeMetadataState: "Associação: {pairing}; dependências de saída: {outgoing}; de entrada: {incoming}",
+    typeReadState: {
+      available: "Disponível",
+      empty: "Nenhum registro visível",
+      unknown: "Desconhecido",
+      unsupported: "Não suportado",
+      denied: "Permissão negada",
+      error: "Falha na leitura",
+    },
     routineValidationFailed: "O DDL foi executado, mas a verificação de compilação ou do código-fonte falhou ou ficou incompleta. As alterações aplicadas não foram revertidas.",
     progress: {
       loadingObjects: "Lendo os objetos dos bancos de dados de origem e destino...",

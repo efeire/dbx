@@ -6212,6 +6212,16 @@ export default withEnglishFallback({
     routinePlanBlocked: "無法部署：{reason}",
     routineDependencies: "相依物件：{dependencies}",
     routineValidationTitle: "編譯狀態與原始碼讀回",
+    typeReferencedColumns: "參照此型別的資料表欄位：{columns}",
+    typeMetadataState: "配對：{pairing}；向外相依：{outgoing}；向內相依：{incoming}",
+    typeReadState: {
+      available: "可讀取",
+      empty: "無可見記錄",
+      unknown: "未知",
+      unsupported: "不支援",
+      denied: "無權限",
+      error: "讀取失敗",
+    },
     routineValidationFailed: "DDL 已執行，但編譯狀態或原始碼讀回驗證失敗或不完整。已套用的變更未回復。",
     progress: {
       loadingObjects: "正在讀取來源與目標資料庫物件……",

@@ -29,6 +29,7 @@ pub struct RoutineStep {
     pub incoming_dependencies: Vec<crate::types::RoutineDependency>,
     pub post_sql: Vec<String>,
     pub trigger: Option<crate::types::RoutineTriggerInfo>,
+    pub type_info: Option<crate::types::RoutineTypeInfo>,
     pub source_schema: Option<String>,
     pub target_schema: Option<String>,
 }
@@ -40,7 +41,7 @@ pub fn is_oracle_routine_database(database: DatabaseType) -> bool {
 fn header(definition: &str) -> Option<(String, usize)> {
     let identifier = r#"(?:"(?:[^"]|"")*"|[A-Za-z][A-Za-z0-9_$#]*)"#;
     let pattern = format!(
-        r"(?is)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(PACKAGE\s+BODY|PACKAGE|TRIGGER|PROCEDURE|FUNCTION)\s+{identifier}(?:\s*\.\s*{identifier})?"
+        r"(?is)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(PACKAGE\s+BODY|TYPE\s+BODY|PACKAGE|TYPE|TRIGGER|PROCEDURE|FUNCTION)\s+{identifier}(?:\s*\.\s*{identifier})?"
     );
     let captures = Regex::new(&pattern).ok()?.captures(definition)?;
     Some((captures[1].split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_uppercase(), captures.get(0)?.end()))
@@ -212,10 +213,36 @@ fn typed_dependencies(diff: &FunctionDiff, target: &str) -> Vec<(String, String,
             (mapped.owner, mapped.name, mapped.object_type)
         })
         .collect();
-    if info.function_type == "PACKAGE BODY" {
-        dependencies.push((target.to_string(), info.name.clone(), "PACKAGE".into()));
+    if matches!(info.function_type.as_str(), "PACKAGE BODY" | "TYPE BODY") {
+        dependencies.push((target.to_string(), info.name.clone(), info.function_type.trim_end_matches(" BODY").into()));
     }
     dependencies
+}
+
+fn complete_type_metadata(info: &crate::types::FunctionInfo) -> Result<(), String> {
+    use dbx_types::oracle_types::OracleMetadataReadState;
+    let metadata = info.type_info.as_ref().ok_or("Complete type metadata is required")?;
+    if [&metadata.pairing_state, &metadata.dependency_state, &metadata.incoming_state]
+        .iter()
+        .any(|state| !matches!(state, OracleMetadataReadState::Available | OracleMetadataReadState::Empty))
+    {
+        return Err(metadata
+            .metadata_message
+            .clone()
+            .unwrap_or_else(|| "Type pair or dependency metadata is unknown, unavailable or unsupported".into()));
+    }
+    if info.paired_object_present.is_none() {
+        return Err("Type pair presence is unknown".into());
+    }
+    Ok(())
+}
+
+fn type_has_table_references(info: &crate::types::FunctionInfo) -> bool {
+    info.type_info.as_ref().is_some_and(|metadata| !metadata.referenced_columns.is_empty())
+        || info
+            .incoming_dependencies
+            .iter()
+            .any(|dependency| matches!(dependency.object_type.as_str(), "TABLE" | "MATERIALIZED VIEW"))
 }
 
 pub fn oracle_routine_steps(
@@ -243,7 +270,7 @@ pub fn oracle_routine_steps_with_context(
         let kind = info.map(|info| info.function_type.to_ascii_uppercase()).unwrap_or_default();
         let result = (|| {
             let schema = target_schema.filter(|schema| !schema.is_empty()).ok_or("An explicit target schema is required")?;
-            if !matches!(kind.as_str(), "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE BODY" | "TRIGGER") { return Err("This routine type is not supported".to_string()); }
+            if !matches!(kind.as_str(), "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE BODY" | "TRIGGER" | "TYPE" | "TYPE BODY") { return Err("This routine type is not supported".to_string()); }
             let info = info.ok_or("The complete routine source is missing")?;
             if info.name != diff.name { return Err("Routine identity does not match its metadata".into()); }
             let source = source.ok_or("The source database type must be explicit")?;
@@ -252,18 +279,36 @@ pub fn oracle_routine_steps_with_context(
             if source != target && diff.diff_type != "removed" {
                 let context = context.ok_or("Live source/target version and edition metadata are required for cross-engine comparison")?;
                 definition = compatibility::conversion_source(&definition, &kind, &info.name, source, target, context)?;
-                if !portable_cross_engine_body(&definition) {
+                if matches!(kind.as_str(), "TYPE" | "TYPE BODY") {
+                    compatibility::compatible_type_source(&definition, &kind, &info.dependency_objects)?;
+                } else if !portable_cross_engine_body(&definition) {
                     return Err("This program definition is outside the confirmed cross-engine subset; target-specific verification is required".into());
+                }
+            }
+            if matches!(kind.as_str(), "TYPE" | "TYPE BODY") {
+                if kind == "TYPE BODY" {
+                    if let Some((_, reason)) = context.and_then(|context| context.blocked_bodies.iter().find(|(name, _)| name == &info.name)) { return Err(reason.clone()); }
+                }
+                if kind == "TYPE" {
+                    if let Some((_, reason)) = context.and_then(|context| context.blocked_types.iter().find(|(name, _)| name == &info.name)) { return Err(reason.clone()); }
+                }
+                complete_type_metadata(info)?;
+                if let Some(target) = &diff.target { complete_type_metadata(target)?; }
+                if kind == "TYPE" && context.is_none() && diff.target.as_ref().is_some_and(type_has_table_references) {
+                    return Err("The target type is referenced by stored table data; replacement or deletion requires a separate data-preserving migration".into());
+                }
+                if kind == "TYPE" && context.is_none() && diff.diff_type == "modified" && diff.target.as_ref().is_some_and(|target| target.incoming_dependencies.iter().any(|dependency| dependency.object_type == "TYPE")) {
+                    return Err("Dependent target types require a coordinated type evolution plan before replacement".into());
                 }
             }
             if diffs.iter().any(|other| other.name == diff.name && other.diff_type != diff.diff_type && other.source.as_ref().or(other.target.as_ref()).is_some_and(|candidate| candidate.function_type == kind) && matches!(other.diff_type.as_str(), "added" | "removed") && matches!(diff.diff_type.as_str(), "added" | "removed")) { return Err("Conflicting routine identities share a target name; review the trigger table mapping".into()); }
             if diff.diff_type == "removed" {
                 if info.schema.as_deref() != Some(schema) { return Err("Removed routine owner does not match the selected target schema".into()); }
-                if matches!(kind.as_str(), "PACKAGE" | "PACKAGE BODY") {
-                    let paired = if kind == "PACKAGE" { "PACKAGE BODY" } else { "PACKAGE" };
+                if matches!(kind.as_str(), "PACKAGE" | "PACKAGE BODY" | "TYPE" | "TYPE BODY") {
+                    let paired = match kind.as_str() { "PACKAGE" => "PACKAGE BODY", "PACKAGE BODY" => "PACKAGE", "TYPE" => "TYPE BODY", _ => "TYPE" };
                     match info.paired_object_present {
-                        None => return Err("Package pair presence is unknown; deletion is blocked".into()),
-                        Some(true) if !diffs.iter().any(|other| other.diff_type == "removed" && other.name == diff.name && other.target.as_ref().is_some_and(|other| other.function_type == paired && other.schema == info.schema)) => return Err("Package specification and body must be selected together for deletion".into()),
+                        None => return Err("Specification/body pair presence is unknown; deletion is blocked".into()),
+                        Some(true) if !diffs.iter().any(|other| other.diff_type == "removed" && other.name == diff.name && other.target.as_ref().is_some_and(|other| other.function_type == paired && other.schema == info.schema)) => return Err("Specification and body must be selected together for deletion".into()),
                         _ => {}
                     }
                 }
@@ -271,6 +316,17 @@ pub fn oracle_routine_steps_with_context(
                 return Ok(format!("DROP {kind} {}.{};", quote(schema), quote(&diff.name)));
             }
             if !matches!(diff.diff_type.as_str(), "added" | "modified") { return Err("Unknown routine operation".into()); }
+            if matches!(kind.as_str(), "TYPE" | "TYPE BODY") {
+                for dependency in info.dependency_objects.iter().filter(|dependency| dependency.object_type == "TYPE") {
+                    let mapped = mapped_dependency(dependency, info.schema.as_deref(), schema);
+                    let selected = diffs.iter().any(|other| other.diff_type != "removed" && other.source.as_ref().is_some_and(|candidate| candidate.schema == info.schema && candidate.name == dependency.name && candidate.function_type == "TYPE" && dependency.owner == info.schema.clone().unwrap_or_default()));
+                    let existing = diff.target.as_ref().is_some_and(|target| target.status.as_deref() == Some("VALID") && target.dependency_objects.contains(&mapped));
+                    let confirmed = context.is_some_and(|context| context.target_dependencies.contains(&(mapped.owner.clone(), mapped.name.clone(), mapped.object_type.clone())));
+                    if !selected && !existing && !confirmed {
+                        return Err(format!("Target type dependency {}.{} is not confirmed; include its definition or verify the existing target dependency", mapped.owner, mapped.name));
+                    }
+                }
+            }
             if info.status.as_deref() != Some("VALID") { return Err("The source routine is not confirmed VALID".into()); }
             let mut program = if kind == "TRIGGER" { trigger_program_source(&definition, &info.name, info.schema.as_deref())? } else { definition };
             if matches!(kind.as_str(), "PACKAGE BODY" | "TYPE BODY") && info.paired_object_present != Some(true) { return Err("A complete specification is required before its body".into()); }
@@ -288,6 +344,17 @@ pub fn oracle_routine_steps_with_context(
                 if kind == "TRIGGER" && source != target {
                     let trigger = info.trigger.as_ref().ok_or("Complete trigger metadata is required")?;
                     if trigger.table_owner == owner { program = compatibility::map_reference(&program, owner, &trigger.table_name, schema)?; }
+                }
+                if matches!(kind.as_str(), "TYPE" | "TYPE BODY") {
+                    for dependency in &info.dependency_objects {
+                        let mapped = mapped_dependency(dependency, info.schema.as_deref(), schema);
+                        let confirmed = context.is_some_and(|context| context.target_dependencies.contains(&(mapped.owner.clone(), mapped.name.clone(), mapped.object_type.clone())));
+                        let existing = diff.target.as_ref().is_some_and(|target| target.status.as_deref() == Some("VALID") && target.dependency_objects.contains(&mapped));
+                        if dependency.owner == owner && (confirmed || existing || diffs.iter().any(|other| other.diff_type != "removed" && other.source.as_ref().is_some_and(|candidate| candidate.schema == info.schema && candidate.name == dependency.name && candidate.function_type == dependency.object_type))) {
+                            program = compatibility::map_reference(&program, owner, &dependency.name, schema)?;
+                        }
+                    }
+                    if kind == "TYPE BODY" { program = compatibility::map_reference(&program, owner, &info.name, schema)?; }
                 }
                 let (_, header_end) = header(&program).ok_or("The routine declaration is incomplete")?;
                 if compatibility::source_tokens(&program[header_end..]).windows(2).any(|pair| compatibility::identifier_word(&pair[0].2) == owner && pair[1].2 == ".") { return Err("The body contains an explicit source-schema reference; review its target mapping before applying".into()); }
@@ -309,10 +376,15 @@ pub fn oracle_routine_steps_with_context(
         // Target callers matter on replacement, even if no source caller references the new object.
         let mut incoming_dependencies = info.map(|info| info.incoming_dependencies.iter().map(|dependency| mapped_dependency(dependency, info.schema.as_deref(), target_owner)).collect::<Vec<_>>()).unwrap_or_default();
         if let Some(target_info) = &diff.target { for dependency in &target_info.incoming_dependencies { if !incoming_dependencies.contains(dependency) { incoming_dependencies.push(dependency.clone()); } } }
+        let type_info = info.and_then(|info| info.type_info.clone().map(|mut metadata| {
+            for column in &mut metadata.referenced_columns { if Some(column.owner.as_str()) == info.schema.as_deref() { column.owner = target_owner.to_string(); } }
+            if let Some(target) = diff.target.as_ref().and_then(|target| target.type_info.as_ref()) { for column in &target.referenced_columns { if !metadata.referenced_columns.contains(column) { metadata.referenced_columns.push(column.clone()); } } }
+            metadata
+        }));
         let compatibility_warnings = if sql.is_some() && source != Some(target) && info.is_some_and(|info| !edition_clause(&info.definition).is_empty()) {
             vec!["The verified non-editioned definition is converted without its edition clause; future edition capability is not preserved".into()]
         } else { Vec::new() };
-        RoutineStep { name: diff.name.clone(), routine_type: kind, operation: diff.diff_type.clone(), sql, blocked_reason, compatibility_warnings, dependencies, incoming_dependencies, post_sql, trigger, source_schema: info.and_then(|info| info.schema.clone()), target_schema: target_schema.map(str::to_string) }
+        RoutineStep { name: diff.name.clone(), routine_type: kind, operation: diff.diff_type.clone(), sql, blocked_reason, compatibility_warnings, dependencies, incoming_dependencies, post_sql, trigger, type_info, source_schema: info.and_then(|info| info.schema.clone()), target_schema: target_schema.map(str::to_string) }
     }).collect();
     let dependencies: Vec<_> = diffs.iter().map(|diff| typed_dependencies(diff, target_owner)).collect();
     // Keep dependency identities typed: a package body may depend on its same-name spec without a self cycle.
@@ -445,7 +517,9 @@ pub fn add_oracle_routines_to_plan_with_context(
                             .iter()
                             .map(|dependency| mapped_dependency(dependency, info.schema.as_deref(), schema))
                             .collect();
-                        // Incoming references belong to the physical target database.
+                        // Incoming references describe physical objects in their own database.
+                        // Preserve target risks and derive only callers actually selected here;
+                        // execution recovery refreshes these from the live target dictionary.
                         info.incoming_dependencies =
                             diff.target.as_ref().map(|target| target.incoming_dependencies.clone()).unwrap_or_default();
                         for caller in diffs
@@ -472,6 +546,17 @@ pub fn add_oracle_routines_to_plan_with_context(
                         if let Some(trigger) = &mut info.trigger {
                             if Some(trigger.table_owner.as_str()) == info.schema.as_deref() {
                                 trigger.table_owner = schema.to_string();
+                            }
+                        }
+                        if let Some(metadata) = &mut info.type_info {
+                            metadata.referenced_columns = diff
+                                .target
+                                .as_ref()
+                                .and_then(|target| target.type_info.as_ref())
+                                .map(|target| target.referenced_columns.clone())
+                                .unwrap_or_default();
+                            if let Some(target) = diff.target.as_ref().and_then(|target| target.type_info.as_ref()) {
+                                metadata.incoming_state = target.incoming_state.clone();
                             }
                         }
                         info.schema = Some(schema.to_string());
@@ -539,6 +624,7 @@ mod tests {
 
     fn routine(name: &str, definition: &str) -> crate::types::FunctionInfo {
         crate::types::FunctionInfo {
+            type_info: None,
             trigger: None,
             dependency_objects: Vec::new(),
             incoming_dependencies: Vec::new(),
@@ -743,21 +829,176 @@ mod tests {
         }
     }
 
-    #[test]
-    fn package_recovery_uses_target_callers_and_selected_source_callers_only() {
-        let mut spec = package("P", false);
-        spec.incoming_dependencies.push(crate::types::RoutineDependency {
-            owner: "SOURCE".into(),
-            name: "UNSELECTED_SOURCE_CALLER".into(),
-            object_type: "PROCEDURE".into(),
+    fn user_type(name: &str, body: bool) -> crate::types::FunctionInfo {
+        use dbx_types::oracle_types::OracleMetadataReadState;
+        let mut info = routine(
+            name,
+            &format!(
+                "CREATE TYPE{} {name} {}",
+                if body { " BODY" } else { "" },
+                if body {
+                    "AS MEMBER FUNCTION value RETURN NUMBER IS BEGIN RETURN 1; END; END;"
+                } else {
+                    "AS OBJECT (\"First\" NUMBER, \"Second\" VARCHAR2(20)) NOT FINAL;"
+                }
+            ),
+        );
+        info.function_type = if body { "TYPE BODY" } else { "TYPE" }.into();
+        info.paired_object_present = Some(body);
+        info.type_info = Some(crate::types::RoutineTypeInfo {
+            pairing_state: if body { OracleMetadataReadState::Available } else { OracleMetadataReadState::Empty },
+            dependency_state: OracleMetadataReadState::Empty,
+            incoming_state: OracleMetadataReadState::Empty,
+            referenced_columns: Vec::new(),
+            metadata_message: None,
         });
-        let mut body = package("P", true);
-        body.dependency_objects.push(crate::types::RoutineDependency {
+        info
+    }
+
+    #[test]
+    fn type_identity_and_comparison_preserve_attribute_order_inheritance_and_quotes() {
+        let original = user_type("T", false);
+        let mut target = original.clone();
+        target.schema = Some("TARGET".into());
+        target.definition = target.definition.replace("TYPE T", "TYPE \"TARGET\".\"T\"");
+        assert!(super::super::diff_functions(std::slice::from_ref(&original), &[target.clone()]).is_empty());
+        for definition in [
+            original
+                .definition
+                .replace("\"First\" NUMBER, \"Second\" VARCHAR2(20)", "\"Second\" VARCHAR2(20), \"First\" NUMBER"),
+            original.definition.replace("NOT FINAL", "FINAL"),
+            original.definition.replace("\"First\"", "\"first\""),
+        ] {
+            let mut changed = original.clone();
+            changed.definition = definition;
+            assert_eq!(super::super::diff_functions(&[changed], &[target.clone()])[0].diff_type, "modified");
+        }
+        let diffs = super::super::diff_functions(&[original, user_type("T", true)], &[]);
+        assert_eq!(diffs.len(), 2);
+        assert_ne!(diffs[0].source.as_ref().unwrap().function_type, diffs[1].source.as_ref().unwrap().function_type);
+    }
+
+    #[test]
+    fn type_dependencies_and_body_are_ordered_and_missing_target_types_are_blocked() {
+        let mut child = user_type("C", false);
+        child.definition = "CREATE TYPE C AS TABLE OF P;".into();
+        child.dependency_objects.push(crate::types::RoutineDependency {
             owner: "SOURCE".into(),
             name: "P".into(),
-            object_type: "PACKAGE".into(),
+            object_type: "TYPE".into(),
         });
-        let diffs = super::super::diff_functions(&[spec, body], &[]);
+        let mut parent = user_type("P", false);
+        parent.paired_object_present = Some(true);
+        let steps = oracle_routine_steps(
+            &super::super::diff_functions(&[child.clone(), user_type("P", true), parent.clone()], &[]),
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
+        assert!(steps.iter().all(|step| step.sql.is_some()));
+        let spec = steps.iter().position(|step| step.name == "P" && step.routine_type == "TYPE").unwrap();
+        assert!(spec < steps.iter().position(|step| step.name == "C").unwrap());
+        assert!(spec < steps.iter().position(|step| step.routine_type == "TYPE BODY").unwrap());
+        let steps = oracle_routine_steps(
+            &super::super::diff_functions(&[child], &[]),
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
+        assert!(steps[0].blocked_reason.as_ref().unwrap().contains("dependency"));
+        parent.schema = Some("TARGET".into());
+        let mut body = user_type("P", true);
+        body.schema = Some("TARGET".into());
+        let steps = oracle_routine_steps(
+            &super::super::diff_functions(&[], &[parent, body]),
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
+        assert_eq!(steps[0].routine_type, "TYPE BODY");
+        assert!(steps
+            .iter()
+            .all(|step| step.sql.as_ref().is_some_and(|sql| !sql.contains("FORCE") && !sql.contains("CASCADE"))));
+    }
+
+    #[test]
+    fn unavailable_type_metadata_table_data_and_cross_engine_types_are_blocked() {
+        use dbx_types::oracle_types::OracleMetadataReadState;
+        let source = user_type("T", false);
+        for state in [
+            OracleMetadataReadState::Unknown,
+            OracleMetadataReadState::Denied,
+            OracleMetadataReadState::Unsupported,
+            OracleMetadataReadState::Error,
+        ] {
+            let mut unavailable = source.clone();
+            unavailable.type_info.as_mut().unwrap().dependency_state = state;
+            let steps = oracle_routine_steps(
+                &super::super::diff_functions(&[unavailable], &[]),
+                DatabaseType::Oracle,
+                Some("TARGET"),
+                Some(DatabaseType::Oracle),
+            );
+            assert!(steps[0].sql.is_none());
+        }
+        let mut target = source.clone();
+        target.schema = Some("TARGET".into());
+        target.type_info.as_mut().unwrap().referenced_columns.push(crate::types::RoutineColumnDependency {
+            owner: "OTHER".into(),
+            table_name: "Data Table".into(),
+            column_name: "Value".into(),
+        });
+        let mut changed = source.clone();
+        changed.definition = changed.definition.replace("NOT FINAL", "FINAL");
+        for diffs in
+            [super::super::diff_functions(&[changed], &[target.clone()]), super::super::diff_functions(&[], &[target])]
+        {
+            let steps = oracle_routine_steps(&diffs, DatabaseType::Oracle, Some("TARGET"), Some(DatabaseType::Oracle));
+            assert!(steps[0].sql.is_none());
+            assert_eq!(steps[0].type_info.as_ref().unwrap().referenced_columns[0].owner, "OTHER");
+        }
+        let steps = oracle_routine_steps(
+            &super::super::diff_functions(&[source], &[]),
+            DatabaseType::OceanbaseOracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+        );
+        assert!(steps[0].sql.is_none());
+    }
+
+    #[test]
+    fn type_recovery_uses_target_risks_instead_of_source_table_references() {
+        let source = user_type("T", false);
+        let diffs = super::super::diff_functions(std::slice::from_ref(&source), &[]);
+        let mut plan = SchemaSyncSqlPlan {
+            routine_steps: Vec::new(),
+            sync_sql: String::new(),
+            rollback_sync_sql: Some(String::new()),
+            rollback_completeness: super::super::RollbackCompleteness::Complete,
+            missing_rollback_objects: Vec::new(),
+        };
+        add_oracle_routines_to_plan(
+            &mut plan,
+            &diffs,
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some("SOURCE"),
+        );
+        assert!(plan.rollback_sync_sql.as_ref().unwrap().contains("DROP TYPE \"TARGET\".\"T\";"));
+        assert_eq!(plan.rollback_completeness, super::super::RollbackCompleteness::Complete);
+        let mut referenced = source;
+        referenced.type_info.as_mut().unwrap().referenced_columns.push(crate::types::RoutineColumnDependency {
+            owner: "SOURCE".into(),
+            table_name: "Data".into(),
+            column_name: "Value".into(),
+        });
+        referenced.incoming_dependencies.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "Data".into(),
+            object_type: "TABLE".into(),
+        });
+        let diffs = super::super::diff_functions(&[referenced], &[]);
         let mut plan = SchemaSyncSqlPlan {
             routine_steps: Vec::new(),
             sync_sql: String::new(),
@@ -774,9 +1015,136 @@ mod tests {
             Some("SOURCE"),
         );
         assert_eq!(plan.rollback_completeness, super::super::RollbackCompleteness::Complete);
-        let rollback = plan.rollback_sync_sql.unwrap();
-        assert!(rollback.find("DROP PACKAGE BODY").unwrap() < rollback.find("DROP PACKAGE \"TARGET\"").unwrap());
-        assert!(!rollback.contains("UNSELECTED_SOURCE_CALLER"));
+        assert!(plan.missing_rollback_objects.is_empty());
+        assert!(plan.rollback_sync_sql.as_ref().unwrap().contains("DROP TYPE \"TARGET\".\"T\";"));
+        assert!(!plan.rollback_sync_sql.as_ref().unwrap().contains("FORCE"));
+        let mut target = user_type("T", false);
+        target.schema = Some("TARGET".into());
+        let mut referenced = diffs[0].source.clone().unwrap();
+        referenced.definition = "CREATE TYPE T AS OBJECT (n NUMBER);".into();
+        let diffs = super::super::diff_functions(&[referenced], &[target]);
+        let mut plan = SchemaSyncSqlPlan {
+            routine_steps: Vec::new(),
+            sync_sql: String::new(),
+            rollback_sync_sql: Some(String::new()),
+            rollback_completeness: super::super::RollbackCompleteness::Complete,
+            missing_rollback_objects: Vec::new(),
+        };
+        add_oracle_routines_to_plan(
+            &mut plan,
+            &diffs,
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some("SOURCE"),
+        );
+        assert_eq!(plan.rollback_completeness, super::super::RollbackCompleteness::Complete);
+        assert!(plan.rollback_sync_sql.as_ref().unwrap().contains("CREATE OR REPLACE TYPE \"TARGET\".\"T\""));
+        assert!(plan.rollback_sync_sql.as_ref().unwrap().contains("\"First\" NUMBER"));
+    }
+
+    #[test]
+    fn type_recovery_preserves_real_target_data_callers_and_unknown_metadata() {
+        use dbx_types::oracle_types::OracleMetadataReadState;
+        let mut source = user_type("T", false);
+        source.definition = "CREATE TYPE T AS OBJECT (n NUMBER, m NUMBER);".into();
+        for risk in ["column", "table", "caller", "denied", "unknown"] {
+            let mut target = user_type("T", false);
+            target.schema = Some("TARGET".into());
+            match risk {
+                "column" => {
+                    target.type_info.as_mut().unwrap().referenced_columns.push(crate::types::RoutineColumnDependency {
+                        owner: "OTHER".into(),
+                        table_name: "Data".into(),
+                        column_name: "Value".into(),
+                    })
+                }
+                "table" => target.incoming_dependencies.push(crate::types::RoutineDependency {
+                    owner: "OTHER".into(),
+                    name: "Data".into(),
+                    object_type: "TABLE".into(),
+                }),
+                "caller" => target.incoming_dependencies.push(crate::types::RoutineDependency {
+                    owner: "OTHER".into(),
+                    name: "Child".into(),
+                    object_type: "TYPE".into(),
+                }),
+                "denied" => target.type_info.as_mut().unwrap().incoming_state = OracleMetadataReadState::Denied,
+                _ => target.type_info.as_mut().unwrap().incoming_state = OracleMetadataReadState::Unknown,
+            }
+            let diffs = super::super::diff_functions(&[source.clone()], &[target]);
+            let mut plan = SchemaSyncSqlPlan {
+                routine_steps: Vec::new(),
+                sync_sql: String::new(),
+                rollback_sync_sql: Some(String::new()),
+                rollback_completeness: super::super::RollbackCompleteness::Complete,
+                missing_rollback_objects: Vec::new(),
+            };
+            add_oracle_routines_to_plan(
+                &mut plan,
+                &diffs,
+                DatabaseType::Oracle,
+                Some("TARGET"),
+                Some(DatabaseType::Oracle),
+                Some("SOURCE"),
+            );
+            assert_eq!(plan.rollback_completeness, super::super::RollbackCompleteness::Incomplete, "{risk}");
+            assert_eq!(plan.missing_rollback_objects[0].kind, "TYPE");
+            assert!(plan.rollback_sync_sql.as_ref().unwrap().is_empty());
+        }
+        // An unread source snapshot is still unknown, even when the old target was absent.
+        source.type_info.as_mut().unwrap().incoming_state = OracleMetadataReadState::Denied;
+        let diffs = super::super::diff_functions(&[source], &[]);
+        let mut plan = SchemaSyncSqlPlan {
+            routine_steps: Vec::new(),
+            sync_sql: String::new(),
+            rollback_sync_sql: Some(String::new()),
+            rollback_completeness: super::super::RollbackCompleteness::Complete,
+            missing_rollback_objects: Vec::new(),
+        };
+        add_oracle_routines_to_plan(
+            &mut plan,
+            &diffs,
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some("SOURCE"),
+        );
+        assert_eq!(plan.rollback_completeness, super::super::RollbackCompleteness::Incomplete);
+    }
+
+    #[test]
+    fn type_recovery_orders_new_target_callers_before_reverse_deletion() {
+        let parent = user_type("P", false);
+        let mut child = user_type("C", false);
+        child.definition = "CREATE TYPE C AS TABLE OF SOURCE.P;".into();
+        child.dependency_objects.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "P".into(),
+            object_type: "TYPE".into(),
+        });
+        let diffs = super::super::diff_functions(&[parent, child], &[]);
+        let mut plan = SchemaSyncSqlPlan {
+            routine_steps: Vec::new(),
+            sync_sql: String::new(),
+            rollback_sync_sql: Some(String::new()),
+            rollback_completeness: super::super::RollbackCompleteness::Complete,
+            missing_rollback_objects: Vec::new(),
+        };
+        add_oracle_routines_to_plan(
+            &mut plan,
+            &diffs,
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some("SOURCE"),
+        );
+        assert_eq!(plan.rollback_completeness, super::super::RollbackCompleteness::Complete);
+        let rollback = plan.rollback_sync_sql.as_ref().unwrap();
+        assert!(
+            rollback.find("DROP TYPE \"TARGET\".\"C\";").unwrap()
+                < rollback.find("DROP TYPE \"TARGET\".\"P\";").unwrap()
+        );
     }
 
     fn conversion_context(
@@ -804,6 +1172,217 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn cross_engine_type_spec_body_and_collection_generate_mapped_ordered_plans_in_both_directions() {
+        let mut parent = user_type("P", false);
+        parent.definition = "CREATE TYPE P AS OBJECT (n NUMBER, MEMBER FUNCTION f RETURN NUMBER);".into();
+        parent.paired_object_present = Some(true);
+        let mut body = user_type("P", true);
+        body.definition = "CREATE TYPE BODY P AS MEMBER FUNCTION f RETURN NUMBER IS v SOURCE.P; msg VARCHAR2(80) := nq'{O'Reilly SOURCE.P}'; BEGIN -- SOURCE.P\nRETURN 1; END; END;".into();
+        body.dependency_objects.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "P".into(),
+            object_type: "TYPE".into(),
+        });
+        let mut child = user_type("C", false);
+        child.definition = "CREATE TYPE C AS TABLE OF SOURCE.P;".into();
+        child.dependency_objects = body.dependency_objects.clone();
+        let objects = vec![body, child, parent];
+        for (source, target) in [
+            (DatabaseType::Oracle, DatabaseType::OceanbaseOracle),
+            (DatabaseType::OceanbaseOracle, DatabaseType::Oracle),
+        ] {
+            let context = conversion_context(&objects, source, target);
+            let diffs = super::super::diff_functions(&objects, &[]);
+            let steps =
+                oracle_routine_steps_with_context(&diffs, target, Some("Mixed Target"), Some(source), Some(&context));
+            assert!(steps.iter().all(|step| step.blocked_reason.is_none()), "{steps:?}");
+            assert_eq!(steps[0].routine_type, "TYPE");
+            assert_eq!(steps[0].name, "P");
+            assert!(steps
+                .iter()
+                .find(|step| step.name == "C")
+                .unwrap()
+                .sql
+                .as_ref()
+                .unwrap()
+                .contains("OF \"Mixed Target\".P"));
+            let sql = steps.iter().find(|step| step.routine_type == "TYPE BODY").unwrap().sql.as_ref().unwrap();
+            assert!(sql.contains("v \"Mixed Target\".P;"));
+            assert!(sql.contains("nq'{O'Reilly SOURCE.P}'"));
+            assert!(sql.contains("-- SOURCE.P\n"));
+            let mut plan = SchemaSyncSqlPlan {
+                routine_steps: Vec::new(),
+                sync_sql: String::new(),
+                rollback_sync_sql: Some(String::new()),
+                rollback_completeness: super::super::RollbackCompleteness::Complete,
+                missing_rollback_objects: Vec::new(),
+            };
+            add_oracle_routines_to_plan_with_context(
+                &mut plan,
+                &diffs,
+                target,
+                Some("Mixed Target"),
+                Some(source),
+                Some("SOURCE"),
+                Some(&context),
+            );
+            let rollback = plan.rollback_sync_sql.unwrap();
+            assert!(
+                rollback.find("DROP TYPE BODY").unwrap() < rollback.find("DROP TYPE \"Mixed Target\".\"P\"").unwrap()
+            );
+            assert!(!rollback.contains("FORCE") && !rollback.contains("CASCADE"));
+        }
+    }
+
+    #[test]
+    fn cross_engine_quoted_type_and_verified_edition_conversion_keep_loss_visible() {
+        let mut info = user_type("Mixed.Type", false);
+        info.definition = "CREATE OR REPLACE EDITIONABLE TYPE \"Mixed.Type\" AS VARRAY(8) OF NUMBER;".into();
+        let objects = vec![info];
+        let mut context = conversion_context(&objects, DatabaseType::Oracle, DatabaseType::OceanbaseOracle);
+        let diffs = super::super::diff_functions(&objects, &[]);
+        let steps = oracle_routine_steps_with_context(
+            &diffs,
+            DatabaseType::OceanbaseOracle,
+            Some("Target.Owner"),
+            Some(DatabaseType::Oracle),
+            Some(&context),
+        );
+        assert!(steps[0].sql.as_ref().unwrap().starts_with("CREATE OR REPLACE TYPE \"Target.Owner\".\"Mixed.Type\""));
+        assert_eq!(steps[0].compatibility_warnings.len(), 1);
+        context.non_editioned_source_objects.clear();
+        let steps = oracle_routine_steps_with_context(
+            &diffs,
+            DatabaseType::OceanbaseOracle,
+            Some("Target.Owner"),
+            Some(DatabaseType::Oracle),
+            Some(&context),
+        );
+        assert!(steps[0].blocked_reason.as_ref().unwrap().contains("edition"));
+    }
+
+    #[test]
+    fn cross_engine_unknown_versions_semantics_permissions_and_global_data_references_stay_blocked() {
+        let mut info = user_type("T", false);
+        info.definition = "CREATE TYPE T AS OBJECT (n NUMBER);".into();
+        let diffs = super::super::diff_functions(&[info.clone()], &[]);
+        let valid = conversion_context(&[info.clone()], DatabaseType::Oracle, DatabaseType::OceanbaseOracle);
+        for banner in ["", "4.3.0", "5.7.25-OceanBase-v4.2.5.0"] {
+            let mut context = valid.clone();
+            context.target_version = banner.into();
+            let steps = oracle_routine_steps_with_context(
+                &diffs,
+                DatabaseType::OceanbaseOracle,
+                Some("TARGET"),
+                Some(DatabaseType::Oracle),
+                Some(&context),
+            );
+            assert!(steps[0].blocked_reason.as_ref().unwrap().contains("version"));
+        }
+        let mut context = valid.clone();
+        context.blocked_types.push(("T".into(), "OTHER.Data references target TYPE".into()));
+        assert!(oracle_routine_steps_with_context(
+            &diffs,
+            DatabaseType::OceanbaseOracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some(&context)
+        )[0]
+        .blocked_reason
+        .as_ref()
+        .unwrap()
+        .contains("OTHER.Data"));
+        let mut inherited = info.clone();
+        inherited.definition = "CREATE TYPE T UNDER Parent (n NUMBER);".into();
+        let steps = oracle_routine_steps_with_context(
+            &super::super::diff_functions(&[inherited], &[]),
+            DatabaseType::OceanbaseOracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some(&valid),
+        );
+        assert!(steps[0].blocked_reason.as_ref().unwrap().contains("UNDER"));
+        info.type_info.as_mut().unwrap().dependency_state = dbx_types::oracle_types::OracleMetadataReadState::Denied;
+        assert!(oracle_routine_steps_with_context(
+            &super::super::diff_functions(&[info], &[]),
+            DatabaseType::OceanbaseOracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some(&valid)
+        )[0]
+        .sql
+        .is_none());
+        let mut reverse = conversion_context(
+            &diffs.iter().filter_map(|diff| diff.source.clone()).collect::<Vec<_>>(),
+            DatabaseType::OceanbaseOracle,
+            DatabaseType::Oracle,
+        );
+        reverse.target_editions_disabled = false;
+        assert!(oracle_routine_steps_with_context(
+            &diffs,
+            DatabaseType::Oracle,
+            Some("TARGET"),
+            Some(DatabaseType::OceanbaseOracle),
+            Some(&reverse)
+        )[0]
+        .blocked_reason
+        .as_ref()
+        .unwrap()
+        .contains("edition"));
+    }
+
+    #[test]
+    fn cross_engine_type_dependency_cycles_and_blocked_specs_never_offer_a_body() {
+        let mut a = user_type("A", false);
+        a.definition = "CREATE TYPE A AS TABLE OF SOURCE.B;".into();
+        a.dependency_objects.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "B".into(),
+            object_type: "TYPE".into(),
+        });
+        let mut b = user_type("B", false);
+        b.definition = "CREATE TYPE B AS TABLE OF SOURCE.A;".into();
+        b.dependency_objects.push(crate::types::RoutineDependency {
+            owner: "SOURCE".into(),
+            name: "A".into(),
+            object_type: "TYPE".into(),
+        });
+        let objects = vec![a, b];
+        let context = conversion_context(&objects, DatabaseType::Oracle, DatabaseType::OceanbaseOracle);
+        let steps = oracle_routine_steps_with_context(
+            &super::super::diff_functions(&objects, &[]),
+            DatabaseType::OceanbaseOracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some(&context),
+        );
+        assert!(steps.iter().all(|step| step.blocked_reason.as_ref().unwrap().contains("cycle")));
+        let mut spec = user_type("T", false);
+        spec.definition = "CREATE TYPE T AS OBJECT(n NUMBER, MEMBER FUNCTION f RETURN NUMBER) NOT FINAL;".into();
+        spec.paired_object_present = Some(true);
+        let mut body = user_type("T", true);
+        body.definition = "CREATE TYPE BODY T AS MEMBER FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;".into();
+        let objects = vec![spec, body];
+        let context = conversion_context(&objects, DatabaseType::Oracle, DatabaseType::OceanbaseOracle);
+        let steps = oracle_routine_steps_with_context(
+            &super::super::diff_functions(&objects, &[]),
+            DatabaseType::OceanbaseOracle,
+            Some("TARGET"),
+            Some(DatabaseType::Oracle),
+            Some(&context),
+        );
+        assert!(steps.iter().all(|step| step.sql.is_none()));
+        assert!(steps
+            .iter()
+            .find(|step| step.routine_type == "TYPE BODY")
+            .unwrap()
+            .blocked_reason
+            .as_ref()
+            .unwrap()
+            .contains("dependency"));
     }
 
     #[test]

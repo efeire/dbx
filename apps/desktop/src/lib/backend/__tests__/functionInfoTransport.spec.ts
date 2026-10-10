@@ -38,4 +38,17 @@ describe("production FunctionInfo transport boundary", () => {
     const value = { dataType: "NUMBER", definition: "unrelated" };
     expect(functionInfoResponse("getObjectSource", value)).toBe(value);
   });
+  it("keeps same-name TYPE and TYPE BODY independently blocked and selectable", () => {
+    const result = functionInfoResponse("prepareSchemaDiff", {
+      diffs: [],
+      syncSql: "",
+      functionDiffs: ["TYPE", "TYPE BODY"].map((functionType) => ({ name: "Mixed.Type", type: "added", source: { ...wire, name: "Mixed.Type", functionType } })),
+      routineSteps: ["TYPE", "TYPE BODY"].map((routineType) => ({ name: "Mixed.Type", routineType, operation: "added", blockedReason: "Incomplete source", dependencies: [] })),
+    }) as SchemaDiffPreparation;
+    const objects = convertToSchemaDiffObjects(result.diffs, result.functionDiffs, [], [], [], undefined, result.routineSteps);
+    expect(objects.map((object) => object.routineType)).toEqual(["TYPE", "TYPE BODY"]);
+    expect(new Set(objects.map((object) => object.id)).size).toBe(2);
+    expect(objects.every((object) => object.blockedReason === "Incomplete source" && !object.selected)).toBe(true);
+    expect(selectSchemaDiffInput(result, objects).functionDiffs).toEqual([]);
+  });
 });

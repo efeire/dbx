@@ -6,6 +6,7 @@ pub mod table_structure_sql;
 pub use oracle_routines::{
     prepare_schema_diff_core, schema_diff_routine_context, validate_schema_diff_routines, RoutineValidation,
 };
+pub mod oracle_types;
 
 pub use dbx_drivers::metadata::sqlite_ddl;
 
@@ -9123,6 +9124,10 @@ fn schema_diff_routine_kind(object_type: &str) -> Option<(&'static str, db::Obje
         Some(("PACKAGE BODY", db::ObjectSourceKind::PackageBody))
     } else if object_type_upper == "TRIGGER" {
         Some(("TRIGGER", db::ObjectSourceKind::Trigger))
+    } else if object_type_upper == "TYPE" {
+        Some(("TYPE", db::ObjectSourceKind::Type))
+    } else if matches!(object_type_upper.as_str(), "TYPE BODY" | "TYPE_BODY") {
+        Some(("TYPE BODY", db::ObjectSourceKind::TypeBody))
     } else if object_type_upper.contains("PROC") {
         Some(("PROCEDURE", db::ObjectSourceKind::Procedure))
     } else if object_type_upper.contains("FUNC") {
@@ -9181,6 +9186,7 @@ async fn load_function_info_via_object(
     };
 
     Some(db::FunctionInfo {
+        type_info: None,
         trigger: None,
         dependency_objects: Vec::new(),
         incoming_dependencies: Vec::new(),

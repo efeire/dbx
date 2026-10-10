@@ -1,7 +1,12 @@
 use super::*;
 use crate::schema_diff::{comparable_oracle_routine, FunctionDiff};
 use sqlparser::dialect::OracleDialect;
+use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer};
+
+#[cfg(all(test, unix))]
+#[path = "oracle_routine_context_tests.rs"]
+mod context_tests;
 
 fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
@@ -38,10 +43,6 @@ async fn dictionary_query(
 fn cell(row: &[serde_json::Value], index: usize) -> String {
     row.get(index).and_then(serde_json::Value::as_str).unwrap_or_default().to_string()
 }
-
-#[cfg(all(test, unix))]
-#[path = "oracle_routine_context_tests.rs"]
-mod context_tests;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn schema_diff_routine_context(
@@ -129,9 +130,10 @@ pub async fn schema_diff_routine_context(
     if source_config.db_type == DatabaseType::Oracle {
         for info in source_objects {
             if info.schema.as_deref() != Some(source_schema) {
-                return Err("Routine source owner differs from comparison schema".into());
+                return Err("Type source owner differs from comparison schema".into());
             }
             let kinds = match info.function_type.as_str() {
+                "TYPE" | "TYPE BODY" => "'TYPE','TYPE BODY'".to_string(),
                 "PACKAGE" | "PACKAGE BODY" => "'PACKAGE','PACKAGE BODY'".to_string(),
                 kind => literal(kind),
             };
@@ -142,6 +144,64 @@ pub async fn schema_diff_routine_context(
                     if !context.non_editioned_source_objects.contains(&identity) {
                         context.non_editioned_source_objects.push(identity);
                     }
+                }
+            }
+        }
+    }
+    for info in source_objects
+        .iter()
+        .chain(removed_objects)
+        .filter(|info| matches!(info.function_type.as_str(), "TYPE" | "TYPE BODY"))
+    {
+        if matches!(info.function_type.as_str(), "TYPE" | "TYPE BODY") {
+            // ALL_* cannot prove absence of references from another schema.
+            let incoming = dictionary_query(state, &endpoints.target_connection_id, &endpoints.target_database, target_schema, &format!("SELECT OWNER, NAME, TYPE FROM DBA_DEPENDENCIES WHERE REFERENCED_OWNER={} AND REFERENCED_NAME={} AND REFERENCED_TYPE={}", literal(target_schema), literal(&info.name), literal(&info.function_type))).await?;
+            if info.function_type == "TYPE" {
+                let columns = dictionary_query(state, &endpoints.target_connection_id, &endpoints.target_database, target_schema, &format!("SELECT OWNER, TABLE_NAME, COLUMN_NAME FROM DBA_TAB_COLUMNS WHERE DATA_TYPE_OWNER={} AND DATA_TYPE={}", literal(target_schema), literal(&info.name))).await?;
+                let object_table = if target_type == DatabaseType::Oracle {
+                    !dictionary_query(state, &endpoints.target_connection_id, &endpoints.target_database, target_schema, &format!("SELECT OWNER, TABLE_NAME FROM DBA_OBJECT_TABLES WHERE TABLE_TYPE_OWNER={} AND TABLE_TYPE={}", literal(target_schema), literal(&info.name))).await?.rows.is_empty()
+                } else {
+                    false
+                };
+                if !columns.rows.is_empty()
+                    || object_table
+                    || incoming
+                        .rows
+                        .iter()
+                        .any(|row| matches!(cell(row, 2).as_str(), "TABLE" | "MATERIALIZED VIEW" | "TYPE"))
+                {
+                    context.blocked_types.push((info.name.clone(), "Target global type references include stored data or dependent types; a data-preserving evolution plan is required".into()));
+                }
+                let deleting =
+                    removed_objects.iter().any(|removed| removed.name == info.name && removed.function_type == "TYPE");
+                let replacing =
+                    target_objects.iter().any(|target| target.name == info.name && target.function_type == "TYPE");
+                if (deleting || replacing)
+                    && dependency_rows(&incoming.rows)?.iter().any(|dependency| {
+                        let selected = if deleting { removed_objects } else { source_objects };
+                        !selected.iter().any(|selected| {
+                            let owner = if deleting {
+                                selected.schema.as_deref()
+                            } else {
+                                selected
+                                    .schema
+                                    .as_deref()
+                                    .filter(|owner| *owner == source_schema)
+                                    .map(|_| target_schema)
+                            };
+                            owner == Some(dependency.owner.as_str())
+                                && selected.name == dependency.name
+                                && selected.function_type == dependency.object_type
+                        })
+                    })
+                {
+                    context.blocked_types.push((
+                        info.name.clone(),
+                        format!(
+                            "Unselected global dependent objects prevent target TYPE {}",
+                            if deleting { "deletion" } else { "replacement" }
+                        ),
+                    ));
                 }
             }
         }
@@ -211,6 +271,131 @@ pub async fn schema_diff_routine_context(
                 if !context.target_dependencies.contains(&identity) {
                     context.target_dependencies.push(identity);
                 }
+            }
+        }
+        if info.function_type == "TYPE BODY"
+            && !source_objects.iter().any(|spec| spec.function_type == "TYPE" && spec.name == info.name)
+        {
+            if status(
+                state,
+                &endpoints.target_connection_id,
+                &endpoints.target_database,
+                target_schema,
+                &info.name,
+                "TYPE",
+            )
+            .await?
+            .as_deref()
+                == Some("VALID")
+            {
+                let compatible = if endpoints.recovery {
+                    true
+                } else {
+                    let expected = source(
+                        state,
+                        &endpoints.source_connection_id,
+                        &endpoints.source_database,
+                        source_schema,
+                        &info.name,
+                        "TYPE",
+                    )
+                    .await?;
+                    let expected = if source_config.db_type != target_type {
+                        let details = oracle_types::get_oracle_type_details_core(
+                            state,
+                            &endpoints.source_connection_id,
+                            &endpoints.source_database,
+                            source_schema,
+                            &info.name,
+                            "TYPE",
+                        )
+                        .await?;
+                        if details.status.as_deref() != Some("VALID") {
+                            return Err("Paired source TYPE is not confirmed VALID".into());
+                        }
+                        if !matches!(
+                            details.dependencies.state,
+                            oracle_types::OracleMetadataReadState::Available
+                                | oracle_types::OracleMetadataReadState::Empty
+                        ) || details.dependencies.rows.iter().any(|dependency| {
+                            dependency.referenced_schema.is_none() || dependency.referenced_link.is_some()
+                        }) {
+                            return Err("Paired source TYPE dependency metadata is incomplete".into());
+                        }
+                        let dependencies = details
+                            .dependencies
+                            .rows
+                            .iter()
+                            .map(|dependency| db::RoutineDependency {
+                                owner: dependency.referenced_schema.clone().unwrap_or_default(),
+                                name: dependency.referenced_name.clone(),
+                                object_type: dependency.referenced_type.replace('_', " "),
+                            })
+                            .collect::<Vec<_>>();
+                        let mut definition = dbx_sql::oracle_program_compatibility::conversion_source(
+                            &expected,
+                            "TYPE",
+                            &info.name,
+                            source_config.db_type,
+                            target_type,
+                            &context,
+                        )?;
+                        dbx_sql::oracle_program_compatibility::compatible_type_source(
+                            &definition,
+                            "TYPE",
+                            &dependencies,
+                        )?;
+                        for dependency in dependencies
+                            .iter()
+                            .filter(|dependency| dependency.owner == source_schema && dependency.object_type == "TYPE")
+                        {
+                            definition = dbx_sql::oracle_program_compatibility::map_reference(
+                                &definition,
+                                source_schema,
+                                &dependency.name,
+                                target_schema,
+                            )?;
+                        }
+                        definition
+                    } else {
+                        expected
+                    };
+                    let mut actual = source(
+                        state,
+                        &endpoints.target_connection_id,
+                        &endpoints.target_database,
+                        target_schema,
+                        &info.name,
+                        "TYPE",
+                    )
+                    .await?;
+                    if source_config.db_type != target_type
+                        && target_type == DatabaseType::Oracle
+                        && context.target_editions_disabled
+                    {
+                        let mut reverse = context.clone();
+                        reverse.source_version = context.target_version.clone();
+                        reverse.target_version = context.source_version.clone();
+                        reverse.non_editioned_source_objects = vec![(info.name.clone(), "TYPE".into())];
+                        reverse.target_editions_disabled = true;
+                        actual = dbx_sql::oracle_program_compatibility::conversion_source(
+                            &actual,
+                            "TYPE",
+                            &info.name,
+                            target_type,
+                            source_config.db_type,
+                            &reverse,
+                        )?;
+                    }
+                    comparable_oracle_routine(&expected) == comparable_oracle_routine(&actual)
+                };
+                if compatible {
+                    context.target_dependencies.push((target_schema.to_string(), info.name.clone(), "TYPE".into()));
+                } else {
+                    context.blocked_bodies.push((info.name.clone(), "The target TYPE specification differs from the source; explicitly include its definition before converting the body".into()));
+                }
+            } else {
+                context.blocked_bodies.push((info.name.clone(), "Target TYPE specification is missing or INVALID; explicitly include its definition before its body".into()));
             }
         }
         if let Some(trigger) = &info.trigger {
@@ -315,6 +500,108 @@ async fn status(
     .await?;
     Ok(result.rows.first().map(|row| cell(row, 0)))
 }
+fn dictionary_type_declaration_end(code: &[&Token], schema: &str, name: &str, start: usize) -> Result<usize, String> {
+    let matches = |index: usize, expected: &str| matches!(code.get(index), Some(Token::Word(value)) if if value.quote_style.is_some() { value.value == expected } else { value.value.to_ascii_uppercase() == expected });
+    if matches!(code.get(start + 1), Some(Token::Period)) {
+        if matches(start, schema) && matches(start + 2, name) {
+            return Ok(start + 3);
+        }
+    } else if matches(start, name) {
+        return Ok(start + 1);
+    }
+    Err("TYPE dictionary declaration differs from its exact owner/name identity".into())
+}
+
+fn complete_dictionary_type_boundary(code: &[&Token], schema: &str, name: &str) -> Result<(), String> {
+    let word = |index: usize, expected: &str| matches!(code.get(index), Some(Token::Word(value)) if value.quote_style.is_none() && value.value.eq_ignore_ascii_case(expected));
+    let header = dictionary_type_declaration_end(code, schema, name, 1)?;
+    let mut depth = 0i32;
+    for token in code {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err("TYPE dictionary parentheses are incomplete".into());
+                }
+            }
+            Token::SemiColon => return Err("TYPE dictionary specification contains an extra statement boundary".into()),
+            _ => (),
+        }
+    }
+    if depth != 0 {
+        return Err("TYPE dictionary parentheses are incomplete".into());
+    }
+    if (word(header, "AS") || word(header, "IS")) && word(header + 1, "OBJECT") || word(header, "UNDER") {
+        let open = code
+            .iter()
+            .position(|token| matches!(token, Token::LParen))
+            .ok_or("TYPE dictionary attribute list is missing")?;
+        depth = 0;
+        let mut close = None;
+        for (index, token) in code.iter().enumerate().skip(open) {
+            match token {
+                Token::LParen => depth += 1,
+                Token::RParen => depth -= 1,
+                _ => (),
+            }
+            if depth == 0 {
+                close = Some(index);
+                break;
+            }
+        }
+        let mut index = close.ok_or("TYPE dictionary attribute list is incomplete")? + 1;
+        while index < code.len() {
+            if word(index, "NOT") {
+                index += 1;
+            }
+            if !word(index, "FINAL") && !word(index, "INSTANTIABLE") {
+                return Err("TYPE dictionary object tail is incomplete or unsupported".into());
+            }
+            index += 1;
+        }
+        return Ok(());
+    }
+    if !word(header, "AS") && !word(header, "IS") {
+        return Err("TYPE dictionary declaration is incomplete or unsupported".into());
+    }
+    let mut index = header + 1;
+    if word(index, "VARRAY") || word(index, "VARYING") && word(index + 1, "ARRAY") {
+        index += if word(index, "VARRAY") { 1 } else { 2 };
+        if !matches!(code.get(index), Some(Token::LParen))
+            || !matches!(code.get(index + 1), Some(Token::Number(_, _)))
+            || !matches!(code.get(index + 2), Some(Token::RParen))
+        {
+            return Err("TYPE dictionary VARRAY bound is incomplete".into());
+        }
+        index += 3;
+    } else if word(index, "TABLE") {
+        index += 1;
+    } else {
+        return Err("TYPE dictionary form is unsupported".into());
+    }
+    if !word(index, "OF") {
+        return Err("TYPE dictionary element declaration is missing".into());
+    }
+    index += 1;
+    let mut end = code.len();
+    if end >= index + 2 && word(end - 2, "NOT") && word(end - 1, "NULL") {
+        end -= 2;
+    }
+    let datatype = &code[index..end];
+    let tokens = datatype.iter().map(|token| (*token).clone()).collect::<Vec<_>>();
+    let mut parser = Parser::new(&OracleDialect {}).with_tokens(tokens);
+    let parsed = parser.parse_data_type().is_ok() && parser.peek_token().token == Token::EOF;
+    // sqlparser's Oracle datatype parser does not yet consume Oracle's interval
+    // qualifiers or LOCAL TIME ZONE. Validate those complete forms explicitly.
+    let temporal = regex::Regex::new(r"(?ix)\A(?:TIMESTAMP\s*(?:\(\s*\d+\s*\))?\s+WITH\s+LOCAL\s+TIME\s+ZONE|INTERVAL\s+YEAR\s*(?:\(\s*\d+\s*\))?\s+TO\s+MONTH|INTERVAL\s+DAY\s*(?:\(\s*\d+\s*\))?\s+TO\s+SECOND\s*(?:\(\s*\d+\s*\))?)\z").unwrap();
+    let text = datatype.iter().map(|token| token.to_string()).collect::<Vec<_>>().join(" ");
+    if !parsed && !temporal.is_match(&text) {
+        return Err("TYPE dictionary collection datatype is incomplete or unsupported".into());
+    }
+    Ok(())
+}
+
 fn complete_dictionary_body(
     rows: &[Vec<serde_json::Value>],
     schema: &str,
@@ -338,7 +625,8 @@ fn complete_dictionary_body(
         }
         body.push_str(row[4].as_str().ok_or("Routine dictionary source text is unavailable")?);
     }
-    let declaration = regex::Regex::new(r"(?is)^\s*(PROCEDURE|FUNCTION|PACKAGE\s+BODY|PACKAGE|TRIGGER)\b").unwrap();
+    let declaration =
+        regex::Regex::new(r"(?is)^\s*(PROCEDURE|FUNCTION|PACKAGE\s+BODY|PACKAGE|TRIGGER|TYPE\s+BODY|TYPE)\b").unwrap();
     let actual_kind = declaration
         .captures(&body)
         .map(|matched| matched[1].split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_uppercase());
@@ -352,11 +640,16 @@ fn complete_dictionary_body(
     if matches!(code.last(), Some(Token::SemiColon)) {
         code.pop();
     }
+    if kind == "TYPE BODY" {
+        dictionary_type_declaration_end(&code, schema, name, 2)?;
+    }
     let end = |token: &&Token| matches!(token, Token::Word(word) if word.quote_style.is_none() && word.value.eq_ignore_ascii_case("END"));
     let named_end = matches!(code.last(), Some(Token::Word(word)) if word.value == name || word.quote_style.is_none() && word.value.eq_ignore_ascii_case(name))
         && code.len() > 1
         && end(&code[code.len() - 2]);
-    if !code.last().is_some_and(end) && !named_end {
+    if kind == "TYPE" {
+        complete_dictionary_type_boundary(&code, schema, name)?;
+    } else if !code.last().is_some_and(end) && !named_end {
         return Err("The complete dictionary routine has no outer END boundary".into());
     }
     let ddl = crate::object_source_sql::ensure_oracle_ddl_terminated(&format!("CREATE OR REPLACE {body}"));
@@ -501,6 +794,7 @@ pub(super) async fn list_routines(
             return Err(format!("{schema}.{name} ({kind}) changed during metadata collection"));
         }
         routines.push(db::FunctionInfo {
+            type_info: None,
             name,
             function_type: kind,
             data_type: String::new(),
@@ -522,6 +816,114 @@ pub(super) async fn list_routines(
             incoming_dependencies: dependency_rows(&incoming.rows)?,
             paired_object_present,
             trigger,
+        });
+    }
+    let kinds = vec!["TYPE".to_string(), "TYPE_BODY".to_string()];
+    let types = list_objects_core(state, connection, database, schema, None, None, None, Some(&kinds), None).await?;
+    for object in types {
+        if object.schema.as_deref() != Some(schema) {
+            return Err("Type inventory owner differs from the selected schema".into());
+        }
+        let (kind, _) = schema_diff_routine_kind(&object.object_type).ok_or("Unexpected type inventory kind")?;
+        let details = oracle_types::get_oracle_type_details_core(
+            state,
+            connection,
+            database,
+            schema,
+            &object.name,
+            &object.object_type,
+        )
+        .await?;
+        let definition = source(state, connection, database, schema, &object.name, kind).await?;
+        let incoming = dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, NAME, TYPE FROM ALL_DEPENDENCIES WHERE REFERENCED_OWNER = {} AND REFERENCED_NAME = {} AND REFERENCED_TYPE = {} ORDER BY OWNER, NAME, TYPE", literal(schema), literal(&object.name), literal(kind))).await?;
+        let incoming_dependencies = dependency_rows(&incoming.rows)?;
+        let columns = if kind == "TYPE" {
+            dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, TABLE_NAME, COLUMN_NAME FROM ALL_TAB_COLUMNS WHERE DATA_TYPE_OWNER = {} AND DATA_TYPE = {} ORDER BY OWNER, TABLE_NAME, COLUMN_ID", literal(schema), literal(&object.name))).await?.rows
+        } else {
+            Vec::new()
+        };
+        let referenced_columns = columns
+            .iter()
+            .map(|row| {
+                let column = db::RoutineColumnDependency {
+                    owner: cell(row, 0),
+                    table_name: cell(row, 1),
+                    column_name: cell(row, 2),
+                };
+                if column.owner.is_empty() || column.table_name.is_empty() || column.column_name.is_empty() {
+                    return Err("Incomplete type column dependency metadata".to_string());
+                }
+                Ok(column)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut dependency_state = details.dependencies.state.clone();
+        let mut metadata_message = details.dependencies.message.clone();
+        let mut dependency_objects = Vec::new();
+        for dependency in details.dependencies.rows {
+            if dependency.referenced_schema.as_deref().is_none_or(str::is_empty) || dependency.referenced_link.is_some()
+            {
+                dependency_state = oracle_types::OracleMetadataReadState::Unknown;
+                let message = format!(
+                    "Type dependency {}.{} ({}) via {} cannot be mapped automatically",
+                    dependency.referenced_schema.as_deref().unwrap_or("UNKNOWN"),
+                    dependency.referenced_name,
+                    dependency.referenced_type,
+                    dependency.referenced_link.as_deref().unwrap_or("unknown owner")
+                );
+                metadata_message = Some(match metadata_message {
+                    Some(previous) => format!("{previous}\n{message}"),
+                    None => message,
+                });
+                continue;
+            }
+            dependency_objects.push(db::RoutineDependency {
+                owner: dependency.referenced_schema.unwrap(),
+                name: dependency.referenced_name,
+                object_type: dependency.referenced_type.replace('_', " "),
+            });
+        }
+        let paired_object_present = match &details.pairing_state {
+            oracle_types::OracleMetadataReadState::Available => Some(details.paired_object.is_some()),
+            oracle_types::OracleMetadataReadState::Empty => Some(false),
+            _ => None,
+        };
+        let incoming_state = if incoming_dependencies.is_empty() && referenced_columns.is_empty() {
+            oracle_types::OracleMetadataReadState::Empty
+        } else {
+            oracle_types::OracleMetadataReadState::Available
+        };
+        if status(state, connection, database, schema, &object.name, kind).await? != details.status {
+            return Err(format!("{schema}.{} ({kind}) changed during type metadata collection", object.name));
+        }
+        routines.push(db::FunctionInfo {
+            name: object.name,
+            function_type: kind.to_string(),
+            data_type: String::new(),
+            definition,
+            arguments: String::new(),
+            schema: Some(schema.to_string()),
+            status: details.status,
+            dependencies: dependency_objects
+                .iter()
+                .map(|dependency| {
+                    format!(
+                        "\"{}\".\"{}\"",
+                        dependency.owner.replace('"', "\"\""),
+                        dependency.name.replace('"', "\"\"")
+                    )
+                })
+                .collect(),
+            dependency_objects,
+            incoming_dependencies,
+            paired_object_present,
+            trigger: None,
+            type_info: Some(db::RoutineTypeInfo {
+                pairing_state: details.pairing_state,
+                dependency_state,
+                incoming_state,
+                referenced_columns,
+                metadata_message,
+            }),
         });
     }
     Ok(routines)
@@ -572,7 +974,24 @@ pub async fn validate_schema_diff_routines(
     if schema.is_empty() {
         return Err("An explicit target schema is required".into());
     }
-    let callers = target_callers(expected, schema);
+    let mut callers = target_callers(expected, schema);
+    for diff in expected {
+        let Some(info) = diff.source.as_ref().or(diff.target.as_ref()) else { continue };
+        if matches!(info.function_type.as_str(), "TYPE" | "TYPE BODY") {
+            let rows = dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, NAME, TYPE FROM DBA_DEPENDENCIES WHERE REFERENCED_OWNER={} AND REFERENCED_NAME={} AND REFERENCED_TYPE={}", literal(schema), literal(&diff.name), literal(&info.function_type))).await?.rows;
+            for caller in dependency_rows(&rows)? {
+                if !expected.iter().any(|selected| {
+                    selected.name == caller.name
+                        && selected.source.as_ref().or(selected.target.as_ref()).is_some_and(|selected| {
+                            caller.owner == schema && selected.function_type == caller.object_type
+                        })
+                }) && !callers.contains(&caller)
+                {
+                    callers.push(caller);
+                }
+            }
+        }
+    }
     let mut results = Vec::with_capacity(expected.len());
     for diff in expected {
         let info = if diff.diff_type == "removed" { diff.target.as_ref() } else { diff.source.as_ref() }
@@ -773,6 +1192,96 @@ mod tests {
         assert!(ensure_selected_callers(std::slice::from_ref(&caller), "DST", &[retained]).is_err());
         let external = vec![serde_json::json!("OTHER"), serde_json::json!("Q"), serde_json::json!("PROCEDURE")];
         assert!(ensure_selected_callers(&[external], "DST", &[selected]).is_err());
+    }
+
+    #[test]
+    fn complete_ob_type_dictionary_preserves_object_collection_and_body_boundaries() {
+        let rows = |kind: &str, text: &str| {
+            vec![vec![
+                serde_json::json!("Mixed Owner"),
+                serde_json::json!("Mixed.Type"),
+                serde_json::json!(kind),
+                serde_json::json!(1),
+                serde_json::json!(text),
+                serde_json::json!(1),
+            ]]
+        };
+        for text in [
+            "TYPE \"Mixed.Type\" AS OBJECT(a NUMBER,b VARCHAR2(10))",
+            "TYPE \"Mixed Owner\".\"Mixed.Type\" AS OBJECT(a NUMBER)",
+            "TYPE \"Mixed.Type\" AS TABLE OF \"Other.Type\"",
+            "TYPE \"Mixed.Type\" AS VARRAY(5) OF NUMBER(10,2)",
+            "TYPE \"Mixed.Type\" AS TABLE OF TIMESTAMP(6) WITH TIME ZONE",
+            "TYPE \"Mixed.Type\" AS TABLE OF TIMESTAMP WITH LOCAL TIME ZONE",
+            "TYPE \"Mixed.Type\" AS TABLE OF INTERVAL YEAR(4) TO MONTH",
+            "TYPE \"Mixed.Type\" AS VARRAY(5) OF INTERVAL DAY(3) TO SECOND(2)",
+            "TYPE \"Mixed.Type\" UNDER BASE(a NUMBER) NOT FINAL",
+        ] {
+            assert_eq!(
+                complete_dictionary_body(&rows("TYPE", text), "Mixed Owner", "Mixed.Type", "TYPE").unwrap(),
+                text
+            );
+        }
+        let body = "TYPE BODY \"Mixed.Type\" AS MEMBER FUNCTION F RETURN NUMBER IS BEGIN RETURN 11; END; END";
+        assert_eq!(
+            complete_dictionary_body(&rows("TYPE BODY", body), "Mixed Owner", "Mixed.Type", "TYPE BODY").unwrap(),
+            body
+        );
+        for text in [
+            "TYPE \"Other.Type\" AS OBJECT(a NUMBER)",
+            "TYPE \"Other Owner\".\"Mixed.Type\" AS OBJECT(a NUMBER)",
+            "TYPE \"Mixed.Type\" AS OBJECT(a NUMBER",
+            "TYPE \"Mixed.Type\" AS OBJECT(a NUMBER); DROP TABLE T",
+            "TYPE \"Mixed.Type\" AS TABLE OF",
+            "TYPE \"Mixed.Type\" AS VARRAY(5) OF",
+            "TYPE \"Mixed.Type\" AS TABLE OF NUMBER DROP TABLE T",
+            "TYPE \"Mixed.Type\" AS TABLE OF TIMESTAMP WITH TIME",
+            "TYPE \"Mixed.Type\" AS TABLE OF INTERVAL YEAR TO",
+            "TYPE \"Mixed.Type\" AS TABLE OF INTERVAL DAY TO SECOND DROP TABLE T",
+        ] {
+            assert!(complete_dictionary_body(&rows("TYPE", text), "Mixed Owner", "Mixed.Type", "TYPE").is_err());
+        }
+        for text in [
+            "TYPE BODY \"Other.Type\" AS BEGIN NULL; END",
+            "TYPE BODY \"Mixed.Type\" AS MEMBER FUNCTION F RETURN NUMBER IS BEGIN RETURN 'END'",
+            "TYPE BODY \"Mixed.Type\" AS BEGIN NULL; -- END",
+            "TYPE BODY \"Mixed.Type\" AS BEGIN NULL; END; DROP TABLE T;",
+        ] {
+            assert!(
+                complete_dictionary_body(&rows("TYPE BODY", text), "Mixed Owner", "Mixed.Type", "TYPE BODY").is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn complete_ob_dictionary_rows_preserve_body_and_reject_missing_identity_lines_or_multiple_statements() {
+        let text = "FUNCTION \"F Mixed\" RETURN NUMBER IS BEGIN RETURN 42; END";
+        let rows = vec![vec![
+            serde_json::json!("Mixed Owner"),
+            serde_json::json!("F Mixed"),
+            serde_json::json!("FUNCTION"),
+            serde_json::json!(1),
+            serde_json::json!(text),
+            serde_json::json!(1),
+        ]];
+        assert_eq!(complete_dictionary_body(&rows, "Mixed Owner", "F Mixed", "FUNCTION").unwrap(), text);
+        assert!(complete_dictionary_body(&rows, "OTHER", "F Mixed", "FUNCTION").is_err());
+        assert!(complete_dictionary_body(&rows, "Mixed Owner", "OTHER", "FUNCTION").is_err());
+        assert!(complete_dictionary_body(&rows, "Mixed Owner", "F Mixed", "PROCEDURE").is_err());
+        for (index, value) in [
+            (3, serde_json::json!(2)),
+            (5, serde_json::json!(2)),
+            (4, serde_json::Value::Null),
+            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42;")),
+            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42; -- END")),
+            (4, serde_json::json!("FUNCTION F RETURN VARCHAR2 IS BEGIN RETURN 'END'")),
+            (4, serde_json::json!("FUNCTION F RETURN NUMBER IS BEGIN RETURN 42; END; DROP TABLE T;")),
+        ] {
+            let mut invalid = rows.clone();
+            invalid[0][index] = value;
+            assert!(complete_dictionary_body(&invalid, "Mixed Owner", "F Mixed", "FUNCTION").is_err());
+        }
+        assert!(complete_dictionary_body(&[], "Mixed Owner", "F Mixed", "FUNCTION").is_err());
     }
 
     #[test]

@@ -122,16 +122,19 @@ describe("routine deployment readback", () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith([step.sql]);
   });
-  it("validates mapped package and body definitions without overwriting source or recovery snapshots", async () => {
-    const source = { name: "Same.Package", function_type: "PACKAGE", data_type: "", arguments: "", schema: "SRC", definition: 'CREATE EDITIONABLE PACKAGE "Same.Package" AS FUNCTION f RETURN NUMBER; END;' };
-    const body = { ...source, function_type: "PACKAGE BODY", definition: 'CREATE PACKAGE BODY "Same.Package" AS FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;' };
+  it.each(["PACKAGE", "TYPE"] as const)("validates mapped %s and body definitions without overwriting source or recovery snapshots", async (kind) => {
+    const bodyKind = kind === "TYPE" ? "TYPE BODY" : "PACKAGE BODY";
+    const definition = kind === "TYPE" ? 'AS TABLE OF SRC.Parent;' : 'AS FUNCTION f RETURN NUMBER; END;';
+    const bodyDefinition = `${kind === "TYPE" ? "MEMBER " : ""}FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;`;
+    const source = { name: "Same.Object", function_type: kind, data_type: "", arguments: "", schema: "SRC", definition: `CREATE EDITIONABLE ${kind} "Same.Object" ${definition}` };
+    const body = { ...source, function_type: bodyKind, definition: `CREATE ${bodyKind} "Same.Object" AS ${bodyDefinition}` };
     const diffs: FunctionDiff[] = [
       { name: source.name, type: "modified", source, target: { ...source, schema: "DST", definition: "original target specification" } },
       { name: source.name, type: "modified", source: body, target: { ...body, schema: "DST", definition: "original target body" } },
     ];
     const steps: SchemaDiffRoutineStep[] = [
-      { name: source.name, routineType: "PACKAGE", operation: "modified", sql: 'CREATE OR REPLACE PACKAGE "DST"."Same.Package" AS FUNCTION f RETURN NUMBER; END;', dependencies: [] },
-      { name: source.name, routineType: "PACKAGE BODY", operation: "modified", sql: 'CREATE OR REPLACE PACKAGE BODY "DST"."Same.Package" AS FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;', dependencies: [] },
+      { name: source.name, routineType: kind, operation: "modified", sql: `CREATE OR REPLACE ${kind} "DST"."Same.Object" ${definition.replace("SRC.", '"DST".')}`, dependencies: [] },
+      { name: source.name, routineType: bodyKind, operation: "modified", sql: `CREATE OR REPLACE ${bodyKind} "DST"."Same.Object" AS ${bodyDefinition}`, dependencies: [] },
     ];
     const forward = schemaDiffRoutineExpectedDefinitions(diffs, steps);
     expect(forward[0]!.source!.definition).toBe(steps[0]!.sql);
@@ -143,8 +146,8 @@ describe("routine deployment readback", () => {
     expect(validate).toHaveBeenCalledWith(forward);
     const recoverySteps = steps.map((step) => ({ ...step, sql: `restore ${step.routineType}` }));
     const recovery = schemaDiffRoutineExpectedDefinitions(diffs, recoverySteps, true);
-    expect(recovery[0]!.target!.definition).toBe("restore PACKAGE");
-    expect(recovery[1]!.target!.definition).toBe("restore PACKAGE BODY");
+    expect(recovery[0]!.target!.definition).toBe(`restore ${kind}`);
+    expect(recovery[1]!.target!.definition).toBe(`restore ${bodyKind}`);
     expect(recovery[0]!.source!.definition).toBe(source.definition);
     expect(diffs[0]!.target!.definition).toBe("original target specification");
   });

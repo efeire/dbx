@@ -6604,6 +6604,16 @@ export default withEnglishFallback({
     routinePlanBlocked: "Dağıtım engellendi: {reason}",
     routineDependencies: "Bağımlılıklar: {dependencies}",
     routineValidationTitle: "Derleme ve kaynak kodu doğrulaması",
+    typeReferencedColumns: "Türe başvuran tablo sütunları: {columns}",
+    typeMetadataState: "Eşleştirme: {pairing}; giden bağımlılıklar: {outgoing}; gelen: {incoming}",
+    typeReadState: {
+      available: "Kullanılabilir",
+      empty: "Görünür kayıt yok",
+      unknown: "Bilinmiyor",
+      unsupported: "Desteklenmiyor",
+      denied: "İzin reddedildi",
+      error: "Okuma başarısız",
+    },
     routineValidationFailed: "DDL çalıştırıldı, ancak derleme veya kaynak kodu doğrulaması başarısız ya da eksik. Uygulanan değişiklikler geri alınmadı.",
     progress: {
       loadingObjects: "Kaynak ve hedef veritabanı nesneleri okunuyor...",
