@@ -5004,6 +5004,17 @@ export default withEnglishFallback({
     partitionSqlPreview: "SQL a ser executado",
     partitionNameRequired: "Digite o nome da partição.",
     notNull: "Não nulo",
+    editTriggerDefinition: "Editar definição do gatilho",
+    triggerStructuredMode: "Campos estruturados",
+    triggerSourceMode: "Código completo",
+    triggerPreviewDefinition: "Visualizar DDL completo",
+    triggerOriginalDefinition: "Definição anterior ao salvamento",
+    triggerReplacementWarning:
+      "Salvar substitui a definição diretamente. A nova definição fica desabilitada até passar nas verificações de compilação e destino; depois, o estado original de habilitação é restaurado. O DDL não é revertido automaticamente. Visualize a definição completa antes de salvar.",
+    triggerRecoveryWarning: "Esta definição foi lida antes de salvar. Confira o gatilho atual e o erro antes de recuperar manualmente; verifique novamente a compilação e o estado de habilitação.",
+    triggerOwnerUnknown: "Não foi possível confirmar o proprietário do gatilho. Atualize os metadados e tente novamente. O proprietário da tabela não será usado como substituto.",
+    triggerPendingDrafts: "Salve ou descarte os rascunhos de criação, edição e exclusão de gatilhos antes de editar a definição completa ou atualizar os gatilhos.",
+    triggerRecoveryTargetUnknown: "Este registro não contém a identidade da tabela de destino. Consulte o dicionário antes de recuperar.",
   },
   diagram: {
     title: "Diagrama de relacionamentos",

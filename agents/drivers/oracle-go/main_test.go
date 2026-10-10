@@ -3549,7 +3549,7 @@ func (c *oracleViewSourceConn) QueryContext(
 	for index, arg := range args {
 		values[index] = arg.Value
 	}
-	if (len(values) > 0 || len(step.args) > 0) && !reflect.DeepEqual(values, step.args) {
+	if len(values) != len(step.args) || (len(values) > 0 && !reflect.DeepEqual(values, step.args)) {
 		return nil, errors.New("unexpected query arguments")
 	}
 	if step.err != nil {
