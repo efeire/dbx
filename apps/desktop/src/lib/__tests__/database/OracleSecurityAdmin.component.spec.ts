@@ -38,10 +38,10 @@ async function settle() {
     await nextTick();
   }
 }
-function mount() {
+function mount(dbType: ConnectionConfig["db_type"] = "oracle") {
   const host = document.createElement("div");
   document.body.append(host);
-  const app = createApp(OracleSecurityAdmin, { connection: { id: "oracle", db_type: "oracle" } as ConnectionConfig });
+  const app = createApp(OracleSecurityAdmin, { connection: { id: "oracle", db_type: dbType } as ConnectionConfig });
   app.mount(host);
   cleanup.push(() => {
     app.unmount();
@@ -50,6 +50,22 @@ function mount() {
   return host;
 }
 describe("Oracle security page", () => {
+  it("uses OceanBase dictionary columns when restricted readers fall back", async () => {
+    mocks.executeQuery.mockImplementation(async (_connection: string, _database: string, sql: string) => {
+      if (/FROM DBA_/.test(sql)) throw new Error("ORA-01031");
+      if (sql.includes("FROM USER_ROLE_PRIVS") && sql.includes("USERNAME AS GRANTEE")) throw new Error("ORA-00904");
+      if (sql.includes("FROM ALL_COL_PRIVS") && sql.includes("TABLE_SCHEMA")) throw new Error("ORA-00904");
+      if (sql.includes("FROM DUAL")) return { columns: ["USERNAME"], rows: [["Reader"]] };
+      return { columns: [], rows: [] };
+    });
+    const host = mount("oceanbase-oracle");
+    await settle();
+    expect(host.querySelectorAll('[data-security-state="error"]').length).toBe(0);
+    const queries = mocks.executeQuery.mock.calls.map((call) => call[2] as string);
+    expect(queries.find((sql) => sql.includes("FROM USER_ROLE_PRIVS UNION"))).toContain("SELECT GRANTEE,");
+    expect(queries.find((sql) => sql.includes("FROM ALL_COL_PRIVS UNION"))).toContain("SELECT GRANTEE, OWNER,");
+  });
+
   it("loads the production reader, exposes limited visibility and filters object grants", async () => {
     mocks.executeQuery.mockImplementation(async (_connection: string, _database: string, sql: string) => {
       if (sql.includes("DBA_USERS")) throw new Error("ORA-01031");

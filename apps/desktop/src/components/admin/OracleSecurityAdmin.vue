@@ -49,7 +49,7 @@ async function refresh() {
   error.value = "";
   try {
     await connectionStore.ensureConnected(connectionId);
-    const next = await loadOracleSecurity((sql) => api.executeQuery(connectionId, "", sql, undefined, undefined, { maxRows: ORACLE_SECURITY_ROW_LIMIT }));
+    const next = await loadOracleSecurity((sql) => api.executeQuery(connectionId, "", sql, undefined, undefined, { maxRows: ORACLE_SECURITY_ROW_LIMIT }), props.connection);
     if (request !== generation) return;
     snapshot.value = next;
     if (!principal.value && !props.objectScope) principal.value = next.currentUser.rows[0] ?? "";
