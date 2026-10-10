@@ -4097,6 +4097,9 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "Copia con password",
     copyPasswordConfirmMessage: "Il testo copiato conterrà la password salvata in chiaro. Continuare?",
     copyPasswordConfirmAction: "Copia",
+    oceanbaseCloneTargetSchema: "Schema di destinazione (nome esatto)",
+    oceanbaseClonePreview:
+      "Creare {target}? I nomi vengono racchiusi tra virgolette doppie e conservati come inseriti.\n\nContenuto copiato:\n{copied}\n\nOggetti esclusi:\n{excluded}\n\nNon vengono copiati chiavi esterne, trigger, vincoli CHECK/UNIQUE, indici speciali, partizioni o attributi fisici. Le espressioni predefinite restano invariate e possono ancora riferirsi a sequenze o funzioni di origine. Questa creazione della struttura non copia dati.\n\nOgni istruzione DDL viene confermata separatamente. Se un passaggio successivo fallisce, gli oggetti creati restano e richiedono ripristino manuale.",
   },
   visibleDatabases: {
     title: "Database Visibili",
@@ -4552,6 +4555,8 @@ export default withEnglishFallback({
     valid: "valido",
     invalid: "non valido",
     refreshDiscardConfirm: "L'aggiornamento eliminerà le modifiche non salvate al codice sorgente. Continuare?",
+    pagedRegexUnsupported: "La ricerca paginata degli oggetti non supporta espressioni regolari. Inserire un nome o un commento.",
+    pagedOrder: "Caricati {count} oggetti nell’ordine del database. Aggiornare dopo le modifiche agli oggetti.",
   },
   structureEditor: {
     mysqlDataTypeHelp: {

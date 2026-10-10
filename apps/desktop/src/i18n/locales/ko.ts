@@ -4032,6 +4032,9 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "비밀번호 포함 복사",
     copyPasswordConfirmMessage: "복사되는 텍스트에 저장된 비밀번호가 평문으로 포함됩니다. 계속할까요?",
     copyPasswordConfirmAction: "복사",
+    oceanbaseCloneTargetSchema: "대상 스키마(정확한 이름)",
+    oceanbaseClonePreview:
+      "{target}을 생성하시겠습니까? 이름은 입력한 내용 그대로 큰따옴표로 감싸 보존합니다.\n\n복사할 내용:\n{copied}\n\n복사하지 않을 객체:\n{excluded}\n\n외래 키, 트리거, CHECK/UNIQUE 제약 조건, 특수 인덱스, 파티션 및 물리 속성은 복사하지 않습니다. 기본 표현식은 원문 그대로 유지되며 원본 시퀀스나 함수를 계속 참조할 수 있습니다. 이번 구조 생성에서는 데이터를 복사하지 않습니다.\n\nDDL은 문장별로 커밋됩니다. 후속 단계가 실패하면 생성된 객체가 남아 수동 복구가 필요합니다.",
   },
   visibleDatabases: {
     title: "표시할 데이터베이스",
@@ -4598,6 +4601,8 @@ export default withEnglishFallback({
     sortDesc: "내림차순",
     sortBy: "정렬 기준",
     refreshDiscardConfirm: "새로 고침하면 저장되지 않은 소스 코드 변경 사항이 삭제됩니다. 계속하시겠습니까?",
+    pagedRegexUnsupported: "페이지 단위 객체 검색은 정규식을 지원하지 않습니다. 이름 또는 주석을 입력하세요.",
+    pagedOrder: "객체 {count}개를 데이터베이스 순서대로 불러왔습니다. 객체 변경 후 새로 고치세요.",
   },
   structureEditor: {
     createTitle: "테이블 만들기",

@@ -4104,6 +4104,9 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "複製含密碼的連線資訊",
     copyPasswordConfirmMessage: "複製的內容將包含明文密碼，任何能存取剪貼簿的程式或使用者都可以看到。是否繼續？",
     copyPasswordConfirmAction: "繼續複製",
+    oceanbaseCloneTargetSchema: "目標 schema（精確名稱）",
+    oceanbaseClonePreview:
+      "確認建立 {target}？名稱按輸入內容加雙引號保留。\n\n複製內容：\n{copied}\n\n不複製的物件：\n{excluded}\n\n不複製外鍵、觸發器、CHECK/UNIQUE 約束、特殊索引、分割區和實體屬性。預設運算式按原文保留，可能仍參照來源序列或函式。本次結構建立不複製資料。\n\nDDL 會逐條提交。後續步驟失敗時，已建立物件會保留，需要人工復原。",
   },
   visibleDatabases: {
     title: "顯示資料庫",
