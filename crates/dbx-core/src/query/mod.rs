@@ -3286,7 +3286,7 @@ pub async fn write_large_value_snapshot(
 }
 
 fn decode_lob_hex_chunk(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() > 8192 || hex.len() % 2 != 0 || !hex.is_ascii() {
+    if hex.len() > 8192 || !hex.len().is_multiple_of(2) || !hex.is_ascii() {
         return Err("Invalid LOB binary encoding".to_string());
     }
     hex.as_bytes()
