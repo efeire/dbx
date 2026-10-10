@@ -298,6 +298,7 @@ fn complete_arguments(before: &Value) -> bool {
 
 fn build_plan(change: &JobChange, before: &Value, oceanbase: bool) -> Result<Vec<Step>, String> {
     let name = scheduler_name(&change.identity)?;
+    let name = if oceanbase { literal(&change.identity.name) } else { name };
     let exists = !before["job"].is_null();
     if change.action == "create" && exists {
         return Err("Job already exists".into());
@@ -646,6 +647,14 @@ pub async fn oracle_jobs_core(
                 return Err("This server version has not been verified for job management".into());
             }
             let change = request.change.as_ref().ok_or("Missing job change")?;
+            if oceanbase {
+                session
+                    .require_current_owner(
+                        &change.identity.owner,
+                        "OceanBase job changes require a connection logged in as the exact job owner".into(),
+                    )
+                    .await?;
+            }
             let before = session.read(&change.identity).await?;
             let current_revision = revision(change, &before);
             let plan = build_plan(change, &before, oceanbase)?;
@@ -754,6 +763,18 @@ mod tests {
                 repeat_interval: "FREQ=DAILY".into(),
                 end_date: String::new(),
             }),
+        }
+    }
+    #[test]
+    fn oceanbase_scheduler_uses_the_exact_unqualified_job_name() {
+        let change = create("STORED_PROCEDURE");
+        let plan = build_plan(&change, &json!({"job":null}), true).unwrap();
+        assert!(plan[0].sql.contains("job_name => 'night''load'"));
+        for action in ["disable", "drop"] {
+            let mut change = create("STORED_PROCEDURE");
+            change.action = action.into();
+            let plan = build_plan(&change, &json!({"job":{"ENABLED":"FALSE"}}), true).unwrap();
+            assert!(plan[0].sql.contains("('night''load', force => FALSE)"));
         }
     }
     #[test]
