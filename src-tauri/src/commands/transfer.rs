@@ -384,6 +384,7 @@ pub async fn start_transfer(
                         status: TransferStatus::Error,
                         error: Some(e),
                         terminal: true,
+                        object_result: None,
                     },
                 )
                 .await;
