@@ -603,7 +603,7 @@ async function changeCatalog(selectedCatalog: string) {
         </TooltipTrigger>
         <TooltipContent>{{ t("editor.previewChanges") }}</TooltipContent>
       </Tooltip>
-      <RuntimeDiagnostics v-if="activeConnection?.db_type === 'oracle'" :connection="activeConnection" :database="activeTab.database" />
+      <RuntimeDiagnostics v-if="activeConnection && ['oracle', 'oceanbase-oracle'].includes(activeConnection.db_type)" :connection="activeConnection" :database="activeTab.database" />
       <Tooltip v-if="supportsExplain">
         <TooltipTrigger as-child>
           <Button

@@ -2,15 +2,17 @@ import * as api from "@/lib/backend/api";
 import { uuid } from "@/lib/common/utils";
 import type { HistoryEntry, HistorySearchRequest } from "@/lib/backend/api";
 import type { QueryResult } from "@/types/database";
+import { collectOceanBaseRuntimeDiagnostic, findOceanBaseDiagnosticTargets, type AuditWindow, type OceanBaseDiagnosticTarget } from "./oceanbaseRuntimeDiagnostics";
 
-export type DiagnosticStatus = "collected" | "not_collected" | "permission_denied" | "target_not_found" | "target_changed" | "unsupported" | "cancelled" | "timeout" | "failed";
+export type DiagnosticStatus = "collected" | "not_collected" | "permission_denied" | "target_not_found" | "target_changed" | "unsupported" | "cancelled" | "timeout" | "failed" | "audit_disabled" | "connection_changed";
 export interface DiagnosticContext {
   connectionId: string;
   connectionName: string;
   database: string;
-  engine: "oracle";
+  engine: "oracle" | "oceanbase-oracle";
 }
 export interface OracleDiagnosticTarget {
+  kind?: "oracle_cursor";
   instanceId: string;
   sqlId: string;
   childNumber: string;
@@ -19,11 +21,12 @@ export interface OracleDiagnosticTarget {
   executions: string;
   lastActiveTime: string;
 }
+export type DiagnosticTarget = OracleDiagnosticTarget | OceanBaseDiagnosticTarget;
 export interface DiagnosticMetric {
   name: string;
   value: string | null;
   unit: "count" | "rows" | "blocks" | "microseconds";
-  scope: "cursor_cumulative";
+  scope: "cursor_cumulative" | "request";
   source: string;
   missingReason?: DiagnosticStatus;
 }
@@ -32,7 +35,7 @@ export interface RuntimeDiagnosticRecord {
   id: string;
   context: DiagnosticContext;
   engineVersion: string | null;
-  target: OracleDiagnosticTarget;
+  target: DiagnosticTarget;
   collectedAt: string;
   status: DiagnosticStatus;
   metrics: DiagnosticMetric[];
@@ -44,6 +47,8 @@ export type DiagnosticQuery = (sql: string) => Promise<QueryResult>;
 
 export function diagnosticErrorStatus(error: unknown): DiagnosticStatus {
   const message = error instanceof Error ? error.message : String(error);
+  if (/audit disabled/i.test(message)) return "audit_disabled";
+  if (/connection (?:lost|closed)|disconnected|reconnect|ORA-03113|ORA-03114|socket/i.test(message)) return "connection_changed";
   if (/abort|cancel|ORA-01013/i.test(message)) return "cancelled";
   if (/timeout|timed out/i.test(message)) return "timeout";
   if (/ORA-01031|ORA-00942|permission|privilege|access denied/i.test(message)) return "permission_denied";
@@ -206,7 +211,8 @@ export function createRuntimeDiagnostics(backend: Backend = api) {
     };
   }
   return {
-    async findTargets(context: DiagnosticContext, sqlId: string, signal: AbortSignal): Promise<OracleDiagnosticTarget[]> {
+    async findTargets(context: DiagnosticContext, sqlId: string, signal: AbortSignal, window?: AuditWindow): Promise<DiagnosticTarget[]> {
+      if (context.engine === "oceanbase-oracle") return findOceanBaseDiagnosticTargets(sqlId, window, queryFor(context, signal));
       if (!/^[0-9a-z]{13}$/.test(sqlId)) throw new Error("Invalid SQL ID");
       const rows = diagnosticRows(await queryFor(context, signal)(`SELECT ${cursorColumns} FROM GV$SQL WHERE SQL_ID = '${sqlId}' AND EXECUTIONS > 0 AND USERS_EXECUTING = 0 ORDER BY INST_ID, CHILD_NUMBER`));
       if (rows.length > 100) throw new Error("Too many cursor targets");
@@ -216,7 +222,12 @@ export function createRuntimeDiagnostics(backend: Backend = api) {
         return target;
       });
     },
-    async collect(context: DiagnosticContext, target: OracleDiagnosticTarget, signal: AbortSignal): Promise<RuntimeDiagnosticRecord> {
+    async collect(context: DiagnosticContext, target: DiagnosticTarget, signal: AbortSignal): Promise<RuntimeDiagnosticRecord> {
+      if (target.kind === "ob_request") {
+        if (context.engine !== "oceanbase-oracle") throw new Error("Unsupported diagnostic target");
+        return collectOceanBaseRuntimeDiagnostic(context, target, queryFor(context, signal));
+      }
+      if (context.engine !== "oracle") throw new Error("Unsupported diagnostic target");
       return collectOracleRuntimeDiagnostic(context, target, queryFor(context, signal));
     },
     async save(record: RuntimeDiagnosticRecord): Promise<void> {
