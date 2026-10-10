@@ -889,7 +889,7 @@ mod tests {
                 .is_err());
         }
         let body = dependency("INCOMING TYPE BODY", "T");
-        assert!(replacement_allowed(&[body.clone()], "DST", "T", TransferObjectKind::Type, &[]).is_err());
+        assert!(replacement_allowed(std::slice::from_ref(&body), "DST", "T", TransferObjectKind::Type, &[]).is_err());
         assert!(replacement_allowed(
             &[body],
             "DST",
@@ -931,13 +931,11 @@ mod tests {
     #[test]
     fn both_engine_directions_use_the_confirmed_conversion_profile() {
         for oracle in ["Oracle Database 19c Enterprise Edition", "Oracle Database 21c Enterprise Edition"] {
-            assert_eq!(
-                conversion_profile(&DatabaseType::Oracle, oracle, &DatabaseType::OceanbaseOracle, "4.2.5.6").unwrap(),
-                true
+            assert!(
+                conversion_profile(&DatabaseType::Oracle, oracle, &DatabaseType::OceanbaseOracle, "4.2.5.6").unwrap()
             );
-            assert_eq!(
-                conversion_profile(&DatabaseType::OceanbaseOracle, "4.2.5.6", &DatabaseType::Oracle, oracle).unwrap(),
-                true
+            assert!(
+                conversion_profile(&DatabaseType::OceanbaseOracle, "4.2.5.6", &DatabaseType::Oracle, oracle).unwrap()
             );
         }
         assert!(conversion_profile(

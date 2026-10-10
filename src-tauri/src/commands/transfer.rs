@@ -179,7 +179,7 @@ pub async fn start_transfer(
             },
         )
         .await;
-        let mut prerequisite_outcome = dbx_core::transfer::TransferObjectOutcome::default();
+        let mut prerequisite_outcome;
         let prerequisite_error = match prerequisites {
             Ok(outcome) => {
                 if let Some(journal) = history.as_ref() {
