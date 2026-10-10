@@ -4355,6 +4355,17 @@ export default withEnglishFallback({
     rowsStale: "估計值已過期",
     rowsNotStale: "未標記過期（非即時列數）",
   },
+  checkEditor: {
+    title: "編輯 CHECK 約束",
+    add: "新增 CHECK",
+    existing: "選擇 CHECK 約束",
+    edit: "編輯所選 CHECK",
+    drop: "刪除此 CHECK",
+    expression: "運算式",
+    hint: "只填寫運算式。保留換行、quoted 名稱和字串；運算式結果為 NULL 時依 CHECK 語義通過。",
+    missing: "無法讀取此 CHECK 約束。",
+    current: "目前 CHECK",
+  },
   foreignKeyEditor: {
     title: "編輯外鍵",
     add: "新增外鍵",

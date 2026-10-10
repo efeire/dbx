@@ -2348,6 +2348,14 @@ export async function buildCreatePartitionedTableSql(options: BuildCreatePartiti
   return invoke("build_create_partitioned_table_sql", { options: options.options, partitioning: options.partitioning });
 }
 
+export async function previewCheckChange(connectionId: string, database: string, change: import("@/types/constraintChange").CheckChange): Promise<import("@/types/constraintChange").CheckChangePreview> {
+  return invoke("preview_check_change", { connectionId, database, change });
+}
+
+export async function applyCheckChange(connectionId: string, database: string, change: import("@/types/constraintChange").CheckChange, revision: string): Promise<import("@/types/constraintChange").CheckChangeResult> {
+  return invoke("apply_check_change", { connectionId, database, change, revision });
+}
+
 export async function previewForeignKeyChange(connectionId: string, database: string, change: import("@/types/constraintChange").ForeignKeyChange): Promise<import("@/types/constraintChange").ForeignKeyChangePreview> {
   return invoke("preview_foreign_key_change", { connectionId, database, change });
 }

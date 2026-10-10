@@ -4657,6 +4657,17 @@ export default withEnglishFallback({
     pagedRegexUnsupported: "페이지 단위 객체 검색은 정규식을 지원하지 않습니다. 이름 또는 주석을 입력하세요.",
     pagedOrder: "객체 {count}개를 데이터베이스 순서대로 불러왔습니다. 객체 변경 후 새로 고치세요.",
   },
+  checkEditor: {
+    title: "CHECK 제약 조건 편집",
+    add: "CHECK 추가",
+    existing: "CHECK 선택",
+    edit: "선택한 CHECK 편집",
+    drop: "이 CHECK 삭제",
+    expression: "표현식",
+    hint: "표현식만 입력하세요. 줄바꿈, 인용된 이름과 문자열은 유지됩니다. 결과가 NULL이면 CHECK 조건을 충족합니다.",
+    missing: "CHECK 제약 조건을 읽을 수 없습니다.",
+    current: "현재 CHECK",
+  },
   foreignKeyEditor: {
     title: "외래 키 편집",
     add: "외래 키 추가",

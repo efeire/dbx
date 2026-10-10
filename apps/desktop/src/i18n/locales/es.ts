@@ -4793,6 +4793,17 @@ export default withEnglishFallback({
     pagedRegexUnsupported: "La búsqueda paginada de objetos no admite expresiones regulares. Introduzca un nombre o un comentario.",
     pagedOrder: "Se han cargado {count} objetos en el orden de la base de datos. Actualice después de modificar los objetos.",
   },
+  checkEditor: {
+    title: "Editar restricciones CHECK",
+    add: "Añadir CHECK",
+    existing: "Seleccionar CHECK",
+    edit: "Editar CHECK seleccionado",
+    drop: "Eliminar este CHECK",
+    expression: "Expresión",
+    hint: "Introduzca solo la expresión. Se conservan saltos de línea, nombres entre comillas y cadenas. Un resultado NULL satisface CHECK.",
+    missing: "La restricción CHECK ya no es visible.",
+    current: "CHECK actual",
+  },
   foreignKeyEditor: {
     title: "Editar claves externas",
     add: "Añadir clave externa",

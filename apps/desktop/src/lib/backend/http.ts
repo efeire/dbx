@@ -1963,6 +1963,14 @@ export async function buildCreatePartitionedTableSql(options: BuildCreatePartiti
   return post("/api/query/build-create-partitioned-table-sql", { options: options.options, partitioning: options.partitioning });
 }
 
+export async function previewCheckChange(connectionId: string, database: string, change: import("@/types/constraintChange").CheckChange): Promise<import("@/types/constraintChange").CheckChangePreview> {
+  return post("/api/query/preview-check-change", { connectionId, database, change });
+}
+
+export async function applyCheckChange(connectionId: string, database: string, change: import("@/types/constraintChange").CheckChange, revision: string): Promise<import("@/types/constraintChange").CheckChangeResult> {
+  return post("/api/query/apply-check-change", { connectionId, database, change, revision });
+}
+
 export async function previewForeignKeyChange(connectionId: string, database: string, change: import("@/types/constraintChange").ForeignKeyChange): Promise<import("@/types/constraintChange").ForeignKeyChangePreview> {
   return post("/api/query/preview-foreign-key-change", { connectionId, database, change });
 }

@@ -4613,6 +4613,17 @@ export default withEnglishFallback({
     pagedRegexUnsupported: "La ricerca paginata degli oggetti non supporta espressioni regolari. Inserire un nome o un commento.",
     pagedOrder: "Caricati {count} oggetti nell’ordine del database. Aggiornare dopo le modifiche agli oggetti.",
   },
+  checkEditor: {
+    title: "Modifica vincoli CHECK",
+    add: "Aggiungi CHECK",
+    existing: "Seleziona CHECK",
+    edit: "Modifica CHECK selezionato",
+    drop: "Elimina questo CHECK",
+    expression: "Espressione",
+    hint: "Inserisci solo l'espressione. Sono preservati righe, nomi tra virgolette e stringhe. Un risultato NULL soddisfa CHECK.",
+    missing: "Il vincolo CHECK non è più visibile.",
+    current: "CHECK attuale",
+  },
   foreignKeyEditor: {
     title: "Modifica chiavi esterne",
     add: "Aggiungi chiave esterna",

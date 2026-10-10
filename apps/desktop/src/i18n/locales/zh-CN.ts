@@ -5326,6 +5326,17 @@ export default withEnglishFallback({
     sortDesc: "降序",
     sortBy: "排序方式",
   },
+  checkEditor: {
+    title: "编辑 CHECK 约束",
+    add: "添加 CHECK",
+    existing: "选择 CHECK 约束",
+    edit: "编辑所选 CHECK",
+    drop: "删除此 CHECK",
+    expression: "表达式",
+    hint: "只填写表达式。保留换行、quoted 名称和字符串；表达式结果为 NULL 时按 CHECK 语义通过。",
+    missing: "无法读取此 CHECK 约束。",
+    current: "当前 CHECK",
+  },
   foreignKeyEditor: {
     title: "编辑外键",
     add: "添加外键",

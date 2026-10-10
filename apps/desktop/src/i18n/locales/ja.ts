@@ -4675,6 +4675,17 @@ export default withEnglishFallback({
     pagedRegexUnsupported: "ページ分割されたオブジェクト検索では正規表現を使用できません。名前またはコメントを入力してください。",
     pagedOrder: "データベースの順序で {count} 個のオブジェクトを読み込みました。オブジェクトを変更した後は更新してください。",
   },
+  checkEditor: {
+    title: "CHECK 制約の編集",
+    add: "CHECK を追加",
+    existing: "CHECK 制約を選択",
+    edit: "選択した CHECK を編集",
+    drop: "この CHECK を削除",
+    expression: "式",
+    hint: "式のみ入力します。改行、引用符付きの名前、文字列は保持されます。結果が NULL の場合は CHECK 制約を満たします。",
+    missing: "CHECK 制約を読み取れません。",
+    current: "現在の CHECK",
+  },
   foreignKeyEditor: {
     title: "外部キーの編集",
     add: "外部キーを追加",
