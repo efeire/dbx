@@ -68,7 +68,8 @@ async fn snapshot(session: &mut SecuritySession<'_>, change: &RoleChange) -> Res
     let graph = session.query("SELECT GRANTEE, GRANTED_ROLE, ADMIN_OPTION, DEFAULT_ROLE FROM DBA_ROLE_PRIVS ORDER BY GRANTEE, GRANTED_ROLE").await?;
     let names = closure(&change.principal, &graph, true)?;
     let scope = names.iter().map(|name| literal(name)).collect::<Vec<_>>().join(", ");
-    let users = session.query(&format!("SELECT USERNAME, TO_CHAR(USER_ID) AS USER_ID, TO_CHAR(CREATED, 'YYYY-MM-DD HH24:MI:SS') AS CREATED FROM DBA_USERS WHERE USERNAME = {}",literal(&change.principal))).await?;
+    let user_id = if session.oceanbase { "USERID" } else { "USER_ID" };
+    let users = session.query(&format!("SELECT USERNAME, TO_CHAR({user_id}) AS USER_ID, TO_CHAR(CREATED, 'YYYY-MM-DD HH24:MI:SS') AS CREATED FROM DBA_USERS WHERE USERNAME = {}",literal(&change.principal))).await?;
     let principal_exists = change.principal == "PUBLIC"
         || !users.is_empty()
         || roles.iter().any(|row| text(row, "ROLE") == change.principal);

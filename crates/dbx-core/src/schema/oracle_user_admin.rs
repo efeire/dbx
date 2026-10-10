@@ -43,7 +43,8 @@ struct UserStep {
 async fn snapshot(session: &mut SecuritySession<'_>, change: &UserChange) -> Result<Value, String> {
     identifier(&change.name)?;
     let name = literal(&change.name);
-    let users = session.query(&format!("SELECT USERNAME, TO_CHAR(USER_ID) AS USER_ID, ACCOUNT_STATUS, PROFILE, DEFAULT_TABLESPACE, TEMPORARY_TABLESPACE, TO_CHAR(CREATED, 'YYYY-MM-DD HH24:MI:SS') AS CREATED, TO_CHAR(LOCK_DATE, 'YYYY-MM-DD HH24:MI:SS') AS LOCK_DATE, TO_CHAR(EXPIRY_DATE, 'YYYY-MM-DD HH24:MI:SS') AS EXPIRY_DATE FROM DBA_USERS WHERE USERNAME = {name}")).await?;
+    let user_id = if session.oceanbase { "USERID" } else { "USER_ID" };
+    let users = session.query(&format!("SELECT USERNAME, TO_CHAR({user_id}) AS USER_ID, ACCOUNT_STATUS, PROFILE, DEFAULT_TABLESPACE, TEMPORARY_TABLESPACE, TO_CHAR(CREATED, 'YYYY-MM-DD HH24:MI:SS') AS CREATED, TO_CHAR(LOCK_DATE, 'YYYY-MM-DD HH24:MI:SS') AS LOCK_DATE, TO_CHAR(EXPIRY_DATE, 'YYYY-MM-DD HH24:MI:SS') AS EXPIRY_DATE FROM DBA_USERS WHERE USERNAME = {name}")).await?;
     if users.len() > 1 {
         return Err("User identity is ambiguous".into());
     }
