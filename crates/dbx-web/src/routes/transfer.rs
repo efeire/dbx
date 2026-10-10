@@ -723,7 +723,7 @@ pub async fn start_transfer(
                 )
                 .await;
             }
-            Err(e) if transfer::is_cancelled(&req.transfer_id).await => {
+            Err(e) if e == "Cancelled" || transfer::is_cancelled(&req.transfer_id).await => {
                 object_outcome.object_results.extend(observed_objects.object_results);
                 report_unexecuted_objects(
                     &req,

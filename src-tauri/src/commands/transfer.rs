@@ -681,7 +681,7 @@ pub async fn start_transfer(
                 )
                 .await;
             }
-            Err(e) if dbx_core::transfer::is_cancelled(&transfer_id).await => {
+            Err(e) if e == "Cancelled" || dbx_core::transfer::is_cancelled(&transfer_id).await => {
                 object_outcome.object_results.extend(observed_objects.object_results);
                 report_unexecuted_objects(
                     &app,
