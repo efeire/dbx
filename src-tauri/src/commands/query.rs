@@ -856,6 +856,35 @@ pub async fn preview_sqlite_table_structure_change(
 }
 
 #[tauri::command]
+pub async fn preview_primary_key_change(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+    change: dbx_core::schema::oracle_constraint_change::PrimaryKeyChange,
+) -> Result<dbx_core::schema::oracle_constraint_change::ConstraintChangePreview, String> {
+    dbx_core::schema::oracle_constraint_change::preview_primary_key_change(&state, &connection_id, &database, change)
+        .await
+}
+
+#[tauri::command]
+pub async fn apply_primary_key_change(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+    change: dbx_core::schema::oracle_constraint_change::PrimaryKeyChange,
+    revision: String,
+) -> Result<dbx_core::schema::oracle_constraint_change::ConstraintChangeResult, String> {
+    dbx_core::schema::oracle_constraint_change::apply_primary_key_change(
+        &state,
+        &connection_id,
+        &database,
+        change,
+        &revision,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn apply_sqlite_table_structure_change(
     state: State<'_, Arc<AppState>>,
     connection_id: String,

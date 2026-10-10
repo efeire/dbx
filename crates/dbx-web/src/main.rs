@@ -854,6 +854,8 @@ async fn serve() -> Result<(), String> {
         )
         .route("/query/build-view-ddl-sql", post(routes::query::build_view_ddl_sql))
         .route("/query/build-table-structure-change-sql", post(routes::query::build_table_structure_change_sql))
+        .route("/query/preview-primary-key-change", post(routes::query::preview_primary_key_change))
+        .route("/query/apply-primary-key-change", post(routes::query::apply_primary_key_change))
         .route("/query/build-table-owner-change-sql", post(routes::query::build_table_owner_change_sql))
         .route("/query/build-table-partition-operation-sql", post(routes::query::build_table_partition_operation_sql))
         .route("/query/build-create-partitioned-table-sql", post(routes::query::build_create_partitioned_table_sql))
