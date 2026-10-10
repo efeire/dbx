@@ -6498,6 +6498,9 @@ export default withEnglishFallback({
       saveFailed: "Error al guardar: {message}",
       deleteFailed: "Error al eliminar: {message}",
     },
+    objectResult_created: "Creado y verificado",
+    objectResult_replaced: "Reemplazado y verificado",
+    objectResult_not_started: "No ejecutado",
   },
   tableImport: {
     title: "Importar datos a tabla",

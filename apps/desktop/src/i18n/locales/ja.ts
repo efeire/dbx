@@ -6331,6 +6331,9 @@ export default withEnglishFallback({
       saveFailed: "保存に失敗しました：{message}",
       deleteFailed: "削除に失敗しました：{message}",
     },
+    objectResult_created: "作成・検証済み",
+    objectResult_replaced: "置換・検証済み",
+    objectResult_not_started: "未実行",
   },
   tableImport: {
     title: "テーブルデータをインポート",
