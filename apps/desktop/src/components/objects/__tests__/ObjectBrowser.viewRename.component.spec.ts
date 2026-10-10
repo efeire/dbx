@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { createApp, defineComponent, h, nextTick, type App } from "vue";
+import { createApp, defineComponent, h, nextTick, ref, type App } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -101,7 +101,8 @@ async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" = "VIEW"
   queries.updateSql(sourceId, "CREATE VIEW old_view AS SELECT 2");
   const container = document.createElement("div");
   document.body.append(container);
-  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection, database: "APP" }) });
+  const database = ref("APP");
+  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection, database: database.value }) });
   app.use(pinia);
   app.use(i18n);
   app.mount(container);
@@ -123,10 +124,20 @@ async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" = "VIEW"
   button.click();
   const safety = useProductionSafetyStore();
   await vi.waitFor(() => expect(safety.pending).toBeDefined());
-  return { container, queries, sourceId, safety, refresh };
+  return { container, queries, sourceId, safety, refresh, database };
 }
 
 describe("ObjectBrowser OceanBase view rename", () => {
+  it("cancels a confirmed rename after the browser database changes", async () => {
+    const { safety, database } = await openRename();
+    database.value = "OTHER_DATABASE";
+    await nextTick();
+    safety.confirm();
+    await vi.waitFor(() => expect(safety.pending).toBeUndefined());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(api.executeQuery).not.toHaveBeenCalled();
+  });
+
   it("does not mutate or detach source when confirmation is cancelled", async () => {
     const { queries, sourceId, safety, refresh } = await openRename();
     safety.cancel();
@@ -201,6 +212,27 @@ describe("ObjectBrowser OceanBase view rename", () => {
 });
 
 describe("ObjectBrowser OceanBase routine rename", () => {
+  it("keeps every step and the recovery snapshot bound to the original database", async () => {
+    let completePreflight!: (value: any) => void;
+    vi.mocked(api.executeQuery)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            completePreflight = resolve;
+          }),
+      )
+      .mockResolvedValue({ columns: [], rows: [] } as any);
+    const { safety, database, queries, refresh } = await openRename("PROCEDURE");
+    safety.confirm();
+    await vi.waitFor(() => expect(api.executeQuery).toHaveBeenCalledTimes(1));
+    database.value = "OTHER_DATABASE";
+    await nextTick();
+    completePreflight({ columns: [], rows: [] });
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(vi.mocked(api.executeQuery).mock.calls.map((call) => call[1])).toEqual(["APP", "APP", "APP", "APP", "APP"]);
+    expect(queries.tabs.find((tab) => tab.sourceSnapshot && tab.sql.includes("CREATE PROCEDURE"))?.database).toBe("APP");
+  });
+
   it("cancels the entire plan before executing any step", async () => {
     const { queries, sourceId, safety } = await openRename("PROCEDURE");
     safety.cancel();

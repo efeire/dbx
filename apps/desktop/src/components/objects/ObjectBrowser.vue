@@ -1829,60 +1829,75 @@ async function confirmRename() {
   const newName = renameInput.value.trim();
   if (!row || !newName || newName === row.name) return;
   renameError.value = "";
+  const connection = props.connection;
+  const database = props.database;
+  const databaseType = effectiveDatabaseType.value;
+  const initialSchema = selectedSchema.value;
+  const isCurrent = () => props.connection.id === connection.id && props.database === database && selectedSchema.value === initialSchema;
+  const executeRenameWithProductionGuard = async <T>(sql: string, execute: () => Promise<T>): Promise<T | undefined> => {
+    if (!isCurrent()) return;
+    return executeWithProductionSqlGuard({
+      connection,
+      database,
+      sql,
+      source: t("production.sourceObjectBrowser"),
+      execute: async () => (isCurrent() ? execute() : undefined),
+    });
+  };
   const oldPinnedNode = pinnedTreeNodeForObjectBrowserRow(row);
   const oldLegacyPinnedNodes = legacyPinnedTreeNodesForObjectBrowserRow(row);
   let renameApplied = false;
-  const schema = row.schema || selectedSchema.value || props.database;
+  const schema = row.schema || initialSchema || database;
   let renameRequestSent = false;
   try {
-    if (supportsSourceBackedRoutineRename(effectiveDatabaseType.value, row.type as ObjectSourceKind)) {
-      const source = await api.getObjectSource(props.connection.id, props.database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined);
+    if (supportsSourceBackedRoutineRename(databaseType, row.type as ObjectSourceKind)) {
+      const source = await api.getObjectSource(connection.id, database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined);
       const statements = await buildRoutineRenameObjectSourceStatements({
-        databaseType: effectiveDatabaseType.value,
+        databaseType: databaseType,
         objectType: row.type as ObjectSourceKind,
         schema,
         name: row.name,
         newName,
         source: source.source,
       });
-      const executed = await executeObjectBrowserSqlWithProductionGuard(statements.join(";\n"), async () => {
-        if (effectiveDatabaseType.value === "oceanbase-oracle") {
-          queryStore.openSourceRecoverySnapshot({ connectionId: props.connection.id, database: props.database, schema, title: t("contextMenu.routineRenameRecoveryTitle", { name: row.name }), sql: source.source });
-          await executeOceanBaseRoutineRenameSteps(statements, (sql) => api.executeQuery(props.connection.id, props.database, sql, schema));
+      const executed = await executeRenameWithProductionGuard(statements.join(";\n"), async () => {
+        if (databaseType === "oceanbase-oracle") {
+          queryStore.openSourceRecoverySnapshot({ connectionId: connection.id, database: database, schema, title: t("contextMenu.routineRenameRecoveryTitle", { name: row.name }), sql: source.source });
+          await executeOceanBaseRoutineRenameSteps(statements, (sql) => api.executeQuery(connection.id, database, sql, schema));
         } else {
-          for (const sql of statements) await api.executeQuery(props.connection.id, props.database, sql, schema);
+          for (const sql of statements) await api.executeQuery(connection.id, database, sql, schema);
         }
         return true;
       });
       if (!executed) return;
     } else {
       const sql = await buildRenameObjectSql({
-        databaseType: effectiveDatabaseType.value,
+        databaseType: databaseType,
         objectType: row.type,
         schema,
         oldName: row.name,
         newName,
       });
-      const executed = await executeObjectBrowserSqlWithProductionGuard(sql, () => {
+      const executed = await executeRenameWithProductionGuard(sql, () => {
         renameRequestSent = true;
-        return api.executeQuery(props.connection.id, props.database, sql, schema);
+        return api.executeQuery(connection.id, database, sql, schema);
       });
       if (!executed) return;
     }
     renameApplied = true;
-    if (effectiveDatabaseType.value === "oceanbase-oracle" && (row.type === "VIEW" || row.type === "PROCEDURE" || row.type === "FUNCTION")) {
-      queryStore.invalidateRenamedObjectTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: row.type });
-      if (sourceRow.value?.id === row.id) closeSource();
-      invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
-      await Promise.all([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
+    if (databaseType === "oceanbase-oracle" && (row.type === "VIEW" || row.type === "PROCEDURE" || row.type === "FUNCTION")) {
+      queryStore.invalidateRenamedObjectTabs({ connectionId: connection.id, database: database, schema, name: row.name, objectType: row.type });
+      if (isCurrent() && sourceRow.value?.id === row.id) closeSource();
+      invalidateObjectBrowserRowsCache({ connectionId: connection.id, database: database, schema });
+      await Promise.all([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: connection.id, database: database, schema, tableName }), invalidateObjectDdl({ connectionId: connection.id, database: database, schema, tableName })]));
     }
     toast(t("contextMenu.renameObjectSuccess", { oldName: row.name, newName }));
     showRenameDialog.value = false;
-    if (sourceRow.value?.id === row.id) closeSource();
+    if (isCurrent() && sourceRow.value?.id === row.id) closeSource();
     const renamedTarget = { ...oldPinnedNode, label: newName, objectName: newName, tableName: newName };
     await reload();
-    await connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, row.schema || selectedSchema.value);
-    const renamedRow = rows.value.find((candidate) => objectBrowserRowMatchesPinnedTreeNode(candidate, treeNodePinIdentity(renamedTarget), objectBrowserPinnedTreeNodeContext()));
+    await connectionStore.refreshObjectListTreeNode(connection.id, database, row.schema || initialSchema);
+    const renamedRow = isCurrent() && rows.value.find((candidate) => objectBrowserRowMatchesPinnedTreeNode(candidate, treeNodePinIdentity(renamedTarget), objectBrowserPinnedTreeNodeContext()));
     if (renamedRow) {
       connectionStore.replacePinnedTreeNode(
         oldPinnedNode,
@@ -1896,20 +1911,20 @@ async function confirmRename() {
       connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
     }
   } catch (e: any) {
-    if (renameRequestSent && !renameApplied && effectiveDatabaseType.value === "oceanbase-oracle" && row.type === "VIEW") {
-      const schema = row.schema || selectedSchema.value || props.database;
-      notifyViewRenameReadback(props.connection.id, props.database, schema, row.name, "pending");
+    if (renameRequestSent && !renameApplied && databaseType === "oceanbase-oracle" && row.type === "VIEW") {
+      const schema = row.schema || initialSchema || database;
+      notifyViewRenameReadback(connection.id, database, schema, row.name, "pending");
       // Freeze saved identities before awaiting a readback of possibly committed DDL.
-      queryStore.invalidateRenamedViewTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: "VIEW" });
-      invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
-      await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
-      const state = await readOceanBaseViewRenameState(props.connection.id, props.database, schema, row.name, newName);
+      queryStore.invalidateRenamedViewTabs({ connectionId: connection.id, database: database, schema, name: row.name, objectType: "VIEW" });
+      invalidateObjectBrowserRowsCache({ connectionId: connection.id, database: database, schema });
+      await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: connection.id, database: database, schema, tableName }), invalidateObjectDdl({ connectionId: connection.id, database: database, schema, tableName })]));
+      const state = await readOceanBaseViewRenameState(connection.id, database, schema, row.name, newName);
       if (state !== "unchanged") connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
       if (state !== "unchanged") {
         const message = t(state === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown");
-        if (sourceRow.value?.id === row.id) sourceSaveError.value = message;
+        if (isCurrent() && sourceRow.value?.id === row.id) sourceSaveError.value = message;
         renameError.value = `${e?.message || String(e)}\n${message}`;
-        await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
+        await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(connection.id, database, schema)]);
         return;
       }
     }
@@ -1924,12 +1939,12 @@ async function confirmRename() {
       // CREATE may have succeeded even if the response was lost. Refresh both
       // identities without replacing the old pin or masking the original error.
       if (e.step === 5 && (row.type === "PROCEDURE" || row.type === "FUNCTION")) {
-        queryStore.invalidateRenamedObjectTabs({ connectionId: props.connection.id, database: props.database, schema, name: row.name, objectType: row.type });
-        if (sourceRow.value?.id === row.id) closeSource();
+        queryStore.invalidateRenamedObjectTabs({ connectionId: connection.id, database: database, schema, name: row.name, objectType: row.type });
+        if (isCurrent() && sourceRow.value?.id === row.id) closeSource();
       }
-      invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
-      await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: props.connection.id, database: props.database, schema, tableName }), invalidateObjectDdl({ connectionId: props.connection.id, database: props.database, schema, tableName })]));
-      await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
+      invalidateObjectBrowserRowsCache({ connectionId: connection.id, database: database, schema });
+      await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: connection.id, database: database, schema, tableName }), invalidateObjectDdl({ connectionId: connection.id, database: database, schema, tableName })]));
+      await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(connection.id, database, schema)]);
     }
   }
 }
