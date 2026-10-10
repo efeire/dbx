@@ -3,7 +3,7 @@ use dbx_core::models::connection::{ConnectionConfig, DatabaseType};
 use dbx_core::transfer::{
     clear_foreign_key_linked_overwrite_targets, drop_backup_tables, rename_tables_to_backup,
     sort_tables_by_fk_dependency_with_foreign_keys, transfer_table, transfer_table_with_result, TransferContent,
-    TransferMode, TransferObjectConflictPolicy, TransferOwnershipPolicy, TransferRequest, TransferTableNameCase,
+    TransferMode, TransferOwnershipPolicy, TransferRequest, TransferTableNameCase,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
