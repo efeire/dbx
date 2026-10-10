@@ -4107,6 +4107,11 @@ export default withEnglishFallback({
     oceanbaseCloneTargetSchema: "Schema de destino (nome exato)",
     oceanbaseClonePreview:
       "Criar {target}? Os nomes são preservados conforme digitados, entre aspas duplas.\n\nConteúdo copiado:\n{copied}\n\nObjetos excluídos:\n{excluded}\n\nNão são copiados chaves estrangeiras, gatilhos, restrições CHECK/UNIQUE, índices especiais, partições ou atributos físicos. As expressões padrão são mantidas e podem continuar referenciando sequências ou funções de origem. Esta criação de estrutura não copia dados.\n\nCada instrução DDL é confirmada separadamente. Se uma etapa posterior falhar, os objetos criados permanecem e exigem recuperação manual.",
+    oceanbaseViewRenameWarning:
+      "A renomeação não pode ser revertida. As permissões existentes permanecem com a view; objetos dependentes podem ficar inválidos e seu código não é reescrito. Operações entre proprietários exigem ALTER ANY TABLE concedido diretamente e metadados visíveis da view; permissões obtidas apenas por roles não podem ser verificadas.",
+    viewRenameResponseLost: "A resposta da renomeação foi perdida. A releitura do dicionário confirmou que o novo nome existe e o antigo não. O código anterior permanece como uma captura que não pode ser salva; reabra o novo objeto.",
+    viewRenameStateUnknown: "A solicitação de renomeação foi enviada, mas não foi possível confirmar o estado dos dois nomes. O código anterior permanece como uma captura que não pode ser salva. Restabeleça a conexão e releia o objeto antes de editar.",
+    renamedSourceSnapshot: "Após a operação de renomeação, o texto permanece como uma captura somente leitura. Confira o objeto no banco de dados e reabra sua definição atual para editar.",
   },
   visibleDatabases: {
     title: "Bancos de dados visíveis",

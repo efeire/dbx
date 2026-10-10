@@ -6,7 +6,7 @@ import FirebirdObjectManager from "@/components/objects/FirebirdObjectManager.vu
 import { useDatabaseBrowserMutation } from "@/lib/database/databaseBrowserActions";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
 
-import { computed, createApp, nextTick, onActivated, onBeforeUnmount, ref, watch, type Component } from "vue";
+import { computed, createApp, nextTick, onActivated, onBeforeUnmount, onMounted, onUnmounted, ref, watch, type Component } from "vue";
 import { RecycleScroller } from "vue-virtual-scroller";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
 import {
@@ -104,7 +104,7 @@ import {
 import { confirmOceanbaseTableClone, executeOceanbaseTableClone, showOceanbaseTableCloneFailure, OceanbaseTableCloneError } from "@/lib/database/oceanbaseTableClone";
 import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
-import { buildRenameObjectSql, supportsObjectRename } from "@/lib/table/objectRenameSql";
+import { buildRenameObjectSql, notifyViewRenameReadback, readOceanBaseViewRenameState, supportsObjectRename } from "@/lib/table/objectRenameSql";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
 import { generateDatabaseExportId } from "@/lib/export/databaseExport";
@@ -1648,7 +1648,7 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
   sourceContent.value = "";
   sourceError.value = "";
   sourceEditing.value = false;
-  sourceCanEdit.value = true;
+  sourceCanEdit.value = false;
   sourceEditableText.value = "";
   sourceDraft.value = "";
   sourceSaveError.value = "";
@@ -1700,6 +1700,32 @@ async function refreshActiveSource() {
   if (sourceEditing.value && !window.confirm(t("objects.refreshDiscardConfirm"))) return;
   await loadSourcePanel(row, { preserveEditing: true });
 }
+
+let sourceBeforeRenameReadback: { rowId: string; canEdit: boolean; editing: boolean } | null = null;
+function onViewRenameReadback(event: Event) {
+  const target = (event as CustomEvent<{ connectionId: string; database: string; schema: string; oldName: string; state: string }>).detail;
+  const row = sourceRow.value;
+  if (!row || row.type !== "VIEW" || target.connectionId !== props.connection.id || target.database !== props.database || target.schema !== (row.schema || selectedSchema.value || props.database) || target.oldName !== row.name) return;
+  if (target.state === "pending") {
+    sourceBeforeRenameReadback = { rowId: row.id, canEdit: sourceCanEdit.value, editing: sourceEditing.value };
+    sidePanelGuard.start();
+    sourceCanEdit.value = false;
+    sourceEditing.value = false;
+    sourceContent.value = sourceDraft.value;
+    sourceLoading.value = false;
+    sourceSaving.value = false;
+    sourceSaveError.value = t("contextMenu.viewRenameStateUnknown");
+  } else if (target.state === "unchanged" && sourceBeforeRenameReadback?.rowId === row.id) {
+    sourceCanEdit.value = sourceBeforeRenameReadback.canEdit;
+    sourceEditing.value = sourceBeforeRenameReadback.editing;
+    sourceSaveError.value = "";
+    sourceBeforeRenameReadback = null;
+  } else {
+    sourceSaveError.value = t(target.state === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown");
+  }
+}
+onMounted(() => window.addEventListener("dbx:view-rename-readback", onViewRenameReadback));
+onUnmounted(() => window.removeEventListener("dbx:view-rename-readback", onViewRenameReadback));
 
 function openEventEditor(row: ObjectBrowserRow) {
   sidePanelGuard.start();
@@ -1821,47 +1847,72 @@ async function confirmRename() {
   const newName = renameInput.value.trim();
   if (!row || !newName || newName === row.name) return;
   renameError.value = "";
+  const connection = props.connection;
+  const database = props.database;
+  const databaseType = effectiveDatabaseType.value;
+  const initialSchema = selectedSchema.value;
+  const isCurrent = () => props.connection.id === connection.id && props.database === database && selectedSchema.value === initialSchema;
+  const executeRenameWithProductionGuard = async <T>(sql: string, execute: () => Promise<T>): Promise<T | undefined> => {
+    if (!isCurrent()) return;
+    return executeWithProductionSqlGuard({
+      connection,
+      database,
+      sql,
+      source: t("production.sourceObjectBrowser"),
+      execute: async () => (isCurrent() ? execute() : undefined),
+    });
+  };
   const oldPinnedNode = pinnedTreeNodeForObjectBrowserRow(row);
   const oldLegacyPinnedNodes = legacyPinnedTreeNodesForObjectBrowserRow(row);
   let renameApplied = false;
+  let renameRequestSent = false;
   try {
-    const schema = row.schema || selectedSchema.value || props.database;
-    if (supportsSourceBackedRoutineRename(effectiveDatabaseType.value, row.type as ObjectSourceKind)) {
-      const source = await api.getObjectSource(props.connection.id, props.database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined);
+    const schema = row.schema || initialSchema || database;
+    if (supportsSourceBackedRoutineRename(databaseType, row.type as ObjectSourceKind)) {
+      const source = await api.getObjectSource(connection.id, database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined);
       const statements = await buildRoutineRenameObjectSourceStatements({
-        databaseType: effectiveDatabaseType.value,
+        databaseType: databaseType,
         objectType: row.type as ObjectSourceKind,
         schema,
         name: row.name,
         newName,
         source: source.source,
       });
-      const executed = await executeObjectBrowserSqlWithProductionGuard(statements.join(";\n"), async () => {
+      const executed = await executeRenameWithProductionGuard(statements.join(";\n"), async () => {
         for (const sql of statements) {
-          await api.executeQuery(props.connection.id, props.database, sql, schema);
+          await api.executeQuery(connection.id, database, sql, schema);
         }
         return true;
       });
       if (!executed) return;
     } else {
       const sql = await buildRenameObjectSql({
-        databaseType: effectiveDatabaseType.value,
+        databaseType: databaseType,
         objectType: row.type,
         schema,
         oldName: row.name,
         newName,
       });
-      const executed = await executeObjectBrowserSqlWithProductionGuard(sql, () => api.executeQuery(props.connection.id, props.database, sql, schema));
+      const executed = await executeRenameWithProductionGuard(sql, () => {
+        renameRequestSent = true;
+        return api.executeQuery(connection.id, database, sql, schema);
+      });
       if (!executed) return;
     }
     renameApplied = true;
+    if (databaseType === "oceanbase-oracle" && row.type === "VIEW") {
+      queryStore.invalidateRenamedViewTabs({ connectionId: connection.id, database: database, schema, name: row.name, objectType: "VIEW" });
+      if (isCurrent() && sourceRow.value?.id === row.id) closeSource();
+      invalidateObjectBrowserRowsCache({ connectionId: connection.id, database: database, schema });
+      await Promise.all([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: connection.id, database: database, schema, tableName }), invalidateObjectDdl({ connectionId: connection.id, database: database, schema, tableName })]));
+    }
     toast(t("contextMenu.renameObjectSuccess", { oldName: row.name, newName }));
     showRenameDialog.value = false;
-    if (sourceRow.value?.id === row.id) closeSource();
+    if (isCurrent() && sourceRow.value?.id === row.id) closeSource();
     const renamedTarget = { ...oldPinnedNode, label: newName, objectName: newName, tableName: newName };
     await reload();
-    await connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, row.schema || selectedSchema.value);
-    const renamedRow = rows.value.find((candidate) => objectBrowserRowMatchesPinnedTreeNode(candidate, treeNodePinIdentity(renamedTarget), objectBrowserPinnedTreeNodeContext()));
+    await connectionStore.refreshObjectListTreeNode(connection.id, database, row.schema || initialSchema);
+    const renamedRow = isCurrent() && rows.value.find((candidate) => objectBrowserRowMatchesPinnedTreeNode(candidate, treeNodePinIdentity(renamedTarget), objectBrowserPinnedTreeNodeContext()));
     if (renamedRow) {
       connectionStore.replacePinnedTreeNode(
         oldPinnedNode,
@@ -1875,6 +1926,23 @@ async function confirmRename() {
       connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
     }
   } catch (e: any) {
+    if (renameRequestSent && !renameApplied && databaseType === "oceanbase-oracle" && row.type === "VIEW") {
+      const schema = row.schema || initialSchema || database;
+      notifyViewRenameReadback(connection.id, database, schema, row.name, "pending");
+      // Freeze saved identities before awaiting a readback of possibly committed DDL.
+      queryStore.invalidateRenamedViewTabs({ connectionId: connection.id, database: database, schema, name: row.name, objectType: "VIEW" });
+      invalidateObjectBrowserRowsCache({ connectionId: connection.id, database: database, schema });
+      await Promise.allSettled([row.name, newName].flatMap((tableName) => [invalidateObjectMetadataCache({ connectionId: connection.id, database: database, schema, tableName }), invalidateObjectDdl({ connectionId: connection.id, database: database, schema, tableName })]));
+      const state = await readOceanBaseViewRenameState(connection.id, database, schema, row.name, newName);
+      if (state !== "unchanged") connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
+      if (state !== "unchanged") {
+        const message = t(state === "renamed" ? "contextMenu.viewRenameResponseLost" : "contextMenu.viewRenameStateUnknown");
+        if (isCurrent() && sourceRow.value?.id === row.id) sourceSaveError.value = message;
+        renameError.value = `${e?.message || String(e)}\n${message}`;
+        await Promise.allSettled([reload(), connectionStore.refreshObjectListTreeNode(connection.id, database, schema)]);
+        return;
+      }
+    }
     if (renameApplied) {
       // The database mutation succeeded even when metadata refresh did not;
       // remove the old pin instead of allowing it to revive later.
@@ -4569,6 +4637,9 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               <X class="h-3 w-3" />
             </Button>
           </div>
+          <div v-if="!sourceCanEdit && sourceSaveError" class="shrink-0 whitespace-pre-wrap break-words border-b px-3 py-2 text-xs text-destructive">
+            {{ sourceSaveError }}
+          </div>
           <div v-if="sourceLoading" class="flex flex-1 items-center justify-center">
             <Loader2 class="h-4 w-4 animate-spin text-muted-foreground" />
           </div>
@@ -4689,6 +4760,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       </DialogHeader>
       <div class="grid gap-3">
         <Input v-model="renameInput" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" @keydown.enter.prevent="confirmRename" />
+        <p v-if="effectiveDatabaseType === 'oceanbase-oracle' && renameTarget?.type === 'VIEW'" class="text-sm text-muted-foreground">{{ t("contextMenu.oceanbaseViewRenameWarning") }}</p>
         <pre v-if="renamePreviewSqlText" class="max-h-32 min-w-0 max-w-full overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(renamePreviewSqlText)"></pre>
         <p v-if="renameError" class="min-w-0 max-w-full overflow-x-auto text-sm text-destructive">{{ renameError }}</p>
       </div>

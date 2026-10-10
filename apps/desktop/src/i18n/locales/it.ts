@@ -4107,6 +4107,11 @@ export default withEnglishFallback({
     oceanbaseCloneTargetSchema: "Schema di destinazione (nome esatto)",
     oceanbaseClonePreview:
       "Creare {target}? I nomi vengono racchiusi tra virgolette doppie e conservati come inseriti.\n\nContenuto copiato:\n{copied}\n\nOggetti esclusi:\n{excluded}\n\nNon vengono copiati chiavi esterne, trigger, vincoli CHECK/UNIQUE, indici speciali, partizioni o attributi fisici. Le espressioni predefinite restano invariate e possono ancora riferirsi a sequenze o funzioni di origine. Questa creazione della struttura non copia dati.\n\nOgni istruzione DDL viene confermata separatamente. Se un passaggio successivo fallisce, gli oggetti creati restano e richiedono ripristino manuale.",
+    oceanbaseViewRenameWarning:
+      "La rinomina non può essere annullata. Le autorizzazioni esistenti restano associate alla vista; gli oggetti dipendenti possono diventare non validi e il codice non viene riscritto. Le operazioni tra proprietari richiedono ALTER ANY TABLE concesso direttamente e metadati della vista visibili; non è possibile verificare autorizzazioni ottenute solo tramite ruoli.",
+    viewRenameResponseLost: "Risposta alla rinomina persa. La rilettura del dizionario conferma che il nuovo nome esiste e il vecchio no. Il codice precedente resta come istantanea non salvabile; riaprire il nuovo oggetto.",
+    viewRenameStateUnknown: "La richiesta di rinomina è stata inviata, ma non è possibile confermare lo stato dei due nomi. Il codice precedente resta come istantanea non salvabile. Ripristinare la connessione e rileggere l’oggetto prima di modificarlo.",
+    renamedSourceSnapshot: "Dopo l’operazione di rinomina, il testo resta come istantanea di sola lettura. Verificare l’oggetto nel database e riaprire la definizione corrente per modificarla.",
   },
   visibleDatabases: {
     title: "Database Visibili",

@@ -4286,6 +4286,11 @@ export default withEnglishFallback({
     oceanbaseCloneTargetSchema: "Schema de destino (nombre exacto)",
     oceanbaseClonePreview:
       "¿Crear {target}? Los nombres se conservan tal como se introducen, entre comillas dobles.\n\nContenido copiado:\n{copied}\n\nObjetos excluidos:\n{excluded}\n\nNo se copian claves foráneas, disparadores, restricciones CHECK/UNIQUE, índices especiales, particiones ni atributos físicos. Las expresiones predeterminadas se conservan y pueden seguir haciendo referencia a secuencias o funciones de origen. Esta creación de estructura no copia datos.\n\nCada sentencia DDL se confirma por separado. Si falla un paso posterior, los objetos creados permanecen y requieren recuperación manual.",
+    oceanbaseViewRenameWarning:
+      "El cambio de nombre no se puede revertir. Los permisos existentes se conservan con la vista; los objetos dependientes pueden quedar inválidos y su código no se reescribe. Las operaciones entre propietarios requieren ALTER ANY TABLE concedido directamente y metadatos visibles de la vista; no se pueden verificar permisos obtenidos solo mediante roles.",
+    viewRenameResponseLost: "Se perdió la respuesta al cambio de nombre. La lectura del diccionario confirma que el nuevo nombre existe y el anterior no. El código anterior se conserva como instantánea que no se puede guardar; vuelva a abrir el nuevo objeto.",
+    viewRenameStateUnknown: "Se envió la solicitud de cambio de nombre, pero no se pudo confirmar el estado de ambos nombres. El código anterior se conserva como instantánea que no se puede guardar. Restablezca la conexión y vuelva a leer el objeto antes de editar.",
+    renamedSourceSnapshot: "Tras la operación de cambio de nombre, el texto se conserva como instantánea de solo lectura. Verifique el objeto en la base de datos y vuelva a abrir su definición actual para editar.",
   },
   visibleDatabases: {
     title: "Bases de datos visibles",

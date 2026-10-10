@@ -2647,6 +2647,7 @@ export const useQueryStore = defineStore("query", () => {
       objectBrowser: t.objectBrowser,
       objectSource: t.objectSource,
       sourceView: t.sourceView,
+      sourceSnapshot: t.sourceSnapshot,
       tableMeta: t.tableMeta,
       mongoEditTarget: t.mongoEditTarget,
       resultEvicted: t.resultEvicted,
@@ -4796,6 +4797,7 @@ export const useQueryStore = defineStore("query", () => {
       objectBrowser: original.objectBrowser ? { ...original.objectBrowser } : undefined,
       objectSource: original.objectSource ? { ...original.objectSource } : undefined,
       sourceView: original.sourceView,
+      sourceSnapshot: original.sourceSnapshot,
       tableMeta: original.tableMeta
         ? {
             ...original.tableMeta,
@@ -4943,6 +4945,26 @@ export const useQueryStore = defineStore("query", () => {
     // A dropped table-like object makes existing data/structure tabs stale; close
     // them immediately instead of letting the next refresh fail against a missing object.
     closeTabsWhere((tab) => tabMatchesDroppedTableObject(tab, target));
+  }
+
+  function invalidateRenamedViewTabs(target: DroppedTableObjectTarget) {
+    closeDroppedTableObjectTabs({ ...target, objectType: "VIEW" });
+    const schemas = droppedTableObjectSchemaCandidates(target);
+    for (const tab of tabs.value) {
+      if (tab.connectionId !== target.connectionId || tab.database !== target.database) continue;
+      const source = tab.objectSource ?? tab.sourceLoad?.request;
+      const sourceMatches = source?.objectType === "VIEW" && source.name === target.name && schemas.has(normalizeOptionalSchema(tab.objectSource?.schema ?? tab.schema));
+      const ddlMatches = tab.ddlViewer?.objectType === "VIEW" && tab.ddlViewer.tableName === target.name && schemas.has(normalizeOptionalSchema(tab.ddlViewer.schema ?? tab.schema));
+      if (!sourceMatches && !ddlMatches) continue;
+      // Preserve unsaved text as a read-only snapshot. Removing load identities
+      // also prevents an in-flight response from restoring the old editable name.
+      tab.objectSource = undefined;
+      tab.sourceLoad = undefined;
+      tab.ddlViewer = undefined;
+      tab.ddlLoad = undefined;
+      tab.sourceView = true;
+      tab.sourceSnapshot = true;
+    }
   }
 
   async function refreshDataTabInternal(id: string, options?: { supersedeBusy?: boolean; propagateBuildError?: boolean }): Promise<boolean> {
@@ -6032,6 +6054,7 @@ export const useQueryStore = defineStore("query", () => {
     const executionTabId = options?.tabId ?? activeTabId.value;
     if (!executionTabId) return;
     const tab = tabs.value.find((item) => item.id === executionTabId);
+    if (tab?.sourceSnapshot) return false;
     if (tab && pendingResultRunPreparations.has(tab)) return false;
     const previousGridKey = tab ? resultGridInstanceKey(tab) : undefined;
     if (tab?.mode === "query") {
@@ -7037,6 +7060,7 @@ export const useQueryStore = defineStore("query", () => {
     assertUpdateAllowsInteraction();
     const tab = findExecutionTab(id);
     if (!tab || !sql.trim()) return;
+    if (tab.sourceSnapshot) return false;
     if (pendingResultRunPreparations.has(tab)) return false;
 
     const openInNewResultTab = tab.mode === "query" && options?.openInNewResultTab === true;
@@ -9996,6 +10020,7 @@ export const useQueryStore = defineStore("query", () => {
     closeConnectionTabs,
     closeDatabaseTabs,
     closeDroppedTableObjectTabs,
+    invalidateRenamedViewTabs,
     refreshDataTab,
     refreshDataTabsForTable,
     releaseConnectionTabs,

@@ -246,6 +246,25 @@ describe("queryStore database open state", () => {
     expect(store.activeTabId).not.toBe(dataId);
   });
 
+  it("preserves renamed view source text without retaining an editable or reloadable old identity", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const sourceId = store.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "APP", title: "Old View", sql: "CREATE VIEW old_view AS SELECT 1", objectSource: { schema: "APP", name: "old_view", objectType: "VIEW" } });
+    store.updateSql(sourceId, "CREATE VIEW old_view AS SELECT 2");
+    const otherId = store.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "OTHER", title: "Other View", sql: "SELECT 3", objectSource: { schema: "OTHER", name: "old_view", objectType: "VIEW" } });
+    const queryId = store.createTab("ob", "APP", "query", "query", "APP", "SELECT * FROM old_view");
+    store.invalidateRenamedViewTabs({ connectionId: "ob", database: "APP", schema: "APP", name: "old_view", objectType: "VIEW" });
+    const source = store.tabs.find((tab) => tab.id === sourceId)!;
+    expect(source.sql).toBe("CREATE VIEW old_view AS SELECT 2");
+    expect(source.sourceView).toBe(true);
+    expect(source.sourceSnapshot).toBe(true);
+    expect(source.objectSource).toBeUndefined();
+    expect(store.refreshObjectSourceTab(sourceId)).toBe(false);
+    await expect(store.executeCurrentSql(source.sql, { tabId: sourceId })).resolves.toBe(false);
+    expect(store.tabs.find((tab) => tab.id === otherId)?.objectSource?.name).toBe("old_view");
+    expect(store.tabs.find((tab) => tab.id === queryId)?.sql).toBe("SELECT * FROM old_view");
+  });
+
   it("closes data tabs but keeps structure tabs for dropped views", async () => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();

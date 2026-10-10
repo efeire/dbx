@@ -34,6 +34,7 @@ const {
   renameObjectName,
   renameObjectDialogTitle,
   renameObjectPreviewSql,
+  renameObjectWarning,
   renameObjectError,
   confirmRenameObject,
   showStructurePreviewDialog,
@@ -294,6 +295,7 @@ watch(
       </DialogHeader>
       <div class="grid gap-3">
         <Input v-model="renameObjectName" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" @keydown.enter.prevent="confirmRenameObject" />
+        <p v-if="renameObjectWarning" class="text-sm text-muted-foreground">{{ renameObjectWarning }}</p>
         <pre v-if="renameObjectPreviewSql" class="max-h-32 min-w-0 max-w-full overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(renameObjectPreviewSql)"></pre>
         <p v-if="renameObjectError" class="min-w-0 max-w-full overflow-x-auto text-sm text-destructive">{{ renameObjectError }}</p>
       </div>
