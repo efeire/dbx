@@ -10,6 +10,7 @@ import { useI18n } from "vue-i18n";
 import { FileText, FolderPlus } from "@lucide/vue";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import AppToolbar from "@/components/layout/AppToolbar.vue";
+import LinuxResizeHandles from "@/components/layout/LinuxResizeHandles.vue";
 import AppTabBar from "@/components/layout/AppTabBar.vue";
 import { createGroupTabBarPortal, GROUP_TAB_BAR_PORTAL } from "@/components/layout/groupTabBarPortal";
 import PluginShortcutBar from "@/components/plugins/PluginShortcutBar.vue";
@@ -74,7 +75,7 @@ import { useExternalSqlFileChanges } from "@/composables/useExternalSqlFileChang
 import { useWebDavAutoUpload } from "@/composables/useWebDavAutoUpload";
 import { readSyncMethod, readWebDavAutoUploadConfig, readWebDavBackupSelection } from "@/lib/webdav/webdavAutoUploadConfig";
 import { useScheduledDatabaseBackups } from "@/composables/useScheduledDatabaseBackups";
-import { shouldDrawDesktopWindowFrame } from "@/composables/useWindowControls";
+import { shouldDrawDesktopWindowFrame, shouldDrawLinuxFloatingFrame, useWindowControls } from "@/composables/useWindowControls";
 import { createOpenTabsRestorationBarrier, initializeDesktopOpenTabs, initializeOpenTabs, type OpenTabsRestorationBarrier } from "@/lib/app/openTabsStartup";
 import { finishAppCloseWithRequiredPersist } from "@/lib/app/appClosePersistence";
 import { useSaveSqlFolderSelection } from "@/composables/useSaveSqlFolderSelection";
@@ -95,7 +96,7 @@ import { schemaAfterConnectionSwitch } from "@/lib/schema/connectionSchemaInitia
 import { resolveHistorySqlRestoreTarget } from "@/lib/history/historyRestoreTarget";
 import { resolveExecutableSql, resolveExecutableSqlWithBackend, type SqlExecutionOverride, type SqlExecutionSnapshot } from "@/lib/sql/sqlExecutionTarget";
 import { uuid } from "@/lib/common/utils";
-import { isMacOS, isWindows } from "@/lib/backend/platform";
+import { getPlatform, isMacOS, isWindows } from "@/lib/backend/platform";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { openQueryResultArchiveFile } from "@/lib/query/queryResultArchiveFile";
 import { activeTabExternalSqlFileTarget, rememberExternalSqlFileTarget, resolveExternalSqlFileTarget, resolveExternalSqlFileTargetForActiveTab, unassociatedExternalSqlFileTarget, type ExternalSqlFileTarget } from "@/lib/sql/externalSqlFileTarget";
@@ -387,6 +388,22 @@ let updateCheckTimer: ReturnType<typeof setInterval> | undefined;
 const needsAuth = ref(!isDesktop && (startupProps.startupAuthentication?.required ?? true));
 const authenticated = ref(isDesktop || (startupProps.startupAuthentication?.authenticated ?? false));
 const setupRequired = ref(!isDesktop && (startupProps.startupAuthentication?.setup_required ?? false));
+const { isMaximized: windowMaximized, isFullscreen: windowFullscreen } = useWindowControls();
+// The Rust side injects this flag into the main window only when a compositing manager is
+// running (see create_linux_main_window); detached-tab and plugin windows never get it.
+const linuxCompositing = (window as unknown as { __DBX_LINUX_FLOATING__?: boolean }).__DBX_LINUX_FLOATING__ === true;
+const drawLinuxFloatingFrame = computed(() =>
+  shouldDrawLinuxFloatingFrame({
+    isLinux: getPlatform() === "linux",
+    isDesktop,
+    isMainWindow: windowContext.kind === "main",
+    compositing: linuxCompositing,
+    showingAuthPage: setupRequired.value || (needsAuth.value && !authenticated.value),
+    isMaximized: windowMaximized.value,
+    isFullscreen: windowFullscreen.value,
+  }),
+);
+watch(drawLinuxFloatingFrame, (enabled) => document.documentElement.classList.toggle("dbx-linux-floating", enabled), { immediate: true });
 // Mirrors the template gate above the app shell. The backend liveness stream is registered
 // against it so the web runtime only opens an authenticated subscription.
 const appReady = computed(() => !setupRequired.value && (!needsAuth.value || authenticated.value));
@@ -473,7 +490,6 @@ const activeOutputView = computed<TabOutputView>({
     if (tab) queryStore.updateTabUiState(tab.id, { activeOutputView: view });
   },
 });
-const newQueryContextSource = ref<"tab" | "sidebar">("tab");
 const queryEditorDdlTarget = ref<{ connectionId: string; database: string; catalog?: string; schema?: string; tableName: string; objectType?: ObjectSourceKind } | null>(null);
 const queryEditorObjectSourceTarget = ref<{
   connectionId: string;
@@ -1094,7 +1110,6 @@ provide(EDITOR_TOOLBAR_ACTIONS, {
   canNewQuery: canCreateNewQuery,
   newQuery: (groupId: string) => {
     queryStore.focusGroup(groupId);
-    newQueryContextSource.value = "tab";
     void newQuery();
   },
   explainMode,
@@ -1738,7 +1753,6 @@ watch(
         }),
       );
     }
-    if (id) newQueryContextSource.value = "tab";
     if (id) activateQuerySurface();
     else if (previousId) activateOpenSpecialPageFallback();
     if (id && pluginCenterActive.value) pluginCenterActive.value = false;
@@ -1836,13 +1850,6 @@ watch(
     navigationStore.record(entry);
   },
   { immediate: true },
-);
-
-watch(
-  () => connectionStore.selectedTreeNodeId,
-  (id) => {
-    if (id) newQueryContextSource.value = "sidebar";
-  },
 );
 
 watch(
@@ -3081,14 +3088,21 @@ function openConnectionSettings(connectionId: string, initialTab: ConfigTab = "c
 }
 
 async function newQuery() {
+  const sqlConnections = connectionStore.connections.filter((connection) => quickConnectionOpenTarget(connection).kind === "query" && supportsGenericNewQuery(connection));
+  const connectedSqlConnectionIds = new Set(sqlConnections.filter((connection) => connectionStore.connectedIds.has(connection.id)).map((connection) => connection.id));
   let target = resolveNewQueryTarget({
     activeTab: activeTab.value,
     selectedTreeNode: findTreeNodeById(connectionStore.treeNodes, connectionStore.selectedTreeNodeId),
     activeConnectionId: connectionStore.activeConnectionId,
     connections: connectionStore.connections,
-    preferredSource: newQueryContextSource.value,
+    connectedSqlConnectionIds,
   });
-  if (!target) return;
+  if (!target) {
+    // No active editor/sidebar choice and no unique online SQL connection:
+    // leave the connection unset so the user can choose in the editor toolbar.
+    if (sqlConnections.length > 0) queryStore.createTab("", "", undefined, "query");
+    return;
+  }
   let conn = connectionStore.getConfig(target.connectionId);
   if (!conn) return;
 
@@ -3138,7 +3152,6 @@ async function newQuery() {
   const initialSql = resolveNewQueryInitialSql({
     activeTab: activeTab.value,
     selectedTreeNode: findTreeNodeById(connectionStore.treeNodes, connectionStore.selectedTreeNodeId),
-    preferredSource: newQueryContextSource.value,
     prefillEnabled: settingsStore.editorSettings.prefillNewQueryWithSelect,
     targetConnectionId: target.connectionId,
     targetDatabase: target.database,
@@ -4737,12 +4750,13 @@ onUnmounted(() => {
 
 <template>
   <LoginPage v-if="setupRequired || (needsAuth && !authenticated)" :setup-mode="setupRequired" @authenticated="onLoginSuccess" />
-  <div v-show="!setupRequired && (!needsAuth || authenticated)" class="fixed inset-0 h-screen w-screen overflow-hidden">
+  <div v-show="!setupRequired && (!needsAuth || authenticated)" class="dbx-app-root fixed inset-0 h-screen w-screen overflow-hidden">
     <div v-if="appBackgroundActive && appBackgroundObjectUrl" data-app-background class="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
       <div class="h-full w-full" :style="appBackgroundImageStyle"></div>
     </div>
     <TooltipProvider :delay-duration="300">
       <SidebarDangerDialogHost />
+      <LinuxResizeHandles v-if="drawLinuxFloatingFrame" />
       <div data-app-shell class="h-screen w-screen max-w-full min-w-[760px] min-h-[600px] flex flex-col bg-background text-foreground overflow-hidden" :class="{ 'dbx-desktop-window-frame': drawDesktopWindowFrame }" :style="appUiFontFamilyStyle">
         <AppToolbar
           v-if="!isDetachedWindowContext"
