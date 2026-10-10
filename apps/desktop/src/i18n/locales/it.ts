@@ -4552,6 +4552,8 @@ export default withEnglishFallback({
     valid: "valido",
     invalid: "non valido",
     refreshDiscardConfirm: "L'aggiornamento eliminerà le modifiche non salvate al codice sorgente. Continuare?",
+    pagedRegexUnsupported: "La ricerca paginata degli oggetti non supporta espressioni regolari. Inserire un nome o un commento.",
+    pagedOrder: "Caricati {count} oggetti nell’ordine del database. Aggiornare dopo le modifiche agli oggetti.",
   },
   structureEditor: {
     mysqlDataTypeHelp: {
