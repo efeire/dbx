@@ -8,6 +8,7 @@ import { tableColumnDefaultDisplayValue } from "@/lib/table/tableColumnDefaultPr
 import { triggerDisplayName, triggerIdentity } from "@/lib/table/triggerIdentity";
 import { formatObjectBrowserBytes } from "@/lib/table/objectBrowserRows";
 import { estimatedRowsDetails, estimatedRowsText } from "@/lib/dataGrid/oceanBaseRowStatistics";
+import { oceanbaseSpaceRows } from "@/lib/table/oceanbaseSpaceStatistics";
 import type { ColumnInfo, ConstraintInfo, ForeignKeyInfo, IndexInfo, ObjectStatistics, PgTablePartitioning, TableInfoTab, TriggerInfo } from "@/types/database";
 
 interface DataGridTableInfoPanelsProps {
@@ -74,6 +75,7 @@ const overviewRows = computed(() => {
     { label: t("grid.tableInfoIndexLength"), value: formatObjectBrowserBytes(props.overviewStats?.index_length), mono: true },
     { label: t("grid.tableInfoAutoIncrement"), value: props.overviewStats?.auto_increment ?? "", mono: true },
     { label: t("grid.tableInfoDataFree"), value: formatObjectBrowserBytes(props.overviewStats?.data_free), mono: true },
+    ...oceanbaseSpaceRows(props.overviewStats?.space, t),
   ];
   const query = props.searchQuery.trim().toLowerCase();
   return rows.filter((row) => row.value && (!query || row.label.toLowerCase().includes(query) || row.value.toLowerCase().includes(query)));

@@ -34,6 +34,7 @@ export function oceanBaseTableStatistics(snapshot: Snapshot, name: string, schem
       schema,
       estimated_rows: null,
       rows_status: snapshot.status ?? "unknown",
+      space: { status: "unknown", source: "", replica_scope: "leader", data_bytes: null, allocated_bytes: null, components_status: "unknown", components: [] },
     }
   );
 }
