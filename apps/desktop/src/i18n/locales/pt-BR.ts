@@ -4107,6 +4107,12 @@ export default withEnglishFallback({
     oceanbaseCloneTargetSchema: "Schema de destino (nome exato)",
     oceanbaseClonePreview:
       "Criar {target}? Os nomes são preservados conforme digitados, entre aspas duplas.\n\nConteúdo copiado:\n{copied}\n\nObjetos excluídos:\n{excluded}\n\nNão são copiados chaves estrangeiras, gatilhos, restrições CHECK/UNIQUE, índices especiais, partições ou atributos físicos. As expressões padrão são mantidas e podem continuar referenciando sequências ou funções de origem. Esta criação de estrutura não copia dados.\n\nCada instrução DDL é confirmada separadamente. Se uma etapa posterior falhar, os objetos criados permanecem e exigem recuperação manual.",
+    routineRenameStepFailed: "A alteração de “{oldName}” para “{newName}” parou na etapa {step}: {message}. O DDL executado não é revertido automaticamente. Verifique ambos os objetos e corrija ou remova o novo antes de tentar novamente.",
+    routineRenameOriginalNotDropped: "A etapa de exclusão do objeto original ainda não foi enviada.",
+    routineRenameRecoveryTitle: "Definição anterior à renomeação: {name}",
+    oceanbaseRoutineRenameWarning:
+      "Serão feitas a verificação prévia, a criação, a verificação da compilação, a cópia das permissões e a verificação das dependências antes de excluir o original. O DDL não é revertido automaticamente. Se a compilação, as permissões ou as dependências não passarem na verificação, o original será mantido e o novo poderá permanecer. As dependências não são reescritas; se não puderem ser lidas por completo, o original não será excluído. Ao confirmar, a definição original será salva em uma aba somente leitura para conferência e recuperação manual. As permissões devem ser verificadas separadamente.",
+    routineRenameFinalStateUnknown: "A última etapa pode ter alterado o banco de dados. Antes de recuperar, releia os dois objetos, o estado de compilação, as permissões e as dependências.",
     oceanbaseViewRenameWarning:
       "A renomeação não pode ser revertida. As permissões existentes permanecem com a view; objetos dependentes podem ficar inválidos e seu código não é reescrito. Operações entre proprietários exigem ALTER ANY TABLE concedido diretamente e metadados visíveis da view; permissões obtidas apenas por roles não podem ser verificadas.",
     viewRenameResponseLost: "A resposta da renomeação foi perdida. A releitura do dicionário confirmou que o novo nome existe e o antigo não. O código anterior permanece como uma captura que não pode ser salva; reabra o novo objeto.",
