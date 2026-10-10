@@ -15,6 +15,7 @@ class JsonRpcLargeValueTest {
         DatabaseAgent agent = (DatabaseAgent) Proxy.newProxyInstance(DatabaseAgent.class.getClassLoader(),
             new Class<?>[]{DatabaseAgent.class}, (object, method, args) -> {
                 if (method.getName().equals("supportsQueryTiming")) return false;
+                if (method.getName().equals("permitsAutomaticReconnect")) return false;
                 if (method.getName().equals("readLargeValueChunk")) {
                     calls.add("read");
                     assertArrayEquals(new Object[]{"opaque-original", 700L, 4096}, args);
@@ -38,6 +39,7 @@ class JsonRpcLargeValueTest {
         DatabaseAgent agent = (DatabaseAgent) Proxy.newProxyInstance(DatabaseAgent.class.getClassLoader(),
             new Class<?>[]{DatabaseAgent.class}, (object, method, args) -> {
                 if (method.getName().equals("supportsQueryTiming")) return false;
+                if (method.getName().equals("permitsAutomaticReconnect")) return false;
                 if (method.getName().equals("invalidateLargeValues")) { calls.add("invalidate"); return null; }
                 if (method.getName().equals("commitManualTransaction")) { calls.add("commit"); return Map.of("ok", true); }
                 return null;
@@ -53,6 +55,7 @@ class JsonRpcLargeValueTest {
         DatabaseAgent agent = (DatabaseAgent) Proxy.newProxyInstance(DatabaseAgent.class.getClassLoader(),
             new Class<?>[]{DatabaseAgent.class}, (object, method, args) -> {
                 if (method.getName().equals("supportsQueryTiming")) return false;
+                if (method.getName().equals("permitsAutomaticReconnect")) return false;
                 if (method.getName().equals("invalidateLargeValues")) { calls.add("invalidate"); return null; }
                 if (method.getName().equals("executeBatch")) { calls.add("write"); throw new java.sql.SQLException("concurrent row removed"); }
                 if (method.getName().equals("rollbackManualTransaction")) { calls.add("rollback"); return Map.of("ok", true); }

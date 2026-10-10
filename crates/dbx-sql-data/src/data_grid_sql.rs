@@ -3782,7 +3782,7 @@ fn oceanbase_temporary_blob_statement(rewritten: &str, blobs: &[&str], guard_row
         ));
     }
     statement.push_str("BEGIN\ndbx_sql := ");
-    statement.push_str(&format_oracle_lob_assignment_literal(&rewritten, "TO_CLOB"));
+    statement.push_str(&format_oracle_lob_assignment_literal(rewritten, "TO_CLOB"));
     statement.push_str(";\n");
     for (index, hex) in blobs.iter().enumerate() {
         statement.push_str(&format!("DBMS_LOB.CREATETEMPORARY(dbx_lob_{index}, TRUE, DBMS_LOB.CALL);\n"));
