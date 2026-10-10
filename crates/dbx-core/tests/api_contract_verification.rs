@@ -20,6 +20,8 @@ use dbx_core::types::{ColumnInfo, TableInfo};
 #[test]
 fn prepare_schema_diff_function_signature() {
     let options = SchemaDiffPreparationOptions {
+        source_database_type: None,
+        source_schema: None,
         source_tables: vec![TableInfo {
             name: "t".to_string(),
             table_type: "TABLE".to_string(),
@@ -122,6 +124,8 @@ fn classify_sql_risk_function_signature() {
 #[test]
 fn schema_diff_preparation_field_names() {
     let result = prepare_schema_diff(SchemaDiffPreparationOptions {
+        source_database_type: None,
+        source_schema: None,
         source_tables: vec![TableInfo {
             name: "t".to_string(),
             table_type: "TABLE".to_string(),
