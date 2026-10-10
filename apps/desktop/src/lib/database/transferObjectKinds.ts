@@ -8,13 +8,13 @@ export enum TransferObjectFamily {
   SqlServer = "sqlserver",
 }
 
-export type TransferObjectKind = "TABLE" | "VIEW" | "MATERIALIZED_VIEW" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "SEQUENCE" | "EVENT" | "PACKAGE" | "PACKAGE_BODY" | "SYNONYM" | "PUBLIC_SYNONYM";
+export type TransferObjectKind = "TABLE" | "VIEW" | "MATERIALIZED_VIEW" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "SEQUENCE" | "EVENT" | "PACKAGE" | "PACKAGE_BODY" | "SYNONYM" | "PUBLIC_SYNONYM" | "DB_LINK" | "PUBLIC_DB_LINK";
 
 export function requiresTransferSchemaObjectPlan(kind: TransferObjectKind): boolean {
-  return kind === "PACKAGE" || kind === "PACKAGE_BODY" || kind === "SYNONYM" || kind === "PUBLIC_SYNONYM";
+  return kind === "PACKAGE" || kind === "PACKAGE_BODY" || kind === "SYNONYM" || kind === "PUBLIC_SYNONYM" || kind === "DB_LINK" || kind === "PUBLIC_DB_LINK";
 }
 
-export function transferObjectMetadataTarget(kind: TransferObjectKind, schema: string): { objectType: Exclude<TransferObjectKind, "PUBLIC_SYNONYM">; schema: string } | undefined {
+export function transferObjectMetadataTarget(kind: Exclude<TransferObjectKind, "DB_LINK" | "PUBLIC_DB_LINK">, schema: string): { objectType: Exclude<TransferObjectKind, "PUBLIC_SYNONYM" | "DB_LINK" | "PUBLIC_DB_LINK">; schema: string } | undefined {
   if (kind === "SYNONYM" && (schema === "PUBLIC" || schema === "__public")) return undefined;
   return kind === "PUBLIC_SYNONYM" ? { objectType: "SYNONYM", schema: "PUBLIC" } : { objectType: kind, schema };
 }
@@ -56,7 +56,7 @@ export function isTransferPairSupported(source?: DatabaseType, target?: Database
 }
 
 export function transferObjectKindsForDatabase(dbType?: DatabaseType): TransferObjectKind[] {
-  if (dbType === "oracle" || dbType === "oceanbase-oracle") return [...ORACLE_KINDS, "PACKAGE", "PACKAGE_BODY", "SYNONYM", "PUBLIC_SYNONYM"];
+  if (dbType === "oracle" || dbType === "oceanbase-oracle") return [...ORACLE_KINDS, "PACKAGE", "PACKAGE_BODY", "SYNONYM", "PUBLIC_SYNONYM", "DB_LINK", "PUBLIC_DB_LINK"];
   switch (transferObjectFamily(dbType)) {
     case TransferObjectFamily.Mysql:
       return [...MYSQL_KINDS];

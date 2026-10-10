@@ -212,12 +212,20 @@ async fn dependency_chain(
         if !current.db_link.is_empty() {
             let target_context = resolve_oracle_schema(&request.target_schema, &request.target_database);
             let link_owner = if public(&current.owner) { target_context.as_str() } else { current.owner.as_str() };
-            let result = metadata(state, pool, &format!("SELECT OWNER, DB_LINK FROM ALL_DB_LINKS WHERE DB_LINK = {} AND (OWNER = {} OR OWNER IN ('PUBLIC', '__public'))", quote_string_literal(&current.db_link), quote_string_literal(link_owner))).await?;
+            let available = oracle_database_links::dependency_available(
+                state,
+                request,
+                pool,
+                link_owner,
+                &current.db_link,
+                allow_planned_objects,
+            )
+            .await?;
             dependencies.push(TransferSchemaObjectDependency {
                 owner: link_owner.into(),
                 name: current.db_link,
                 object_type: "DATABASE LINK".into(),
-                available: !result.rows.is_empty(),
+                available,
             });
             // Never dereference the link, read credentials, or claim the remote object exists.
             return Ok(dependencies);
@@ -302,6 +310,7 @@ async fn build_plan(
         };
         let mut entry = Planned {
             item: TransferSchemaObjectItem {
+                credential_required: None,
                 object_type: kind,
                 name: name.clone(),
                 source_schema: source_schema.clone(),
@@ -661,6 +670,7 @@ mod tests {
     fn planned(name: &str, schema: &str, dependencies: &[(&str, &str)]) -> Planned {
         Planned {
             item: TransferSchemaObjectItem {
+                credential_required: None,
                 object_type: if public(schema) {
                     TransferObjectKind::PublicSynonym
                 } else {

@@ -23,6 +23,8 @@ pub struct TransferSchemaObjectDependency {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferSchemaObjectItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_required: Option<bool>,
     pub object_type: TransferObjectKind,
     pub name: String,
     pub source_schema: String,
@@ -236,6 +238,37 @@ async fn object_status(
     Ok(result.rows.first().and_then(|r| r.first()).and_then(|v| v.as_str()).map(str::to_string))
 }
 
+async fn validate_execution_dependency(
+    state: &AppState,
+    request: &TransferRequest,
+    target_pool: &str,
+    dependency: &TransferSchemaObjectDependency,
+) -> Result<(), String> {
+    let available = if dependency.object_type == "DATABASE LINK (remote object unverified)" {
+        oracle_database_links::dependency_available(
+            state,
+            request,
+            target_pool,
+            &dependency.owner,
+            &dependency.name,
+            false,
+        )
+        .await?
+    } else {
+        object_status(state, target_pool, &dependency.owner, &dependency.name, &dependency.object_type)
+            .await?
+            .as_deref()
+            == Some("VALID")
+    };
+    if !available {
+        return Err(format!(
+            "Dependency is no longer available: {}.{} ({})",
+            dependency.owner, dependency.name, dependency.object_type,
+        ));
+    }
+    Ok(())
+}
+
 fn text(row: &[serde_json::Value], index: usize) -> String {
     row.get(index).and_then(|v| v.as_str()).unwrap_or_default().to_string()
 }
@@ -268,6 +301,18 @@ async fn dependencies(
         let dependency = text(&row, 1);
         let object_type = text(&row, 2);
         let link = text(&row, 3);
+        if !link.is_empty() {
+            let available =
+                oracle_database_links::dependency_available(state, request, target_pool, &target_schema, &link, true)
+                    .await?;
+            result.push(TransferSchemaObjectDependency {
+                owner: target_schema.clone(),
+                name: link,
+                object_type: "DATABASE LINK (remote object unverified)".into(),
+                available,
+            });
+            continue;
+        }
         // The definition header moves into the selected target schema. Other schemas stay intact.
         let words = sql_words(&declaration(original, kind)?.2);
         let explicit = words.windows(3).any(|part| {
@@ -355,6 +400,7 @@ async fn build_plan(
     let mut items = Vec::new();
     for (kind, name) in &selections {
         let mut item = TransferSchemaObjectItem {
+            credential_required: None,
             object_type: *kind,
             name: name.clone(),
             source_schema: source_schema.clone(),
@@ -728,16 +774,7 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
             // Planned dependencies may have been skipped or changed since preflight.
             // Read them again after their execution and before mutating this object.
             for dependency in &item.dependencies {
-                if object_status(state, target_pool, &dependency.owner, &dependency.name, &dependency.object_type)
-                    .await?
-                    .as_deref()
-                    != Some("VALID")
-                {
-                    return Err(format!(
-                        "Dependency is no longer VALID: {}.{} ({})",
-                        dependency.owner, dependency.name, dependency.object_type
-                    ));
-                }
+                validate_execution_dependency(state, request, target_pool, dependency).await?;
             }
             let expected_signature = if item.object_type == TransferObjectKind::Package {
                 Some(signature(state, source_pool, &item.source_schema, &item.name).await?)
@@ -850,6 +887,86 @@ pub(super) async fn execute<F: FnMut(TransferProgress)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn package_execution_rechecks_real_link_catalog_instead_of_remote_object_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = crate::persistence::test_storage::open(&directory.path().join("storage.db")).await.unwrap();
+        let state = AppState::new(storage);
+        let pool =
+            crate::db::sqlite::connect_path_create_if_missing(directory.path().join("target.db").to_str().unwrap())
+                .await
+                .unwrap();
+        state
+            .update_connection_pools(|connections| {
+                connections.insert("target".into(), PoolKind::Sqlite(pool));
+            })
+            .await;
+        // SQLite supplies a strict local catalog fixture; no remote database is queried.
+        execute_on_pool(&state, "target", "CREATE TABLE ALL_DB_LINKS (OWNER TEXT, DB_LINK TEXT)").await.unwrap();
+        let request: TransferRequest = serde_json::from_value(serde_json::json!({"transferId":"x","sourceConnectionId":"s","sourceDatabase":"S","sourceSchema":"S","targetConnectionId":"t","targetDatabase":"T","targetSchema":"T","tables":[],"createTable":true,"batchSize":100,"objects":[{"objectType":"DB_LINK","names":["REMOTE"]}],"databaseLinks":[{"objectType":"DB_LINK","name":"REMOTE","sourceOwner":"S","targetName":"REMOTE","targetScope":"private","authentication":"fixedUser","username":"U","host":"remote","credentialAvailable":true}]})).unwrap();
+        let dependency = TransferSchemaObjectDependency {
+            owner: "T".into(),
+            name: "REMOTE".into(),
+            object_type: "DATABASE LINK (remote object unverified)".into(),
+            available: true,
+        };
+        // A planned credential-ready link passes preview, but cannot stand in for execution readback.
+        assert!(oracle_database_links::dependency_available(&state, &request, "target", "T", "REMOTE", true)
+            .await
+            .unwrap());
+        assert!(validate_execution_dependency(&state, &request, "target", &dependency).await.is_err());
+        execute_on_pool(&state, "target", "INSERT INTO ALL_DB_LINKS VALUES ('T', 'REMOTE')").await.unwrap();
+        assert!(validate_execution_dependency(&state, &request, "target", &dependency).await.is_ok());
+        execute_on_pool(&state, "target", "DELETE FROM ALL_DB_LINKS").await.unwrap();
+        execute_on_pool(&state, "target", "INSERT INTO ALL_DB_LINKS VALUES ('PUBLIC', 'REMOTE')").await.unwrap();
+        assert!(validate_execution_dependency(&state, &request, "target", &dependency).await.is_ok());
+        execute_on_pool(
+            &state,
+            "target",
+            "CREATE TABLE ALL_OBJECTS (OWNER TEXT, OBJECT_NAME TEXT, OBJECT_TYPE TEXT, STATUS TEXT)",
+        )
+        .await
+        .unwrap();
+        execute_on_pool(&state, "target", "INSERT INTO ALL_OBJECTS VALUES ('T', 'LOCAL', 'PACKAGE', 'INVALID')")
+            .await
+            .unwrap();
+        let local = TransferSchemaObjectDependency {
+            owner: "T".into(),
+            name: "LOCAL".into(),
+            object_type: "PACKAGE".into(),
+            available: true,
+        };
+        assert!(validate_execution_dependency(&state, &request, "target", &local).await.is_err());
+        execute_on_pool(&state, "target", "UPDATE ALL_OBJECTS SET STATUS = 'VALID'").await.unwrap();
+        assert!(validate_execution_dependency(&state, &request, "target", &local).await.is_ok());
+    }
+
+    #[test]
+    fn uncertain_failed_write_preserves_both_definitions_for_explicit_recovery() {
+        let backup = PackageBackup {
+            connection_id: "target-connection".into(),
+            schema: "Mixed.Target".into(),
+            name: "P".into(),
+            definitions: vec![
+                ("PACKAGE".into(), "PACKAGE P AS END;".into()),
+                ("PACKAGE BODY".into(), "PACKAGE BODY P AS secret varchar2(20) := 'private'; END;".into()),
+            ],
+        };
+        // Producing failure guidance has no pool/executor, and leaves the exact old
+        // specification/body available for recovery after the pending write finishes.
+        let before = serde_json::to_value(&backup).unwrap();
+        let guidance = manual_recovery(&backup, "backup.json");
+        assert_eq!(serde_json::to_value(&backup).unwrap(), before);
+        assert!(guidance.contains("No automatic restoration was executed"));
+        assert!(guidance.contains("Wait for pending DDL to finish and compare current source"));
+        assert!(
+            guidance.contains("explicitly restoring the backup on connection target-connection in schema Mixed.Target")
+        );
+        assert!(guidance.contains("VALID, ALL_ERRORS and full source"));
+        assert!(guidance.contains("backup.json"));
+        assert!(!guidance.contains("private"));
+    }
+
     #[test]
     fn uncertain_failed_write_preserves_both_definitions_for_explicit_recovery() {
         let backup = PackageBackup {
@@ -911,6 +1028,7 @@ mod tests {
 
     fn plan_item(kind: TransferObjectKind, name: &str, dependencies: &[&str]) -> TransferSchemaObjectItem {
         TransferSchemaObjectItem {
+            credential_required: None,
             object_type: kind,
             name: name.into(),
             source_schema: "S".into(),
