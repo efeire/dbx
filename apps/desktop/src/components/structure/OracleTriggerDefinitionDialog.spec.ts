@@ -171,4 +171,28 @@ describe("complete trigger definition dialog", () => {
     expect([...document.querySelectorAll("textarea")].some((element) => element.readOnly && element.value === original)).toBe(true);
     expect(api.executeQuery).toHaveBeenCalledTimes(4);
   });
+
+  it("cancels replacement when the context changes during the metadata preflight", async () => {
+    const { safety, database, changed } = await mountDialog();
+    let finishRead!: (value: any) => void;
+    vi.mocked(api.executeQuery).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    click("structureEditor.triggerPreviewDefinition");
+    await nextTick();
+    click("common.save");
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await vi.waitFor(() => expect(api.executeQuery).toHaveBeenCalledTimes(1));
+    database.value = "OTHER_DATABASE";
+    await nextTick();
+    finishRead({ columns: [], rows: [["VALID", "ENABLED", "APP", "DATA"]] });
+    await vi.waitFor(() => expect(api.getObjectSource).toHaveBeenLastCalledWith("ob", "APP", "APP", "T", "TRIGGER"));
+    await vi.waitFor(() => expect([...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === i18n.global.t("structureEditor.triggerPreviewDefinition"))?.disabled).toBe(false));
+    expect(api.executeQuery).toHaveBeenCalledTimes(1);
+    expect(changed).not.toHaveBeenCalled();
+  });
 });

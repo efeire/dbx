@@ -136,6 +136,7 @@ async function save() {
             }
           },
           onMutationStarted: () => {
+            if (saveEpoch !== loadEpoch) throw new Error("Trigger editing context changed before replacement; reopen the selected trigger.");
             mutationStarted = true;
           },
         });
