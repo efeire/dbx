@@ -262,6 +262,8 @@ async function apply() {
     if (response) {
       outcome.value = response;
       details.value = response.readback ?? null;
+      selected.value = response.readback?.job ? { ...requested.identity } : null;
+      selectedLegacy.value = false;
       editor.value = false;
     }
     previewOpen.value = false;

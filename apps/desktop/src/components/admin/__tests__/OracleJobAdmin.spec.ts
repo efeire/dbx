@@ -83,6 +83,34 @@ afterEach(() => {
 });
 
 describe("OracleJobAdmin production component", () => {
+  it("keeps a newly created job selected for immediate editing and enable preview", async () => {
+    const original = mocks.oracleJobs.getMockImplementation()!;
+    mocks.oracleJobs.mockImplementation(async (...args) => {
+      if (args[2].operation === "apply") return { outcome: "unverified", readback: { ...details, job: { ...details.job, OWNER: "TEST", JOB_NAME: "PLAN" } } };
+      return original(...args);
+    });
+    mount();
+    await settle();
+    await click("JOB 7");
+    await click("New disabled job");
+    for (const [label, value] of [
+      ["Exact owner", "TEST"],
+      ["Exact job name", "PLAN"],
+    ]) {
+      const input = root.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement;
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await settle();
+    await click("Preview definition");
+    await click("Apply reviewed change");
+    await click("Preview enable");
+    expect(mocks.oracleJobs).toHaveBeenLastCalledWith("a", "svc", { operation: "preview", change: { action: "enable", identity: { owner: "TEST", name: "PLAN" } } });
+    await click("Cancel");
+    await click("Edit disabled job");
+    expect((root.querySelector('input[aria-label="Exact owner"]') as HTMLInputElement).value).toBe("TEST");
+    expect((root.querySelector('input[aria-label="Exact job name"]') as HTMLInputElement).value).toBe("PLAN");
+  });
   it.each([
     { state: "evaluated", requestedNextRun: "2026-10-11 09:00:00 +08:00", reason: "Engine calendar evaluation only" },
     { state: "unsupported", requestedNextRun: null, reason: "Calendar evaluation is not supported by this engine" },
