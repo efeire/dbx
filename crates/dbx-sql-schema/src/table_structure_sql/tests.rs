@@ -7197,7 +7197,7 @@ fn oceanbase_oracle_keeps_existing_trigger_source_guard_and_new_drop_paths() {
     assert_eq!(created.statements, vec!["CREATE OR REPLACE TRIGGER \"APP\".\"ORDERS_AUDIT\" AFTER INSERT ON \"APP\".\"ORDERS\"\nFOR EACH ROW\nBEGIN\n  NULL;\nEND;"]);
 
     draft.original = Some(TriggerInfo {
-        owner: None,
+        owner: Some("APP".to_string()),
         name: draft.name.clone(),
         event: draft.event.clone(),
         timing: draft.timing.clone(),
