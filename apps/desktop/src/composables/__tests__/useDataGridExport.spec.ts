@@ -1176,7 +1176,7 @@ describe("useDataGridExport prepared row statements", () => {
     const request = vi.mocked(extractDataGridSelection).mock.calls[0]?.[0];
     expect(request).toEqual(
       expect.objectContaining({
-        columns: [{ displayName: "name", sourceName: "name", sourceIndex: 0 }],
+        columns: [{ displayName: "name", sourceName: "name", sourceIndex: 0, dataType: "varchar" }],
         selectedColumnIndexes: [0],
         rows: [["Ada"]],
         selectionKind: "columns",
