@@ -11389,12 +11389,17 @@ watch(
       }
       // The append completion above already reset `infiniteScrollLoading`, so the
       // post-flush loading watcher cannot observe this append; a "load all" run
-      // must still continue or reveal its last row from here.
+      // must still continue or reveal its last row from here after the current
+      // post-flush cycle finishes, so dispatching the next chunk does not arm
+      // `infiniteScrollLoading` while the post-flush watcher is evaluating this result.
       if (infiniteScrollLoadAllPending) {
         infiniteScrollLoadAllPending = false;
-        if (!finishOrContinueLoadAllRun(appendRequestedOffset, appendRequestedLimit)) {
-          selectAndRevealLastLoadedRow();
-        }
+        nextTick(() => {
+          if (!loadAllRowsLoopActive) return;
+          if (!finishOrContinueLoadAllRun(appendRequestedOffset, appendRequestedLimit)) {
+            selectAndRevealLastLoadedRow();
+          }
+        });
       }
       return;
     }
@@ -12787,6 +12792,7 @@ onUnmounted(() => {
   onDetailResizeEnd();
   onMongoJsonPreviewResizeEnd();
   finishCellSelection();
+  loadAllRowsLoopActive = false;
   clearTimeout(highlightedColumnTimer);
   stopLoadingElapsedTimer();
 });
