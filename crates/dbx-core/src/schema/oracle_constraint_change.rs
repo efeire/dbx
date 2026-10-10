@@ -4,6 +4,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{connection::AppState, db, models::connection::DatabaseType};
 
+mod foreign_key;
+pub use foreign_key::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrimaryKeyChange {

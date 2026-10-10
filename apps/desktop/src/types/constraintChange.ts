@@ -5,6 +5,36 @@ export interface PrimaryKeyChange {
   dropPreviousIndex?: boolean;
 }
 
+export interface ForeignKeyDefinition {
+  name: string;
+  columns: string[];
+  referencedSchema: string;
+  referencedTable: string;
+  referencedColumns: string[];
+  deleteRule: "NO ACTION" | "CASCADE" | "SET NULL";
+  rely: boolean;
+  enabled: boolean;
+  validated: boolean;
+  deferrable: boolean;
+  initiallyDeferred: boolean;
+}
+
+export interface ForeignKeyChange {
+  schema: string;
+  tableName: string;
+  originalName: string | null;
+  desired: ForeignKeyDefinition | null;
+}
+
+export interface ForeignKeyChangePreview extends Omit<ConstraintChangePreview, "currentConstraint"> {
+  currentConstraint: ForeignKeyDefinition | null;
+}
+
+export interface ForeignKeyChangeResult extends Omit<ConstraintChangeResult, "currentConstraint"> {
+  currentConstraint: ForeignKeyDefinition | null;
+  originalConstraint: ForeignKeyDefinition | null;
+}
+
 export interface KeySnapshot {
   name: string;
   columns: string[];
