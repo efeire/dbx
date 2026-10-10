@@ -92,6 +92,48 @@ describe("transfer strategies", () => {
 });
 
 describe("transfer submission", () => {
+  it("does not accept a private synonym plan for a same-named selected public synonym", async () => {
+    const execute = vi.fn();
+    const confirm = vi.fn();
+    const plan: TransferOwnershipPreview = {
+      missingOwners: [],
+      targetOwner: "TARGET",
+      schemaObjects: { canExecute: true, items: [{ objectType: "SYNONYM", name: "S", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "create", ddl: 'CREATE SYNONYM "TARGET"."S" FOR "TARGET"."T"', dependencies: [], warnings: [], errors: [] }] },
+    };
+    const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm, execute });
+    await expect(submission.start(request({ tables: [], objects: [{ objectType: "PUBLIC_SYNONYM", names: ["S"] }], dropTargetBeforeCreate: false }))).rejects.toThrow("TRANSFER_OBJECT_PREVIEW_UNAVAILABLE");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("reviews the original remote synonym reference without expanding it to a table transfer", async () => {
+    const execute = vi.fn();
+    const plan: TransferOwnershipPreview = {
+      missingOwners: [],
+      targetOwner: "TARGET",
+      schemaObjects: {
+        canExecute: true,
+        items: [
+          {
+            objectType: "PUBLIC_SYNONYM",
+            name: "Remote S",
+            sourceSchema: "PUBLIC",
+            targetSchema: "PUBLIC",
+            action: "create",
+            ddl: 'CREATE PUBLIC SYNONYM "Remote S" FOR "REMOTE_OWNER"."T"@"REMOTE_LINK"',
+            dependencies: [{ owner: "TARGET", name: "REMOTE_LINK", objectType: "DB_LINK", available: true }],
+            warnings: ["Remote object not validated"],
+            errors: [],
+          },
+        ],
+      },
+    };
+    const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm: async () => true, execute });
+    const input = request({ tables: [], objects: [{ objectType: "PUBLIC_SYNONYM", names: ["Remote S"] }], dropTargetBeforeCreate: false });
+    await expect(submission.start(input)).resolves.toBe(true);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ tables: [], objects: input.objects }));
+    expect(transferPreviewSql(plan)).toBe(plan.schemaObjects!.items[0]!.ddl);
+  });
   it("requires a complete package plan without adding an unselected body", async () => {
     const execute = vi.fn();
     const confirm = vi.fn().mockResolvedValue(true);

@@ -7038,6 +7038,9 @@ export default {
     },
   },
   transfer: {
+    objectTypeSynonym: "Private synonyms",
+    objectTypePublicSynonym: "Public synonyms",
+    synonymDependencyHint: "Only selected synonyms are migrated. Preflight lists target object and DBLink dependencies without connecting remotely. Public synonyms require the corresponding privileges.",
     objectTypePackage: "Package specification",
     objectTypePackageBody: "Package body",
     objectConflictPolicy: "Existing program objects",

@@ -516,7 +516,11 @@ fn unexpanded_schema_object_notes(
     for selection in selections {
         if matches!(
             selection.object_type,
-            TransferObjectKind::Table | TransferObjectKind::Package | TransferObjectKind::PackageBody
+            TransferObjectKind::Table
+                | TransferObjectKind::Package
+                | TransferObjectKind::PackageBody
+                | TransferObjectKind::Synonym
+                | TransferObjectKind::PublicSynonym
         ) || selection.names.is_empty()
         {
             continue;
@@ -541,6 +545,8 @@ fn preview_object_kind_label(kind: &TransferObjectKind) -> &'static str {
         TransferObjectKind::Event => "Events",
         TransferObjectKind::Package => "Package specifications",
         TransferObjectKind::PackageBody => "Package bodies",
+        TransferObjectKind::Synonym => "Private synonyms",
+        TransferObjectKind::PublicSynonym => "Public synonyms",
     }
 }
 

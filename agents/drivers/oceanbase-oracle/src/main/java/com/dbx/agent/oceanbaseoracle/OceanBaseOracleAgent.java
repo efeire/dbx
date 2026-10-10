@@ -434,6 +434,25 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                     AND o.OBJECT_TYPE IN ('TABLE', 'VIEW')
                 WHERE o.OWNER = ? AND o.OBJECT_TYPE IN (%s)
                 """.stripIndent().trim();
+            if (objectTypes.contains("SYNONYM")) {
+                // Public synonyms can use OB's internal owner. Canonicalize before
+                // filtering/paging, keeping the private and public scopes separate.
+                baseSql = """
+                    SELECT OBJECT_NAME, OBJECT_TYPE, COMMENTS
+                    FROM (
+                        SELECT o.OWNER, o.OBJECT_NAME, o.OBJECT_TYPE, tc.COMMENTS
+                        FROM ALL_OBJECTS o
+                        LEFT JOIN ALL_TAB_COMMENTS tc ON tc.OWNER = o.OWNER AND tc.TABLE_NAME = o.OBJECT_NAME
+                            AND o.OBJECT_TYPE IN ('TABLE', 'VIEW')
+                        WHERE o.OBJECT_TYPE <> 'SYNONYM'
+                        UNION
+                        SELECT CASE WHEN OWNER = '__public' THEN 'PUBLIC' ELSE OWNER END AS OWNER,
+                               SYNONYM_NAME AS OBJECT_NAME, 'SYNONYM' AS OBJECT_TYPE, NULL AS COMMENTS
+                        FROM ALL_SYNONYMS
+                    ) c
+                    WHERE OWNER = ? AND OBJECT_TYPE IN (%s)
+                    """.stripIndent().trim();
+            }
             MetadataSql query = oceanBaseMetadataSql(
                 String.format(baseSql, placeholders(objectTypes.size())),
                 "OBJECT_NAME, OBJECT_TYPE, COMMENTS",

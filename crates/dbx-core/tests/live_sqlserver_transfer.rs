@@ -3,7 +3,7 @@ use dbx_core::models::connection::{ConnectionConfig, DatabaseType};
 use dbx_core::transfer::{
     clear_foreign_key_linked_overwrite_targets, drop_backup_tables, rename_tables_to_backup,
     sort_tables_by_fk_dependency_with_foreign_keys, transfer_table, transfer_table_with_result, TransferContent,
-    TransferMode, TransferOwnershipPolicy, TransferRequest, TransferTableNameCase,
+    TransferMode, TransferObjectConflictPolicy, TransferOwnershipPolicy, TransferRequest, TransferTableNameCase,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1075,7 +1075,7 @@ async fn live_sqlserver_transfer_overwrite_replaces_tables_linked_by_foreign_key
         target_table_name_case: TransferTableNameCase::Preserve,
         quote_target_column_names: true,
         ownership_policy: TransferOwnershipPolicy::Preserve,
-        object_conflict_policy: Default::default(),
+        object_conflict_policy: TransferObjectConflictPolicy::Skip,
         batch_size: 1000,
     };
 

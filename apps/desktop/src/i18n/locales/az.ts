@@ -6061,6 +6061,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "Şəxsi sinonimlər",
+    objectTypePublicSynonym: "İctimai sinonimlər",
+    synonymDependencyHint: "Yalnız seçilmiş sinonimlər köçürülür. İlkin yoxlama uzaq bağlantı yaratmadan obyekt və DBLink asılılıqlarını göstərir. İctimai sinonimlər müvafiq icazələr tələb edir.",
     objectTypePackage: "Paket spesifikasiyası",
     objectTypePackageBody: "Paket gövdəsi",
     objectConflictPolicy: "Mövcud proqram obyektləri",

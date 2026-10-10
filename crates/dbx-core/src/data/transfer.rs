@@ -25,6 +25,7 @@ mod iris_tests;
 mod db2;
 mod ddl_plan;
 mod oracle_packages;
+mod oracle_synonyms;
 mod overwrite_clear;
 mod structure_plan;
 pub use oracle_packages::{TransferObjectConflictPolicy, TransferSchemaObjectPlan, TransferSchemaObjectResult};
@@ -210,6 +211,8 @@ pub enum TransferObjectKind {
     Event,
     Package,
     PackageBody,
+    Synonym,
+    PublicSynonym,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -263,7 +266,12 @@ pub fn transfer_object_kinds_for_family(family: &TransferObjectFamily) -> Vec<Tr
 pub fn transfer_object_kinds(db_type: &DatabaseType) -> Vec<TransferObjectKind> {
     if matches!(db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) {
         let mut kinds = transfer_object_kinds_for_family(&TransferObjectFamily::Oracle);
-        kinds.extend([TransferObjectKind::Package, TransferObjectKind::PackageBody]);
+        kinds.extend([
+            TransferObjectKind::Package,
+            TransferObjectKind::PackageBody,
+            TransferObjectKind::Synonym,
+            TransferObjectKind::PublicSynonym,
+        ]);
         return kinds;
     }
     match transfer_object_family(db_type) {
@@ -8368,6 +8376,8 @@ pub fn ordered_transfer_object_kinds(kinds: Vec<TransferObjectKind>) -> Vec<Tran
         TransferObjectKind::Event => 6,
         TransferObjectKind::Package => 3,
         TransferObjectKind::PackageBody => 4,
+        TransferObjectKind::Synonym => 7,
+        TransferObjectKind::PublicSynonym => 8,
     };
     let mut kinds = kinds;
     kinds.sort_by_key(rank);
@@ -8583,7 +8593,8 @@ pub async fn ensure_transfer_schema_objects_ready(
     source_pool_key: &str,
     target_pool_key: &str,
 ) -> Result<(), String> {
-    oracle_packages::ensure_ready(state, request, source_pool_key, target_pool_key).await
+    oracle_packages::ensure_ready(state, request, source_pool_key, target_pool_key).await?;
+    oracle_synonyms::ensure_ready(state, request, source_pool_key, target_pool_key).await
 }
 
 async fn transfer_mysql_schema_objects<F>(
@@ -8677,7 +8688,13 @@ where
         request.object_selection_mode().selections().iter().map(|s| s.object_type).collect(),
     );
     for kind in order {
-        if matches!(kind, TransferObjectKind::Package | TransferObjectKind::PackageBody) {
+        if matches!(
+            kind,
+            TransferObjectKind::Package
+                | TransferObjectKind::PackageBody
+                | TransferObjectKind::Synonym
+                | TransferObjectKind::PublicSynonym
+        ) {
             continue;
         }
         for name in selected_object_names(request.object_selection_mode().selections(), &kind) {
@@ -8732,6 +8749,12 @@ where
             }
         }
     }
+    let synonyms =
+        oracle_synonyms::execute(state, request, source_pool_key, target_pool_key, &mut progress_callback).await?;
+    outcome.transferred.extend(synonyms.transferred);
+    outcome.skipped.extend(synonyms.skipped);
+    outcome.failed.extend(synonyms.failed);
+    outcome.object_results.extend(synonyms.object_results);
     Ok(outcome)
 }
 
@@ -9718,7 +9741,15 @@ pub async fn preview_transfer_ownership(
         None
     };
 
-    let schema_objects = oracle_packages::preview(state, request, source_pool_key, target_pool_key).await?;
+    let mut schema_objects = oracle_packages::preview(state, request, source_pool_key, target_pool_key).await?;
+    if let Some(synonyms) = oracle_synonyms::preview(state, request, source_pool_key, target_pool_key).await? {
+        if let Some(objects) = &mut schema_objects {
+            objects.can_execute &= synonyms.can_execute;
+            objects.items.extend(synonyms.items);
+        } else {
+            schema_objects = Some(synonyms);
+        }
+    }
     Ok(TransferOwnershipPreview { missing_owners, target_owner, rebuild, structure, schema_objects })
 }
 

@@ -7411,6 +7411,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "Частные синонимы",
+    objectTypePublicSynonym: "Общедоступные синонимы",
+    synonymDependencyHint: "Переносятся только выбранные синонимы. Предварительная проверка показывает зависимости объектов и DBLink без удалённого подключения. Для общедоступных синонимов нужны соответствующие права.",
     objectTypePackage: "Спецификация пакета",
     objectTypePackageBody: "Тело пакета",
     objectConflictPolicy: "Существующие программные объекты",

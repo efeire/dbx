@@ -6421,6 +6421,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "Sinónimos privados",
+    objectTypePublicSynonym: "Sinónimos públicos",
+    synonymDependencyHint: "Solo se migran los sinónimos seleccionados. La comprobación previa muestra las dependencias de objetos y DBLink sin conectarse de forma remota. Los sinónimos públicos requieren los privilegios correspondientes.",
     objectTypePackage: "Especificación del paquete",
     objectTypePackageBody: "Cuerpo del paquete",
     objectConflictPolicy: "Objetos de programa existentes",

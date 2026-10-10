@@ -5562,6 +5562,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "私有同義詞",
+    objectTypePublicSynonym: "公共同義詞",
+    synonymDependencyHint: "僅遷移明確選取的同義詞。目標物件及 DBLink 相依項目會列於預檢，不會自動連線遠端；公共同義詞需要相應權限。",
     objectTypePackage: "套件規格",
     objectTypePackageBody: "套件主體",
     objectConflictPolicy: "同名程式物件",

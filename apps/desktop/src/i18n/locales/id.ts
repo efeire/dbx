@@ -6706,6 +6706,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "Sinonim privat",
+    objectTypePublicSynonym: "Sinonim publik",
+    synonymDependencyHint: "Hanya sinonim yang dipilih yang dimigrasikan. Pemeriksaan awal menampilkan dependensi objek dan DBLink tanpa koneksi jarak jauh. Sinonim publik memerlukan hak akses yang sesuai.",
     objectTypePackage: "Spesifikasi paket",
     objectTypePackageBody: "Badan paket",
     objectConflictPolicy: "Objek program yang sudah ada",

@@ -6027,6 +6027,9 @@ export default withEnglishFallback({
     },
   },
   transfer: {
+    objectTypeSynonym: "전용 동의어",
+    objectTypePublicSynonym: "공용 동의어",
+    synonymDependencyHint: "선택한 동의어만 이전합니다. 사전 검사에서 대상 객체와 DBLink 종속성을 표시하며 원격 연결은 하지 않습니다. 공용 동의어에는 해당 권한이 필요합니다.",
     objectTypePackage: "패키지 명세",
     objectTypePackageBody: "패키지 본문",
     objectConflictPolicy: "기존 프로그램 객체",
