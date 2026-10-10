@@ -4658,6 +4658,7 @@ export default withEnglishFallback({
     pagedOrder: "객체 {count}개를 데이터베이스 순서대로 불러왔습니다. 객체 변경 후 새로 고치세요.",
   },
   constraintEditor: {
+    oceanbasePrimaryKeyHint: "키 순서대로 열을 선택하고 모두 해제하면 키를 삭제합니다. OceanBase가 기본 키 저장소를 관리합니다. 적용 전에 DDL과 종속성 검사 결과를 확인하세요.",
     dropPreviousIndex: "성공 후 기존 인덱스와 해당 고유성 제한을 제거합니다. 다른 제약 조건에서 사용하는 인덱스는 제거할 수 없습니다.",
     editPrimaryKey: "기본 키 편집",
     primaryKeyHint: "키 순서대로 열을 선택하세요. 모두 해제하면 기본 키가 삭제됩니다. 기존 인덱스는 유지됩니다.",

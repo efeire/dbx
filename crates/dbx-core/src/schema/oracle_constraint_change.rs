@@ -57,17 +57,30 @@ pub struct ConstraintChangeResult {
 
 #[async_trait]
 trait ConstraintSession: Sync {
+    fn engine(&self) -> Engine {
+        Engine::Oracle
+    }
     async fn query(&self, sql: &str) -> Result<db::QueryResult, String>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+enum Engine {
+    Oracle,
+    OceanBaseOracle,
 }
 
 struct CoreSession<'a> {
     state: &'a AppState,
     connection_id: &'a str,
     database: &'a str,
+    engine: Engine,
 }
 
 #[async_trait]
 impl ConstraintSession for CoreSession<'_> {
+    fn engine(&self) -> Engine {
+        self.engine
+    }
     async fn query(&self, sql: &str) -> Result<db::QueryResult, String> {
         crate::query::execute_sql_statement(self.state, self.connection_id, self.database, sql, None, None).await
     }
@@ -79,8 +92,8 @@ pub async fn preview_primary_key_change(
     database: &str,
     change: PrimaryKeyChange,
 ) -> Result<ConstraintChangePreview, String> {
-    require_engine(state, connection_id).await?;
-    preview(&CoreSession { state, connection_id, database }, &change).await
+    let engine = require_engine(state, connection_id).await?;
+    preview(&CoreSession { state, connection_id, database, engine }, &change).await
 }
 
 pub async fn apply_primary_key_change(
@@ -90,19 +103,20 @@ pub async fn apply_primary_key_change(
     change: PrimaryKeyChange,
     revision: &str,
 ) -> Result<ConstraintChangeResult, String> {
-    require_engine(state, connection_id).await?;
+    let engine = require_engine(state, connection_id).await?;
     let pool_key = state.get_or_create_pool(connection_id, Some(database)).await?;
     crate::query::check_read_only_for_connection(state, &pool_key, "ALTER TABLE").await?;
-    let result = apply(&CoreSession { state, connection_id, database }, &change, revision).await;
+    let result = apply(&CoreSession { state, connection_id, database, engine }, &change, revision).await;
     crate::object_cache::invalidate_connection_object_cache(&state.storage, connection_id).await;
     result
 }
 
-async fn require_engine(state: &AppState, connection_id: &str) -> Result<(), String> {
+async fn require_engine(state: &AppState, connection_id: &str) -> Result<Engine, String> {
     let configs = state.configs.read().await;
     match configs.get(connection_id).map(|config| config.db_type) {
-        Some(DatabaseType::Oracle) => Ok(()),
-        _ => Err("This primary-key editor requires an Oracle connection.".into()),
+        Some(DatabaseType::Oracle) => Ok(Engine::Oracle),
+        Some(DatabaseType::OceanbaseOracle) => Ok(Engine::OceanBaseOracle),
+        _ => Err("This primary-key editor requires Oracle or OceanBase Oracle.".into()),
     }
 }
 
@@ -215,6 +229,10 @@ async fn preview(
     session: &impl ConstraintSession,
     change: &PrimaryKeyChange,
 ) -> Result<ConstraintChangePreview, String> {
+    let oceanbase = session.engine() == Engine::OceanBaseOracle;
+    if oceanbase && change.drop_previous_index {
+        return Err("OceanBase manages primary-key storage through ALTER TABLE; removing an Oracle supporting index is not supported.".into());
+    }
     let target = table(change)?;
     let owner = literal(&change.schema);
     let name = literal(&change.table_name);
@@ -251,54 +269,72 @@ async fn preview(
         affected.push(format!("Constraint {}", key.name));
         // ALL_CONSTRAINTS is filtered by visibility and cannot prove there are no
         // cross-schema references. Failure to read the complete inventory blocks DDL.
+        let referenced_keys = if oceanbase {
+            format!("IN (SELECT CONSTRAINT_NAME FROM DBA_CONSTRAINTS WHERE OWNER={owner} AND TABLE_NAME={name} AND CONSTRAINT_TYPE IN ('P','U'))")
+        } else {
+            format!("={}", literal(&key.name))
+        };
         let references = count(session, &format!(
-            "SELECT COUNT(*) FROM DBA_CONSTRAINTS WHERE CONSTRAINT_TYPE='R' AND R_OWNER={owner} AND R_CONSTRAINT_NAME={}", literal(&key.name)
+            "SELECT COUNT(*) FROM DBA_CONSTRAINTS WHERE CONSTRAINT_TYPE='R' AND R_OWNER={owner} AND R_CONSTRAINT_NAME {referenced_keys}"
         )).await.map_err(|error| format!("Cannot confirm all referencing foreign keys; access to DBA_CONSTRAINTS is required. No DDL was executed. {error}"))?;
         if references != 0 {
             return Err(format!("{} foreign key(s) reference {}. Resolve these dependencies before changing the primary key; no constraints were dropped.", references, key.name));
         }
-        match (&key.index_owner, &key.index_name) {
-            (Some(index_owner), Some(index_name)) => {
-                let index = read(session, &format!(
+        if oceanbase {
+            if key.index_owner.is_some() != key.index_name.is_some() {
+                return Err("The OceanBase primary-key index metadata is incomplete.".into());
+            }
+            if !key.enabled || !key.validated || key.deferrable || key.initially_deferred {
+                return Err(
+                    "This OceanBase primary-key state cannot be preserved by MODIFY PRIMARY KEY; no DDL was executed."
+                        .into(),
+                );
+            }
+            affected.push(format!("OceanBase manages primary-key storage; dictionary index: {}.{}. Separate indexes are not explicitly removed.", key.index_owner.as_deref().unwrap_or("<none>"), key.index_name.as_deref().unwrap_or("<none>")));
+        } else {
+            match (&key.index_owner, &key.index_name) {
+                (Some(index_owner), Some(index_name)) => {
+                    let index = read(session, &format!(
                     "SELECT INDEX_TYPE,UNIQUENESS,STATUS,TABLE_OWNER,TABLE_NAME FROM ALL_INDEXES WHERE OWNER={} AND INDEX_NAME={}",
                     literal(index_owner), literal(index_name))).await?;
-                let row = index.rows.first().ok_or("The supporting index is not visible; no DDL was executed.")?;
-                if text(row, 3)? != change.schema || text(row, 4)? != change.table_name {
-                    return Err("The supporting index does not belong to the selected table.".into());
-                }
-                evidence.push(serde_json::to_string(&index.rows).map_err(|error| error.to_string())?);
-                if change.drop_previous_index {
-                    let other_users = count(session, &format!(
+                    let row = index.rows.first().ok_or("The supporting index is not visible; no DDL was executed.")?;
+                    if text(row, 3)? != change.schema || text(row, 4)? != change.table_name {
+                        return Err("The supporting index does not belong to the selected table.".into());
+                    }
+                    evidence.push(serde_json::to_string(&index.rows).map_err(|error| error.to_string())?);
+                    if change.drop_previous_index {
+                        let other_users = count(session, &format!(
                         "SELECT COUNT(*) FROM DBA_CONSTRAINTS WHERE INDEX_OWNER={} AND INDEX_NAME={} AND NOT (OWNER={owner} AND CONSTRAINT_NAME={})",
                         literal(index_owner), literal(index_name), literal(&key.name))).await?;
-                    if other_users != 0 {
-                        return Err("The original index supports another constraint and cannot be removed.".into());
+                        if other_users != 0 {
+                            return Err("The original index supports another constraint and cannot be removed.".into());
+                        }
+                        let ddl = read(
+                            session,
+                            &format!(
+                                "SELECT DBMS_METADATA.GET_DDL('INDEX',{}, {}) FROM DUAL",
+                                literal(index_name),
+                                literal(index_owner)
+                            ),
+                        )
+                        .await?;
+                        let source = text(ddl.rows.first().ok_or("The original index definition is unavailable.")?, 0)?;
+                        if source.trim().is_empty() {
+                            return Err("The original index definition is empty.".into());
+                        }
+                        evidence.push(source.clone());
+                        index_restore = Some(source);
+                        affected.push(format!("Remove index {}.{} after replacing the key; the old index's uniqueness will no longer be enforced", index_owner, index_name));
+                    } else {
+                        affected.push(format!(
+                            "Preserve index {}.{} (its uniqueness remains in effect)",
+                            index_owner, index_name
+                        ));
                     }
-                    let ddl = read(
-                        session,
-                        &format!(
-                            "SELECT DBMS_METADATA.GET_DDL('INDEX',{}, {}) FROM DUAL",
-                            literal(index_name),
-                            literal(index_owner)
-                        ),
-                    )
-                    .await?;
-                    let source = text(ddl.rows.first().ok_or("The original index definition is unavailable.")?, 0)?;
-                    if source.trim().is_empty() {
-                        return Err("The original index definition is empty.".into());
-                    }
-                    evidence.push(source.clone());
-                    index_restore = Some(source);
-                    affected.push(format!("Remove index {}.{} after replacing the key; the old index's uniqueness will no longer be enforced", index_owner, index_name));
-                } else {
-                    affected.push(format!(
-                        "Preserve index {}.{} (its uniqueness remains in effect)",
-                        index_owner, index_name
-                    ));
                 }
+                (None, None) if !key.enabled => {}
+                _ => return Err("The supporting index metadata is incomplete.".into()),
             }
-            (None, None) if !key.enabled => {}
-            _ => return Err("The supporting index metadata is incomplete.".into()),
         }
     }
     if !change.columns.is_empty() {
@@ -334,13 +370,57 @@ async fn preview(
     let revision = format!(
         "{:x}",
         Sha256::digest(
-            serde_json::to_vec(&(change, &current, &evidence, &ddl_stamp.rows)).map_err(|error| error.to_string())?
+            serde_json::to_vec(&(session.engine(), change, &current, &evidence, &ddl_stamp.rows))
+                .map_err(|error| error.to_string())?
         )
     );
     let mut statements = Vec::new();
     let mut recovery_statements: Vec<String> = index_restore.into_iter().collect();
-    recovery_statements.extend(current.as_ref().map(|key| add_key_sql(change, key)).transpose()?);
+    recovery_statements.extend(
+        current
+            .as_ref()
+            .map(|key| {
+                if oceanbase {
+                    oceanbase_add_key_sql(change, &key.name, &key.columns)
+                } else {
+                    add_key_sql(change, key)
+                }
+            })
+            .transpose()?,
+    );
     if current.as_ref().map(|key| key.columns.as_slice()).unwrap_or_default() == change.columns.as_slice() {
+        return Ok(ConstraintChangePreview {
+            statements,
+            revision,
+            current_constraint: current,
+            affected_objects: affected,
+            recovery_statements,
+        });
+    }
+    if oceanbase {
+        statements.push(if change.columns.is_empty() {
+            format!("ALTER TABLE {target} DROP PRIMARY KEY")
+        } else if current.is_some() {
+            format!(
+                "ALTER TABLE {target} MODIFY PRIMARY KEY ({})",
+                change.columns.iter().map(|column| identifier(column)).collect::<Result<Vec<_>, _>>()?.join(", ")
+            )
+        } else {
+            let constraint_name = format!("DBX_PK_{}", &revision[..22]);
+            if count(
+                session,
+                &format!(
+                    "SELECT COUNT(*) FROM ALL_CONSTRAINTS WHERE OWNER={owner} AND CONSTRAINT_NAME={}",
+                    literal(&constraint_name)
+                ),
+            )
+            .await?
+                != 0
+            {
+                return Err("The planned primary-key name already exists. Refresh before retrying.".into());
+            }
+            oceanbase_add_key_sql(change, &constraint_name, &change.columns)?
+        });
         return Ok(ConstraintChangePreview {
             statements,
             revision,
@@ -514,7 +594,8 @@ async fn guard_step(
     sql: &str,
 ) -> Result<(), String> {
     let Some(original) = &plan.current_constraint else { return Ok(()) };
-    if sql == format!("ALTER TABLE {} DROP CONSTRAINT {} KEEP INDEX", table(change)?, identifier(&original.name)?)
+    if (session.engine() == Engine::OceanBaseOracle
+        || sql == format!("ALTER TABLE {} DROP CONSTRAINT {} KEEP INDEX", table(change)?, identifier(&original.name)?))
         && read_key(session, change).await?.as_ref() != Some(original)
     {
         return Err("The original constraint changed during execution. Remaining DDL was stopped.".into());
@@ -546,6 +627,15 @@ async fn guard_step(
         }
     }
     Ok(())
+}
+
+fn oceanbase_add_key_sql(change: &PrimaryKeyChange, name: &str, columns: &[String]) -> Result<String, String> {
+    Ok(format!(
+        "ALTER TABLE {} ADD CONSTRAINT {} PRIMARY KEY ({})",
+        table(change)?,
+        identifier(name)?,
+        columns.iter().map(|column| identifier(column)).collect::<Result<Vec<_>, _>>()?.join(", ")
+    ))
 }
 
 #[cfg(test)]

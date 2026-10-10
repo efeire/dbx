@@ -5336,6 +5336,7 @@ export default {
     sortBy: "Sort by",
   },
   constraintEditor: {
+    oceanbasePrimaryKeyHint: "Select columns in key order; clear all to remove the key. OceanBase manages primary-key storage. Review the DDL and dependency checks before applying.",
     dropPreviousIndex: "Remove the previous supporting index after success. This also removes the uniqueness enforced by that index; shared indexes cannot be removed.",
     editPrimaryKey: "Edit primary key",
     primaryKeyHint: "Select columns in key order. Clear all columns to remove the primary key. Existing supporting indexes are retained.",

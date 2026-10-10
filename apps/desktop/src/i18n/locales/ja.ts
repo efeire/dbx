@@ -4676,6 +4676,7 @@ export default withEnglishFallback({
     pagedOrder: "データベースの順序で {count} 個のオブジェクトを読み込みました。オブジェクトを変更した後は更新してください。",
   },
   constraintEditor: {
+    oceanbasePrimaryKeyHint: "キー順に列を選択し、すべて解除するとキーを削除します。OceanBase が主キーのストレージを管理します。実行前に DDL と依存関係の確認結果を確認してください。",
     dropPreviousIndex: "成功後に元の索引を削除し、その索引の一意性制限も解除します。他の制約が使う索引は削除できません。",
     editPrimaryKey: "主キーを編集",
     primaryKeyHint: "キー順に列を選択します。すべて解除すると主キーを削除します。既存の索引は保持されます。",

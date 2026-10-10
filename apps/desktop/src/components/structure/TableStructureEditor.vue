@@ -6562,7 +6562,8 @@ watch(
             @scroll.passive="onStructureContentScroll('constraints', $event)"
           >
             <OraclePrimaryKeyEditor
-              v-if="databaseType === 'oracle' && !isCreateMode && !connection?.read_only"
+              v-if="(databaseType === 'oracle' || databaseType === 'oceanbase-oracle') && !isCreateMode && !connection?.read_only"
+              :oceanbase="databaseType === 'oceanbase-oracle'"
               :connection-id="connectionId"
               :database="database"
               :schema="metadataSchema || database"

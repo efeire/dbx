@@ -4794,6 +4794,7 @@ export default withEnglishFallback({
     pagedOrder: "Se han cargado {count} objetos en el orden de la base de datos. Actualice después de modificar los objetos.",
   },
   constraintEditor: {
+    oceanbasePrimaryKeyHint: "Seleccione las columnas en orden; quite todas para eliminar la clave. OceanBase administra su almacenamiento. Revise el DDL y las dependencias antes de aplicar.",
     dropPreviousIndex: "Eliminar el índice anterior tras finalizar. También elimina su restricción de unicidad; no se eliminan índices compartidos.",
     editPrimaryKey: "Editar clave primaria",
     primaryKeyHint: "Seleccione las columnas en orden. Quite todas para eliminar la clave primaria. Se conservan los índices existentes.",
