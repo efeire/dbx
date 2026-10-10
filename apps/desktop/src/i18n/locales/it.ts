@@ -4097,6 +4097,11 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "Copia con password",
     copyPasswordConfirmMessage: "Il testo copiato conterrà la password salvata in chiaro. Continuare?",
     copyPasswordConfirmAction: "Copia",
+    oceanbaseViewRenameWarning:
+      "La rinomina non può essere annullata. Le autorizzazioni esistenti restano associate alla vista; gli oggetti dipendenti possono diventare non validi e il codice non viene riscritto. Le operazioni tra proprietari richiedono ALTER ANY TABLE concesso direttamente e metadati della vista visibili; non è possibile verificare autorizzazioni ottenute solo tramite ruoli.",
+    viewRenameResponseLost: "Risposta alla rinomina persa. La rilettura del dizionario conferma che il nuovo nome esiste e il vecchio no. Il codice precedente resta come istantanea non salvabile; riaprire il nuovo oggetto.",
+    viewRenameStateUnknown: "La richiesta di rinomina è stata inviata, ma non è possibile confermare lo stato dei due nomi. Il codice precedente resta come istantanea non salvabile. Ripristinare la connessione e rileggere l’oggetto prima di modificarlo.",
+    renamedSourceSnapshot: "Dopo l’operazione di rinomina, il testo resta come istantanea di sola lettura. Verificare l’oggetto nel database e riaprire la definizione corrente per modificarla.",
   },
   visibleDatabases: {
     title: "Database Visibili",

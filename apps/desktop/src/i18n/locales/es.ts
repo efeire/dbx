@@ -4277,6 +4277,11 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "Copiar con contraseña",
     copyPasswordConfirmMessage: "El texto copiado contendrá la contraseña guardada en texto sin formato. ¿Continuar?",
     copyPasswordConfirmAction: "Copiar",
+    oceanbaseViewRenameWarning:
+      "El cambio de nombre no se puede revertir. Los permisos existentes se conservan con la vista; los objetos dependientes pueden quedar inválidos y su código no se reescribe. Las operaciones entre propietarios requieren ALTER ANY TABLE concedido directamente y metadatos visibles de la vista; no se pueden verificar permisos obtenidos solo mediante roles.",
+    viewRenameResponseLost: "Se perdió la respuesta al cambio de nombre. La lectura del diccionario confirma que el nuevo nombre existe y el anterior no. El código anterior se conserva como instantánea que no se puede guardar; vuelva a abrir el nuevo objeto.",
+    viewRenameStateUnknown: "Se envió la solicitud de cambio de nombre, pero no se pudo confirmar el estado de ambos nombres. El código anterior se conserva como instantánea que no se puede guardar. Restablezca la conexión y vuelva a leer el objeto antes de editar.",
+    renamedSourceSnapshot: "Tras la operación de cambio de nombre, el texto se conserva como instantánea de solo lectura. Verifique el objeto en la base de datos y vuelva a abrir su definición actual para editar.",
   },
   visibleDatabases: {
     title: "Bases de datos visibles",

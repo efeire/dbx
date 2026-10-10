@@ -4032,6 +4032,10 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "비밀번호 포함 복사",
     copyPasswordConfirmMessage: "복사되는 텍스트에 저장된 비밀번호가 평문으로 포함됩니다. 계속할까요?",
     copyPasswordConfirmAction: "복사",
+    oceanbaseViewRenameWarning: "이름 변경은 롤백할 수 없습니다. 기존 권한은 뷰에 유지되지만 의존 객체가 무효화될 수 있으며 소스는 자동으로 수정되지 않습니다. 소유자가 다른 객체의 작업에는 직접 부여된 ALTER ANY TABLE과 뷰 메타데이터 조회 권한이 필요합니다. 역할로만 받은 권한은 검증할 수 없습니다.",
+    viewRenameResponseLost: "이름 변경 응답이 유실되었습니다. 딕셔너리를 다시 조회하여 새 이름은 존재하고 기존 이름은 없음을 확인했습니다. 기존 소스는 저장할 수 없는 스냅샷으로 유지됩니다. 새 객체를 다시 여세요.",
+    viewRenameStateUnknown: "이름 변경 요청이 전송되었지만 기존 이름과 새 이름의 상태를 확인할 수 없습니다. 기존 소스는 저장할 수 없는 스냅샷으로 유지됩니다. 연결을 복구하고 객체를 다시 읽은 뒤 편집하세요.",
+    renamedSourceSnapshot: "이름 변경 작업 후 현재 텍스트는 읽기 전용 스냅샷으로 유지됩니다. 데이터베이스의 객체를 확인한 뒤 현재 정의를 다시 열어 편집하세요.",
   },
   visibleDatabases: {
     title: "표시할 데이터베이스",

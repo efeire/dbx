@@ -4121,6 +4121,11 @@ export default withEnglishFallback({
     copyPasswordConfirmTitle: "パスワードを含めてコピー",
     copyPasswordConfirmMessage: "コピーされるテキストには保存済みのパスワードが平文で含まれます。続行しますか？",
     copyPasswordConfirmAction: "コピー",
+    oceanbaseViewRenameWarning:
+      "名前変更はロールバックできません。既存の権限はビューに保持されますが、依存オブジェクトが無効になる可能性があり、ソースは自動的に書き換えません。所有者をまたぐ操作には、直接付与された ALTER ANY TABLE とビューのメタデータの可視性が必要です。ロールのみで取得した権限は検証できません。",
+    viewRenameResponseLost: "名前変更の応答が失われました。辞書の再取得により、新しい名前が存在し古い名前が存在しないことを確認しました。元のソースは保存不可のスナップショットとして保持されます。新しいオブジェクトを開き直してください。",
+    viewRenameStateUnknown: "名前変更の要求は送信されましたが、古い名前と新しい名前の状態を確認できません。元のソースは保存不可のスナップショットとして保持されます。接続を復旧し、オブジェクトを再取得してから編集してください。",
+    renamedSourceSnapshot: "名前変更操作後、現在のテキストは読み取り専用スナップショットとして保持されます。データベース内のオブジェクトを確認し、現在の定義を開き直して編集してください。",
   },
   visibleDatabases: {
     title: "表示するデータベース",
