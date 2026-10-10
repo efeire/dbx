@@ -1623,6 +1623,17 @@ describe("connectionStore completion assistant", () => {
     expect((await store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "Ca", 20, "APP", undefined, false, "APP", ["function"], true)).map((object) => object.name)).toEqual(["Calc"]);
   });
 
+  it.each([["routine", "sequence"], ["function", "sequence"], ["sequence"]] as const)("preserves requested OceanBase sequence candidates for %j", async (...objectKinds) => {
+    const completionAssistantSearch = vi.fn().mockResolvedValue({ candidates: [{ name: "ORDER_SEQ", kind: "sequence", schema: "APP" }], incomplete: false, fallback_used: false });
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+    vi.doMock("@/lib/backend/api", () => ({ checkConnectionHealth: vi.fn(), completionAssistantSearch }));
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    store.connections = [oceanBaseOracleConnection()];
+    store.connectedIds.add("oceanbase-oracle-1");
+    expect(await store.listCompletionObjects("oceanbase-oracle-1", "OBORCL", "ORDER", 20, "APP", undefined, false, "APP", [...objectKinds])).toEqual([expect.objectContaining({ name: "ORDER_SEQ", type: "sequence", schema: "APP" })]);
+  });
+
   it("retains OceanBase legacy-agent fallback without treating an empty search as unsupported", async () => {
     const completionAssistantSearch = vi.fn().mockRejectedValueOnce(new Error("OceanBase agent does not support filtered routine completion")).mockResolvedValue({ candidates: [], incomplete: false, fallback_used: false });
     const listCompletionObjects = vi.fn().mockResolvedValue([{ name: "P", object_type: "PROCEDURE", schema: "APP" }]);

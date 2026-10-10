@@ -9193,8 +9193,10 @@ export const useConnectionStore = defineStore("connection", () => {
     const objects = completionObjectsCache.value[cacheKey] ?? [];
     const filtered = objects.filter((object) => {
       if (databaseType === "oceanbase-oracle") {
-        if (object.type !== "procedure" && object.type !== "function") return false;
-        if (!objectKinds.includes("routine") && !objectKinds.includes(object.type)) return false;
+        if (object.type === "sequence") {
+          if (!objectKinds.includes("sequence")) return false;
+        } else if (object.type !== "procedure" && object.type !== "function") return false;
+        else if (!objectKinds.includes("routine") && !objectKinds.includes(object.type)) return false;
         if (schema && !globalSearch && object.schema !== schema) return false;
         if (caseSensitive) return object.name.includes(filter.trim());
       }
