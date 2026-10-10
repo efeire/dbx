@@ -5205,6 +5205,7 @@ export const useQueryStore = defineStore("query", () => {
 
   const manualTransactionTargetEpochs = new WeakMap<QueryTab, number>();
   const pendingManualTransactionStarts = new Map<string, { epoch: number; promise: Promise<string> }>();
+  const pendingManualTransactionCommits = new WeakMap<QueryTab, { sessionId: string; promise: Promise<void> }>();
 
   function manualTransactionTargetEpoch(tab: QueryTab): number {
     return manualTransactionTargetEpochs.get(tab) ?? 0;
@@ -5407,12 +5408,19 @@ export const useQueryStore = defineStore("query", () => {
       return ending;
     }
     const sessionId = tab.txnSessionId;
-    try {
-      await api.commitManualTransaction(sessionId);
-    } finally {
-      // A mode or target switch may have started a replacement transaction.
-      if (tab.txnSessionId === sessionId) clearManualTransactionSession(tab);
-    }
+    const pending = pendingManualTransactionCommits.get(tab);
+    if (pending?.sessionId === sessionId) return pending.promise;
+    const committing = (async () => {
+      try {
+        await api.commitManualTransaction(sessionId);
+      } finally {
+        // A mode or target switch may have started a replacement transaction.
+        if (tab.txnSessionId === sessionId) clearManualTransactionSession(tab);
+        if (pendingManualTransactionCommits.get(tab)?.promise === committing) pendingManualTransactionCommits.delete(tab);
+      }
+    })();
+    pendingManualTransactionCommits.set(tab, { sessionId, promise: committing });
+    return committing;
   }
 
   async function rollbackTransaction(id: string) {
