@@ -6982,6 +6982,7 @@ export default withEnglishFallback({
     dependencyGraph: "依存関係グラフ",
     copySourceDdl: "ソース DDL をコピー",
     copyTargetDdl: "ターゲット DDL をコピー",
+    routinePreviewReadOnly: "プログラムオブジェクトの SQL は読み取り専用です。生成された計画を実行し、トリガーは再取得による検証後にのみ有効化します。",
   },
   rollbackComparison: {
     title: "ロールバック比較",

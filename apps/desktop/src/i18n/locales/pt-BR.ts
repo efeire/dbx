@@ -6953,6 +6953,7 @@ export default withEnglishFallback({
     dependencyGraph: "Grafo de dependências",
     copySourceDdl: "Copiar DDL de origem",
     copyTargetDdl: "Copiar DDL de destino",
+    routinePreviewReadOnly: "O SQL dos objetos de programa é somente leitura. O plano gerado é executado; os gatilhos só são habilitados após a verificação por releitura.",
   },
   rollbackComparison: {
     title: "Comparação de Reversão",

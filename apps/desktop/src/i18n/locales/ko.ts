@@ -6795,6 +6795,7 @@ export default withEnglishFallback({
     routineDdlCopied: "DDL을 복사했습니다",
     copySourceDdl: "소스 DDL 복사",
     copyTargetDdl: "대상 DDL 복사",
+    routinePreviewReadOnly: "프로그램 객체 SQL은 읽기 전용입니다. 생성된 계획을 실행하며 트리거는 다시 읽어 검증한 후에만 활성화됩니다.",
   },
   rollbackComparison: {
     title: "롤백 비교",

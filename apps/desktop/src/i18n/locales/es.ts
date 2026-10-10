@@ -7171,6 +7171,7 @@ export default withEnglishFallback({
     dependencyGraph: "Grafo de dependencias",
     copySourceDdl: "Copiar DDL de origen",
     copyTargetDdl: "Copiar DDL de destino",
+    routinePreviewReadOnly: "El SQL de objetos de programa es de solo lectura. Se ejecuta el plan generado; los disparadores solo se habilitan tras verificar mediante lectura posterior.",
   },
   rollbackComparison: {
     title: "Comparación de Reversión",

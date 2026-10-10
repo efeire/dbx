@@ -6307,6 +6307,7 @@ export default withEnglishFallback({
     dependencyGraph: "依賴圖",
     copySourceDdl: "複製來源 DDL",
     copyTargetDdl: "複製目標 DDL",
+    routinePreviewReadOnly: "程式物件 SQL 為唯讀。執行使用產生的計畫，觸發器通過讀回驗證後才啟用。",
   },
   rollbackComparison: {
     title: "回溯對比",

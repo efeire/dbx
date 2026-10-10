@@ -6953,6 +6953,7 @@ export default withEnglishFallback({
     dependencyGraph: "Grafo delle dipendenze",
     copySourceDdl: "Copia DDL sorgente",
     copyTargetDdl: "Copia DDL destinazione",
+    routinePreviewReadOnly: "L’SQL degli oggetti di programma è di sola lettura. Viene eseguito il piano generato; i trigger vengono abilitati solo dopo la verifica tramite rilettura.",
   },
   rollbackComparison: {
     title: "Confronto Rollback",
