@@ -2749,6 +2749,8 @@ export default withEnglishFallback({
     binaryImportFailed: "Не удалось импортировать файл: {message}",
     binaryImportTooLarge: "Файл слишком большой ({size}, предел {limit}). Импорт больших файлов в одну ячейку не поддерживается.",
     downloadBinaryValue: "Скачать значение",
+    downloadSnapshotValue: "Скачать полный снимок результата",
+    largeValueSnapshotPreview: "{value} (предпросмотр снимка результата)",
     downloadSaved: "Сохранено в {path}",
     downloadStarted: "Скачивание начато: {fileName}",
     binaryDownload: {

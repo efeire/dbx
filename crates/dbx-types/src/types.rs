@@ -577,6 +577,9 @@ pub struct LargeValueCell {
     pub row_index: usize,
     pub column_index: usize,
     pub original_bytes: usize,
+    /// Opaque original-result locator. Absent for legacy preview/re-query drivers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

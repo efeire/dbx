@@ -1587,6 +1587,62 @@ export async function executeMultiWithProgress(
   return results;
 }
 
+export interface LargeValueRequest {
+  connectionId: string;
+  database: string;
+  valueRef: string;
+  offset?: number;
+  limit?: number;
+  executionId?: string;
+  clientSessionId?: string;
+  catalog?: string;
+  txnSessionId?: string;
+}
+
+export interface LargeValueChunk {
+  status: string;
+  data: string;
+  next_offset: number;
+  eof: boolean;
+  value_kind: "text" | "binary";
+}
+
+export async function readLargeValueChunk(request: LargeValueRequest): Promise<LargeValueChunk> {
+  return post("/api/query/large-value/chunk", request);
+}
+
+export async function releaseLargeValue(request: LargeValueRequest): Promise<boolean> {
+  return post("/api/query/large-value/release", request);
+}
+
+export async function downloadLargeValue(request: LargeValueRequest, filePath: string): Promise<void> {
+  const fileName = filePath.split(/[\\/]/).pop() || "lob.txt";
+  const prepared = await post<{ downloadId: string }>("/api/query/large-value/download", { request, fileName });
+  const anchor = document.createElement("a");
+  anchor.href = apiUrl(`/api/query/large-value/download/${encodeURIComponent(prepared.downloadId)}`);
+  anchor.download = fileName;
+  anchor.click();
+}
+
+export interface SnapshotExportRequest {
+  context: LargeValueRequest;
+  format: "csv" | "json";
+  columns: string[];
+  rows: unknown[][];
+  cells: Array<{ rowIndex: number; columnIndex: number; valueRef: string }>;
+  quoteMode?: "all" | "necessary";
+  nullLiteral?: string | null;
+}
+
+export async function exportSnapshotResult(request: SnapshotExportRequest, filePath: string): Promise<void> {
+  const fileName = filePath.split(/[\\/]/).pop() || `result.${request.format}`;
+  const prepared = await post<{ downloadId: string }>("/api/query/large-value/export", { request, fileName });
+  const anchor = document.createElement("a");
+  anchor.href = apiUrl(`/api/query/large-value/download/${encodeURIComponent(prepared.downloadId)}`);
+  anchor.download = fileName;
+  anchor.click();
+}
+
 export async function closeQuerySession(connectionId: string, database: string, sessionId: string, clientSessionId?: string, catalog?: string): Promise<boolean> {
   return post("/api/query/close-session", {
     connectionId,
