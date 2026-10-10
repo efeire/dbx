@@ -444,6 +444,19 @@ describe("extractSqlParameters", () => {
       expect(substituteSqlParameters(sql, { LINK: { kind: "raw", value: "WRONG" }, id: { kind: "number", value: "7" } }, { databaseType })).toBe("SELECT ename, HR.get_sal@LINK(empno) FROM emp WHERE id = 7");
     });
 
+    it.each([
+      "SELECT HR.order_seq.NEXTVAL@LINK, :id FROM DUAL",
+      "SELECT :id, order_seq.CURRVAL /* remote */ @LINK FROM DUAL",
+      'CREATE OR REPLACE SYNONYM orders FOR "Hr"."Orders"@LINK',
+      "CREATE PUBLIC SYNONYM orders FOR HR.orders /* remote */ @LINK",
+      "CREATE SYNONYM merge FOR HR.orders@LINK",
+      "CREATE SYNONYM HR.execute FOR HR.orders@LINK",
+      "MERGE INTO local_orders t USING HR.orders@LINK s ON (t.id = s.id) WHEN MATCHED THEN UPDATE SET t.amount = :id",
+    ])("preserves remote object links in %s", (sql) => {
+      expect(extractSqlParameters(sql, { databaseType })).toEqual(sql.includes(":id") ? ["id"] : []);
+      expect(substituteSqlParameters(sql, { LINK: { kind: "raw", value: "WRONG" }, id: { kind: "number", value: "7" } }, { databaseType })).toBe(sql.replace(":id", "7"));
+    });
+
     it.each(["HR.NEXT", "HR.OFFSET", "HR.FIRST", "FIRST", "-- comment\nFIRST", "employees, FIRST", "(SELECT id FROM employees) e, FIRST"])("preserves database links on the non-reserved object %s", (objectName) => {
       const sql = `SELECT * FROM ${objectName} /* separator */ @LINK WHERE id = :id`;
       expect(extractSqlParameters(sql, { databaseType })).toEqual(["id"]);
