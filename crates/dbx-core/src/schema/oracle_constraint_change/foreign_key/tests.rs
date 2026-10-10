@@ -13,6 +13,8 @@ struct Fixture {
     eligible: bool,
     privilege: bool,
     truncated: bool,
+    name_bytes: u64,
+    name_parser_accepts: bool,
 }
 struct Session {
     engine: Engine,
@@ -63,6 +65,8 @@ fn session(engine: Engine, request: &ForeignKeyChange) -> Session {
             eligible: true,
             privilege: true,
             truncated: false,
+            name_bytes: request.desired.as_ref().map_or(0, |key| key.name.len() as u64),
+            name_parser_accepts: true,
         }),
     }
 }
@@ -75,7 +79,14 @@ impl ConstraintSession for Session {
     async fn query(&self, sql: &str) -> Result<db::QueryResult, String> {
         let mut fixture = self.fixture.lock().unwrap();
         fixture.queries.push(sql.into());
-        let mut result = if sql.starts_with("SELECT c.CONSTRAINT_NAME,c.STATUS,c.VALIDATED") {
+        let mut result = if sql.starts_with("SELECT LENGTHB(") {
+            rows(vec![vec![json!(fixture.name_bytes)]])
+        } else if sql.starts_with("SELECT 1 AS ") {
+            if !fixture.name_parser_accepts {
+                return Err("ORA-00972: identifier is too long".into());
+            }
+            rows(vec![vec![json!(1)]])
+        } else if sql.starts_with("SELECT c.CONSTRAINT_NAME,c.STATUS,c.VALIDATED") {
             rows(
                 fixture
                     .current
@@ -159,6 +170,43 @@ impl ConstraintSession for Session {
         };
         result.truncated = fixture.truncated;
         Ok(result)
+    }
+}
+
+#[tokio::test]
+async fn requested_name_uses_engine_byte_rules_before_any_drop() {
+    for (engine, name, database_bytes, parser_accepts, valid) in [
+        (Engine::OceanBaseOracle, "X".repeat(129), 129, true, false),
+        (Engine::OceanBaseOracle, "X".repeat(128), 128, true, true),
+        (Engine::OceanBaseOracle, "汉".repeat(43), 129, true, false),
+        (Engine::Oracle, "X".repeat(31), 31, false, false),
+        (Engine::Oracle, "X".repeat(128), 128, true, true),
+        // A single-byte database charset can represent this as 128 bytes, not UTF-8's 256.
+        (Engine::Oracle, "é".repeat(128), 128, true, true),
+    ] {
+        let mut request = change();
+        request.desired.as_mut().unwrap().name = name.clone();
+        let session = session(engine, &request);
+        {
+            let mut fixture = session.fixture.lock().unwrap();
+            fixture.name_bytes = database_bytes;
+            fixture.name_parser_accepts = parser_accepts;
+        }
+        let preview = preview_foreign_key(&session, &request).await;
+        if valid {
+            assert_eq!(preview.unwrap().statements.len(), 2);
+        } else {
+            assert!(preview.is_err(), "invalid name produced a DROP plan: {engine:?}");
+            assert!(apply_foreign_key(&session, &request, "old-revision").await.is_err());
+        }
+        let fixture = session.fixture.lock().unwrap();
+        assert!(fixture.writes.is_empty());
+        assert_eq!(fixture.current, Some(key()));
+        let expected_probe = match engine {
+            Engine::OceanBaseOracle => format!("SELECT LENGTHB({}) FROM DUAL", literal(&name)),
+            Engine::Oracle => format!("SELECT 1 AS {} FROM DUAL", identifier(&name).unwrap()),
+        };
+        assert!(fixture.queries.contains(&expected_probe));
     }
 }
 

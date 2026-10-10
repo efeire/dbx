@@ -366,6 +366,18 @@ async fn preview_foreign_key(
     }
     let mut statements = Vec::new();
     if let Some(desired) = &change.desired {
+        // Use the database charset and, for Oracle, its COMPATIBLE-dependent parser limit.
+        let name_identifier = identifier(&desired.name)?;
+        let name_probe = match session.engine() {
+            Engine::OceanBaseOracle => format!("SELECT LENGTHB({}) FROM DUAL", literal(&desired.name)),
+            Engine::Oracle => format!("SELECT 1 AS {name_identifier} FROM DUAL"),
+        };
+        let name_length = count(session, &name_probe)
+            .await
+            .map_err(|error| format!("Cannot confirm a valid constraint name; no DDL was executed. {error}"))?;
+        if session.engine() == Engine::OceanBaseOracle && name_length > 128 {
+            return Err("The constraint name exceeds OceanBase Oracle's 128-byte limit; no DDL was executed.".into());
+        }
         let sql = foreign_key_sql(session.engine(), change, desired)?;
         let collision = count(
             session,
