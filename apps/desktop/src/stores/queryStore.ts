@@ -940,7 +940,8 @@ function expandStarProjectionColumnsForSource(analysis: EditableQueryInfo, sourc
       if (column.sourceKey && column.sourceKey !== source.key) return [column];
       return tableColumns.map((tableColumn) => ({
         sourceName: tableColumn.name,
-        sourceNameQuoted: false,
+        // These names come from metadata, including physical quoted "rowid".
+        sourceNameQuoted: true,
         ...(column.sourceQualifier ? { sourceQualifier: column.sourceQualifier } : {}),
         sourceKey: source.key,
         resultName: tableColumn.name,
@@ -6445,10 +6446,10 @@ export const useQueryStore = defineStore("query", () => {
       const wholeSourceProjected = projectsAllColumnsForSource(analysis, source.key);
       const hasDirectSourceProjection = analysis.columns.some((column) => Boolean(column.sourceName) && (!column.sourceKey || column.sourceKey === source.key));
       if (!wholeSourceProjected && !hasDirectSourceProjection) return unchanged;
-      // Whole-source projections already include declared primary keys. Oracle
+      // Whole-source projections already include declared primary keys. Oracle, OB
       // and Xugu may need a synthetic key, while DB2 needs column metadata to
       // decide whether LOB materialization can be deferred safely.
-      if (databaseType !== "oracle" && databaseType !== "xugu" && databaseType !== "db2" && wholeSourceProjected) return unchanged;
+      if (databaseType !== "oracle" && databaseType !== "oceanbase-oracle" && databaseType !== "xugu" && databaseType !== "db2" && wholeSourceProjected) return unchanged;
 
       const target = resolveEditableSourceMetadataTarget(tab, analysis, source, conn, databaseType, executionDatabase);
       const cached = getCachedTableMetadata(target.request);
