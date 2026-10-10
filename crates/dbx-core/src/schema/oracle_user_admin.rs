@@ -143,6 +143,9 @@ fn plan(change: &UserChange, before: &Value, oceanbase: bool, secret: Option<&st
             }
         }
         "drop" => {
+            if oceanbase {
+                return Err("OceanBase requires DROP USER CASCADE; non-cascading user deletion is not supported".into());
+            }
             if before["dropChecks"] != true
                 || !before["objects"].as_array().is_some_and(Vec::is_empty)
                 || !before["dependencies"].as_array().is_some_and(Vec::is_empty)
@@ -328,6 +331,14 @@ mod tests {
         let mut change = change("alter");
         change.default_tablespace = Some("DATA".into());
         assert!(plan(&change, &json!({"user":{}}), true, None).is_err());
+    }
+    #[test]
+    fn oceanbase_empty_user_drop_reports_the_cascade_requirement() {
+        let before = json!({"user":{},"dropChecks":true,"objects":[],"dependencies":[]});
+        let error = plan(&change("drop"), &before, true, None).err().unwrap();
+        assert!(error.contains("requires DROP USER CASCADE"));
+        let steps = plan(&change("drop"), &before, false, None).unwrap();
+        assert!(!steps[0].sql.contains("CASCADE"));
     }
     #[test]
     fn unknown_lock_or_password_authentication_cannot_be_verified() {
