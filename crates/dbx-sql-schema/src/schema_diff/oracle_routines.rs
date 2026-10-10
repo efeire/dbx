@@ -283,11 +283,11 @@ mod tests {
         let mut mapped = unchanged.clone();
         mapped.schema = Some("TARGET".into());
         mapped.definition = mapped.definition.replace("SOURCE.same", "TARGET.same");
-        assert!(super::super::diff_functions(&[unchanged.clone()], &[mapped]).is_empty());
+        assert!(super::super::diff_functions(std::slice::from_ref(&unchanged), &[mapped]).is_empty());
         let changed = routine("same", "CREATE PROCEDURE SOURCE.same IS BEGIN x := 'a  b'; END;");
-        let diffs = super::super::diff_functions(&[changed], &[unchanged.clone()]);
+        let diffs = super::super::diff_functions(&[changed], std::slice::from_ref(&unchanged));
         assert_eq!(diffs[0].diff_type, "modified");
-        assert_eq!(super::super::diff_functions(&[unchanged.clone()], &[])[0].diff_type, "added");
+        assert_eq!(super::super::diff_functions(std::slice::from_ref(&unchanged), &[])[0].diff_type, "added");
         assert_eq!(super::super::diff_functions(&[], &[unchanged])[0].diff_type, "removed");
     }
 
