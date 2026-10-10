@@ -1047,9 +1047,9 @@ mod tests {
             .await;
 
         let detail = storage.get_task_run_detail(&request.transfer_id).await.unwrap().unwrap();
-        assert_eq!(detail.run.status, TaskRunStatus::Failed);
+        assert_eq!(detail.run.status, TaskRunStatus::PartialFailed);
         assert!(detail.run.history_complete);
-        assert_eq!(detail.run.error_code.as_deref(), Some("TRANSFER_FAILED"));
+        assert_eq!(detail.run.error_code.as_deref(), Some("TRANSFER_PARTIAL_FAILURE"));
         assert_eq!(detail.transfer.as_ref().unwrap().filtered_table_count, 1);
         let items = storage.list_task_run_items(&request.transfer_id, TaskRunItemsQuery::default()).await.unwrap();
         assert_eq!(items.items[0].source_row_count, None);
