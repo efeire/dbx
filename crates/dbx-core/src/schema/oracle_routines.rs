@@ -405,11 +405,11 @@ mod tests {
                 "name": "Q", "functionType": "PROCEDURE", "dataType": "", "arguments": "", "definition": "CREATE PROCEDURE Q AS BEGIN NULL; END;", "schema": "DST"
             }
         })).unwrap();
-        assert!(ensure_selected_callers(&[caller.clone()], "DST", &[]).is_err());
-        assert!(ensure_selected_callers(&[caller.clone()], "DST", &[selected.clone()]).is_ok());
+        assert!(ensure_selected_callers(std::slice::from_ref(&caller), "DST", &[]).is_err());
+        assert!(ensure_selected_callers(std::slice::from_ref(&caller), "DST", std::slice::from_ref(&selected)).is_ok());
         let mut retained = selected.clone();
         retained.diff_type = "modified".into();
-        assert!(ensure_selected_callers(&[caller.clone()], "DST", &[retained]).is_err());
+        assert!(ensure_selected_callers(std::slice::from_ref(&caller), "DST", &[retained]).is_err());
         let external = vec![serde_json::json!("OTHER"), serde_json::json!("Q"), serde_json::json!("PROCEDURE")];
         assert!(ensure_selected_callers(&[external], "DST", &[selected]).is_err());
     }
