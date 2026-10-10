@@ -5076,6 +5076,8 @@ export default withEnglishFallback({
     sortAsc: "По возрастанию",
     sortDesc: "По убыванию",
     sortBy: "Сортировать по",
+    pagedRegexUnsupported: "Постраничный поиск объектов пока не поддерживает регулярные выражения. Введите имя или текст комментария.",
+    pagedOrder: "Загружено объектов: {count}, в порядке базы данных. После изменения объектов обновите.",
   },
   structureEditor: {
     createTitle: "Создание таблицы",
