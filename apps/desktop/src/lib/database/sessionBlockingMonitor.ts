@@ -121,7 +121,7 @@ export function createSessionBlockingMonitor(backend: Backend = api) {
           const result = await Promise.race([backend.executeQuery(context.connectionId, context.database, sql, undefined, executionId, { maxRows: limit + 1, timeoutSecs: 10 }), aborted]);
           if (controller.signal.aborted) throw new Error(timedOut ? "timeout" : "cancelled");
           if (result.execution_error) throw new Error(JSON.stringify(result.error ?? "Collection failed"));
-          if (result.rows.length > limit) addLimit("truncated");
+          if (result.truncated === true || result.has_more === true || result.rows.length > limit) addLimit("truncated");
           return result.rows.slice(0, limit).map((row) => Object.fromEntries(result.columns.map((column, index) => [column.toUpperCase(), row[index]])));
         } catch (cause) {
           if (controller.signal.aborted) throw new Error(timedOut ? "timeout" : "cancelled");

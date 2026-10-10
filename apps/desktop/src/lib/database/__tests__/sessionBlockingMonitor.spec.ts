@@ -99,6 +99,24 @@ describe("read-only session blocking snapshots", () => {
     expect(truncated.sessions).toHaveLength(1000);
     expect(truncated.limitations).toContain("truncated");
   });
+  it("marks a backend-truncated snapshot incomplete below the local row limit", async () => {
+    const backend = { executeQuery: vi.fn().mockResolvedValue({ ...result([session("1", "7", "10")]), truncated: true }), cancelQuery: vi.fn() };
+    const snapshot = await createSessionBlockingMonitor(backend).collect(oracle, signal());
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.limitations).toContain("truncated");
+  });
+  it("marks a snapshot with more backend rows incomplete below the local row limit", async () => {
+    const backend = { executeQuery: vi.fn().mockResolvedValue({ ...result([session("1", "7", "10")]), has_more: true }), cancelQuery: vi.fn() };
+    const snapshot = await createSessionBlockingMonitor(backend).collect(oracle, signal());
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.limitations).toContain("truncated");
+  });
+  it.each([{}, { truncated: false }, { has_more: false }, { truncated: false, has_more: false }])("keeps a complete snapshot unmarked for backend flags %j", async (flags) => {
+    const backend = { executeQuery: vi.fn().mockResolvedValue({ ...result([session("1", "7", "10")]), ...flags }), cancelQuery: vi.fn() };
+    const snapshot = await createSessionBlockingMonitor(backend).collect(oracle, signal());
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.limitations).not.toContain("truncated");
+  });
   it.each([
     ["ORA-01031", "permission_denied"],
     ["ORA-00904", "unsupported"],
