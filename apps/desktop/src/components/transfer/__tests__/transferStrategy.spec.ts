@@ -137,6 +137,24 @@ describe("transfer submission", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  it("reviews type prerequisites before referencing table DDL and deferred bodies after programs", () => {
+    const common = { sourceSchema: "SOURCE", targetSchema: "TARGET", action: "create" as const, dependencies: [], warnings: [], errors: [] };
+    const plan: TransferOwnershipPreview = {
+      missingOwners: [],
+      targetOwner: "TARGET",
+      structure: { sql: 'CREATE TABLE "TARGET"."PAYLOAD" (value "TARGET"."T");', tables: [], operations: [] },
+      schemaObjects: {
+        canExecute: true,
+        items: [
+          { ...common, objectType: "DB_LINK", name: "L", ddl: "-- Create DBLink L using supplied credentials" },
+          { ...common, objectType: "TYPE", name: "T", executionPhase: "beforeTables", ddl: 'CREATE TYPE "TARGET"."T" AS OBJECT (n NUMBER);' },
+          { ...common, objectType: "PACKAGE", name: "P", ddl: 'CREATE PACKAGE "TARGET"."P" AS PROCEDURE p; END;' },
+          { ...common, objectType: "TYPE_BODY", name: "T", executionPhase: "afterObjects", ddl: 'CREATE TYPE BODY "TARGET"."T" AS MEMBER PROCEDURE p IS BEGIN "TARGET"."P".p; END; END;' },
+        ],
+      },
+    };
+    expect(transferPreviewSql(plan)).toBe([plan.schemaObjects!.items[0]!.ddl, plan.schemaObjects!.items[1]!.ddl, plan.structure!.sql, plan.schemaObjects!.items[2]!.ddl, plan.schemaObjects!.items[3]!.ddl].join("\n\n"));
+  });
   it("cannot dispatch a DBLink with missing credentials even if a confirmation accepts it", async () => {
     const execute = vi.fn();
     const plan: TransferOwnershipPreview = {
@@ -234,11 +252,25 @@ describe("transfer submission", () => {
     expect(confirm).toHaveBeenCalledWith(expect.anything(), plan);
   });
 
-  it("refuses a selected package body missing from the backend plan", async () => {
+  it.each(["PACKAGE_BODY", "TYPE", "TYPE_BODY"] as const)("refuses a selected %s missing from the backend plan", async (objectType) => {
     const execute = vi.fn();
     const confirm = vi.fn();
     const submission = createTransferSubmission({ preview: async () => ({ missingOwners: [], targetOwner: "TARGET", schemaObjects: { canExecute: true, items: [] } }), confirmOwnership: async () => "preserve", confirm, execute });
-    await expect(submission.start(request({ tables: [], objects: [{ objectType: "PACKAGE_BODY", names: ["P"] }], dropTargetBeforeCreate: false }))).rejects.toThrow("TRANSFER_OBJECT_PREVIEW_UNAVAILABLE");
+    await expect(submission.start(request({ tables: [], objects: [{ objectType, names: ["P"] }], dropTargetBeforeCreate: false }))).rejects.toThrow("TRANSFER_OBJECT_PREVIEW_UNAVAILABLE");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a type definition plan for the same-named type body", async () => {
+    const execute = vi.fn();
+    const confirm = vi.fn();
+    const plan: TransferOwnershipPreview = {
+      missingOwners: [],
+      targetOwner: "TARGET",
+      schemaObjects: { canExecute: true, items: [{ objectType: "TYPE", name: "Case T", sourceSchema: "SOURCE", targetSchema: "TARGET", action: "create", ddl: 'CREATE TYPE "TARGET"."Case T" AS OBJECT (n NUMBER)', dependencies: [], warnings: [], errors: [] }] },
+    };
+    const submission = createTransferSubmission({ preview: async () => plan, confirmOwnership: async () => "preserve", confirm, execute });
+    await expect(submission.start(request({ tables: [], objects: [{ objectType: "TYPE_BODY", names: ["Case T"] }], dropTargetBeforeCreate: false }))).rejects.toThrow("TRANSFER_OBJECT_PREVIEW_UNAVAILABLE");
     expect(confirm).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });

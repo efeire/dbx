@@ -165,6 +165,73 @@ pub async fn start_transfer(
             dbx_core::transfer::clear_cancelled(&transfer_id).await;
             return;
         }
+        let mut observed_prerequisites = dbx_core::transfer::TransferObjectOutcome::default();
+        let prerequisites = dbx_core::transfer::transfer_schema_prerequisites(
+            &state,
+            &request,
+            &source_pool_key,
+            &target_pool_key,
+            |progress| {
+                if let Some(result) = &progress.object_result {
+                    observed_prerequisites.object_results.push(result.clone());
+                }
+                emit_progress(&app, progress)
+            },
+        )
+        .await;
+        let mut prerequisite_outcome;
+        let prerequisite_error = match prerequisites {
+            Ok(outcome) => {
+                if let Some(journal) = history.as_ref() {
+                    journal.record_object_outcome(&outcome).await;
+                }
+                let error = if !dbx_core::transfer::has_transfer_object_blockers(&outcome) {
+                    None
+                } else {
+                    Some("Type prerequisite failed; tables and dependent programs were not executed".to_string())
+                };
+                prerequisite_outcome = outcome;
+                error
+            }
+            Err(error) => {
+                prerequisite_outcome = observed_prerequisites;
+                Some(error)
+            }
+        };
+        if let Some(error) = prerequisite_error {
+            report_unexecuted_objects(
+                &app,
+                &request,
+                &mut prerequisite_outcome,
+                "Prerequisite stage did not complete; remaining selected objects were not executed",
+                history.as_ref(),
+                true,
+            )
+            .await;
+            emit_terminal_progress(
+                &app,
+                history.as_ref(),
+                TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    table: "type prerequisites".into(),
+                    table_index: 0,
+                    total_tables: request.tables.len(),
+                    rows_transferred: 0,
+                    total_rows: None,
+                    status: if dbx_core::transfer::is_cancelled(&transfer_id).await {
+                        TransferStatus::Cancelled
+                    } else {
+                        TransferStatus::Error
+                    },
+                    error: Some(error),
+                    terminal: true,
+                    object_result: None,
+                },
+            )
+            .await;
+            dbx_core::transfer::clear_cancelled(&transfer_id).await;
+            return;
+        }
         // Sort tables by FK dependency so referenced tables are transferred first,
         // and keep the foreign key metadata fetched along the way — MySQL-family
         // targets reuse it per table below instead of re-querying it.
@@ -567,12 +634,17 @@ pub async fn start_transfer(
         // Core decision handles all content modes: DataOnly never
         // transfers schema objects; PG→PG keeps the legacy empty-selection
         // default only when structure participates in the transfer.
-        let mut object_outcome = dbx_core::transfer::TransferObjectOutcome::default();
+        let mut object_outcome = prerequisite_outcome;
         let mut observed_objects = dbx_core::transfer::TransferObjectOutcome::default();
+        let tables_blocked_objects =
+            dbx_core::transfer::has_transfer_type_prerequisites(&request) && !failed_tables.is_empty();
         let exact_object_progress =
             matches!(source_db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle | DatabaseType::Dameng)
                 && dbx_core::transfer::is_same_transfer_family(&source_db_type, &target_db_type);
-        let schema_objects = {
+        let schema_objects = if tables_blocked_objects {
+            Err("Selected table transfer failed; dependent programs and deferred TYPE BODY were not executed"
+                .to_string())
+        } else {
             if let Some(journal) = history.as_ref() {
                 journal.start_legacy_schema_objects().await;
             }
@@ -651,7 +723,7 @@ pub async fn start_transfer(
                     &mut object_outcome,
                     "Schema object stage did not complete; this selected object was not executed",
                     history.as_ref(),
-                    exact_object_progress,
+                    tables_blocked_objects || exact_object_progress,
                 )
                 .await;
                 if let Some(journal) = history.as_ref() {

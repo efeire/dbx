@@ -1028,11 +1028,12 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         args.addAll(objectTypes);
         String sql = baseSql;
         if (constraints.hasFilter()) {
+            boolean hasComments = baseSql.contains("LEFT JOIN ALL_TAB_COMMENTS c");
             sql += " AND (UPPER(" + nameColumn + ") LIKE ? ESCAPE '\\'"
-                + " OR UPPER(c.COMMENTS) LIKE ? ESCAPE '\\')";
+                + (hasComments ? " OR UPPER(c.COMMENTS) LIKE ? ESCAPE '\\')" : ")");
             String pattern = constraints.fuzzyLikePattern().toUpperCase(Locale.ROOT);
             args.add(pattern);
-            args.add(pattern);
+            if (hasComments) args.add(pattern);
         }
         sql += "\n" + orderSql;
         if (constraints.hasLimit()) {

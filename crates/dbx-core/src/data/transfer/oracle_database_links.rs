@@ -259,6 +259,7 @@ async fn build_plan(
     for (kind, name) in selected(request) {
         let mut entry = Planned {
             item: TransferSchemaObjectItem {
+                execution_phase: None,
                 credential_required: Some(true),
                 object_type: kind,
                 name: name.clone(),

@@ -7,6 +7,15 @@ import type { DatabaseType } from "@/types/database";
 const TABLE_ONLY_TRANSFER_DATABASES: DatabaseType[] = ["sqlite", "rqlite", "turso", "cloudflare-d1", "duckdb", "clickhouse", "mongodb", "highgo", "vastbase", "goldendb", "yashandb", "questdb", "h2", "hive", "argo", "transwarp", "kyuubi", "impala", "db2", "iris", "spark", "xugu"];
 
 describe("transferObjectKinds", () => {
+  it.each(["oracle", "oceanbase-oracle"] as const)("exposes type parts for %s with mandatory plans and exact metadata identity", (databaseType) => {
+    expect(crossFamilyTransferableKinds(databaseType, databaseType)).toEqual(expect.arrayContaining(["TYPE", "TYPE_BODY"]));
+    expect(crossFamilyTransferableKinds(databaseType, "dameng")).not.toContain("TYPE");
+    expect(crossFamilyTransferableKinds(databaseType, "mysql")).not.toContain("TYPE_BODY");
+    for (const kind of ["TYPE", "TYPE_BODY"] as const) {
+      expect(requiresTransferSchemaObjectPlan(kind)).toBe(true);
+      expect(transferObjectMetadataTarget(kind, "Case Owner")).toEqual({ objectType: kind, schema: "Case Owner" });
+    }
+  });
   it("keeps public and private synonym metadata scopes distinct", () => {
     expect(transferObjectMetadataTarget("SYNONYM", "Case Owner")).toEqual({ objectType: "SYNONYM", schema: "Case Owner" });
     expect(transferObjectMetadataTarget("PUBLIC_SYNONYM", "Case Owner")).toEqual({ objectType: "SYNONYM", schema: "PUBLIC" });
@@ -15,6 +24,11 @@ describe("transferObjectKinds", () => {
     expect(transferObjectMetadataTarget("SYNONYM", "public")).toEqual({ objectType: "SYNONYM", schema: "public" });
     expect(requiresTransferSchemaObjectPlan("SYNONYM")).toBe(true);
     expect(requiresTransferSchemaObjectPlan("PUBLIC_SYNONYM")).toBe(true);
+  });
+
+  it("keeps database links outside sidebar metadata listing", () => {
+    expect(transferObjectMetadataTarget("DB_LINK", "Case Owner")).toBeUndefined();
+    expect(transferObjectMetadataTarget("PUBLIC_DB_LINK", "Case Owner")).toBeUndefined();
   });
 
   it.each(["oracle", "oceanbase-oracle"] as const)("exposes separate synonym scopes for %s without allowing unrelated targets", (source) => {
@@ -33,7 +47,7 @@ describe("transferObjectKinds", () => {
   it("returns per-family object kinds", () => {
     expect(transferObjectKindsForDatabase("mysql")).toEqual(["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"]);
     expect(transferObjectKindsForDatabase("postgres")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE"]);
-    expect(transferObjectKindsForDatabase("oracle")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "PACKAGE", "PACKAGE_BODY", "SYNONYM", "PUBLIC_SYNONYM", "DB_LINK", "PUBLIC_DB_LINK"]);
+    expect(transferObjectKindsForDatabase("oracle")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "TYPE", "TYPE_BODY", "PACKAGE", "PACKAGE_BODY", "SYNONYM", "PUBLIC_SYNONYM", "DB_LINK", "PUBLIC_DB_LINK"]);
     expect(transferObjectKindsForDatabase("sqlserver")).toEqual(["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE"]);
   });
 

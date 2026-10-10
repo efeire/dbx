@@ -265,6 +265,56 @@ pub async fn start_transfer(
             return;
         }
 
+        let mut observed_prerequisites = transfer::TransferObjectOutcome::default();
+        let mut prerequisites =
+            match transfer::transfer_schema_prerequisites(&app, &req, &source_pool_key, &target_pool_key, |progress| {
+                if let Some(result) = &progress.object_result {
+                    observed_prerequisites.object_results.push(result.clone());
+                }
+                send_transfer_progress(&progress_channel, &progress);
+            })
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    report_unexecuted_objects(
+                        &req,
+                        &mut observed_prerequisites,
+                        "Prerequisite stage did not complete; remaining selected objects were not executed",
+                        &progress_channel,
+                        history.as_ref(),
+                        true,
+                    )
+                    .await;
+                    send_transfer_progress(&progress_channel, &terminal_transfer_error(&req, error).await);
+                    finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
+                    return;
+                }
+            };
+        if let Some(journal) = history.as_ref() {
+            journal.record_object_outcome(&prerequisites).await;
+        }
+        if transfer::has_transfer_object_blockers(&prerequisites) {
+            report_unexecuted_objects(
+                &req,
+                &mut prerequisites,
+                "Type prerequisite failed; this selected object was not executed",
+                &progress_channel,
+                history.as_ref(),
+                true,
+            )
+            .await;
+            send_transfer_progress(
+                &progress_channel,
+                &terminal_transfer_error(
+                    &req,
+                    "Type prerequisite failed; tables and dependent programs were not executed",
+                )
+                .await,
+            );
+            finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
+            return;
+        }
         let tables = req.tables.clone();
         // Sort by FK dependency so referenced tables are transferred first, and
         // keep the foreign key metadata fetched along the way — MySQL-family
@@ -629,8 +679,9 @@ pub async fn start_transfer(
         // Core decision handles all content modes: DataOnly never
         // transfers schema objects; PG→PG keeps the legacy empty-selection
         // default only when structure participates in the transfer.
-        let mut object_outcome = transfer::TransferObjectOutcome::default();
+        let mut object_outcome = prerequisites;
         let mut observed_objects = transfer::TransferObjectOutcome::default();
+        let tables_blocked_objects = transfer::has_transfer_type_prerequisites(&req) && !failed_tables.is_empty();
         let exact_object_progress = matches!(
             source_db_type,
             dbx_core::models::connection::DatabaseType::Oracle
@@ -638,7 +689,10 @@ pub async fn start_transfer(
                 | dbx_core::models::connection::DatabaseType::Dameng
         ) && transfer::is_same_transfer_family(&source_db_type, &target_db_type);
         let progress_channel_clone = progress_channel.clone();
-        let schema_objects = {
+        let schema_objects = if tables_blocked_objects {
+            Err("Selected table transfer failed; dependent programs and deferred TYPE BODY were not executed"
+                .to_string())
+        } else {
             if let Some(journal) = history.as_ref() {
                 journal.start_legacy_schema_objects().await;
             }
@@ -707,7 +761,7 @@ pub async fn start_transfer(
                     "Schema object stage did not complete; this selected object was not executed",
                     &progress_channel,
                     history.as_ref(),
-                    exact_object_progress,
+                    tables_blocked_objects || exact_object_progress,
                 )
                 .await;
                 if let Some(journal) = history.as_ref() {
@@ -931,6 +985,31 @@ mod tests {
     use dbx_core::transfer::{
         TransferContent, TransferMode, TransferOwnershipPolicy, TransferRequest, TransferTableNameCase,
     };
+
+    #[test]
+    fn aggregate_overwrite_failure_serializes_without_an_object_result() {
+        let channel = TransferProgressChannel::new();
+        let progress = transfer::TransferProgress {
+            transfer_id: "overwrite-test".into(),
+            table: "overwrite pre-pass".into(),
+            table_index: 0,
+            total_tables: 2,
+            rows_transferred: 37,
+            total_rows: None,
+            status: TransferStatus::Error,
+            error: Some("Overwrite clearing failed".into()),
+            terminal: true,
+            object_result: None,
+        };
+        send_transfer_progress(&channel, &progress);
+        let payload: serde_json::Value = serde_json::from_str(&channel.latest().unwrap()).unwrap();
+        assert!(payload.get("objectResult").is_none());
+        assert_eq!(payload["status"], "error");
+        assert_eq!(payload["error"], "Overwrite clearing failed");
+        assert_eq!(payload["terminal"], true);
+        assert_eq!(payload["table"], "overwrite pre-pass");
+        assert_eq!(payload["rowsTransferred"], 37);
+    }
 
     fn sqlite_config(id: &str, path: &str) -> ConnectionConfig {
         ConnectionConfig {

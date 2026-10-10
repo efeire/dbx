@@ -515,6 +515,18 @@ mod tests {
     }
 
     #[test]
+    fn type_conversion_uses_referenced_type_identity() {
+        let dependency = RoutineDependency {
+            owner: "APP".into(),
+            name: "ELEMENT_T".into(),
+            object_type: "TYPE".into(),
+        };
+        let source = "CREATE TYPE T AS TABLE OF ELEMENT_T;";
+        assert!(compatible_type_source(source, "TYPE", &[]).is_err());
+        assert!(compatible_type_source(source, "TYPE", &[dependency]).is_ok());
+    }
+
+    #[test]
     fn type_categories_report_specific_unknown_semantics() {
         assert!(compatible_type_source(
             "CREATE TYPE T AS OBJECT (n NUMBER(10,2), label VARCHAR2(30 CHAR));",
