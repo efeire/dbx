@@ -100,8 +100,8 @@ async fn removed_only_package_preview_checks_saved_target_before_deletion() {
             Some("SRC"),
             Some("DST"),
             &[],
-            &[target.clone()],
-            &[target],
+            std::slice::from_ref(&target),
+            std::slice::from_ref(&target),
         )
         .await
         .unwrap_err();
