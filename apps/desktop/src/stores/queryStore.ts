@@ -5410,16 +5410,23 @@ export const useQueryStore = defineStore("query", () => {
     const sessionId = tab.txnSessionId;
     const pending = pendingManualTransactionCommits.get(tab);
     if (pending?.sessionId === sessionId) return pending.promise;
-    const committing = (async () => {
+    let resolveCommit!: () => void;
+    let rejectCommit!: (error: unknown) => void;
+    const committing = new Promise<void>((resolve, reject) => {
+      resolveCommit = resolve;
+      rejectCommit = reject;
+    });
+    const entry = { sessionId, promise: committing };
+    pendingManualTransactionCommits.set(tab, entry);
+    void (async () => {
       try {
         await api.commitManualTransaction(sessionId);
       } finally {
         // A mode or target switch may have started a replacement transaction.
         if (tab.txnSessionId === sessionId) clearManualTransactionSession(tab);
-        if (pendingManualTransactionCommits.get(tab)?.promise === committing) pendingManualTransactionCommits.delete(tab);
+        if (pendingManualTransactionCommits.get(tab) === entry) pendingManualTransactionCommits.delete(tab);
       }
-    })();
-    pendingManualTransactionCommits.set(tab, { sessionId, promise: committing });
+    })().then(resolveCommit, rejectCommit);
     return committing;
   }
 

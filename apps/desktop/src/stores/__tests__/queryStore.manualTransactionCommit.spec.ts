@@ -58,6 +58,25 @@ describe.each(["oracle", "oceanbase-oracle"] as const)("queryStore %s commit lif
 
   afterEach(() => vi.unstubAllGlobals());
 
+  it("preserves a synchronous backend error and permits the next transaction to commit", async () => {
+    const { store, id, tab } = await setupManualTab(dbType);
+    const error = new Error("Synchronous commit boundary failure");
+    mocks.commitManualTransaction.mockImplementationOnce(() => {
+      throw error;
+    });
+
+    await expect(store.commitTransaction(id)).rejects.toBe(error);
+    expect(tab.txnSessionId).toBeUndefined();
+    expect(tab.txnPossiblyDirty).toBe(false);
+
+    mocks.beginManualTransaction.mockResolvedValueOnce("txn-next");
+    await store.ensureManualTransactionSession(id, "ORCL", "APP");
+    mocks.commitManualTransaction.mockResolvedValueOnce(undefined);
+    await expect(store.commitTransaction(id)).resolves.toBeUndefined();
+    expect(mocks.commitManualTransaction.mock.calls.map(([sessionId]) => sessionId)).toEqual(["txn-old", "txn-next"]);
+    expect(tab.txnSessionId).toBeUndefined();
+  });
+
   it.each(["success", "failure"] as const)("shares an in-flight commit until its %s result arrives", async (outcome) => {
     const { store, id, tab } = await setupManualTab(dbType);
     const commit = deferred<void>();
