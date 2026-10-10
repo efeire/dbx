@@ -463,6 +463,8 @@ async fn build_plan(
             engine_check = Err(error);
         }
     }
+    let edition =
+        Regex::new(r"(?is)(CREATE\s+(?:OR\s+REPLACE\s+)?)(?:NON)?EDITIONABLE(\s+TYPE(?:\s+BODY)?\s*)$").unwrap();
     let mut plan = Vec::new();
     for (kind, name) in &selection {
         // Specifications already ran before tables. Replanning them after tables would
@@ -490,7 +492,6 @@ async fn build_plan(
                     if rows.len() != 1 || text(&rows[0], 0)? != "N" { return Err("TYPE conversion to an edition-enabled or unknown Oracle target schema is not confirmed".into()); }
                 }
                 let (prefix, _, _) = oracle_packages::declaration(&original, *kind)?;
-                let edition = Regex::new(r"(?is)(CREATE\s+(?:OR\s+REPLACE\s+)?)(?:NON)?EDITIONABLE(\s+TYPE(?:\s+BODY)?\s*)$").unwrap();
                 if edition.is_match(&prefix) {
                     if get_db_type(state, &request.source_connection_id).await? != DatabaseType::Oracle { return Err("OceanBase editionability syntax is not a confirmed conversion input".into()); }
                     converted.replace_range(..prefix.len(), &edition.replace(&prefix, "$1$2"));
