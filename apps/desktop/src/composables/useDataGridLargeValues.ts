@@ -137,7 +137,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     return largeValueCellsByKey.value.get(largeValueCellKey(item.sourceIndex, columnIndex))?.value_ref;
   }
 
-  async function downloadSnapshotCell(rowId: number, columnIndex: number, filePath: string): Promise<void> {
+  async function downloadSnapshotCell(rowId: number, columnIndex: number, filePath: string, downloadEncoding?: "binary" | "utf8" | "gbk"): Promise<void> {
     const sourceResult = options.result.value;
     const ref = snapshotReference(options.getRowItem(rowId), columnIndex);
     const context = sourceResult.large_value_context;
@@ -145,7 +145,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     const executionId = options.uuid();
     snapshotExecutionIds.add(executionId);
     try {
-      await api.downloadLargeValue({ ...context, valueRef: ref, executionId }, filePath);
+      await api.downloadLargeValue({ ...context, valueRef: ref, executionId, downloadEncoding }, filePath);
       if (options.result.value !== sourceResult) throw new Error("LOB result context changed");
     } finally {
       snapshotExecutionIds.delete(executionId);

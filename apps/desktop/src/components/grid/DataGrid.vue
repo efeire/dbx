@@ -10684,6 +10684,15 @@ async function downloadDetailBinaryValue(detail: DataGridCellDetail | null, mode
   if (!detail || !canDownloadDetailBinaryValue(detail)) return;
   try {
     const sourceResult = props.result;
+    if (largeValueRuntimeInstance.snapshotReference(getRowItem(detail.rowId), detail.colIndex)) {
+      const extension = mode === "binary" ? binaryCellDownloadPayload(detail.value, mode, detail.type, resolvedDatabaseType.value).extension : "txt";
+      const fileName = binaryCellDownloadFileName({ column: detail.column, rowNumber: detail.rowNumber, mode, extension });
+      const path = isTauriRuntime() ? await promptExportSavePath({ defaultFileName: fileName, filters: [{ name: "LOB", extensions: [extension] }] }) : fileName;
+      if (!path || props.result !== sourceResult) return;
+      await largeValueRuntimeInstance.downloadSnapshotCell(detail.rowId, detail.colIndex, path, mode);
+      toast(isTauriRuntime() ? t("grid.downloadSaved", { path }) : t("grid.downloadStarted", { fileName }));
+      return;
+    }
     if (!(await hydrateLargeValueCell(detail.rowId, detail.colIndex))) return;
     if (props.result !== sourceResult) return;
     const resolvedDetail = cellDetailFor(displayRowIndexById(detail.rowId), detail.colIndex);

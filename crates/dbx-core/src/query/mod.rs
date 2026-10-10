@@ -3131,6 +3131,7 @@ pub struct LargeValueRequest {
     pub client_session_id: Option<String>,
     pub catalog: Option<String>,
     pub txn_session_id: Option<String>,
+    pub download_encoding: Option<String>,
 }
 
 /// Fetches only the original captured locator; never retries by selecting the current row.
@@ -3162,6 +3163,9 @@ async fn request_large_value_with_cancel(
     release: bool,
     cancel_token: Option<CancellationToken>,
 ) -> Result<serde_json::Value, String> {
+    if request.value_ref.len() > 128 || (!release && (request.limit == 0 || request.limit > 4096)) {
+        return Err("Invalid LOB chunk request".to_string());
+    }
     let method = if release { "release_large_value" } else { "read_large_value_chunk" };
     let params = serde_json::json!({ "valueRef": request.value_ref, "offset": request.offset, "limit": request.limit });
     if let Some(txn_id) = request.txn_session_id.as_deref() {
@@ -3227,6 +3231,14 @@ pub async fn write_large_value_snapshot(
     request.offset = 0;
     request.limit = 4096;
     let mut written = 0;
+    let mut value_kind: Option<String> = None;
+    let mut decoder = match request.download_encoding.as_deref() {
+        None | Some("binary") => None,
+        Some("utf8") => Some(encoding_rs::UTF_8.new_decoder_without_bom_handling()),
+        Some("gbk") => Some(encoding_rs::GBK.new_decoder_without_bom_handling()),
+        Some(_) => return Err("Unsupported LOB download encoding".to_string()),
+    };
+    let mut first_decoded_output = request.download_encoding.as_deref() == Some("utf8");
     loop {
         if is_canceled(&cancel) {
             return Err(canceled_error());
@@ -3236,11 +3248,31 @@ pub async fn write_large_value_snapshot(
             return Err(canceled_error());
         }
         let (data, next, eof, kind) = snapshot_export::checked_chunk(&chunk, request.offset)?;
-        if kind != "text" {
-            return Err("CLOB download requires text chunks".to_string());
+        if value_kind.as_deref().is_some_and(|original| original != kind) {
+            return Err("LOB chunk type changed".to_string());
         }
-        output.write_all(data.as_bytes()).map_err(|error| error.to_string())?;
-        written += data.len() as u64;
+        value_kind = Some(kind.to_string());
+        let bytes = if kind == "binary" {
+            let bytes = decode_lob_hex_chunk(data)?;
+            if let Some(decoder) = decoder.as_mut() {
+                let mut text = decode_lob_text_chunk(decoder, &bytes, eof)?;
+                if first_decoded_output && !text.is_empty() {
+                    if text.starts_with('\u{feff}') {
+                        text.drain(..3);
+                    }
+                    first_decoded_output = false;
+                }
+                text.into_bytes()
+            } else {
+                bytes
+            }
+        } else if kind == "text" {
+            data.as_bytes().to_vec()
+        } else {
+            return Err("Invalid LOB type".to_string());
+        };
+        output.write_all(&bytes).map_err(|error| error.to_string())?;
+        written += bytes.len() as u64;
         if eof {
             break;
         }
@@ -3251,6 +3283,28 @@ pub async fn write_large_value_snapshot(
     }
     output.flush().map_err(|error| error.to_string())?;
     Ok(written)
+}
+
+fn decode_lob_hex_chunk(hex: &str) -> Result<Vec<u8>, String> {
+    if hex.len() > 8192 || !hex.len().is_multiple_of(2) || !hex.is_ascii() {
+        return Err("Invalid LOB binary encoding".to_string());
+    }
+    hex.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).map_err(|_| "Invalid LOB binary encoding".to_string())?, 16)
+                .map_err(|_| "Invalid LOB binary encoding".to_string())
+        })
+        .collect()
+}
+
+fn decode_lob_text_chunk(decoder: &mut encoding_rs::Decoder, bytes: &[u8], eof: bool) -> Result<String, String> {
+    let mut text = String::with_capacity(bytes.len() * 3 + 12);
+    let (status, consumed, _) = decoder.decode_to_string(bytes, &mut text, eof);
+    if status != encoding_rs::CoderResult::InputEmpty || consumed != bytes.len() {
+        return Err("LOB download decoding did not consume the complete chunk".to_string());
+    }
+    Ok(text)
 }
 
 pub async fn close_query_session(
@@ -4676,6 +4730,53 @@ fn contains_standalone_concurrently_keyword(upper: &str) -> bool {
         search_from = pos + 1;
     }
     false
+}
+
+pub async fn execute_blob_bound_statements(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    previews: &[String],
+    bound: &[dbx_types::types::BlobBoundStatement],
+    schema: Option<&str>,
+    use_transaction: bool,
+    timeout_secs: Option<u64>,
+) -> Result<db::QueryResult, String> {
+    dbx_types::types::validate_blob_bound_statements(previews, bound)?;
+    if connection_database_type(state, connection_id).await != Some(DatabaseType::OceanbaseOracle) {
+        return Err("Bound BLOB saves are only supported for OceanBase Oracle.".into());
+    }
+    let pool_key = if database.is_empty() {
+        connection_id.to_string()
+    } else {
+        state.get_or_create_pool(connection_id, Some(database)).await?
+    };
+    let sql = bound.iter().map(|statement| statement.sql.clone()).collect::<Vec<_>>();
+    check_read_only_for_connection_multi(state, &pool_key, &sql).await?;
+    let pool = state.pool_handle(&pool_key).await;
+    let Some(PoolKind::Agent(source_client)) = pool.as_ref() else {
+        return Err("Bound BLOB saves require an updated JDBC Agent.".into());
+    };
+    let mut client = source_client.lock().await;
+    let result = client
+        .execute_blob_bound_typed(
+            if database.is_empty() { None } else { Some(database) },
+            previews,
+            bound,
+            schema,
+            use_transaction,
+            resolve_query_timeout(timeout_secs),
+        )
+        .await;
+    drop(client);
+    match result {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            discard_agent_pool_after_typed_error(state, &pool_key, source_client, &error, RecoveryScope::UserOperation)
+                .await;
+            Err(error.into_legacy_string())
+        }
+    }
 }
 
 async fn execute_statements_inner(
@@ -6256,6 +6357,7 @@ pub async fn execute_in_manual_transaction(
 
 #[derive(Clone, Debug, Default)]
 pub struct ManualTransactionExecutionOptions {
+    pub bound_statements: Option<Vec<dbx_types::types::BlobBoundStatement>>,
     pub max_rows: Option<usize>,
     pub table_data_preview: bool,
     pub execution_id: Option<String>,
@@ -6279,6 +6381,9 @@ pub async fn execute_in_manual_transaction_with_options(
     options: ManualTransactionExecutionOptions,
 ) -> Result<Vec<ExecuteMultiResult>, String> {
     if sqlserver_manual_transaction::is_session_id(txn_session_id) {
+        if options.bound_statements.is_some() {
+            return Err("Bound BLOB saves are only supported for OceanBase Oracle.".into());
+        }
         return sqlserver_manual_transaction::execute(state, txn_session_id, sql, database, schema, options).await;
     }
     const TXN_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(MANUAL_TRANSACTION_IDLE_TIMEOUT_SECS);
@@ -6294,16 +6399,28 @@ pub async fn execute_in_manual_transaction_with_options(
 
     let db_type = connection_database_type(state, &connection_id).await;
     let compatibility_mode = connection_sql_compatibility_mode(state, &pool_key, db_type).await;
-    let statements = db_type.map_or_else(
-        || split_sql_statements(sql),
-        |db_type| {
-            crate::sql::split_sql_statements_for_database_with_compatibility(
-                sql,
-                db_type,
-                compatibility_mode.as_deref(),
-            )
-        },
-    );
+    let statements = if let Some(bound) = options.bound_statements.as_ref() {
+        if db_type != Some(DatabaseType::OceanbaseOracle) {
+            return Err("Bound BLOB saves are only supported for OceanBase Oracle.".into());
+        }
+        let previews = bound.iter().map(|statement| statement.preview_sql.clone()).collect::<Vec<_>>();
+        if sql != previews.join(";\n") {
+            return Err("The reviewed SQL changed; regenerate the BLOB save preview before saving.".into());
+        }
+        dbx_types::types::validate_blob_bound_statements(&previews, bound)?;
+        previews
+    } else {
+        db_type.map_or_else(
+            || split_sql_statements(sql),
+            |db_type| {
+                crate::sql::split_sql_statements_for_database_with_compatibility(
+                    sql,
+                    db_type,
+                    compatibility_mode.as_deref(),
+                )
+            },
+        )
+    };
     if statements.is_empty() {
         // Sticky-dialect UX marker: the no-op is Core's decision that the script
         // (empty/whitespace/comments-only) has no statements, so the frontend
@@ -6337,6 +6454,31 @@ pub async fn execute_in_manual_transaction_with_options(
     // Read-only check while the session is still in the map. If this fails the
     // session remains intact.
     check_read_only_for_connection_multi(state, &pool_key, &statements).await?;
+    if let Some(bound) = options.bound_statements.as_ref() {
+        check_read_only_for_connection_multi(
+            state,
+            &pool_key,
+            &bound.iter().map(|statement| statement.sql.clone()).collect::<Vec<_>>(),
+        )
+        .await?;
+        let connection = state
+            .transaction_sessions
+            .read()
+            .await
+            .get(txn_session_id)
+            .map(|session| Arc::clone(&session.connection))
+            .ok_or(MANUAL_TRANSACTION_SESSION_NOT_FOUND_ERROR)?;
+        let connection = connection.lock().await;
+        let supported = match &*connection {
+            TxnConnection::Agent { client, .. } => {
+                client.lock().await.supports_capability(crate::db::agent_driver::AgentCapability::BlobBindStatementsV1)
+            }
+            _ => false,
+        };
+        if !supported {
+            return Err("This Agent does not support bound BLOB saves; update the Agent before saving.".into());
+        }
+    }
 
     let classification: Vec<bool> =
         classify_manual_transaction_statements(db_type, statements.len(), options.classification_sql.as_deref());
@@ -6378,7 +6520,11 @@ pub async fn execute_in_manual_transaction_with_options(
     let mut results = Vec::with_capacity(statements.len());
 
     let mut conn = connection.lock().await;
+    let mut bound_failure_can_keep = false;
     for (i, statement) in statements.iter().enumerate() {
+        if options.bound_statements.is_some() && i > 0 {
+            break;
+        }
         let result = match &mut *conn {
             TxnConnection::SqlServer { .. } => {
                 return Err("SQL Server transaction must use its batch executor".to_string())
@@ -6395,18 +6541,40 @@ pub async fn execute_in_manual_transaction_with_options(
                 .await
             }
             TxnConnection::Agent { client, .. } => {
-                execute_manual_txn_agent_statement(
-                    client,
-                    db_type,
-                    statement,
-                    database,
-                    schema,
-                    row_limit,
-                    options.table_data_preview,
-                    options.page_size,
-                    options.result_session_id.as_deref(),
-                )
-                .await
+                if let Some(bound) = options.bound_statements.as_ref() {
+                    let mut locked = client.lock().await;
+                    match locked
+                        .execute_blob_bound_typed(
+                            if database.is_empty() { None } else { Some(database) },
+                            &statements,
+                            bound,
+                            schema,
+                            false,
+                            resolve_query_timeout(options.timeout_secs),
+                        )
+                        .await
+                    {
+                        Ok(result) => Ok(result),
+                        Err(error) => {
+                            bound_failure_can_keep = error.session_disposition()
+                                == Some(crate::db::agent_driver::AgentSessionDisposition::Keep);
+                            Err(error.into_legacy_string())
+                        }
+                    }
+                } else {
+                    execute_manual_txn_agent_statement(
+                        client,
+                        db_type,
+                        statement,
+                        database,
+                        schema,
+                        row_limit,
+                        options.table_data_preview,
+                        options.page_size,
+                        options.result_session_id.as_deref(),
+                    )
+                    .await
+                }
             }
             TxnConnection::ExternalDriver { session, config, .. } => {
                 execute_manual_txn_external_driver_statement(session, config, statement, database, schema, row_limit)
@@ -6425,6 +6593,13 @@ pub async fn execute_in_manual_transaction_with_options(
                 results.push(executed);
             }
             Err(e) => {
+                if bound_failure_can_keep {
+                    if let Some(session) = state.transaction_sessions.write().await.get_mut(txn_session_id) {
+                        session.busy = false;
+                        session.last_activity = std::time::Instant::now();
+                    }
+                    return Err(e);
+                }
                 // Statement failure ends the transaction. If another cleanup path
                 // already removed the session, it owns the final rollback.
                 let should_rollback = {
@@ -6435,7 +6610,11 @@ pub async fn execute_in_manual_transaction_with_options(
                     let _ = rollback_manual_txn_connection(&mut conn).await;
                     release_manual_txn_session_pool(state, &connection_id, &mut conn).await;
                 }
-                return Err(format!("Statement {} failed: {}. The manual transaction was rolled back.", i + 1, e));
+                return Err(if options.bound_statements.is_some() {
+                    format!("Bound BLOB save failed: {e}. The transaction session was discarded; the operation outcome may be unknown.")
+                } else {
+                    format!("Statement {} failed: {}. The manual transaction was rolled back.", i + 1, e)
+                });
             }
         }
     }
@@ -10496,6 +10675,38 @@ for line in sys.stdin:
         .unwrap();
         assert_eq!(legacy.value_ref, None);
         assert!(serde_json::to_value(legacy).unwrap().get("value_ref").is_none());
+    }
+
+    #[test]
+    fn lob_binary_download_decodes_every_byte_without_text_conversion() {
+        let original: Vec<u8> = (0..=255).collect();
+        let hex: String = original.iter().map(|value| format!("{value:02x}")).collect();
+        assert_eq!(decode_lob_hex_chunk(&hex).unwrap(), original);
+        assert_eq!(decode_lob_hex_chunk("").unwrap(), Vec::<u8>::new());
+        assert_eq!(decode_lob_hex_chunk("00FF").unwrap(), vec![0, 255]);
+        assert!(decode_lob_hex_chunk("0").is_err());
+        assert!(decode_lob_hex_chunk("zz").is_err());
+        assert!(decode_lob_hex_chunk("00".repeat(4097).as_str()).is_err());
+    }
+
+    #[test]
+    fn lob_download_text_modes_preserve_multibyte_characters_split_across_chunks() {
+        let original = "中文😀末尾";
+        let mut utf8 = encoding_rs::UTF_8.new_decoder_without_bom_handling();
+        let bytes = original.as_bytes();
+        let mut decoded = String::new();
+        for (index, byte) in bytes.iter().enumerate() {
+            decoded.push_str(&decode_lob_text_chunk(&mut utf8, &[*byte], index + 1 == bytes.len()).unwrap());
+        }
+        assert_eq!(decoded, original);
+        let (bytes, _, errors) = encoding_rs::GBK.encode("中文末尾");
+        assert!(!errors);
+        let mut gbk = encoding_rs::GBK.new_decoder_without_bom_handling();
+        let mut decoded = String::new();
+        for (index, byte) in bytes.iter().enumerate() {
+            decoded.push_str(&decode_lob_text_chunk(&mut gbk, &[*byte], index + 1 == bytes.len()).unwrap());
+        }
+        assert_eq!(decoded, "中文末尾");
     }
 
     #[test]

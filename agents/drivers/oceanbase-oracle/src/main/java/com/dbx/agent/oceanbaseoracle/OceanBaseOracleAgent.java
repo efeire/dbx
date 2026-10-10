@@ -1,6 +1,8 @@
 package com.dbx.agent.oceanbaseoracle;
 
 import com.dbx.agent.ColumnInfo;
+import com.dbx.agent.BlobBoundStatement;
+import com.dbx.agent.BlobBoundExecutor;
 import com.dbx.agent.AgentProtocol;
 import com.dbx.agent.CompletionAssistantCandidate;
 import com.dbx.agent.CompletionAssistantCandidateKind;
@@ -91,6 +93,16 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
 
     @Override
     public boolean supportsQueryTiming() { return true; }
+
+    @Override
+    public boolean supportsBlobBindStatements() { return true; }
+
+    @Override
+    public QueryResult executeBlobBoundStatements(List<String> previews, List<BlobBoundStatement> statements,
+        String schema, int timeoutSecs, boolean transaction) {
+        return BlobBoundExecutor.execute(requireConnected(), previews, statements, schema,
+            this::setSchemaSQL, this::resetSchemaSQL, timeoutSecs, transaction, OceanBaseLobStatements.BINDING);
+    }
 
     @Override
     public QueryResult executeQuery(String sql, String schema, ExecuteQueryOptions options) {
@@ -2033,6 +2045,6 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     }
 
     public static void main(String[] args) {
-        new MultiSessionJsonRpcServer(OceanBaseOracleAgent::new).run();
+        MultiSessionJsonRpcServer.withBlobBindings(OceanBaseOracleAgent::new).run();
     }
 }

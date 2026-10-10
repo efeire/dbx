@@ -142,11 +142,16 @@ function previewResult(columnType = "bytea", value = "\\x00017f80ff...", origina
 }
 
 describe("useDataGridLargeValues", () => {
-  it("keeps the first pending CLOB edit when loading a second complete CLOB on the same row", async () => {
-    const result = previewResult("CLOB", "first preview", 2057);
+  it.each(["CLOB", "BLOB"])("keeps the first pending %s edit when loading a second complete LOB on the same row", async (columnType) => {
+    const binary = columnType === "BLOB";
+    const firstEdit = binary ? "0x00ff80" : "first pending edit";
+    const secondEdit = binary ? "0xaabbcc" : "second pending edit";
+    const firstData = (binary ? "11" : "a").repeat(2057);
+    const secondData = (binary ? "22" : "b").repeat(2061);
+    const result = previewResult(columnType, binary ? "0x11" : "first preview", 2057);
     result.value.columns.push("DOCUMENT");
-    result.value.column_types!.push("CLOB");
-    result.value.rows[0]!.push("second preview");
+    result.value.column_types!.push(columnType);
+    result.value.rows[0]!.push(binary ? "0x22" : "second preview");
     result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO" };
     result.value.large_value_cells = [
       { row_index: 0, column_index: 1, original_bytes: 2057, value_ref: "first" },
@@ -154,37 +159,43 @@ describe("useDataGridLargeValues", () => {
     ];
     mocks.readLargeValueChunk.mockImplementation(async (options) => {
       const bytes = options.valueRef === "first" ? 2057 : 2061;
-      return { status: "ok", data: (options.valueRef === "first" ? "a" : "b").repeat(bytes), next_offset: bytes, eof: true, value_kind: "text" };
+      return { status: "ok", data: options.valueRef === "first" ? firstData : secondData, next_offset: bytes, eof: true, value_kind: binary ? "binary" : "text" };
     });
     const { largeValues, editor } = mountLargeValues("oceanbase-oracle", result, true);
     await expect(largeValues.hydrateLargeValueCell(1, 1)).resolves.toBe(true);
-    editor!.applyCellValue(0, 1, "first pending edit");
+    editor!.applyCellValue(0, 1, firstEdit);
     await nextTick();
     const row = result.value.rows[0];
     await expect(largeValues.hydrateLargeValueCell(1, 2)).resolves.toBe(true);
     await nextTick();
-    expect(editor!.dirtyRows.value.get(0)?.get(1)).toBe("first pending edit");
+    expect(editor!.dirtyRows.value.get(0)?.get(1)).toBe(firstEdit);
     expect(result.value.rows[0]).toBe(row);
-    editor!.applyCellValue(0, 2, "second pending edit");
-    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["both CLOB updates"], rollbackStatements: [] });
+    editor!.applyCellValue(0, 2, secondEdit);
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: [`both ${columnType} updates`], rollbackStatements: [] });
     await editor!.previewChanges();
     expect(mocks.prepareDataGridSave.mock.calls[0]![0].dirtyRows).toEqual([
       [
         0,
         [
-          [1, "first pending edit"],
-          [2, "second pending edit"],
+          [1, firstEdit],
+          [2, secondEdit],
         ],
       ],
     ]);
-    expect(result.value.rows[0]).toEqual([1, "a".repeat(2057), "b".repeat(2061)]);
+    expect(result.value.rows[0]).toEqual([1, (binary ? "0x" : "") + firstData, (binary ? "0x" : "") + secondData]);
     editor!.undoPendingChange();
-    expect(editor!.dirtyRows.value.get(0)?.get(1)).toBe("first pending edit");
+    expect(editor!.dirtyRows.value.get(0)?.get(1)).toBe(firstEdit);
     expect(editor!.dirtyRows.value.get(0)?.has(2)).toBe(false);
   });
 
-  it.each(["preview", "failed preparation"])("keeps editor edits, deletes and undo after baseline reads during %s", async (action) => {
-    const result = previewResult("CLOB", "preview", 1);
+  it.each([
+    ["CLOB", "preview"],
+    ["CLOB", "failed preparation"],
+    ["BLOB", "preview"],
+    ["BLOB", "failed preparation"],
+  ])("keeps editor edits, deletes and undo after %s baseline reads during %s", async (columnType, action) => {
+    const binary = columnType === "BLOB";
+    const result = previewResult(columnType, binary ? "0x00" : "preview", 1);
     result.value.rows.push([2, "second preview"]);
     result.value.large_value_context = { connectionId: "oracle-1", database: "MAXIMO" };
     result.value.large_value_cells = [
@@ -198,7 +209,7 @@ describe("useDataGridLargeValues", () => {
     const rows = result.value.rows;
     const first = rows[0];
     const second = rows[1];
-    mocks.readLargeValueChunk.mockResolvedValue({ status: "ok", data: "complete", next_offset: 8, eof: true, value_kind: "text" });
+    mocks.readLargeValueChunk.mockResolvedValue({ status: "ok", data: binary ? "00ff" : "complete", next_offset: binary ? 2 : 8, eof: true, value_kind: binary ? "binary" : "text" });
     if (action === "preview") {
       mocks.prepareDataGridSave.mockResolvedValue({ statements: ["UPDATE APP_DATA", "DELETE APP_DATA"], rollbackStatements: [] });
       await editor!.previewChanges();
@@ -215,7 +226,7 @@ describe("useDataGridLargeValues", () => {
     expect(result.value.rows).toBe(rows);
     expect(result.value.rows[0]).toBe(first);
     expect(result.value.rows[1]).toBe(second);
-    expect(first![1]).toBe("complete");
+    expect(first![1]).toBe(binary ? "0x00ff" : "complete");
     expect(mocks.executeBatch).not.toHaveBeenCalled();
     editor!.undoPendingChange();
     expect(editor!.deletedRows.value.has(1)).toBe(false);

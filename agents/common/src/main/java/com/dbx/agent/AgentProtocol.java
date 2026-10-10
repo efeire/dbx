@@ -143,6 +143,7 @@ public final class AgentProtocol {
     public static final String CAPABILITY_MONGO_FIND_CURSOR = "mongo_find_cursor";
     public static final String CAPABILITY_MULTI_SESSION = "multi_session";
     public static final String CAPABILITY_STRUCTURED_ERROR_V1 = "structured_error_v1";
+    public static final String CAPABILITY_BLOB_BIND_STATEMENTS_V1 = "blob_bind_statements_v1";
 
     public static final List<String> CAPABILITIES = Collections.unmodifiableList(Arrays.asList(
         CAPABILITY_CONNECT,
@@ -271,6 +272,7 @@ public final class AgentProtocol {
 
         List<String> jdbcAllCapabilities = new java.util.ArrayList<>(MULTI_SESSION_ALL_CAPABILITIES);
         jdbcAllCapabilities.add(CAPABILITY_STRUCTURED_ERROR_V1);
+        jdbcAllCapabilities.add(CAPABILITY_BLOB_BIND_STATEMENTS_V1);
         MULTI_SESSION_JDBC_ALL_CAPABILITIES = Collections.unmodifiableList(jdbcAllCapabilities);
 
         List<String> methods = new java.util.ArrayList<>(COMMON_METHODS);
@@ -385,6 +387,13 @@ public final class AgentProtocol {
             MULTI_SESSION_PROTOCOL_VERSION,
             MULTI_SESSION_JDBC_CAPABILITIES
         );
+    }
+
+    public static HandshakeResult multiSessionJdbcHandshakeResult(boolean blobBindStatements) {
+        if (!blobBindStatements) return multiSessionJdbcHandshakeResult();
+        java.util.ArrayList<String> capabilities = new java.util.ArrayList<>(MULTI_SESSION_JDBC_CAPABILITIES);
+        capabilities.add(CAPABILITY_BLOB_BIND_STATEMENTS_V1);
+        return new HandshakeResult(MULTI_SESSION_PROTOCOL_VERSION, MULTI_SESSION_PROTOCOL_VERSION, capabilities);
     }
 
     public static final class HandshakeResult {

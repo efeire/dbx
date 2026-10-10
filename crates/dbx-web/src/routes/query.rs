@@ -73,6 +73,8 @@ pub struct CloseClientConnectionSessionRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteBatchRequest {
+    #[serde(default)]
+    pub bound_statements: Option<Vec<dbx_core::db::BlobBoundStatement>>,
     pub connection_id: String,
     pub database: String,
     pub statements: Vec<String>,
@@ -646,6 +648,25 @@ pub async fn execute_batch(
     for statement in &req.statements {
         super::mcp_policy::ensure_sql(&state, &headers, &req.connection_id, &database, statement, false).await?;
     }
+    if let Some(bound) = req.bound_statements.as_ref() {
+        for statement in bound {
+            super::mcp_policy::ensure_sql(&state, &headers, &req.connection_id, &database, &statement.sql, false)
+                .await?;
+        }
+        return dbx_core::query::execute_blob_bound_statements(
+            &state.app,
+            &req.connection_id,
+            &database,
+            &req.statements,
+            bound,
+            req.schema.as_deref(),
+            req.use_transaction == Some(true),
+            req.timeout_secs,
+        )
+        .await
+        .map(Json)
+        .map_err(AppError::from);
+    }
     tracing::debug!(connection_id = %req.connection_id, "execute_batch");
     let result = dbx_core::query::execute_statements_with_transaction_option(
         &state.app,
@@ -846,6 +867,21 @@ pub async fn execute_in_transaction(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ExecuteBatchRequest>,
 ) -> Result<Json<dbx_core::db::QueryResult>, AppError> {
+    if let Some(bound) = req.bound_statements.as_ref() {
+        return dbx_core::query::execute_blob_bound_statements(
+            &state.app,
+            &req.connection_id,
+            &req.database,
+            &req.statements,
+            bound,
+            req.schema.as_deref(),
+            true,
+            req.timeout_secs,
+        )
+        .await
+        .map(Json)
+        .map_err(AppError::from);
+    }
     tracing::debug!(connection_id = %req.connection_id, "execute_in_transaction");
     let result = dbx_core::query::execute_statements_in_transaction(
         &state.app,
@@ -865,6 +901,9 @@ pub async fn execute_script_with_2pc(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ExecuteBatchRequest>,
 ) -> Result<Json<dbx_core::query::SchemaDiffDeployResult>, AppError> {
+    if req.bound_statements.is_some() {
+        return Err(AppError::from("Bound BLOB saves must use a supported save execution endpoint.".to_string()));
+    }
     tracing::debug!(connection_id = %req.connection_id, "execute_script_with_2pc");
     // Single-connection real transaction (not per-statement auto-commit 2PC).
     let result = dbx_core::query::execute_schema_diff_deploy(
@@ -1455,6 +1494,7 @@ mod tests {
     async fn execute_script_with_2pc_returns_structured_result() {
         let (state, _dir) = test_web_state().await;
         let req = ExecuteBatchRequest {
+            bound_statements: None,
             connection_id: "conn-1".to_string(),
             database: "testdb".to_string(),
             statements: vec!["SELECT 1".to_string()],
@@ -1481,6 +1521,7 @@ mod tests {
     async fn execute_script_with_2pc_empty_statements_succeeds() {
         let (state, _dir) = test_web_state().await;
         let req = ExecuteBatchRequest {
+            bound_statements: None,
             connection_id: "conn-empty".to_string(),
             database: "testdb".to_string(),
             statements: vec![],
@@ -1504,6 +1545,7 @@ mod tests {
     async fn execute_script_with_2pc_propagates_structured_failure_fields() {
         let (state, _dir) = test_web_state().await;
         let req = ExecuteBatchRequest {
+            bound_statements: None,
             connection_id: "missing-conn".to_string(),
             database: "testdb".to_string(),
             statements: vec!["CREATE TABLE t1 (id INT)".to_string(), "CREATE TABLE t2 (id INT)".to_string()],
@@ -1529,6 +1571,7 @@ mod tests {
     async fn execute_script_with_2pc_blocks_unconfirmed_destructive_sql() {
         let (state, _dir) = test_web_state().await;
         let req = ExecuteBatchRequest {
+            bound_statements: None,
             connection_id: "missing-conn".to_string(),
             database: "testdb".to_string(),
             statements: vec!["DROP INDEX idx_old ON users".to_string()],

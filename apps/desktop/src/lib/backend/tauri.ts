@@ -2060,7 +2060,7 @@ export async function closeClientConnectionSession(connectionId: string, databas
   });
 }
 
-export async function executeBatch(connectionId: string, database: string, statements: string[], schema?: string, timeoutSecs?: number, useTransaction?: boolean): Promise<QueryResult> {
+export async function executeBatch(connectionId: string, database: string, statements: string[], schema?: string, timeoutSecs?: number, useTransaction?: boolean, boundStatements?: BlobBoundStatement[]): Promise<QueryResult> {
   return invoke("execute_batch", {
     connectionId,
     database,
@@ -2068,6 +2068,7 @@ export async function executeBatch(connectionId: string, database: string, state
     schema,
     timeoutSecs,
     useTransaction,
+    boundStatements,
   });
 }
 
@@ -2085,13 +2086,14 @@ export async function executeScriptWith2pc(connectionId: string, database: strin
   });
 }
 
-export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string, catalog?: string): Promise<QueryResult> {
+export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string, catalog?: string, boundStatements?: BlobBoundStatement[]): Promise<QueryResult> {
   return invoke("execute_in_transaction", {
     connectionId,
     database,
     statements,
     schema,
     catalog,
+    boundStatements,
   });
 }
 
@@ -2111,6 +2113,7 @@ export async function executeInManualTransaction(
   classificationSql?: string,
   executionId?: string,
   timeoutSecs?: number,
+  boundStatements?: BlobBoundStatement[],
 ): Promise<QueryResult[]> {
   return invokeBackend("execute_in_manual_transaction", {
     txnSessionId,
@@ -2124,6 +2127,7 @@ export async function executeInManualTransaction(
     classificationSql,
     executionId,
     timeoutSecs,
+    boundStatements,
   });
 }
 
@@ -2384,12 +2388,19 @@ export interface DataGridSaveGuard {
   message: string;
 }
 
+export interface BlobBoundStatement {
+  previewSql: string;
+  sql: string;
+  blobParameters: string[];
+}
+
 export interface DataGridSavePreparation {
   validationError?: string;
   statements: string[];
   rollbackStatements: string[];
   executionSchema?: string;
   keylessGuards?: DataGridSaveGuard[];
+  boundStatements?: BlobBoundStatement[];
 }
 
 export async function prepareDataGridSave(options: DataGridSaveStatementOptions, driverProfile?: string): Promise<DataGridSavePreparation> {

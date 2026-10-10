@@ -1,13 +1,13 @@
 package com.dbx.agent.oceanbaseoracle;
 
 import com.dbx.agent.JdbcExecutor;
-import com.oceanbase.jdbc.OceanBaseStatement;
 import com.oceanbase.jdbc.DbxLobResourceBytes;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.sql.CallableStatement;
 import java.sql.Clob;
+import java.sql.Blob;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -36,23 +36,25 @@ final class OceanBaseLobValues {
 
     @FunctionalInterface
     interface BlockReader {
-        Chunk read(Connection connection, Clob locator, long offset, int limit) throws SQLException;
+        Chunk read(Connection connection, Object locator, long offset, int limit) throws SQLException;
     }
 
     OceanBaseLobValues() { this(OceanBaseLobValues::read, DbxLobResourceBytes::retainedBytes); }
     OceanBaseLobValues(BlockReader reader) { this(reader, ignored -> 0); }
     OceanBaseLobValues(BlockReader reader, java.util.function.ToLongFunction<Object> retainedBytes) { this.reader = reader; this.retainedBytes = retainedBytes; }
 
-    record Preview(String text, String ref) {}
+    record Preview(String text, String ref, String kind) {
+        Preview(String text, String ref) { this(text, ref, "clob"); }
+    }
     record Chunk(String status, String data, long next_offset, boolean eof, String value_kind) {}
     record MarkedRows(List<String> columns, List<String> types, List<List<Object>> rows) {}
     private static final class Entry {
         final Connection connection;
-        final Clob locator;
+        final Object locator;
         final long retainedBytes;
         final long created = System.currentTimeMillis();
         long accessed = created;
-        Entry(Connection connection, Clob locator, long retainedBytes) {
+        Entry(Connection connection, Object locator, long retainedBytes) {
             this.connection = connection;
             this.locator = locator;
             this.retainedBytes = retainedBytes;
@@ -60,32 +62,36 @@ final class OceanBaseLobValues {
     }
 
     synchronized Object preview(ResultSet rs, int index, int sqlType, String typeName) throws SQLException {
-        if (!isCharacterLob(sqlType, typeName) || hasMarkerCollision(rs)) return null;
+        boolean binary = sqlType == Types.BLOB || "BLOB".equalsIgnoreCase(typeName);
+        if ((!binary && !isCharacterLob(sqlType, typeName)) || hasMarkerCollision(rs)) return null;
         // NCLOB's charset form must be verified separately; retain the complete existing read.
         if (sqlType == Types.NCLOB || "NCLOB".equalsIgnoreCase(typeName)) return null;
-        Clob locator = rs.getClob(index);
-        if (locator == null || rs.wasNull()) return new Preview(null, null);
+        Object locator = binary ? rs.getBlob(index) : rs.getClob(index);
+        String kind = binary ? "blob" : "clob";
+        if (locator == null || rs.wasNull()) return new Preview(null, null, kind);
         Connection connection = rs.getStatement().getConnection();
         prune();
         long bytes = retainedBytes.applyAsLong(locator);
         if (bytes < 0 || bytes > MAX_RETAINED_BYTES - retainedByteCount || entries.size() >= MAX_REFS) {
-            locator.free();
+            freeLocator(locator);
             throw new SQLException("LOB result resource limit reached; close older results and execute again", "HY001");
         }
         boolean retained = false;
         try {
             Chunk chunk = reader.read(connection, locator, 0, PREVIEW_CHARACTERS + 1);
-            if (chunk.eof()) return new Preview(chunk.data(), null);
+            if (chunk.eof()) return new Preview(binary ? "0x" + chunk.data() : chunk.data(), null, kind);
             String text = chunk.data();
-            int count = text.codePointCount(0, text.length());
-            if (count <= PREVIEW_CHARACTERS) return new Preview(text, null);
+            int count = binary ? text.length() / 2 : text.codePointCount(0, text.length());
+            if (count <= PREVIEW_CHARACTERS) return new Preview(binary ? "0x" + text : text, null, kind);
             String ref = UUID.randomUUID().toString();
             entries.put(ref, new Entry(connection, locator, bytes));
             retainedByteCount += bytes;
             retained = true;
-            return new Preview(text.substring(0, text.offsetByCodePoints(0, PREVIEW_CHARACTERS)), ref);
+            String preview = binary ? "0x" + text.substring(0, PREVIEW_CHARACTERS * 2)
+                : text.substring(0, text.offsetByCodePoints(0, PREVIEW_CHARACTERS));
+            return new Preview(preview, ref, kind);
         } finally {
-            if (!retained) locator.free();
+            if (!retained) freeLocator(locator);
         }
     }
 
@@ -141,32 +147,32 @@ final class OceanBaseLobValues {
     }
 
     private static void free(Entry entry) {
-        try { entry.locator.free(); } catch (SQLException ignored) { }
+        try { freeLocator(entry.locator); } catch (SQLException ignored) { }
     }
 
-    static Chunk read(Connection connection, Clob locator, long offset, int limit) throws SQLException {
+    private static void freeLocator(Object locator) throws SQLException {
+        if (locator instanceof Blob) ((Blob) locator).free();
+        else ((Clob) locator).free();
+    }
+
+    static Chunk read(Connection connection, Object locator, long offset, int limit) throws SQLException {
+        boolean binary = locator instanceof Blob;
         // OceanBase READ raises ORA-06502 for empty LOBs. Only zero is safe here:
         // JDBC CLOB length counts UTF-16 units while READ offsets count code points.
-        if (locator.length() == 0) return new Chunk("ok", "", offset, true, "text");
+        long length = binary ? ((Blob) locator).length() : ((Clob) locator).length();
+        if (length == 0) return new Chunk("ok", "", offset, true, binary ? "binary" : "text");
         try (CallableStatement call = connection.prepareCall(
-            "DECLARE v_lob CLOB := ?; v_amount INTEGER := ?; v_offset INTEGER := ?; "
-            + "v_buffer VARCHAR2(32767); v_length INTEGER; BEGIN v_length := DBMS_LOB.GETLENGTH(v_lob); "
+            "DECLARE v_lob " + (binary ? "BLOB" : "CLOB") + " := ?; v_amount INTEGER := ?; v_offset INTEGER := ?; "
+            + "v_buffer " + (binary ? "RAW(32767)" : "VARCHAR2(32767)") + "; v_length INTEGER; BEGIN v_length := DBMS_LOB.GETLENGTH(v_lob); "
             + "IF v_offset > v_length THEN v_amount := 0; ELSE DBMS_LOB.READ(v_lob,v_amount,v_offset,v_buffer); END IF; "
             + "? := v_amount; ? := v_buffer; ? := v_length; END;")) {
-            OceanBaseStatement vendor;
-            try {
-                vendor = call instanceof OceanBaseStatement ? (OceanBaseStatement) call : call.unwrap(OceanBaseStatement.class);
-            } catch (SQLException error) {
-                throw new SQLException("Unsupported OceanBase LOB statement", error);
-            }
-            if (vendor == null) throw new SQLException("Unsupported OceanBase LOB statement");
-            // Only the vendor flag bypasses the pool proxy; lifecycle and cancellation stay on call.
-            vendor.setInternal();
-            call.setClob(1, locator);
+            OceanBaseLobStatements.configure(call);
+            if (binary) call.setBlob(1, (Blob) locator);
+            else call.setClob(1, (Clob) locator);
             call.setInt(2, limit);
             call.setLong(3, offset + 1);
             call.registerOutParameter(4, Types.INTEGER);
-            call.registerOutParameter(5, Types.VARCHAR);
+            call.registerOutParameter(5, binary ? Types.VARBINARY : Types.VARCHAR);
             call.registerOutParameter(6, Types.BIGINT);
             call.setQueryTimeout(20);
             JdbcExecutor.current().withActiveStatement(call, () -> { call.execute(); return null; });
@@ -178,6 +184,11 @@ final class OceanBaseLobValues {
                 || offset < serverLength && (amount == 0 || nextOffset > serverLength)
                 || offset >= serverLength && amount != 0) {
                 throw new SQLException("Invalid OceanBase LOB chunk response");
+            }
+            if (binary) {
+                if (bytes != null && bytes.length != amount) throw new SQLException("OceanBase BLOB byte count mismatch");
+                String hex = bytes == null ? "" : JdbcExecutor.bytesToHex(bytes).substring(2);
+                return new Chunk("ok", hex, nextOffset, nextOffset >= serverLength, "binary");
             }
             String text;
             try {
@@ -209,8 +220,11 @@ final class OceanBaseLobValues {
         List<String> expandedColumns = new ArrayList<>();
         List<String> expandedTypes = new ArrayList<>();
         boolean[] marked = new boolean[columns.size()];
+        String[] kinds = new String[columns.size()];
         for (List<Object> row : rows) {
-            for (int index = 0; index < row.size(); index++) if (row.get(index) instanceof Preview) marked[index] = true;
+            for (int index = 0; index < row.size(); index++) {
+                if (row.get(index) instanceof Preview preview) { marked[index] = true; kinds[index] = preview.kind(); }
+            }
         }
         boolean anyMarked = false;
         for (boolean value : marked) anyMarked |= value;
@@ -219,7 +233,7 @@ final class OceanBaseLobValues {
             expandedColumns.add(columns.get(index));
             expandedTypes.add(index < types.size() ? types.get(index) : "");
             if (marked[index]) {
-                expandedColumns.add(MARKER_PREFIX + "C_" + index);
+                expandedColumns.add(MARKER_PREFIX + ("blob".equals(kinds[index]) ? "L_" : "C_") + index);
                 expandedTypes.add("VARCHAR");
             }
         }
