@@ -437,6 +437,8 @@ describe("extractSqlParameters", () => {
       "SELECT :id, order_seq.CURRVAL /* remote */ @LINK FROM DUAL",
       'CREATE OR REPLACE SYNONYM orders FOR "Hr"."Orders"@LINK',
       "CREATE PUBLIC SYNONYM orders FOR HR.orders /* remote */ @LINK",
+      "CREATE SYNONYM merge FOR HR.orders@LINK",
+      "CREATE SYNONYM HR.execute FOR HR.orders@LINK",
       "MERGE INTO local_orders t USING HR.orders@LINK s ON (t.id = s.id) WHEN MATCHED THEN UPDATE SET t.amount = :id",
     ])("preserves remote object links in %s", (sql) => {
       expect(extractSqlParameters(sql, { databaseType })).toEqual(sql.includes(":id") ? ["id"] : []);

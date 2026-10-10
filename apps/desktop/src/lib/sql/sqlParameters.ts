@@ -769,8 +769,8 @@ function collectSeparatedOracleDatabaseLinks(sql: string, databaseType: Database
         if (before.depth < token.depth || before.text === ";") break;
         if (before.depth !== token.depth || before.kind !== "word") continue;
         if (before.normalized === "synonym") synonym = true;
-        if (["create", "merge", "select", "begin", "execute"].includes(before.normalized)) {
-          objectContext ||= (prefix === "for" && synonym && before.normalized === "create") || (prefix === "using" && before.normalized === "merge");
+        if ((prefix === "for" && synonym && before.normalized === "create") || (prefix === "using" && before.normalized === "merge" && tokens[j + 1]?.normalized === "into")) {
+          objectContext = true;
           break;
         }
       }
