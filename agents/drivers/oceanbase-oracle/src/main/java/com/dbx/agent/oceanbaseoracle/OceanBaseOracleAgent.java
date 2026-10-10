@@ -449,16 +449,20 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 // Public synonyms can use OB's internal owner. Canonicalize before
                 // filtering/paging, keeping the private and public scopes separate.
                 baseSql = """
-                    SELECT OBJECT_NAME, OBJECT_TYPE, COMMENTS
+                    SELECT OBJECT_NAME, OBJECT_TYPE, COMMENTS, STATUS
                     FROM (
-                        SELECT o.OWNER, o.OBJECT_NAME, o.OBJECT_TYPE, tc.COMMENTS
+                        SELECT o.OWNER, o.OBJECT_NAME, o.OBJECT_TYPE, tc.COMMENTS, o.STATUS
                         FROM ALL_OBJECTS o
                         LEFT JOIN ALL_TAB_COMMENTS tc ON tc.OWNER = o.OWNER AND tc.TABLE_NAME = o.OBJECT_NAME
                             AND o.OBJECT_TYPE IN ('TABLE', 'VIEW')
                         WHERE o.OBJECT_TYPE <> 'SYNONYM'
+                          AND (o.OBJECT_TYPE NOT IN ('TYPE', 'TYPE BODY') OR
+                            (NVL(o.GENERATED, 'N') = 'N' AND o.OWNER NOT IN ('SYS', 'SYSTEM')
+                             AND EXISTS (SELECT 1 FROM ALL_TYPES t WHERE t.OWNER = o.OWNER
+                                 AND t.TYPE_NAME = o.OBJECT_NAME AND t.PREDEFINED = 'NO')))
                         UNION
                         SELECT CASE WHEN OWNER = '__public' THEN 'PUBLIC' ELSE OWNER END AS OWNER,
-                               SYNONYM_NAME AS OBJECT_NAME, 'SYNONYM' AS OBJECT_TYPE, NULL AS COMMENTS
+                               SYNONYM_NAME AS OBJECT_NAME, 'SYNONYM' AS OBJECT_TYPE, NULL AS COMMENTS, NULL AS STATUS
                         FROM ALL_SYNONYMS
                     ) c
                     WHERE OWNER = ? AND OBJECT_TYPE IN (%s)

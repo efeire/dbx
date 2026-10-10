@@ -12540,13 +12540,34 @@ mod object_source_tests {
 
     #[test]
     fn builds_oracle_list_objects_sql_with_packages() {
-        let sql = oracle_list_objects_sql("hr");
+        let sql = oracle_list_objects_sql("HR");
 
         assert!(sql.contains("'PACKAGE'"));
         assert!(sql.contains("'PACKAGE BODY'"));
         assert!(sql.contains("'SEQUENCE'"));
         assert!(sql.contains("CASE object_type WHEN 'PACKAGE BODY' THEN 'PACKAGE_BODY'"));
-        assert!(sql.contains("owner = 'hr'"));
+        let (owner_query, object_filter) = sql.split_once(" AND object_type IN ").unwrap();
+        assert_eq!(
+            owner_query,
+            "SELECT object_name, CASE object_type WHEN 'PACKAGE BODY' THEN 'PACKAGE_BODY' WHEN 'TYPE BODY' THEN 'TYPE_BODY' ELSE object_type END AS object_type, owner, status FROM all_objects o WHERE owner = 'HR'"
+        );
+        assert_eq!(
+            object_filter.split_once(" AND ").unwrap().0,
+            "('TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION', 'SEQUENCE', 'PACKAGE', 'PACKAGE BODY', 'TYPE', 'TYPE BODY')"
+        );
+        assert!(sql.contains("NVL(generated, 'N') = 'N' AND owner NOT IN ('SYS', 'SYSTEM')"));
+        assert!(sql.contains("t.owner = o.owner AND t.type_name = o.object_name AND t.predefined = 'NO'"));
+    }
+
+    #[test]
+    fn oracle_list_objects_preserves_exact_owner_identity() {
+        for (schema, expected_owner) in
+            [("", "USER"), ("HR", "'HR'"), ("hr", "'hr'"), ("Mixed Owner", "'Mixed Owner'"), ("O'wner", "'O''wner'")]
+        {
+            let sql = oracle_list_objects_sql(schema);
+            let owner_filter = sql.split_once("WHERE ").unwrap().1.split_once(" AND object_type IN ").unwrap().0;
+            assert_eq!(owner_filter, format!("owner = {expected_owner}"), "{schema}");
+        }
     }
 
     #[test]

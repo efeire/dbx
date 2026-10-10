@@ -3739,6 +3739,26 @@ export const useQueryStore = defineStore("query", () => {
     return registerOpenTab(tab);
   }
 
+  function openOracleTypeEditor(connectionId: string, database: string, schema = "", name = "") {
+    const existing = tabs.value.find((tab) => tab.mode === "oracle-type-editor" && tab.connectionId === connectionId && tab.database === database && (tab.oracleTypeIdentity?.schema ?? "") === schema && (tab.oracleTypeIdentity?.name ?? "") === name);
+    if (existing) {
+      switchTab(existing.id);
+      return existing.id;
+    }
+    return registerOpenTab({
+      id: uuid(),
+      title: name ? `${t("tree.types")} - ${name}` : t("tree.types"),
+      connectionId,
+      database,
+      sql: "",
+      isExecuting: false,
+      isCancelling: false,
+      isExplaining: false,
+      mode: "oracle-type-editor",
+      oracleTypeIdentity: schema && name ? { schema, name, object_type: "TYPE" } : undefined,
+    });
+  }
+
   function openDamengUsers(connectionId: string) {
     const existing = tabs.value.find((tab) => tab.mode === "dameng-users" && tab.connectionId === connectionId);
     if (existing) {
@@ -10162,6 +10182,7 @@ export const useQueryStore = defineStore("query", () => {
     openDamengUsers,
     openDamengRoles,
     openDamengJobAdmin,
+    openOracleTypeEditor,
     openMqAdmin,
     openMqttAdmin,
     openNacosAdmin,

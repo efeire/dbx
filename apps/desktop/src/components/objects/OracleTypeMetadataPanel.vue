@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import * as api from "@/lib/backend/api";
 import { uuid } from "@/lib/common/utils";
+import { useQueryStore } from "@/stores/queryStore";
 import type { OracleTypeDetails } from "@/types/oracleTypes";
 
 const props = defineProps<{ connectionId: string; database: string; schema: string; name: string; objectType: "TYPE" | "TYPE_BODY" }>();
@@ -11,6 +12,7 @@ const { t } = useI18n({
   useScope: "local",
   messages: {
     en: {
+      edit: "Edit definitions",
       title: "Type metadata",
       status: "Status",
       pair: "Paired definition",
@@ -30,6 +32,7 @@ const { t } = useI18n({
       loading: "Loading",
     },
     "zh-CN": {
+      edit: "编辑定义",
       title: "类型元数据",
       status: "状态",
       pair: "配对定义",
@@ -226,6 +229,7 @@ onBeforeUnmount(() => cancel(false));
   <section class="max-h-64 shrink-0 overflow-auto border-b px-3 py-2 text-xs" data-oracle-type-metadata>
     <div class="flex items-center gap-2">
       <span class="flex-1 font-medium">{{ t("title") }}</span>
+      <Button variant="ghost" size="sm" class="h-6 text-xs" @click="useQueryStore().openOracleTypeEditor(connectionId, database, schema, name)">{{ t("edit") }}</Button>
       <Button v-if="loading" variant="ghost" size="sm" class="h-6 text-xs" @click="cancel()">{{ t("cancel") }}</Button>
       <Button v-else variant="ghost" size="sm" class="h-6 text-xs" @click="load">{{ t("refresh") }}</Button>
     </div>
