@@ -4625,6 +4625,8 @@ export default withEnglishFallback({
     valid: "有効",
     invalid: "無効",
     refreshDiscardConfirm: "更新すると、保存されていないソースコードの変更が破棄されます。続行しますか？",
+    pagedRegexUnsupported: "ページ分割されたオブジェクト検索では正規表現を使用できません。名前またはコメントを入力してください。",
+    pagedOrder: "データベースの順序で {count} 個のオブジェクトを読み込みました。オブジェクトを変更した後は更新してください。",
   },
   structureEditor: {
     mysqlDataTypeHelp: {

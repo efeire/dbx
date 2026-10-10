@@ -1258,7 +1258,7 @@ function openDriverStoreForInstallError(errMsg: string, node: TreeNode = activeN
 
 async function loadMoreObjectGroupChildren() {
   const node = activeNode.value;
-  const searchFilter = node.loadMore?.parentId ? connectionStore.sidebarTableSearchQueries[node.loadMore.parentId]?.trim() || "" : "";
+  const searchFilter = node.loadMore?.searchFilter ?? (node.loadMore?.parentId ? connectionStore.sidebarTableSearchQueries[node.loadMore.parentId]?.trim() || "" : "");
   try {
     await connectionStore.loadMoreObjectGroupChildren(node, { searchFilter });
   } catch (e: any) {
