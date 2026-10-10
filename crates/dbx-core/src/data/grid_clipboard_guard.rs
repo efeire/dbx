@@ -133,6 +133,7 @@ mod tests {
                 display_name: "value".to_string(),
                 source_name: Some("value".to_string()),
                 source_index: 0,
+                data_type: None,
             }],
             selected_column_indexes: vec![0],
             rows,
@@ -300,6 +301,7 @@ mod tests {
                 display_name: "formula".to_string(),
                 source_name: Some("formula".to_string()),
                 source_index: 1,
+                data_type: None,
             });
             let guarded = neutralize_spreadsheet_formulas(request);
             let result = dbx_sql::data_grid_extractors::extract_data_grid_selection(guarded)

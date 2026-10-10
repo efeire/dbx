@@ -180,7 +180,8 @@ function createExportState(
     selectedRowIds,
     hasRowSelection: computed(() => selectedRowIds.value.size > 0),
   };
-  return useDataGridExport({ ...options, ...overrides });
+  const resolvedOptions = { ...options, ...overrides };
+  return { ...useDataGridExport(resolvedOptions), contextCell: resolvedOptions.contextCell };
 }
 
 describe("original LOB result exports", () => {
@@ -258,6 +259,19 @@ describe("useDataGridExport prepared row statements", () => {
     vi.clearAllMocks();
     clearDataGridClipboardCopy();
     vi.mocked(saveTextFile).mockResolvedValue(true);
+  });
+
+  it.each(["closed", "retargeted"] as const)("copies the clicked cell when the context menu is %s before its async callback finishes", async (menuState) => {
+    const state = createExportState(editableTable, ["id", "name"], undefined, [1, "clicked cell"]);
+    state.contextCell.value = { rowId: 1, rowIndex: 0, col: 1 };
+
+    const pendingCopy = state.copyCell();
+    // The menu starts the action, then clears or replaces its target on close.
+    state.contextCell.value = menuState === "closed" ? null : { rowId: 1, rowIndex: 0, col: 0 };
+
+    await expect(pendingCopy).resolves.toBeUndefined();
+    expect(copyToClipboard).toHaveBeenCalledWith("clicked cell");
+    expect(parseDataGridClipboard("clicked cell")).toEqual([["clicked cell"]]);
   });
 
   it("disables row copy when the result has no rows", () => {
@@ -1253,7 +1267,7 @@ describe("useDataGridExport prepared row statements", () => {
     const request = vi.mocked(extractDataGridSelection).mock.calls[0]?.[0];
     expect(request).toEqual(
       expect.objectContaining({
-        columns: [{ displayName: "name", sourceName: "name", sourceIndex: 0 }],
+        columns: [{ displayName: "name", sourceName: "name", sourceIndex: 0, dataType: "varchar" }],
         selectedColumnIndexes: [0],
         rows: [["Ada"]],
         selectionKind: "columns",
