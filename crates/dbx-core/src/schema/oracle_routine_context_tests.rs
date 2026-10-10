@@ -134,7 +134,7 @@ async fn core_reads_versions_and_prepares_supported_type_but_blocks_unknown_vers
         )
         .await;
         let info = routine("TYPE", "SRC", SPEC);
-        let context = fixture.context(&endpoints(), &[info.clone()], &[]).await.unwrap();
+        let context = fixture.context(&endpoints(), std::slice::from_ref(&info), &[]).await.unwrap();
         assert_eq!(context.source_version, version);
         assert_eq!(context.target_version, target_version);
         let plan = prepare(&fixture, info).await.unwrap();
@@ -255,7 +255,7 @@ async fn core_independent_body_requires_matching_valid_live_specification() {
         let fixture =
             Fixture::new(json!({"target_spec_status":status, "source_spec":BODY_SPEC, "target_spec":spec})).await;
         let body = routine("TYPE BODY", "SRC", BODY);
-        let context = fixture.context(&endpoints(), &[body.clone()], &[]).await.unwrap();
+        let context = fixture.context(&endpoints(), std::slice::from_ref(&body), &[]).await.unwrap();
         assert_eq!(context.blocked_bodies.is_empty(), allowed);
         assert_eq!(context.target_dependencies.contains(&("DST".into(), "T".into(), "TYPE".into())), allowed);
         let plan = prepare(&fixture, body).await.unwrap();
