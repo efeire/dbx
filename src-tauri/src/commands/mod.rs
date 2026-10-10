@@ -39,6 +39,7 @@ pub mod mq_cmd;
 pub mod mqtt_cmd;
 pub mod nacos_cmd;
 pub mod oracle_jobs;
+pub mod oracle_role_admin;
 pub mod oracle_user_admin;
 pub mod plugin_download;
 pub mod plugin_download_file;

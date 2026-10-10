@@ -2,6 +2,7 @@ pub mod oracle_constraint_change;
 mod oracle_routines;
 pub mod oracle_types;
 pub mod oracle_jobs;
+pub mod oracle_role_admin;
 mod oracle_security_write;
 pub mod oracle_user_admin;
 pub mod table_structure_sql;
