@@ -6314,6 +6314,9 @@ export default withEnglishFallback({
       saveFailed: "Salvataggio fallito: {message}",
       deleteFailed: "Eliminazione fallita: {message}",
     },
+    objectResult_created: "Creato e verificato",
+    objectResult_replaced: "Sostituito e verificato",
+    objectResult_not_started: "Non eseguito",
   },
   tableImport: {
     title: "Importa Dati Tabella",

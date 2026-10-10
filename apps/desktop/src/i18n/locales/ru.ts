@@ -7490,6 +7490,9 @@ export default withEnglishFallback({
       saveFailed: "Не удалось сохранить: {message}",
       deleteFailed: "Не удалось удалить: {message}",
     },
+    objectResult_created: "Создан и проверен",
+    objectResult_replaced: "Заменён и проверен",
+    objectResult_not_started: "Не выполнялся",
   },
   tableImport: {
     title: "Импорт данных таблицы",

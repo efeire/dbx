@@ -6103,6 +6103,9 @@ export default withEnglishFallback({
       saveFailed: "저장 실패: {message}",
       deleteFailed: "삭제 실패: {message}",
     },
+    objectResult_created: "생성 및 검증 완료",
+    objectResult_replaced: "교체 및 검증 완료",
+    objectResult_not_started: "실행되지 않음",
   },
   tableImport: {
     title: "테이블 데이터 가져오기",
