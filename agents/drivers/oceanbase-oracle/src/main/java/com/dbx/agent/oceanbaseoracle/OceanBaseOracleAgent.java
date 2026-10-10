@@ -369,6 +369,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             || (kinds.contains(CompletionAssistantObjectKind.PROCEDURE) && kinds.contains(CompletionAssistantObjectKind.FUNCTION))
             ? "'PROCEDURE', 'FUNCTION'"
             : kinds.contains(CompletionAssistantObjectKind.PROCEDURE) ? "'PROCEDURE'" : "'FUNCTION'";
+        if (kinds.contains(CompletionAssistantObjectKind.SEQUENCE)) types += ", 'SEQUENCE'";
         String pattern = completionLikePattern(request.getMask(), request.getMatch_mode());
         args.add(request.getCase_sensitive() ? pattern : pattern.toUpperCase(Locale.ROOT));
         String ownerFilter = "";
@@ -397,7 +398,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                     }
                     String objectType = rs.getString(3);
                     candidates.add(new CompletionAssistantCandidate(rs.getString(2),
-                        "PROCEDURE".equals(objectType) ? CompletionAssistantCandidateKind.PROCEDURE : CompletionAssistantCandidateKind.FUNCTION,
+                        "PROCEDURE".equals(objectType) ? CompletionAssistantCandidateKind.PROCEDURE
+                            : "SEQUENCE".equals(objectType) ? CompletionAssistantCandidateKind.SEQUENCE : CompletionAssistantCandidateKind.FUNCTION,
                         blankToNull(request.getDatabase()), rs.getString(1), null, null, null, objectType));
                 }
             }

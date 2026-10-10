@@ -1,6 +1,7 @@
 package com.dbx.agent.oceanbaseoracle;
 
 import com.dbx.agent.ColumnInfo;
+import com.dbx.agent.CompletionAssistantCandidateKind;
 import com.dbx.agent.CompletionAssistantMatchMode;
 import com.dbx.agent.CompletionAssistantObjectKind;
 import com.dbx.agent.CompletionAssistantRequest;
@@ -507,6 +508,23 @@ class OceanBaseOracleAgentTest {
         Assertions.assertFalse(response.getFallback_used());
         Assertions.assertTrue(sql.get(0).contains("ROWNUM <= ?"));
         Assertions.assertTrue(new com.google.gson.Gson().toJsonTree(response).getAsJsonObject().has("routine_search_supported"));
+    }
+
+    @Test
+    void mixedRoutineSearchPreservesRequestedSequences() {
+        for (CompletionAssistantObjectKind routineKind : List.of(CompletionAssistantObjectKind.ROUTINE, CompletionAssistantObjectKind.FUNCTION)) {
+            List<String> sql = new ArrayList<>();
+            OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+            TestSupport.setPrivateConnection(agent, preparedConnection(sql, resultSet(
+                new String[]{"OWNER", "OBJECT_NAME", "OBJECT_TYPE"},
+                new Object[][]{{"APP", "ORDER_SEQ", "SEQUENCE"}}
+            )));
+            CompletionAssistantRequest request = completionRequest("APP", null, "ORDER", false);
+            setField(request, "object_kinds", List.of(routineKind, CompletionAssistantObjectKind.SEQUENCE));
+            CompletionAssistantResponse response = agent.completionAssistantSearch(request);
+            Assertions.assertTrue(sql.get(0).contains("'SEQUENCE'"));
+            Assertions.assertEquals(CompletionAssistantCandidateKind.SEQUENCE, response.getCandidates().get(0).getKind());
+        }
     }
 
     @Test
