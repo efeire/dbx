@@ -1,6 +1,7 @@
 pub mod oracle_constraint_change;
 mod oracle_routines;
 pub mod oracle_types;
+pub mod oracle_jobs;
 pub mod table_structure_sql;
 pub use oracle_routines::{
     prepare_schema_diff_core, schema_diff_routine_context, validate_schema_diff_routines, RoutineValidation,
