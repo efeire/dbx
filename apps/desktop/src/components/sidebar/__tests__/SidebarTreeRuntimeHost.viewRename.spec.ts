@@ -25,6 +25,7 @@ const mounted: App[] = [];
 const node: TreeNode = { id: "ob:APP:view:Old View", type: "view", label: "Old View", connectionId: "ob", database: "APP" };
 
 interface RenameDialog {
+  packageCleanupReviewed: boolean;
   renameObjectName: string;
   renameObjectError: string;
   showRenameObjectDialog: boolean;
@@ -47,7 +48,7 @@ async function openRename(target: TreeNode = node) {
     schema: "APP",
     title: target.label,
     sql: target.type === "view" ? "CREATE VIEW old_view AS SELECT 2" : "unsaved original definition",
-    objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" },
+    objectSource: { schema: "APP", name: target.objectName || target.label, objectType: target.type === "package" ? "PACKAGE" : target.type === "package-body" ? "PACKAGE_BODY" : target.type === "procedure" ? "PROCEDURE" : target.type === "function" ? "FUNCTION" : "VIEW" },
   });
   const instance = ref<{ buildContextMenu(target: TreeNode): ContextMenuItem[] }>();
   let controller: RenameDialog | undefined;
@@ -80,6 +81,8 @@ async function openRename(target: TreeNode = node) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [["Old View"]] } as any);
+  vi.mocked(api.getObjectSource).mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true } as any);
+  vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]);
 });
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
@@ -165,5 +168,91 @@ describe("OceanBase ordinary view rename", () => {
     expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "CREATE VIEW old_view AS SELECT 2" });
     expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
     expect(replacePin).not.toHaveBeenCalled();
+  });
+});
+
+describe("OceanBase package migration from the sidebar", () => {
+  const target: TreeNode = { ...node, type: "package", id: "ob:APP:package:Old View" };
+  function preparePackage() {
+    vi.mocked(api.executeQuery).mockImplementation(
+      async (_connection, _database, sql) => ({ columns: sql === "readback" ? ["OLD_OBJECTS", "VALID_NEW_OBJECTS", "NEW_OBJECTS", "COMPILE_ERRORS"] : [], rows: sql.startsWith("SELECT OBJECT_TYPE") ? [["PACKAGE"]] : sql === "readback" ? [[0, 1, 1, 0]] : [] }) as any,
+    );
+    vi.mocked(api.getObjectSource).mockImplementation(async (_connection, _database, schema, name, objectType) => ({ name, schema, object_type: objectType, source: `CREATE PACKAGE "APP"."${name}" AS END;` }));
+    vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockImplementation(async (input) => (input.packageCleanup ? ["cleanup", "readback"] : ["preflight", "create spec", "validate", "grants", "dependencies"]));
+  }
+
+  it("cancels after read-only preparation without replacing the original pin", async () => {
+    preparePackage();
+    const { dialog, safety, replacePin, queries } = await openRename(target);
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.cancel();
+    await execution;
+    expect(vi.mocked(api.executeQuery).mock.calls.every((call) => call[2].startsWith("SELECT"))).toBe(true);
+    expect(replacePin).not.toHaveBeenCalled();
+    expect(queries.tabs.some((tab) => tab.sourceSnapshot)).toBe(false);
+  });
+
+  it("keeps the original source identity after a specification-only migration", async () => {
+    preparePackage();
+    const { dialog, safety, replacePin, queries, sourceId } = await openRename(target);
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await execution;
+    expect(dialog.showRenameObjectDialog).toBe(false);
+    expect(replacePin).not.toHaveBeenCalled();
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource?.name).toBe("Old View");
+    expect(queries.tabs.find((tab) => tab.sourceSnapshot)?.sql).toContain("5. inspect remaining dependencies: response received");
+    expect(vi.mocked(api.executeQuery).mock.calls.some((call) => /DROP PACKAGE/i.test(call[2]))).toBe(false);
+  });
+
+  it("cancels explicit cleanup without changing the source or pin", async () => {
+    preparePackage();
+    const { dialog, safety, replacePin, queries, sourceId } = await openRename(target);
+    dialog.packageCleanupReviewed = true;
+    await nextTick();
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.cancel();
+    await execution;
+    expect(vi.mocked(api.executeQuery).mock.calls.every((call) => call[2].startsWith("SELECT"))).toBe(true);
+    expect(replacePin).not.toHaveBeenCalled();
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource?.name).toBe("Old View");
+  });
+
+  it("replaces the pin and detaches old source after confirmed cleanup", async () => {
+    preparePackage();
+    const { dialog, safety, replacePin, queries, sourceId } = await openRename(target);
+    dialog.packageCleanupReviewed = true;
+    await nextTick();
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await execution;
+    expect(dialog.showRenameObjectDialog).toBe(false);
+    expect(replacePin).toHaveBeenCalledWith(target, expect.objectContaining({ label: "New View", children: undefined, isExpanded: false }));
+    expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "unsaved original definition" });
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
+  });
+
+  it("keeps the pin and recovery text when cleanup outcome cannot be read", async () => {
+    preparePackage();
+    const defaultExecution = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      if (args[2] === "readback") throw new Error("readback unavailable");
+      return defaultExecution(...args);
+    });
+    const { dialog, safety, replacePin, queries, sourceId } = await openRename(target);
+    dialog.packageCleanupReviewed = true;
+    await nextTick();
+    const execution = dialog.confirmRenameObject();
+    await vi.waitFor(() => expect(safety.pending).toBeDefined());
+    safety.confirm();
+    await execution;
+    expect(dialog.renameObjectError).toContain("readback unavailable");
+    expect(replacePin).not.toHaveBeenCalled();
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.sourceSnapshot).toBe(true);
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
   });
 });

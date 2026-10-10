@@ -265,7 +265,7 @@ describe("queryStore database open state", () => {
     expect(store.tabs.find((tab) => tab.id === queryId)?.sql).toBe("SELECT * FROM old_view");
   });
 
-  it.each(["PROCEDURE", "FUNCTION"] as const)("preserves %s edits and isolates schema and kind when rename invalidates the source identity", async (objectType) => {
+  it.each(["PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE_BODY"] as const)("preserves %s edits and isolates schema and kind when rename invalidates the source identity", async (objectType) => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();
     const sourceId = store.openObjectSourceTab({ connectionId: "ob", database: "APP", schema: "APP", title: "Routine", sql: "original source", objectSource: { schema: "APP", name: "old_routine", objectType } });

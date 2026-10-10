@@ -77,6 +77,8 @@ beforeEach(() => {
   invalidateObjectBrowserRowsCache({});
   vi.mocked(api.listObjects).mockResolvedValue([{ name: "Old View", schema: "APP", object_type: "VIEW" }]);
   vi.mocked(api.executeQuery).mockResolvedValue({ columns: [], rows: [["Old View"]] } as any);
+  vi.mocked(api.getObjectSource).mockResolvedValue({ source: 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true } as any);
+  vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockResolvedValue(["preflight", "create", "validate", "grants", "drop"]);
 });
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
@@ -85,7 +87,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" = "VIEW") {
+async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE_BODY" = "VIEW", cleanup = false) {
+  if (objectType === "VIEW") vi.mocked(api.getObjectSource).mockResolvedValue({ source: "CREATE VIEW old_view AS SELECT 2", editable: true } as any);
   vi.mocked(api.listObjects).mockResolvedValue([{ name: "Old View", schema: "APP", object_type: objectType }]);
   vi.mocked(api.getObjectSource).mockResolvedValue({ source: objectType === "VIEW" ? "CREATE VIEW old_view AS SELECT 2" : 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true });
   const pinia = createPinia();
@@ -120,7 +123,13 @@ async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" = "VIEW"
   input.value = "New View";
   input.dispatchEvent(new Event("input", { bubbles: true }));
   await nextTick();
-  const button = [...dialog.querySelectorAll("button")].find((item) => item.textContent?.trim() === i18n.global.t("contextMenu.renameObject"))!;
+  if (cleanup) {
+    const checkbox = dialog.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+  }
+  const button = [...dialog.querySelectorAll("button")].find((item) => item.textContent?.trim() === i18n.global.t(cleanup ? "contextMenu.packageCleanupAction" : "contextMenu.renameObject"))!;
   button.click();
   const safety = useProductionSafetyStore();
   await vi.waitFor(() => expect(safety.pending).toBeDefined());
@@ -281,5 +290,88 @@ describe("ObjectBrowser OceanBase routine rename", () => {
     expect(vi.mocked(api.executeQuery).mock.calls.map((call) => call[2])).toEqual(["preflight", "create", "validate", "grants", "drop"]);
     expect(container.textContent).toContain("New View");
     expect(queries.tabs.find((tab) => tab.id === sourceId)?.sourceSnapshot).toBe(true);
+  });
+});
+
+describe("ObjectBrowser package migration", () => {
+  function preparePackage(fail?: string) {
+    vi.mocked(api.getObjectSource).mockImplementation(async (_connection, _database, schema, name, objectType) => ({
+      schema,
+      name,
+      object_type: objectType,
+      source: `CREATE ${objectType === "PACKAGE_BODY" ? "PACKAGE BODY" : "PACKAGE"} "APP"."${name}" AS END;`,
+    }));
+    vi.mocked(api.buildRoutineRenameObjectSourceStatements).mockImplementation(async (input) => (input.packageCleanup ? ["cleanup", "readback"] : ["preflight", "create spec", "create body", "validate pair", "copy grants", "dependencies"]));
+    vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => {
+      if (sql.startsWith("SELECT OBJECT_TYPE")) return { columns: ["OBJECT_TYPE"], rows: [["PACKAGE"], ["PACKAGE BODY"]] } as any;
+      if (sql === fail) throw new Error("package-stage-error");
+      if (sql === "readback") return { columns: ["OLD_OBJECTS", "VALID_NEW_OBJECTS", "NEW_OBJECTS", "COMPILE_ERRORS"], rows: [[0, 2, 2, 0]] } as any;
+      return { columns: [], rows: [] } as any;
+    });
+  }
+
+  it("allows read-only preparation but sends no DDL when production confirmation is cancelled", async () => {
+    preparePackage();
+    const { safety, queries } = await openRename("PACKAGE");
+    safety.cancel();
+    await nextTick();
+    expect(vi.mocked(api.executeQuery).mock.calls.every((call) => call[2].startsWith("SELECT"))).toBe(true);
+    expect(queries.tabs.some((tab) => tab.sourceSnapshot)).toBe(false);
+  });
+
+  it("keeps the original identity and recovery snapshot after the new package is validated", async () => {
+    preparePackage();
+    const { safety, queries, sourceId, refresh } = await openRename("PACKAGE_BODY");
+    safety.confirm();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource?.name).toBe("Old View");
+    const snapshot = queries.tabs.find((tab) => tab.sourceSnapshot);
+    expect(snapshot?.sql).toContain("ORIGINAL BODY");
+    expect(snapshot?.sql).toContain("6. inspect remaining dependencies: response received");
+    expect(vi.mocked(api.executeQuery).mock.calls.some((call) => /DROP PACKAGE/i.test(call[2]))).toBe(false);
+  });
+
+  it("stops after pair validation fails and records the attempted step", async () => {
+    preparePackage("validate pair");
+    const { safety, queries, refresh } = await openRename("PACKAGE");
+    safety.confirm();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("package-stage-error"));
+    expect(vi.mocked(api.executeQuery).mock.calls.some((call) => call[2] === "copy grants")).toBe(false);
+    expect(queries.tabs.find((tab) => tab.sourceSnapshot)?.sql).toContain("attempted; read back database state");
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("cancels explicit cleanup before any destructive statement", async () => {
+    preparePackage();
+    const { safety, queries, sourceId } = await openRename("PACKAGE", true);
+    safety.cancel();
+    await nextTick();
+    expect(vi.mocked(api.executeQuery).mock.calls.every((call) => call[2].startsWith("SELECT"))).toBe(true);
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource?.name).toBe("Old View");
+    expect(queries.tabs.some((tab) => tab.sourceSnapshot)).toBe(false);
+  });
+
+  it("detaches both original sources only after cleanup is read back", async () => {
+    preparePackage();
+    const { safety, queries, sourceId, refresh } = await openRename("PACKAGE", true);
+    const bodyId = queries.openObjectSourceTab({ connectionId: connection.id, database: "APP", schema: "APP", title: "Old View body", sql: "unsaved body", objectSource: { schema: "APP", name: "Old View", objectType: "PACKAGE_BODY" } });
+    vi.mocked(api.listObjects).mockResolvedValue([{ name: "New View", schema: "APP", object_type: "PACKAGE" }]);
+    safety.confirm();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+    for (const id of [sourceId, bodyId]) {
+      expect(queries.tabs.find((tab) => tab.id === id)?.sourceSnapshot).toBe(true);
+      expect(queries.tabs.find((tab) => tab.id === id)?.objectSource).toBeUndefined();
+    }
+    expect(queries.tabs.find((tab) => tab.id === bodyId)?.sql).toBe("unsaved body");
+    expect(vi.mocked(api.executeQuery).mock.calls.some((call) => call[2] === "readback")).toBe(true);
+  });
+
+  it("preserves original text as a snapshot when cleanup readback fails", async () => {
+    preparePackage("readback");
+    const { safety, queries, sourceId } = await openRename("PACKAGE", true);
+    safety.confirm();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("package-stage-error"));
+    expect(queries.tabs.find((tab) => tab.id === sourceId)).toMatchObject({ sourceSnapshot: true, sql: "CREATE VIEW old_view AS SELECT 2" });
+    expect(queries.tabs.find((tab) => tab.id === sourceId)?.objectSource).toBeUndefined();
   });
 });

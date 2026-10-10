@@ -11,6 +11,8 @@ export type BuildEditableObjectSourceSqlInput = {
 
 export type BuildRoutineRenameObjectSourceInput = BuildEditableObjectSourceSqlInput & {
   newName: string;
+  packageBodySource?: string | null;
+  packageCleanup?: boolean;
 };
 
 export type ObjectSourceSaveExecutionMode = "single" | "script";
