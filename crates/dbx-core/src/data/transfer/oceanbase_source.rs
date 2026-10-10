@@ -180,6 +180,13 @@ fn prepare(
     }
     let start = offset(&ddl, tokens[first].span.start.line, tokens[first].span.start.column)?;
     let end = offset(&ddl, tokens[index].span.end.line, tokens[index].span.end.column)?;
+    if owner != target
+        && tokens[index + 1..].windows(2).any(|pair| {
+            matches!(pair[1].token, Token::Period) && identifier(Some(&pair[0])).ok().as_deref() == Some(owner)
+        })
+    {
+        reject_shadowed_owner(&tokens[index + 1..], owner)?;
+    }
     let mut replacements = vec![(start, end, qualified)];
     // Token positions preserve the original PL/SQL, including comments, q-quotes and strings.
     for pair in tokens[index + 1..].windows(2) {
@@ -200,6 +207,38 @@ fn prepare(
         return Err(format!("No executable source for OceanBase {kind:?} {name}"));
     }
     Ok(statements)
+}
+
+fn reject_shadowed_owner(tokens: &[TokenWithSpan], owner: &str) -> Result<(), String> {
+    for (index, token) in tokens.iter().enumerate() {
+        if identifier(Some(token)).ok().as_deref() != Some(owner)
+            || matches!(tokens.get(index + 1).map(|token| &token.token), Some(Token::Period))
+        {
+            continue;
+        }
+        // A local declaration or an explicit alias can bind the same spelling.
+        let local = index.checked_sub(1).is_some_and(|previous| {
+            matches!(tokens[previous].token, Token::LParen | Token::Comma | Token::SemiColon)
+                || ["AS", "IS", "DECLARE", "FOR"].iter().any(|value| word(tokens.get(previous), value))
+        }) && identifier(tokens.get(index + 1)).is_ok();
+        let mut reference = index;
+        if reference > 0 && identifier(tokens.get(reference - 1)).is_ok() {
+            reference -= 1;
+            while reference >= 2
+                && matches!(tokens[reference - 1].token, Token::Period)
+                && identifier(tokens.get(reference - 2)).is_ok()
+            {
+                reference -= 2;
+            }
+        }
+        let table_alias = reference
+            .checked_sub(1)
+            .is_some_and(|previous| word(tokens.get(previous), "FROM") || word(tokens.get(previous), "JOIN"));
+        if local || table_alias {
+            return Err(format!("Ambiguous source owner {owner}: a local binding or table alias shadows the schema; automatic owner mapping is blocked"));
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn execute(
@@ -426,6 +465,27 @@ mod tests {
         assert_eq!(statements.len(), 1);
         assert!(statements[0].contains("CREATE VIEW \"Mixed Owner\".\"V\" (\"Alias\", \"Other\") AS"));
         assert!(statements[0].contains("'SRC.t' FROM \"Mixed Owner\".t -- SRC.t"));
+    }
+
+    #[test]
+    fn schema_mapping_rejects_table_aliases_and_local_bindings_before_ddl() {
+        for (kind, source) in [
+            (TransferObjectKind::View, "CREATE VIEW SRC.OBJ AS SELECT SRC.ID FROM SRC.T SRC"),
+            (TransferObjectKind::View, "CREATE VIEW SRC.OBJ AS SELECT SRC.ID FROM T SRC WHERE SRC.ID > 0"),
+            (TransferObjectKind::Procedure, "CREATE PROCEDURE SRC.OBJ AS SRC T%ROWTYPE; BEGIN SRC.ID := 1; END;"),
+            (
+                TransferObjectKind::Function,
+                "CREATE FUNCTION SRC.OBJ(SRC NUMBER) RETURN NUMBER AS BEGIN RETURN SRC.ID; END;",
+            ),
+        ] {
+            let error = prepare(source, "SRC", "DST", "OBJ", kind, &[]).unwrap_err();
+            assert!(error.contains("shadows the schema"));
+            assert!(prepare(source, "SRC", "SRC", "OBJ", kind, &[]).is_ok());
+        }
+        let source = "CREATE VIEW SRC.OBJ AS SELECT T.ID FROM SRC.T T";
+        assert!(prepare(source, "SRC", "DST", "OBJ", TransferObjectKind::View, &[]).is_ok());
+        let source = "CREATE PROCEDURE SRC.OBJ AS SRC NUMBER; BEGIN NULL; END;";
+        assert!(prepare(source, "SRC", "DST", "OBJ", TransferObjectKind::Procedure, &[]).is_ok());
     }
 
     #[test]
