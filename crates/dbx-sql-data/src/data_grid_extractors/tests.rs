@@ -58,7 +58,7 @@ fn temporal_insert_request() -> DataGridExtractRequest {
 
 #[test]
 fn oracle_query_insert_uses_real_result_types_without_table_metadata() {
-    for database_type in [DatabaseType::Oracle, DatabaseType::OceanBaseOracle] {
+    for database_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle] {
         let mut value = serde_json::to_value(request(DataGridExtractorId::SqlInserts)).unwrap();
         value["databaseType"] = serde_json::to_value(database_type).unwrap();
         value["columns"] = json!([
@@ -98,7 +98,7 @@ fn query_insert_result_types_preserve_metadata_priority_and_unknown_strings() {
     let sql = extract_data_grid_selection(native).unwrap().text;
     assert!(sql.contains("'it''s text'"));
     let mut value = serde_json::to_value(request(DataGridExtractorId::SqlInserts)).unwrap();
-    value["databaseType"] = serde_json::to_value(DatabaseType::OceanBaseOracle).unwrap();
+    value["databaseType"] = serde_json::to_value(DatabaseType::OceanbaseOracle).unwrap();
     value["columns"][1]["dataType"] = json!("UNKNOWN");
     value["rows"] = json!([[1, "2026-10-10 13:14:15"]]);
     assert!(extract_data_grid_selection(serde_json::from_value(value).unwrap())
