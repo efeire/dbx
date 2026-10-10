@@ -435,11 +435,15 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 return List.of();
             }
             String baseSql = """
-                SELECT o.OBJECT_NAME, o.OBJECT_TYPE, c.COMMENTS
+                SELECT o.OBJECT_NAME, o.OBJECT_TYPE, c.COMMENTS, o.STATUS
                 FROM ALL_OBJECTS o
                 LEFT JOIN ALL_TAB_COMMENTS c ON c.OWNER = o.OWNER AND c.TABLE_NAME = o.OBJECT_NAME
                     AND o.OBJECT_TYPE IN ('TABLE', 'VIEW')
                 WHERE o.OWNER = ? AND o.OBJECT_TYPE IN (%s)
+                  AND (o.OBJECT_TYPE NOT IN ('TYPE', 'TYPE BODY') OR
+                    (NVL(o.GENERATED, 'N') = 'N' AND o.OWNER NOT IN ('SYS', 'SYSTEM')
+                     AND EXISTS (SELECT 1 FROM ALL_TYPES t WHERE t.OWNER = o.OWNER
+                         AND t.TYPE_NAME = o.OBJECT_NAME AND t.PREDEFINED = 'NO')))
                 """.stripIndent().trim();
             if (objectTypes.contains("SYNONYM")) {
                 // Public synonyms can use OB's internal owner. Canonicalize before
@@ -462,7 +466,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             }
             MetadataSql query = oceanBaseMetadataSql(
                 String.format(baseSql, placeholders(objectTypes.size())),
-                "OBJECT_NAME, OBJECT_TYPE, COMMENTS",
+                "OBJECT_NAME, OBJECT_TYPE, COMMENTS, STATUS",
                 "OBJECT_NAME",
                 """
                 ORDER BY CASE OBJECT_TYPE
@@ -487,8 +491,9 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
                         String objectType = rs.getString(2);
-                        result.add(new ObjectInfo(rs.getString(1),
-                            "PACKAGE BODY".equals(objectType) ? "PACKAGE_BODY" : objectType, owner, rs.getString(3)));
+                        String status = rs.getString(4);
+                        Boolean valid = "VALID".equals(status) ? Boolean.TRUE : "INVALID".equals(status) ? Boolean.FALSE : null;
+                        result.add(new ObjectInfo(rs.getString(1), objectType.replace(' ', '_'), owner, rs.getString(3), valid));
                     }
                 }
             }
@@ -1061,7 +1066,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     }
 
     private static List<String> oceanBaseObjectTypes(MetadataListConstraints constraints) {
-        List<String> supported = List.of("TABLE", "VIEW", "PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE BODY", "SEQUENCE", "SYNONYM");
+        List<String> supported = List.of("TABLE", "VIEW", "PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE BODY", "SEQUENCE", "SYNONYM", "TYPE", "TYPE BODY");
         if (!constraints.hasObjectTypes()) {
             return supported;
         }
@@ -1133,7 +1138,13 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 throw metadataError;
             }
         }
-        return new ObjectSource(name, objectType, owner, source == null ? "" : source);
+        boolean typeSource = "TYPE".equals(objectType) || "TYPE_BODY".equals(objectType);
+        if (typeSource && (source == null || source.isBlank())) {
+            throw new SQLException("Complete type source is missing or is not visible to the current account");
+        }
+        return typeSource
+            ? new ObjectSource(name, objectType, owner, source, false)
+            : new ObjectSource(name, objectType, owner, source == null ? "" : source);
     }
 
     private String queryDbmsMetadataSource(String owner, String name, String objectType) throws SQLException {

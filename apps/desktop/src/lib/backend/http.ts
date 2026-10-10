@@ -1246,6 +1246,10 @@ export async function getColumns(connectionId: string, database: string, schema:
   return get(`/api/schema/columns?${qs({ connection_id: connectionId, database, schema, table, catalog, client_session_id: clientSessionId, current_schema: currentSchema })}`);
 }
 
+export async function getOracleTypeDetails(connectionId: string, database: string, schema: string, name: string, objectType: "TYPE" | "TYPE_BODY", executionId?: string): Promise<import("@/types/oracleTypes").OracleTypeDetails> {
+  return get(`/api/schema/oracle-type-details?${qs({ connection_id: connectionId, database, schema, table: name, object_type: objectType, execution_id: executionId })}`);
+}
+
 export async function getPluginTableMetadata(request: PluginTableMetadataRequest): Promise<PluginTableMetadata> {
   return post("/api/plugin/table-metadata", request);
 }

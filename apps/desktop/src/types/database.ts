@@ -2274,6 +2274,8 @@ export interface QueryTab {
     objectType: ObjectSourceKind;
     signature?: string;
   };
+  /** Exact identity retained for read-only Oracle type source tabs. */
+  oracleTypeIdentity?: import("./oracleTypes").OracleTypeIdentity;
   /**
    * 「先出 UI 再加载」的中间态：源码 tab 已经可见，但源码还在路上
    * （ensureConnected + getObjectSource）。让 tab 栏与编辑区在等待期间就有反馈，

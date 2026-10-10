@@ -68,6 +68,7 @@ export interface SavedOpenTab {
   databaseSearchState?: QueryTab["databaseSearchState"];
   objectBrowser?: QueryTab["objectBrowser"];
   objectSource?: QueryTab["objectSource"];
+  oracleTypeIdentity?: QueryTab["oracleTypeIdentity"];
   sourceView?: boolean;
   sourceSnapshot?: boolean;
   ddlViewer?: QueryTab["ddlViewer"];
@@ -217,6 +218,7 @@ export function serializeOpenTabs(tabs: QueryTab[]): SavedOpenTab[] {
     ...(tab.databaseSearchState ? { databaseSearchState: tab.databaseSearchState } : {}),
     objectBrowser: tab.objectBrowser,
     objectSource: tab.objectSource,
+    ...(tab.oracleTypeIdentity ? { oracleTypeIdentity: { ...tab.oracleTypeIdentity } } : {}),
     ...(tab.sourceView ? { sourceView: true } : {}),
     ...(tab.sourceSnapshot ? { sourceSnapshot: true } : {}),
     ...(tab.ddlViewer ? { ddlViewer: { ...tab.ddlViewer } } : {}),

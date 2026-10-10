@@ -109,13 +109,13 @@ class OceanBaseOracleObjectListTest {
             };
 
             assertEquals(List.of("APP", "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "PACKAGE",
-                "PACKAGE BODY", "SEQUENCE", "SYNONYM"), call.args);
+                "PACKAGE BODY", "SEQUENCE", "SYNONYM", "TYPE", "TYPE BODY"), call.args);
             assertEquals(List.of("TABLE", "VIEW", "PROCEDURE", "FUNCTION", "PACKAGE",
                 "PACKAGE_BODY", "SEQUENCE", "SYNONYM"), objects.stream().map(ObjectInfo::getObject_type).toList());
             assertEquals(8, objects.size());
             assertTrue(objects.stream().allMatch(object -> "APP".equals(object.getSchema())));
             assertTrue(objects.stream().allMatch(object -> object.getValid() == null));
-            assertTrue(call.sql.contains("OBJECT_TYPE IN (?, ?, ?, ?, ?, ?, ?, ?)"), call.sql);
+            assertTrue(call.sql.contains("OBJECT_TYPE IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"), call.sql);
             assertFalse(call.sql.contains("ROWNUM"), call.sql);
             assertObjectOrder(call.sql);
             call.assertClosed();
@@ -137,7 +137,7 @@ class OceanBaseOracleObjectListTest {
         ), objects);
         assertNotEquals(objects.get(0), objects.get(1));
         assertFalse(call.sql.contains("Mixed.Owner"), call.sql);
-        assertFalse(call.sql.contains("STATUS"), call.sql);
+        assertTrue(call.sql.contains("STATUS"), call.sql);
         call.assertClosed();
     }
 
@@ -237,7 +237,7 @@ class OceanBaseOracleObjectListTest {
     void unsupportedTypesDoNotQueryTheDatabase() {
         JdbcFixture jdbc = new JdbcFixture();
 
-        assertEquals(List.of(), jdbc.agent.listObjects("APP", constraints(null, null, null, "TRIGGER", "TYPE_BODY")));
+        assertEquals(List.of(), jdbc.agent.listObjects("APP", constraints(null, null, null, "TRIGGER", "JOB")));
         assertEquals(0, jdbc.prepared);
     }
 
@@ -441,7 +441,43 @@ class OceanBaseOracleObjectListTest {
     }
 
     private static String[] row(String... columns) {
-        return columns;
+        return columns.length == 2 ? Arrays.copyOf(columns, 3) : columns;
+    }
+
+    @Test
+    void userTypesPreserveOwnerPairAndActualValidity() {
+        JdbcFixture jdbc = new JdbcFixture();
+        JdbcCall call = jdbc.rows(row("Mixed.Type", "TYPE", null, "VALID"), row("Mixed.Type", "TYPE BODY", null, "INVALID"), row("Unknown", "TYPE", null, null));
+        List<ObjectInfo> objects = jdbc.agent.listObjects(" Mixed.Owner ", constraints(null, null, null, "TYPE", "TYPE_BODY"));
+        assertEquals(List.of(" Mixed.Owner ", "TYPE", "TYPE BODY"), call.args);
+        assertEquals(" Mixed.Owner ", objects.get(0).getSchema());
+        assertEquals("TYPE_BODY", objects.get(1).getObject_type());
+        assertEquals(Boolean.TRUE, objects.get(0).getValid());
+        assertEquals(Boolean.FALSE, objects.get(1).getValid());
+        assertNull(objects.get(2).getValid());
+        assertTrue(call.sql.contains("t.PREDEFINED = 'NO'"));
+        assertTrue(call.sql.contains("NVL(o.GENERATED, 'N') = 'N'"));
+    }
+
+    @Test
+    void typeSourcePreservesMethodsAndIsReadOnly() {
+        JdbcFixture jdbc = new JdbcFixture();
+        JdbcCall call = jdbc.rows(row("TYPE BODY \"Mixed.Type\" AS\n"), row("MEMBER FUNCTION f RETURN VARCHAR2 IS BEGIN RETURN '中文'; END;\n"), row("END;\n"));
+        ObjectSource source = jdbc.agent.getObjectSource("Mixed.Owner", "Mixed.Type", "TYPE_BODY");
+        assertEquals(List.of("Mixed.Owner", "Mixed.Type", "TYPE BODY"), call.args);
+        assertTrue(source.getSource().contains("MEMBER FUNCTION f RETURN VARCHAR2 IS BEGIN RETURN '中文'; END;"));
+        assertFalse(source.isEditable());
+        call.assertClosed();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"TYPE", "TYPE_BODY"})
+    void missingTypeSourceNeverReturnsAnEmptyDefinition(String type) {
+        JdbcFixture jdbc = new JdbcFixture();
+        jdbc.rows();
+        jdbc.rows();
+        RuntimeException error = assertThrows(RuntimeException.class, () -> jdbc.agent.getObjectSource("APP", "Missing", type));
+        assertTrue(error.getMessage().contains("Complete type source"));
     }
 
     private static String[] objectRow(String name, String type) {

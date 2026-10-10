@@ -107,6 +107,7 @@ import { confirmOceanbaseTableClone, executeOceanbaseTableClone, showOceanbaseTa
 import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeOceanBaseRoutineRenameSteps, RoutineRenameStepError, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildRenameObjectSql, notifyViewRenameReadback, readOceanBaseViewRenameState, supportsObjectRename } from "@/lib/table/objectRenameSql";
+import OracleTypeMetadataPanel from "@/components/objects/OracleTypeMetadataPanel.vue";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
 import { generateDatabaseExportId } from "@/lib/export/databaseExport";
@@ -4691,6 +4692,14 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
           <div v-if="!sourceCanEdit && sourceSaveError" class="shrink-0 whitespace-pre-wrap break-words border-b px-3 py-2 text-xs text-destructive">
             {{ sourceSaveError }}
           </div>
+          <OracleTypeMetadataPanel
+            v-if="!sourceLoading && sourceRow && ['TYPE', 'TYPE_BODY'].includes(sourceRow.type) && ['oracle', 'oceanbase-oracle'].includes(effectiveDatabaseType)"
+            :connection-id="props.connection.id"
+            :database="props.database"
+            :schema="sourceRow.schema || selectedSchema || props.database"
+            :name="sourceRow.name"
+            :object-type="sourceRow.type === 'TYPE_BODY' ? 'TYPE_BODY' : 'TYPE'"
+          />
           <div v-if="sourceLoading" class="flex flex-1 items-center justify-center">
             <Loader2 class="h-4 w-4 animate-spin text-muted-foreground" />
           </div>
