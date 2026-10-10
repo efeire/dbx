@@ -2574,6 +2574,8 @@ export default withEnglishFallback({
     largeValueLocalSortUnavailable: "この列には大きな値のプレビューが含まれるため、プレビュー内容による現在のページの並べ替えはできません。データベース並べ替えを使用してください。",
     copyValue: "値をコピー",
     downloadBinaryValue: "値をダウンロード",
+    downloadSnapshotValue: "結果スナップショット全体をダウンロード",
+    largeValueSnapshotPreview: "{value}（結果スナップショットのプレビュー）",
     downloadSaved: "{path} に保存しました",
     downloadStarted: "ダウンロード開始: {fileName}",
     binaryDownload: {
