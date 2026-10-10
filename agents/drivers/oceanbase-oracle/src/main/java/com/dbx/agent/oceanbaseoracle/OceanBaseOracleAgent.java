@@ -505,7 +505,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                     WHEN 'PACKAGE BODY' THEN 5
                     WHEN 'SEQUENCE' THEN 6
                     ELSE 7
-                END, OBJECT_NAME, o.OBJECT_ID
+                END, OBJECT_NAME, OBJECT_TYPE
                 """.stripIndent().trim(),
                 owner,
                 objectTypes,
@@ -1051,12 +1051,11 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         args.addAll(objectTypes);
         String sql = baseSql;
         if (constraints.hasFilter()) {
-            boolean hasComments = baseSql.contains("LEFT JOIN ALL_TAB_COMMENTS c");
             sql += " AND (UPPER(" + nameColumn + ") LIKE ? ESCAPE '\\'"
-                + (hasComments ? " OR UPPER(c.COMMENTS) LIKE ? ESCAPE '\\')" : ")");
+                + " OR UPPER(c.COMMENTS) LIKE ? ESCAPE '\\')";
             String pattern = constraints.fuzzyLikePattern().toUpperCase(Locale.ROOT);
             args.add(pattern);
-            if (hasComments) args.add(pattern);
+            args.add(pattern);
         }
         sql += "\n" + orderSql;
         if (constraints.hasLimit()) {

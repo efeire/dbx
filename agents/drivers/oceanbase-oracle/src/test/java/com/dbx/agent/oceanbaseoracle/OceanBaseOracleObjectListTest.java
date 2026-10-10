@@ -24,29 +24,29 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OceanBaseOracleObjectListTest {
     @Test
-    void jdbcFixtureRejectsMissingCommentsColumn() {
+    void jdbcFixtureRejectsMissingMetadataColumns() {
         JdbcFixture jdbc = new JdbcFixture();
         jdbc.rows(row("S", "SYNONYM"));
 
         RuntimeException error = assertThrows(RuntimeException.class,
             () -> jdbc.agent.listObjects("APP", constraints(null, null, null, "SYNONYM")));
         assertInstanceOf(SQLException.class, error.getCause());
-        assertEquals("Invalid column index: 3", error.getCause().getMessage());
+        assertEquals("Invalid column index: 4", error.getCause().getMessage());
     }
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void synonymUnionKeepsThreeColumnsAndTableViewCommentsWithAndWithoutPaging(boolean paged) {
+    void synonymUnionKeepsCommentsAndValidityWithAndWithoutPaging(boolean paged) {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(row("T", "TABLE", "订单备注"), row("V", "VIEW", "Customer view"),
+        JdbcCall call = jdbc.rows(row("T", "TABLE", "订单备注", "VALID"), row("V", "VIEW", "Customer view", "INVALID"),
             objectRow("S", "SYNONYM"));
         MetadataListConstraints requested = paged ? constraints("", 3, 0, "TABLE", "VIEW", "SYNONYM")
             : constraints("", null, null, "TABLE", "VIEW", "SYNONYM");
 
-        assertEquals(List.of(new ObjectInfo("T", "TABLE", "APP", "订单备注"),
-            new ObjectInfo("V", "VIEW", "APP", "Customer view"),
+        assertEquals(List.of(new ObjectInfo("T", "TABLE", "APP", "订单备注", true),
+            new ObjectInfo("V", "VIEW", "APP", "Customer view", false),
             new ObjectInfo("S", "SYNONYM", "APP", null)), jdbc.agent.listObjects("APP", requested));
-        assertTrue(call.sql.contains("SELECT OBJECT_NAME, OBJECT_TYPE, COMMENTS\nFROM ("), call.sql);
+        assertTrue(call.sql.contains("SELECT OBJECT_NAME, OBJECT_TYPE, COMMENTS, STATUS\nFROM ("), call.sql);
         assertTrue(call.sql.contains("SELECT o.OWNER, o.OBJECT_NAME, o.OBJECT_TYPE, tc.COMMENTS"), call.sql);
         assertTrue(call.sql.contains("LEFT JOIN ALL_TAB_COMMENTS tc"), call.sql);
         assertTrue(call.sql.contains("'SYNONYM' AS OBJECT_TYPE, NULL AS COMMENTS"), call.sql);
@@ -57,8 +57,8 @@ class OceanBaseOracleObjectListTest {
     @Test
     void tableAndViewCommentsSurviveObjectListing() {
         JdbcFixture jdbc = new JdbcFixture();
-        jdbc.rows(row("T", "TABLE", null, "订单备注"), row("V", "VIEW", null, "Customer view"),
-            row("EMPTY", "TABLE", null, ""), row("NO_COMMENT", "VIEW", null, null));
+        jdbc.rows(row("T", "TABLE", "订单备注", null), row("V", "VIEW", "Customer view", null),
+            row("EMPTY", "TABLE", "", null), row("NO_COMMENT", "VIEW", null, null));
 
         assertEquals(List.of(
             new ObjectInfo("T", "TABLE", "APP", "订单备注"),
@@ -72,7 +72,7 @@ class OceanBaseOracleObjectListTest {
     @ValueSource(strings = {"订单", "Customer", "'", "%", "_", "\\"})
     void commentOnlyMatchesAreBoundBeforePaging(String filter) {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(row("Z_LATE", "TABLE", null, "prefix " + filter + " suffix"));
+        JdbcCall call = jdbc.rows(row("Z_LATE", "TABLE", "prefix " + filter + " suffix", null));
         MetadataListConstraints constraints = constraints(filter, 1, 2, "TABLE");
 
         assertEquals(List.of(new ObjectInfo("Z_LATE", "TABLE", "Mixed.Owner", "prefix " + filter + " suffix")),
@@ -365,7 +365,7 @@ class OceanBaseOracleObjectListTest {
         for (String owner : List.of("Mixed.Owner", "PUBLIC")) {
             JdbcCall call = jdbc.rows(objectRow("Mixed.Syn", "SYNONYM"));
             objects.addAll(jdbc.agent.listObjects(owner, constraints("Mixed", 1, 1, "SYNONYM")));
-            assertEquals(List.of(owner, "SYNONYM", "%M%I%X%E%D%", "%M%I%X%E%D%", 2, 1), call.args);
+            assertEquals(List.of(owner, "SYNONYM", "%M%I%X%E%D%", "%M%I%X%E%D%", 2L, 1), call.args);
             assertTrue(call.sql.contains("FROM ALL_SYNONYMS"), call.sql);
             assertTrue(call.sql.contains("WHEN OWNER = '__public' THEN 'PUBLIC' ELSE OWNER END"), call.sql);
             assertTrue(call.sql.contains("WHERE o.OBJECT_TYPE <> 'SYNONYM'"), call.sql);
@@ -482,7 +482,7 @@ class OceanBaseOracleObjectListTest {
     }
 
     private static String[] objectRow(String name, String type) {
-        return row(name, type, null);
+        return row(name, type, null, null);
     }
 
     private static void assertObjectOrder(String sql) {
@@ -490,7 +490,8 @@ class OceanBaseOracleObjectListTest {
         for (int rank = 0; rank < types.size(); rank++) {
             assertTrue(sql.contains("WHEN '" + types.get(rank) + "' THEN " + rank), sql);
         }
-        assertTrue(sql.contains("ELSE 7\nEND, OBJECT_NAME, o.OBJECT_ID"), sql);
+        assertTrue(sql.contains("ELSE 7\nEND, OBJECT_NAME, OBJECT_TYPE"), sql);
+        assertFalse(sql.contains("o.OBJECT_ID"), sql);
     }
 
     private static final class JdbcFixture {

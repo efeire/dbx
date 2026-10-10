@@ -3,7 +3,6 @@ import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import type * as TauriModule from "@/lib/backend/tauri";
 import { appendDebugLog } from "@/lib/backend/debugLog";
 import type { AiConfigItem } from "@/types/ai";
-import { functionInfoRequestArguments, functionInfoResponse } from "@/lib/backend/functionInfoTransport";
 
 // ---------------------------------------------------------------------------
 // Lazy backend resolution (avoids top-level await)

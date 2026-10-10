@@ -8485,54 +8485,60 @@ mod unexecuted_object_tests {
 
     #[test]
     fn unexecuted_results_preserve_exact_identity_and_success_without_fake_failure() {
-        let mut request: TransferRequest = serde_json::from_value(serde_json::json!({
-            "transferId": "blocked-results", "sourceConnectionId": "s", "sourceDatabase": "S", "sourceSchema": "S",
-            "targetConnectionId": "t", "targetDatabase": "T", "targetSchema": "Mixed Owner", "tables": [],
-            "createTable": true, "batchSize": 10, "content": "structureOnly",
-            "objects": [
-                {"objectType": "TYPE", "names": ["a\"b"]},
-                {"objectType": "TYPE_BODY", "names": ["a\"b", "a\"b", "A\"B"]},
-                {"objectType": "VIEW", "names": ["V"]}
-            ]
-        }))
-        .unwrap();
-        let mut outcome = TransferObjectOutcome {
-            object_results: vec![TransferSchemaObjectResult {
-                object_type: TransferObjectKind::Type,
-                name: "a\"b".into(),
-                schema: "Mixed Owner".into(),
-                status: "created".into(),
-                compile_status: Some("VALID".into()),
-                source_verified: Some(true),
-                error: None,
-                recovery: None,
-            }],
-            ..Default::default()
-        };
-        let added = mark_unexecuted_transfer_objects(&request, &mut outcome, "Prerequisite did not complete", true);
-        assert_eq!(added.len(), 3);
-        assert_eq!(
-            added.iter().map(|result| (result.object_type, result.name.as_str())).collect::<Vec<_>>(),
-            vec![
-                (TransferObjectKind::TypeBody, "a\"b"),
-                (TransferObjectKind::TypeBody, "A\"B"),
-                (TransferObjectKind::View, "V")
-            ]
-        );
-        assert!(added.iter().all(|result| result.status == "not_started"
-            && result.compile_status.is_none()
-            && result.source_verified.is_none()));
-        assert!(outcome.failed.is_empty());
-        assert_eq!(outcome.object_results[0].status, "created");
-        assert!(has_transfer_object_blockers(&outcome));
-        assert!(mark_unexecuted_transfer_objects(&request, &mut outcome, "Repeated report", true).is_empty());
+        for (spec, body) in [
+            (TransferObjectKind::Type, TransferObjectKind::TypeBody),
+            (TransferObjectKind::Package, TransferObjectKind::PackageBody),
+        ] {
+            let mut request: TransferRequest = serde_json::from_value(serde_json::json!({
+                "transferId": "blocked-results", "sourceConnectionId": "s", "sourceDatabase": "S", "sourceSchema": "S",
+                "targetConnectionId": "t", "targetDatabase": "T", "targetSchema": "Mixed Owner", "tables": [],
+                "createTable": true, "batchSize": 10, "content": "structureOnly",
+                "objects": [
+                    {"objectType": spec, "names": ["a\"b"]},
+                    {"objectType": body, "names": ["a\"b", "a\"b", "A\"B"]},
+                    {"objectType": "VIEW", "names": ["V"]}
+                ]
+            }))
+            .unwrap();
+            let mut outcome = TransferObjectOutcome {
+                object_results: vec![TransferSchemaObjectResult {
+                    object_type: spec,
+                    name: "a\"b".into(),
+                    schema: "Mixed Owner".into(),
+                    status: "created".into(),
+                    compile_status: Some("VALID".into()),
+                    source_verified: Some(true),
+                    error: None,
+                    recovery: None,
+                }],
+                ..Default::default()
+            };
+            let added = mark_unexecuted_transfer_objects(&request, &mut outcome, "Prerequisite did not complete", true);
+            assert_eq!(added.len(), 3);
+            assert_eq!(
+                added.iter().map(|result| (result.object_type, result.name.as_str())).collect::<Vec<_>>(),
+                vec![(body, "a\"b"), (body, "A\"B"), (TransferObjectKind::View, "V")]
+            );
+            assert!(added.iter().all(|result| result.status == "not_started"
+                && result.compile_status.is_none()
+                && result.source_verified.is_none()));
+            assert!(outcome.failed.is_empty());
+            assert_eq!(outcome.object_results[0].status, "created");
+            assert!(has_transfer_object_blockers(&outcome));
+            assert!(mark_unexecuted_transfer_objects(&request, &mut outcome, "Repeated report", true).is_empty());
 
-        let mut uncertain_legacy = TransferObjectOutcome::default();
-        let added = mark_unexecuted_transfer_objects(&request, &mut uncertain_legacy, "Stage interrupted", false);
-        assert!(!added.iter().any(|result| result.object_type == TransferObjectKind::View));
-        request.content = TransferContent::DataOnly;
-        assert!(mark_unexecuted_transfer_objects(&request, &mut TransferObjectOutcome::default(), "Data only", true)
+            let mut uncertain_legacy = TransferObjectOutcome::default();
+            let added = mark_unexecuted_transfer_objects(&request, &mut uncertain_legacy, "Stage interrupted", false);
+            assert!(!added.iter().any(|result| result.object_type == TransferObjectKind::View));
+            request.content = TransferContent::DataOnly;
+            assert!(mark_unexecuted_transfer_objects(
+                &request,
+                &mut TransferObjectOutcome::default(),
+                "Data only",
+                true
+            )
             .is_empty());
+        }
     }
 }
 

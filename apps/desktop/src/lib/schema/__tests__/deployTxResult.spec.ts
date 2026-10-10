@@ -124,7 +124,7 @@ describe("routine deployment readback", () => {
   });
   it.each(["PACKAGE", "TYPE"] as const)("validates mapped %s and body definitions without overwriting source or recovery snapshots", async (kind) => {
     const bodyKind = kind === "TYPE" ? "TYPE BODY" : "PACKAGE BODY";
-    const definition = kind === "TYPE" ? 'AS TABLE OF SRC.Parent;' : 'AS FUNCTION f RETURN NUMBER; END;';
+    const definition = kind === "TYPE" ? "AS TABLE OF SRC.Parent;" : "AS FUNCTION f RETURN NUMBER; END;";
     const bodyDefinition = `${kind === "TYPE" ? "MEMBER " : ""}FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;`;
     const source = { name: "Same.Object", function_type: kind, data_type: "", arguments: "", schema: "SRC", definition: `CREATE EDITIONABLE ${kind} "Same.Object" ${definition}` };
     const body = { ...source, function_type: bodyKind, definition: `CREATE ${bodyKind} "Same.Object" AS ${bodyDefinition}` };

@@ -18,22 +18,6 @@ async function waitForHistory<T>(action: () => Promise<T>, signal: AbortSignal):
   }
 }
 
-async function waitForHistory<T>(action: () => Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) throw new Error("Diagnostic cancelled");
-  let rejectCancelled!: (error: Error) => void;
-  const cancelled = new Promise<never>((_resolve, reject) => {
-    rejectCancelled = reject;
-  });
-  const cancel = () => rejectCancelled(new Error("Diagnostic cancelled"));
-  signal.addEventListener("abort", cancel, { once: true });
-  try {
-    // History transport may still finish; cancellation only ends local waiting.
-    return await Promise.race([action(), cancelled]);
-  } finally {
-    signal.removeEventListener("abort", cancel);
-  }
-}
-
 export function useRuntimeDiagnostics(context: Readonly<Ref<DiagnosticContext | null>>, service = createRuntimeDiagnostics()) {
   const targets = shallowRef<DiagnosticTarget[]>([]);
   const records = shallowRef<RuntimeDiagnosticRecord[]>([]);

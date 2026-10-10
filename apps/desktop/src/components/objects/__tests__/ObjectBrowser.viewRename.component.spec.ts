@@ -88,9 +88,10 @@ afterEach(() => {
 });
 
 async function openRename(objectType: "VIEW" | "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE_BODY" = "VIEW", cleanup = false) {
-  if (objectType === "VIEW") vi.mocked(api.getObjectSource).mockResolvedValue({ source: "CREATE VIEW old_view AS SELECT 2", editable: true } as any);
   vi.mocked(api.listObjects).mockResolvedValue([{ name: "Old View", schema: "APP", object_type: objectType }]);
-  vi.mocked(api.getObjectSource).mockResolvedValue({ source: objectType === "VIEW" ? "CREATE VIEW old_view AS SELECT 2" : 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true });
+  if (objectType !== "PACKAGE" && objectType !== "PACKAGE_BODY") {
+    vi.mocked(api.getObjectSource).mockResolvedValue({ source: objectType === "VIEW" ? "CREATE VIEW old_view AS SELECT 2" : 'CREATE PROCEDURE "APP"."Old View" AS BEGIN NULL; END;', editable: true });
+  }
   const pinia = createPinia();
   setActivePinia(pinia);
   const connections = useConnectionStore();

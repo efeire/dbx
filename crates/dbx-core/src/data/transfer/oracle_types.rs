@@ -62,16 +62,17 @@ pub(super) async fn map_table_type_references(
 }
 
 fn compatible_source(sql: &str, kind: TransferObjectKind, details: &OracleTypeDetails) -> Result<(), String> {
-    let dependencies = details.dependencies.rows.iter().map(|dependency| db::RoutineDependency {
-        owner: dependency.referenced_schema.clone().unwrap_or_default(),
-        name: dependency.referenced_name.clone(),
-        object_type: dependency.referenced_type.clone(),
-    }).collect::<Vec<_>>();
-    dbx_sql::oracle_program_compatibility::compatible_type_source(
-        sql,
-        dictionary_kind(kind),
-        &dependencies,
-    )
+    let dependencies = details
+        .dependencies
+        .rows
+        .iter()
+        .map(|dependency| db::RoutineDependency {
+            owner: dependency.referenced_schema.clone().unwrap_or_default(),
+            name: dependency.referenced_name.clone(),
+            object_type: dependency.referenced_type.clone(),
+        })
+        .collect::<Vec<_>>();
+    dbx_sql::oracle_program_compatibility::compatible_type_source(sql, dictionary_kind(kind), &dependencies)
 }
 fn source_kind(kind: TransferObjectKind) -> db::ObjectSourceKind {
     if kind == TransferObjectKind::TypeBody {
