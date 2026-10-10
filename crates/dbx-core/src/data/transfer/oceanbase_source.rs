@@ -388,7 +388,7 @@ mod tests {
         ] {
             assert_ne!(definition_tokens(&original).unwrap(), definition_tokens(&[changed.into()]).unwrap());
         }
-        let enabled =
+        let enabled: Vec<String> =
             vec!["CREATE TRIGGER T BEFORE INSERT ON A BEGIN NULL; END;".into(), "ALTER TRIGGER T ENABLE;".into()];
         let disabled = vec![enabled[0].clone(), "ALTER TRIGGER T DISABLE;".into()];
         assert_ne!(definition_tokens(&enabled).unwrap(), definition_tokens(&disabled).unwrap());
