@@ -57,7 +57,7 @@ function mountGrid() {
   const pinia = createPinia();
   setActivePinia(pinia);
   useSettingsStore().updateEditorSettings({ dataGridRenderMode: "canvas", infiniteScroll: false });
-  const result = (rows: unknown[][]): QueryResult => markRaw({ columns: ["LABEL", "__DBX_PK_0"], rows, affected_rows: 0, execution_time_ms: 1 });
+  const result = (rows: QueryResult["rows"]): QueryResult => markRaw({ columns: ["LABEL", "__DBX_PK_0"], rows, affected_rows: 0, execution_time_ms: 1 });
   const state = reactive({ result: result([["same", "ROW-22"]]) });
   const reload = vi.fn();
   const host = document.createElement("div");
