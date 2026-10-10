@@ -130,7 +130,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             return result;
         } catch (RuntimeException error) {
             lobValues.clear();
-            throw error;
+            throw permissionExecutionError(error);
         } finally {
             deferCharacterLobs = false;
         }
@@ -152,10 +152,33 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             return result;
         } catch (RuntimeException error) {
             lobValues.clear();
-            throw error;
+            throw permissionExecutionError(error);
         } finally {
             deferCharacterLobs = false;
         }
+    }
+
+    private RuntimeException permissionExecutionError(RuntimeException error) {
+        SQLException permission = null;
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            // Mixed failures can include reset/network errors; keep their original classification.
+            if (current.getSuppressed().length != 0) return error;
+            if (current instanceof SQLException sqlError) {
+                boolean expectedWrapper = permission == null
+                    ? sqlError instanceof java.sql.SQLTransientConnectionException
+                    : sqlError.getClass() == SQLException.class
+                        || sqlError.getClass() == com.oceanbase.jdbc.internal.util.exceptions.OceanBaseSqlException.class;
+                if (sqlError.getNextException() != null || !expectedWrapper
+                    || !"HY000".equals(sqlError.getSQLState()) || sqlError.getErrorCode() != 1031
+                    || sqlError.getMessage() == null || !sqlError.getMessage().contains("ORA-01031:")) {
+                    return error;
+                }
+                permission = sqlError;
+            }
+        }
+        // The OB driver wraps this confirmed server permission error as a connection exception.
+        // Change the diagnostic category only; quarantine and the unknown outcome remain intact.
+        return permission == null ? error : sqlExecutionErrorPreservingDisposition(error);
     }
 
     @Override

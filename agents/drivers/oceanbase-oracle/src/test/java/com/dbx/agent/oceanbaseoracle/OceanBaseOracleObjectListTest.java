@@ -125,19 +125,20 @@ class OceanBaseOracleObjectListTest {
     @Test
     void packageGroupRetainsSameNameSpecAndBodyWithDistinctProtocolTypes() {
         JdbcFixture jdbc = new JdbcFixture();
-        JdbcCall call = jdbc.rows(objectRow("Pkg.With\"Quote", "PACKAGE"), objectRow("Pkg.With\"Quote", "PACKAGE BODY"));
+        JdbcCall call = jdbc.rows(row("Pkg.With\"Quote", "PACKAGE", null, "VALID"),
+            row("Pkg.With\"Quote", "PACKAGE BODY", null, "INVALID"));
 
         List<ObjectInfo> objects = jdbc.agent.listObjects("Mixed.Owner\"Name",
             constraints(null, null, null, " package_body ", "package", "PACKAGE BODY"));
 
         assertEquals(List.of("Mixed.Owner\"Name", "PACKAGE", "PACKAGE BODY"), call.args);
         assertEquals(List.of(
-            new ObjectInfo("Pkg.With\"Quote", "PACKAGE", "Mixed.Owner\"Name", null),
-            new ObjectInfo("Pkg.With\"Quote", "PACKAGE_BODY", "Mixed.Owner\"Name", null)
+            new ObjectInfo("Pkg.With\"Quote", "PACKAGE", "Mixed.Owner\"Name", null, true),
+            new ObjectInfo("Pkg.With\"Quote", "PACKAGE_BODY", "Mixed.Owner\"Name", null, false)
         ), objects);
         assertNotEquals(objects.get(0), objects.get(1));
         assertFalse(call.sql.contains("Mixed.Owner"), call.sql);
-        assertTrue(call.sql.contains("STATUS"), call.sql);
+        assertTrue(call.sql.contains("o.STATUS"), call.sql);
         call.assertClosed();
     }
 
