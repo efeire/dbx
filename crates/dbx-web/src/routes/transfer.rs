@@ -496,6 +496,7 @@ pub async fn start_transfer(
                     status: TransferStatus::Error,
                     error: Some(e),
                     terminal: true,
+                    object_result: None,
                 };
                 send_transfer_progress(&progress_channel, &progress);
                 finish_transfer_channel(&state_clone, &req.transfer_id, &progress_channel).await;
@@ -945,6 +946,31 @@ mod tests {
     use dbx_core::transfer::{
         TransferContent, TransferMode, TransferOwnershipPolicy, TransferRequest, TransferTableNameCase,
     };
+
+    #[test]
+    fn aggregate_overwrite_failure_serializes_without_an_object_result() {
+        let channel = TransferProgressChannel::new();
+        let progress = transfer::TransferProgress {
+            transfer_id: "overwrite-test".into(),
+            table: "overwrite pre-pass".into(),
+            table_index: 0,
+            total_tables: 2,
+            rows_transferred: 37,
+            total_rows: None,
+            status: TransferStatus::Error,
+            error: Some("Overwrite clearing failed".into()),
+            terminal: true,
+            object_result: None,
+        };
+        send_transfer_progress(&channel, &progress);
+        let payload: serde_json::Value = serde_json::from_str(&channel.latest().unwrap()).unwrap();
+        assert!(payload.get("objectResult").is_none());
+        assert_eq!(payload["status"], "error");
+        assert_eq!(payload["error"], "Overwrite clearing failed");
+        assert_eq!(payload["terminal"], true);
+        assert_eq!(payload["table"], "overwrite pre-pass");
+        assert_eq!(payload["rowsTransferred"], 37);
+    }
 
     fn sqlite_config(id: &str, path: &str) -> ConnectionConfig {
         ConnectionConfig {
