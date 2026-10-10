@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { createApp, defineComponent, h, nextTick, type App } from "vue";
+import { createApp, defineComponent, h, nextTick, ref, type App } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -98,7 +98,8 @@ async function openRename() {
   queries.updateSql(sourceId, "CREATE VIEW old_view AS SELECT 2");
   const container = document.createElement("div");
   document.body.append(container);
-  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection, database: "APP" }) });
+  const database = ref("APP");
+  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection, database: database.value }) });
   app.use(pinia);
   app.use(i18n);
   app.mount(container);
@@ -120,10 +121,20 @@ async function openRename() {
   button.click();
   const safety = useProductionSafetyStore();
   await vi.waitFor(() => expect(safety.pending).toBeDefined());
-  return { container, queries, sourceId, safety, refresh };
+  return { container, queries, sourceId, safety, refresh, database };
 }
 
 describe("ObjectBrowser OceanBase view rename", () => {
+  it("cancels a confirmed rename after the browser database changes", async () => {
+    const { safety, database } = await openRename();
+    database.value = "OTHER_DATABASE";
+    await nextTick();
+    safety.confirm();
+    await vi.waitFor(() => expect(safety.pending).toBeUndefined());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(api.executeQuery).not.toHaveBeenCalled();
+  });
+
   it("does not mutate or detach source when confirmation is cancelled", async () => {
     const { queries, sourceId, safety, refresh } = await openRename();
     safety.cancel();
