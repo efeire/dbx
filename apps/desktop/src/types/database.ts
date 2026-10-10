@@ -1197,6 +1197,8 @@ export interface ForeignKeyInfo {
 
 export interface TriggerInfo {
   name: string;
+  /** Catalog-reported trigger owner, independent of the parent table schema. */
+  owner?: string | null;
   event: string;
   timing: string;
   level?: string | null;
