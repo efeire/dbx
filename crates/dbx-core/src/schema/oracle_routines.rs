@@ -12,6 +12,12 @@ fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+fn incoming_dependencies_sql(schema: &str, name: &str, kind: &str) -> String {
+    // A comparison can export DROP statements without the interactive preflight.
+    // ALL_DEPENDENCIES cannot prove that callers outside the account are absent.
+    format!("SELECT OWNER, NAME, TYPE FROM DBA_DEPENDENCIES WHERE REFERENCED_OWNER = {} AND REFERENCED_NAME = {} AND REFERENCED_TYPE = {} ORDER BY OWNER, NAME, TYPE", literal(schema), literal(name), literal(kind))
+}
+
 async fn dictionary_query(
     state: &AppState,
     connection: &str,
@@ -779,7 +785,9 @@ pub(super) async fn list_routines(
             .map_err(|error| format!("Cannot read {schema}.{name} ({kind}): {error}"))?;
         let dependencies = dictionary_query(state, connection, database, schema, &format!("SELECT REFERENCED_OWNER, REFERENCED_NAME, REFERENCED_TYPE FROM ALL_DEPENDENCIES WHERE OWNER = {} AND NAME = {} AND TYPE = {} ORDER BY REFERENCED_OWNER, REFERENCED_NAME, REFERENCED_TYPE", literal(schema), literal(&name), literal(&kind))).await?;
         let dependency_objects = dependency_rows(&dependencies.rows)?;
-        let incoming = dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, NAME, TYPE FROM ALL_DEPENDENCIES WHERE REFERENCED_OWNER = {} AND REFERENCED_NAME = {} AND REFERENCED_TYPE = {} ORDER BY OWNER, NAME, TYPE", literal(schema), literal(&name), literal(&kind))).await?;
+        let incoming =
+            dictionary_query(state, connection, database, schema, &incoming_dependencies_sql(schema, &name, &kind))
+                .await?;
         let paired_kind = match kind.as_str() {
             "PACKAGE" => Some("PACKAGE BODY"),
             "PACKAGE BODY" => Some("PACKAGE"),
@@ -835,7 +843,14 @@ pub(super) async fn list_routines(
         )
         .await?;
         let definition = source(state, connection, database, schema, &object.name, kind).await?;
-        let incoming = dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, NAME, TYPE FROM ALL_DEPENDENCIES WHERE REFERENCED_OWNER = {} AND REFERENCED_NAME = {} AND REFERENCED_TYPE = {} ORDER BY OWNER, NAME, TYPE", literal(schema), literal(&object.name), literal(kind))).await?;
+        let incoming = dictionary_query(
+            state,
+            connection,
+            database,
+            schema,
+            &incoming_dependencies_sql(schema, &object.name, kind),
+        )
+        .await?;
         let incoming_dependencies = dependency_rows(&incoming.rows)?;
         let columns = if kind == "TYPE" {
             dictionary_query(state, connection, database, schema, &format!("SELECT OWNER, TABLE_NAME, COLUMN_NAME FROM ALL_TAB_COLUMNS WHERE DATA_TYPE_OWNER = {} AND DATA_TYPE = {} ORDER BY OWNER, TABLE_NAME, COLUMN_ID", literal(schema), literal(&object.name))).await?.rows
@@ -1135,6 +1150,31 @@ fn ensure_selected_callers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn incoming_inventory_includes_callers_hidden_from_all_dependencies() {
+        // Model catalog visibility at the SQL boundary, not Oracle engine behavior.
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE ALL_DEPENDENCIES (OWNER TEXT, NAME TEXT, TYPE TEXT, REFERENCED_OWNER TEXT, REFERENCED_NAME TEXT, REFERENCED_TYPE TEXT);
+            CREATE TABLE DBA_DEPENDENCIES AS SELECT * FROM ALL_DEPENDENCIES;
+            INSERT INTO DBA_DEPENDENCIES VALUES ('OTHER', 'CALLER', 'PROCEDURE', 'APP', 'P', 'PACKAGE');
+            INSERT INTO DBA_DEPENDENCIES VALUES ('OTHER', 'UNRELATED', 'PROCEDURE', 'APP', 'P', 'TYPE');").unwrap();
+        let sql = incoming_dependencies_sql("APP", "P", "PACKAGE");
+        let mut query = db.prepare(&sql).unwrap();
+        let callers = query
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(callers, vec![("OTHER".into(), "CALLER".into(), "PROCEDURE".into())]);
+    }
+
+    #[test]
+    fn incoming_inventory_does_not_fall_back_to_an_incomplete_catalog() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE ALL_DEPENDENCIES (OWNER TEXT, NAME TEXT, TYPE TEXT, REFERENCED_OWNER TEXT, REFERENCED_NAME TEXT, REFERENCED_TYPE TEXT);").unwrap();
+        assert!(db.prepare(&incoming_dependencies_sql("APP", "P", "PACKAGE")).is_err());
+    }
+
     #[test]
     fn complete_ob_dictionary_rows_preserve_body_and_reject_missing_identity_lines_or_multiple_statements() {
         let text = "FUNCTION \"F Mixed\" RETURN NUMBER IS BEGIN RETURN 42; END";

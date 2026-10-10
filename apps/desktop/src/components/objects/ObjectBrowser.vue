@@ -448,7 +448,7 @@ const sourceDialect = computed(() => codeMirrorSqlDialect(effectiveDatabaseType.
 const sourceFormatDialect = computed<SqlFormatDialect>(() => sqlFormatDialectForDbType(effectiveDatabaseType.value));
 const objectFilters = computed<ObjectFilter[]>(() =>
   usesServerObjectPaging.value
-    ? ["all", "tables", "views", "procedures", "functions", "sequences", "packages"]
+    ? ["all", "tables", "views", "procedures", "functions", "sequences", "packages", "types"]
     : (
         [
           ["all", objectCounts.value.all],

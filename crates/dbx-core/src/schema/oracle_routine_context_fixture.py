@@ -30,6 +30,8 @@ for line in sys.stdin:
             rows = [[mode.get('editions', 'N')]]
         elif 'EDITION_NAME' in sql:
             rows = [['TYPE', None], ['TYPE BODY', None]]
+        elif 'SELECT OBJECT_NAME, OBJECT_TYPE, STATUS FROM ALL_OBJECTS' in sql:
+            rows = mode.get('routine_objects', [])
         elif 'SELECT STATUS' in sql:
             status = mode.get(prefix + '_status', 'VALID' if source else None)
             if "OBJECT_TYPE = 'TYPE'" in sql and mode.get('target_spec_status', 'VALID') is not None and not source:
@@ -58,6 +60,8 @@ for line in sys.stdin:
     elif method == 'get_object_source':
         result = {'name': params['name'], 'schema': params.get('schema'), 'object_type': params['object_type'],
                   'source': mode.get('routine_source', 'CREATE OR REPLACE PACKAGE P AS PROCEDURE RUN; END;')}
+    elif method == 'list_objects':
+        result = []
     response = {'jsonrpc': '2.0', 'id': request['id']}
     response.update({'error': error} if error else {'result': result})
     print(json.dumps(response), flush=True)

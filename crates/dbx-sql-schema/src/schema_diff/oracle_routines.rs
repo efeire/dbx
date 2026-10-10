@@ -115,12 +115,62 @@ fn definition_without_client_delimiter(definition: &str) -> &str {
 fn disabled_trigger_source(definition: &str) -> Result<String, String> {
     let (_, header_end) = header(definition).ok_or("The trigger declaration is incomplete")?;
     let tokens = compatibility::source_tokens(&definition[header_end..]);
-    let (from, to, word) = tokens
-        .iter()
-        .find(|(_, _, word)| {
-            matches!(word.as_str(), "ENABLE" | "DISABLE" | "WHEN" | "DECLARE" | "BEGIN" | "COMPOUND" | "CALL")
-        })
-        .ok_or("The trigger body boundary could not be confirmed for disabled creation")?;
+    let error = "The trigger body boundary could not be confirmed for disabled creation";
+    let word = |index: usize| tokens.get(index).map(|token| token.2.as_str());
+    let identifier = Regex::new(r#"^(?:"(?:[^"]|"")*"|[\p{L}_][\p{L}\p{N}_$#]*)$"#).unwrap();
+    let consume_name = |index: &mut usize| -> Result<(), String> {
+        if !word(*index).is_some_and(|name| identifier.is_match(name)) {
+            return Err(error.into());
+        }
+        *index += 1;
+        if word(*index) == Some(".") {
+            *index += 1;
+            if !word(*index).is_some_and(|name| identifier.is_match(name)) {
+                return Err(error.into());
+            }
+            *index += 1;
+        }
+        Ok(())
+    };
+    // UPDATE OF column names precede ON; a state word there is an identifier.
+    let mut index = tokens.iter().position(|token| token.2 == "ON").ok_or(error)? + 1;
+    if word(index) == Some("NESTED") && word(index + 1) == Some("TABLE") {
+        index += 2;
+        consume_name(&mut index)?;
+        if word(index) != Some("OF") {
+            return Err(error.into());
+        }
+        index += 1;
+    }
+    consume_name(&mut index)?;
+    if word(index) == Some("REFERENCING") {
+        index += 1;
+        while matches!(word(index), Some("OLD" | "NEW" | "PARENT")) {
+            index += 1;
+            if word(index) == Some("AS") {
+                index += 1;
+            }
+            consume_name(&mut index)?;
+        }
+    }
+    if word(index) == Some("FOR") && word(index + 1) == Some("EACH") && word(index + 2) == Some("ROW") {
+        index += 3;
+    }
+    if matches!(word(index), Some("FORWARD" | "REVERSE")) && word(index + 1) == Some("CROSSEDITION") {
+        index += 2;
+    }
+    if matches!(word(index), Some("FOLLOWS" | "PRECEDES")) {
+        index += 1;
+        consume_name(&mut index)?;
+        while word(index) == Some(",") {
+            index += 1;
+            consume_name(&mut index)?;
+        }
+    }
+    let (from, to, word) = tokens.get(index).ok_or(error)?;
+    if !matches!(word.as_str(), "ENABLE" | "DISABLE" | "WHEN" | "DECLARE" | "BEGIN" | "COMPOUND" | "CALL") {
+        return Err(error.into());
+    }
     let from = header_end + from;
     if matches!(word.as_str(), "ENABLE" | "DISABLE") {
         Ok(format!("{}DISABLE{}", &definition[..from], &definition[header_end + to..]))
@@ -602,6 +652,23 @@ mod tests {
         assert_eq!(disabled, body.replacen("ROW ENABLE WHEN", "ROW DISABLE WHEN", 1));
         assert_eq!(disabled_trigger_source(&disabled).unwrap(), disabled);
         assert!(disabled_trigger_source("CREATE TRIGGER T BEFORE INSERT ON T").is_err());
+    }
+    #[test]
+    fn disabled_creation_preserves_state_words_used_as_header_identifiers() {
+        for declaration in [
+            "BEFORE UPDATE OF ENABLE, DISABLE ON T FOR EACH ROW",
+            "BEFORE INSERT ON ENABLE",
+            "BEFORE INSERT ON APP.DISABLE FOR EACH ROW",
+            "BEFORE INSERT ON T REFERENCING NEW AS ENABLE OLD AS DISABLE FOR EACH ROW",
+            "BEFORE INSERT ON T FOLLOWS ENABLE, APP.DISABLE",
+        ] {
+            let source = format!("CREATE TRIGGER TR {declaration} BEGIN NULL; END;");
+            let expected = format!("CREATE TRIGGER TR {declaration} DISABLE BEGIN NULL; END;");
+            assert_eq!(disabled_trigger_source(&source).unwrap(), expected, "{declaration}");
+            assert_eq!(disabled_trigger_source(&expected).unwrap(), expected);
+            let enabled = format!("CREATE TRIGGER TR {declaration} ENABLE BEGIN NULL; END;");
+            assert_eq!(disabled_trigger_source(&enabled).unwrap(), expected);
+        }
     }
     #[test]
     fn rewrites_only_the_declaration_and_preserves_literal_and_comment_spacing() {

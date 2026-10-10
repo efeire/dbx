@@ -106,6 +106,46 @@ const SPEC: &str = "CREATE OR REPLACE TYPE T AS OBJECT (N NUMBER);";
 const BODY_SPEC: &str = "CREATE OR REPLACE TYPE T AS OBJECT (N NUMBER, MEMBER FUNCTION F RETURN NUMBER);";
 const BODY: &str = "CREATE OR REPLACE TYPE BODY T AS MEMBER FUNCTION F RETURN NUMBER IS BEGIN RETURN 1; END; END;";
 
+#[tokio::test]
+async fn routine_comparison_keeps_globally_visible_callers_in_the_drop_plan() {
+    for (connection, schema, database_type) in
+        [("source", "SRC", DatabaseType::Oracle), ("target", "DST", DatabaseType::OceanbaseOracle)]
+    {
+        let fixture = Fixture::new(json!({
+            "routine_objects":[["P", "PACKAGE", "VALID"]], "target_status":"VALID",
+            "incoming":[["OTHER", "CALLER", "PROCEDURE"]]
+        }))
+        .await;
+        let objects = list_routines(&fixture.state, connection, "configured", schema).await.unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].incoming_dependencies.len(), 1);
+        assert_eq!(objects[0].incoming_dependencies[0].owner, "OTHER");
+        let options = serde_json::from_value(json!({
+            "sourceDatabaseType":database_type, "databaseType":database_type,
+            "sourceSchema":schema, "targetSchema":schema,
+            "sourceFunctions":[], "targetFunctions":objects
+        }))
+        .unwrap();
+        let plan = crate::schema_diff::prepare_schema_diff(options);
+        assert_eq!(plan.routine_steps.len(), 1);
+        assert!(plan.routine_steps[0].sql.is_none());
+        assert!(plan.routine_steps[0].blocked_reason.is_some());
+        fixture.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn routine_comparison_rejects_unavailable_or_partial_incoming_inventory() {
+    for fault in ["fail_contains", "truncate_contains", "more_contains"] {
+        let mut mode = json!({"routine_objects":[["P", "PACKAGE", "VALID"]], "target_status":"VALID"});
+        mode[fault] = json!("DBA_DEPENDENCIES");
+        let fixture = Fixture::new(mode).await;
+        let error = list_routines(&fixture.state, "target", "configured", "DST").await.unwrap_err();
+        assert!(error.contains("ORA-01031") || error.contains("incomplete"), "{error}");
+        fixture.shutdown().await;
+    }
+}
+
 async fn prepare(
     fixture: &Fixture,
     info: db::FunctionInfo,

@@ -122,6 +122,21 @@ describe("OceanBase Oracle object pagination (#11418)", () => {
     await mountBrowser(null);
     expect(mocks.listObjects).toHaveBeenCalledWith(connection.id, "APP", "APP", ["TABLE"], undefined, 3, 0, undefined);
   });
+  it("offers the types filter before any types are loaded and requests both specifications and bodies", async () => {
+    mocks.listObjects.mockResolvedValueOnce([object("FIRST_TABLE")]).mockResolvedValue([
+      { ...object("CUSTOM_TYPE"), object_type: "TYPE" },
+      { ...object("CUSTOM_TYPE_BODY"), object_type: "TYPE_BODY" },
+    ]);
+    const { host } = await mountBrowser();
+    const types = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.trim() === "tree.types");
+    expect(types).toBeDefined();
+    types!.click();
+    await vi.waitFor(() => expect(mocks.listObjects).toHaveBeenCalledTimes(2));
+    expect(mocks.listObjects).toHaveBeenLastCalledWith(connection.id, "APP", "APP", ["TYPE", "TYPE_BODY"], undefined, 3, 0, undefined);
+    await vi.waitFor(() => expect(host.querySelector('[title="CUSTOM_TYPE"]')).not.toBeNull());
+    expect(host.querySelector('[title="CUSTOM_TYPE_BODY"]')).not.toBeNull();
+    expect(host.querySelector('[title="FIRST_TABLE"]')).toBeNull();
+  });
   it("requests bounded pages and appends in server order without displaying the lookahead row", async () => {
     mocks.listObjects.mockResolvedValueOnce([object("O11418_10"), object("O11418_2"), object("O11418_3")]).mockResolvedValueOnce([object("O11418_3")]);
     const { host } = await mountBrowser();
