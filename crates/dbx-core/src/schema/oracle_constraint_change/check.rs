@@ -279,6 +279,17 @@ async fn preview_check(session: &impl ConstraintSession, change: &CheckChange) -
     // Reject boundary escapes before sending any expression to the database.
     if let Some(desired) = &change.desired {
         check_sql(session.engine(), change, desired)?;
+        let name_identifier = identifier(&desired.name)?;
+        let name_probe = match session.engine() {
+            Engine::OceanBaseOracle => format!("SELECT LENGTHB({}) FROM DUAL", literal(&desired.name)),
+            Engine::Oracle => format!("SELECT 1 AS {name_identifier} FROM DUAL"),
+        };
+        let name_length = count(session, &name_probe)
+            .await
+            .map_err(|error| format!("Cannot confirm a valid constraint name; no DDL was executed. {error}"))?;
+        if session.engine() == Engine::OceanBaseOracle && name_length > 128 {
+            return Err("The constraint name exceeds OceanBase Oracle's 128-byte limit; no DDL was executed.".into());
+        }
     }
     let stamp = require_table(session, &change.schema, &change.table_name).await?;
     let identity = read(session, "SELECT USER FROM DUAL").await?;

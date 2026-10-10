@@ -13,6 +13,8 @@ struct Fixture {
     readback_error: bool,
     privilege: bool,
     nonnullable: bool,
+    name_error: Option<String>,
+    name_bytes: u64,
 }
 struct Session {
     engine: Engine,
@@ -56,6 +58,8 @@ fn session(engine: Engine, request: &CheckChange) -> Session {
             readback_error: false,
             privilege: true,
             nonnullable: false,
+            name_error: None,
+            name_bytes: 20,
         }),
     }
 }
@@ -67,6 +71,16 @@ impl ConstraintSession for Session {
     async fn query(&self, sql: &str) -> Result<db::QueryResult, String> {
         let mut fixture = self.fixture.lock().unwrap();
         fixture.queries.push(sql.into());
+        if sql.starts_with("SELECT LENGTHB(") || sql.starts_with("SELECT 1 AS ") {
+            if let Some(error) = &fixture.name_error {
+                return Err(error.clone());
+            }
+            return Ok(rows(vec![vec![json!(if self.engine == Engine::OceanBaseOracle {
+                fixture.name_bytes
+            } else {
+                1
+            })]]));
+        }
         if sql.starts_with("SELECT CONSTRAINT_NAME,SEARCH_CONDITION") {
             if fixture.readback_error && !fixture.writes.is_empty() {
                 return Err("dictionary unavailable".into());
@@ -151,6 +165,61 @@ fn expression_boundary_preserves_strings_comments_q_literals_and_rejects_stateme
         "",
     ] {
         assert!(expression_boundary(expression).is_err(), "{expression}");
+    }
+}
+
+#[tokio::test]
+async fn valid_names_use_server_encoding_and_preserve_identifier_quoting() {
+    for (engine, name, name_bytes) in [
+        (Engine::OceanBaseOracle, "X".repeat(128), 128),
+        (Engine::OceanBaseOracle, "汉".repeat(42), 126),
+        (Engine::Oracle, "é".repeat(128), 128),
+        (Engine::Oracle, "Quoted \"Name\"".into(), 13),
+    ] {
+        let mut request = request();
+        request.desired.as_mut().unwrap().name = name.clone();
+        let session = session(engine, &request);
+        session.fixture.lock().unwrap().name_bytes = name_bytes;
+        let plan = preview_check(&session, &request).await.unwrap();
+        assert_eq!(plan.statements.len(), 2);
+        assert!(plan.statements[1].contains(&identifier(&name).unwrap()));
+        let expected_probe = match engine {
+            Engine::OceanBaseOracle => format!("SELECT LENGTHB({}) FROM DUAL", literal(&name)),
+            Engine::Oracle => format!("SELECT 1 AS {} FROM DUAL", identifier(&name).unwrap()),
+        };
+        assert!(session.fixture.lock().unwrap().queries.contains(&expected_probe));
+        assert!(apply_check(&session, &request, &plan.revision).await.unwrap().success);
+    }
+}
+
+#[tokio::test]
+async fn invalid_or_unverifiable_name_never_drops_original_on_preview_or_apply() {
+    for (engine, unavailable) in [
+        (Engine::Oracle, false),
+        (Engine::OceanBaseOracle, false),
+        (Engine::Oracle, true),
+        (Engine::OceanBaseOracle, true),
+    ] {
+        let mut request = request();
+        request.desired.as_mut().unwrap().name = "长".repeat(50);
+        let session = session(engine, &request);
+        let plan = preview_check(&session, &request).await.unwrap();
+        {
+            let mut fixture = session.fixture.lock().unwrap();
+            fixture.name_bytes = 150;
+            fixture.name_error = if unavailable {
+                Some("name validation unavailable".into())
+            } else if engine == Engine::Oracle {
+                Some("ORA-00972: identifier is too long".into())
+            } else {
+                None
+            };
+        }
+        assert!(preview_check(&session, &request).await.is_err());
+        assert!(apply_check(&session, &request, &plan.revision).await.is_err());
+        let fixture = session.fixture.lock().unwrap();
+        assert!(fixture.writes.is_empty());
+        assert_eq!(fixture.current, Some(key()));
     }
 }
 
