@@ -1,7 +1,6 @@
 use super::{
     completion_assistant_search_core, get_table_comment_core, get_table_ddl_core, list_databases_core,
-    list_object_statistics_core, AppState,
-    ConnectionConfig, DatabaseType, PoolKind,
+    list_object_statistics_core, AppState, ConnectionConfig, DatabaseType, PoolKind,
 };
 use crate::db::agent_driver::{AgentDriverClient, PooledAgentClient};
 use serde_json::{json, Value};
