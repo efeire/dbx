@@ -204,8 +204,10 @@ interface CopyInsertData {
 
 export function useDataGridExport(options: UseDataGridExportOptions) {
   let activeSnapshotCancel: (() => Promise<void>) | undefined;
+  let scopeDisposed = false;
   if (getCurrentScope())
     onScopeDispose(() => {
+      scopeDisposed = true;
       void activeSnapshotCancel?.().catch(() => undefined);
     });
   const { t } = useI18n();
@@ -314,6 +316,37 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
       });
       return { ...item, data };
     });
+  }
+
+  async function materializeExportSnapshot(result: QueryResult, isResultCurrent: () => boolean): Promise<QueryResult["rows"]> {
+    if (!result.large_value_cells?.some((cell) => cell.value_ref)) return result.rows;
+    const originalConnectionId = connectionId.value;
+    const originalDatabase = database.value;
+    const isCurrent = () => !scopeDisposed && isResultCurrent() && connectionId.value === originalConnectionId && database.value === originalDatabase;
+    if (!isCurrent()) throw new Error("LOB result context changed");
+    const executionId = uuid();
+    const controller = new AbortController();
+    const cancel = async () => {
+      controller.abort(new Error("LOB export cancelled locally"));
+      await api.cancelQuery(executionId);
+    };
+    activeSnapshotCancel = cancel;
+    const previousCancel = exportCancelHandler?.value;
+    if (exportCancelHandler) exportCancelHandler.value = cancel;
+    const stop = watch(
+      isCurrent,
+      (current) => {
+        if (!current) void cancel().catch(() => undefined);
+      },
+      { flush: "sync" },
+    );
+    try {
+      return await materializeSnapshotResultRows(result, isCurrent, controller.signal, executionId);
+    } finally {
+      stop();
+      if (activeSnapshotCancel === cancel) activeSnapshotCancel = undefined;
+      if (exportCancelHandler?.value === cancel) exportCancelHandler.value = previousCancel ?? null;
+    }
   }
 
   function applyGlobalDateTimeExportFormat(result: { columns: string[]; columnTypes: string[]; rows: CellValue[][] }, enabled: boolean) {
@@ -536,7 +569,13 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     // change what the export contains.
     if (useFullExport && rowIds === undefined && hasCompleteLocalResult?.value && completeLocalResult?.value) {
       const original = completeLocalResult.value;
-      const rows = await materializeSnapshotResultRows(original, () => completeLocalResult.value === original);
+      const projected = hasColumnSubset || databaseType.value === "mongodb";
+      const hiddenIndexes = new Set(original.hidden_column_indexes ?? []);
+      const sourceIndexes = projected ? (projectionSourceIndexes ?? targetColumns.map((column) => original.columns.indexOf(column))) : original.columns.map((_, index) => index).filter((index) => !hiddenIndexes.has(index));
+      const settings = useSettingsStore().editorSettings;
+      const sourceRows = settings.exportRowLimitEnabled ? original.rows.slice(0, settings.exportRowLimit) : original.rows;
+      const selected = { ...original, rows: sourceRows, large_value_cells: original.large_value_cells?.filter((cell) => cell.row_index < sourceRows.length && sourceIndexes.includes(cell.column_index)) };
+      const rows = await materializeExportSnapshot(selected, () => completeLocalResult.value === original);
       const materialized = { ...original, rows };
       const normalized = hasColumnSubset || databaseType.value === "mongodb" ? normalizeCompleteLocalResult(materialized, targetColumns, projectionSourceIndexes) : normalizeCompleteLocalResult(materialized);
       const columnComments = buildXlsxHeaderOverrides(normalized.columns, normalized.columnComments, headerMode);
@@ -552,9 +591,9 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     }
     const targetComments = commentsForExportColumns(targetColumns, false);
     const commentHeader = buildXlsxHeaderOverrides(targetColumns, targetComments, headerMode);
-    const exportItems = await resolveVisibleRowValues(rowsToExport(rowIds));
     const visibleIndexes = visibleColumnIndexesOption?.value ?? columns.value.map((_, index) => index);
     const targetSourceIndexes = validColumnIndexes.map((targetIdx) => visibleIndexes[targetIdx] ?? targetIdx);
+    const exportItems = await resolveVisibleRowValues(rowsToExport(rowIds), targetSourceIndexes);
     const targetIndexBySource = new Map<number, number>();
     targetSourceIndexes.forEach((sourceIdx, targetIdx) => {
       targetIndexBySource.set(sourceIdx, targetIdx);
@@ -1492,7 +1531,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
         const worksheets = [];
         for (const sheet of sheets) {
           const sourceRows = sheet.result.rows;
-          const rows = await materializeSnapshotResultRows(sheet.result, () => sheet.result.rows === sourceRows);
+          const rows = await materializeExportSnapshot(sheet.result, () => sheet.result.rows === sourceRows && (sheetsToExport !== undefined || !!allExportResults?.value?.includes(sheet)));
           if (sheet.result.large_value_refs?.length || sheet.result.large_value_cells?.some((cell) => cell.value_ref)) assertSnapshotXlsxCellLengths(rows);
           worksheets.push({
             sheetName: sheet.sheetName,

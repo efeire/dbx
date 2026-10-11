@@ -8,7 +8,7 @@ import { copyToClipboard } from "@/lib/common/clipboard";
 import type { DataGridTableMeta } from "@/lib/dataGrid/dataGridSql";
 import type { CellSelectionMatrix, SelectionData } from "@/lib/dataGrid/gridSelection";
 import type { CellValue } from "@/lib/dataGrid/cellValue";
-import { cancelQuery, extractDataGridSelection, exportQueryResultCsv, exportQueryResultJson, exportQueryResultMarkdown, exportSnapshotResult, readLargeValueChunk } from "@/lib/backend/api";
+import { cancelQuery, extractDataGridSelection, exportQueryResultCsv, exportQueryResultJson, exportQueryResultMarkdown, exportQueryResultXlsx, exportSnapshotResult, readLargeValueChunk } from "@/lib/backend/api";
 import { DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS } from "@/lib/dataGrid/dataGridCopyExtractor";
 import { clearDataGridClipboardCopy, parseDataGridClipboard } from "@/lib/dataGrid/dataGridClipboard";
 import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridExternalValue } from "@/lib/mongo/mongoDocumentValues";
@@ -53,6 +53,7 @@ vi.mock("@/lib/backend/api", async (importOriginal) => {
     exportQueryResultCsv: vi.fn(),
     exportQueryResultJson: vi.fn(),
     exportQueryResultMarkdown: vi.fn(),
+    exportQueryResultXlsx: vi.fn(),
     exportSnapshotResult: vi.fn(),
     readLargeValueChunk: vi.fn(),
     cancelQuery: vi.fn(),
@@ -270,6 +271,81 @@ describe("original LOB result exports", () => {
     expect(exportQueryResultJson).not.toHaveBeenCalled();
     expect(original.rows[0]![1]).toBe("preview");
     expect(toast).toHaveBeenCalledWith(expect.stringContaining("LOB snapshot expired"), 5000);
+  });
+  it.each(["unselected column", "hidden column", "row beyond limit"])("does not read an expired LOB in an %s during bounded export", async (excluded) => {
+    const { original } = snapshotState();
+    if (excluded === "hidden column") original.hidden_column_indexes = [1];
+    if (excluded === "row beyond limit") {
+      original.rows = [
+        [1, "plain text"],
+        [2, "preview"],
+      ];
+      original.large_value_cells![0]!.row_index = 1;
+      useSettingsStore().editorSettings.exportRowLimitEnabled = true;
+      useSettingsStore().editorSettings.exportRowLimit = 1;
+    }
+    const state = createExportState(editableTable, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "oracle", undefined, {
+      context: computed(() => "results"),
+      snapshotResult: computed(() => original),
+      hasCompleteLocalResult: computed(() => true),
+      completeLocalResult: computed(() => original),
+    });
+    vi.mocked(readLargeValueChunk).mockRejectedValue(new Error("excluded LOB expired"));
+    await state.exportMarkdown(excluded === "unselected column" ? { columnIndexes: [0] } : undefined);
+    expect(exportQueryResultMarkdown).toHaveBeenCalledWith(expect.any(String), excluded === "row beyond limit" ? ["id", "name"] : ["id"], excluded === "row beyond limit" ? [[1, "plain text"]] : [[1]]);
+    expect(readLargeValueChunk).not.toHaveBeenCalled();
+  });
+  it("fails bounded export when the selected LOB snapshot has expired", async () => {
+    const { original } = snapshotState();
+    const state = createExportState(editableTable, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "oracle", undefined, {
+      context: computed(() => "results"),
+      snapshotResult: computed(() => original),
+      hasCompleteLocalResult: computed(() => true),
+      completeLocalResult: computed(() => original),
+    });
+    vi.mocked(readLargeValueChunk).mockRejectedValue(new Error("selected LOB expired"));
+    await state.exportMarkdown({ columnIndexes: [1] });
+    expect(readLargeValueChunk).toHaveBeenCalledWith(expect.objectContaining({ valueRef: "original-locator" }));
+    expect(exportQueryResultMarkdown).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("selected LOB expired"), 5000);
+  });
+  it.each(["replacement", "disposal"])("settles pending XLSX snapshot reads on %s even if server cancellation fails", async (change) => {
+    const scope = effectScope();
+    const { original } = snapshotState();
+    const current = ref(original);
+    const state = scope.run(() =>
+      createExportState(editableTable, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "oracle", undefined, {
+        context: computed(() => "results"),
+        snapshotResult: computed(() => current.value),
+        hasCompleteLocalResult: computed(() => true),
+        completeLocalResult: computed(() => current.value),
+      }),
+    )!;
+    let deliver!: (chunk: Awaited<ReturnType<typeof readLargeValueChunk>>) => void;
+    vi.mocked(readLargeValueChunk).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deliver = resolve;
+        }),
+    );
+    vi.mocked(cancelQuery).mockRejectedValueOnce(new Error("cancel unavailable"));
+    let settled = false;
+    const pending = state.exportXlsx().finally(() => {
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() => expect(readLargeValueChunk).toHaveBeenCalledOnce());
+      if (change === "replacement") current.value = { ...original, rows: [[2, "new result"]] };
+      else scope.stop();
+      await vi.waitFor(() => expect(settled).toBe(true));
+      expect(cancelQuery).toHaveBeenCalledWith(expect.any(String));
+      expect(vi.mocked(readLargeValueChunk).mock.calls[0]?.[0].executionId).toBe(vi.mocked(cancelQuery).mock.calls[0]?.[0]);
+    } finally {
+      deliver({ status: "ok", data: "late", next_offset: 4, eof: true, value_kind: "text" });
+      await pending;
+      scope.stop();
+    }
+    expect(exportQueryResultXlsx).not.toHaveBeenCalled();
   });
   it("materializes export-all for bounded formats rather than passing preview rows", async () => {
     const { original } = snapshotState();

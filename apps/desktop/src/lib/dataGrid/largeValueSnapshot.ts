@@ -70,7 +70,7 @@ export async function materializeLargeValueSnapshot(request: LargeValueRequest, 
   return (kind === "binary" ? "0x" : "") + chunks.join("");
 }
 
-export async function materializeSnapshotResultRows(result: QueryResult, isCurrent: () => boolean): Promise<QueryResult["rows"]> {
+export async function materializeSnapshotResultRows(result: QueryResult, isCurrent: () => boolean, signal?: AbortSignal, executionId?: string): Promise<QueryResult["rows"]> {
   const cells = result.large_value_cells ?? [];
   if (!cells.some((cell) => cell.value_ref)) return result.rows;
   const context = result.large_value_context;
@@ -79,7 +79,7 @@ export async function materializeSnapshotResultRows(result: QueryResult, isCurre
   let totalBytes = 0;
   for (const cell of cells) {
     if (!cell.value_ref) throw new Error("This result includes a value without a snapshot reference");
-    const value = await materializeLargeValueSnapshot({ ...context, valueRef: cell.value_ref }, isCurrent);
+    const value = await materializeLargeValueSnapshot({ ...context, valueRef: cell.value_ref, executionId }, isCurrent, signal);
     totalBytes += new TextEncoder().encode(value).length;
     if (totalBytes > 64 * 1024 * 1024) throw new Error("LOB result exceeds the 64 MiB export limit; download individual complete values");
     const row = rows[cell.row_index];
