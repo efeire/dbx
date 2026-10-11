@@ -1,6 +1,11 @@
 package com.dbx.agent.oceanbaseoracle;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import com.dbx.agent.ExecuteQueryOptions;
+import com.dbx.agent.QueryPageOptions;
+import com.dbx.agent.test.TestSupport;
 import static org.junit.jupiter.api.Assertions.*;
 import java.lang.reflect.Proxy;
 import java.sql.Clob;
@@ -14,6 +19,39 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 class OceanBaseLobValuesTest {
+    @ParameterizedTest
+    @CsvSource({"query,false", "query,true", "page,false", "page,true", "table,false", "table,true"})
+    void failedReadReleasesOnlyItsNewLocators(String entryPoint, boolean capturePartial) throws Exception {
+        OceanBaseLobValues values = new OceanBaseLobValues((connection, locator, offset, limit) -> chunk("x".repeat(1000), offset, limit));
+        Fixture old = new Fixture();
+        var retained = (OceanBaseLobValues.Preview) values.preview(old.resultSet, 1, Types.CLOB, "CLOB");
+        Fixture partial = new Fixture();
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        var field = OceanBaseOracleAgent.class.getDeclaredField("lobValues");
+        field.setAccessible(true);
+        field.set(agent, values);
+        TestSupport.setPrivateConnection(agent, proxy(Connection.class, (method, args) -> {
+            if (method.equals("isClosed")) return false;
+            if (method.equals("createStatement")) {
+                if (capturePartial) values.preview(partial.resultSet, 1, Types.CLOB, "CLOB");
+                throw new java.sql.SQLException("failed request", "42000");
+            }
+            return null;
+        }));
+        assertThrows(RuntimeException.class, () -> {
+            switch (entryPoint) {
+                case "query" -> agent.executeQuery("SELECT INVALID FROM DUAL", null, new ExecuteQueryOptions(10, null, 5));
+                case "page" -> agent.executeQueryPage("SELECT INVALID FROM DUAL", null, new QueryPageOptions(10, null, 10, 5));
+                default -> agent.startTableRead("SELECT INVALID FROM DUAL", null, new QueryPageOptions(10, null, 10, 5));
+            }
+        });
+        assertFalse(old.freed.get());
+        assertEquals(capturePartial, partial.freed.get());
+        assertEquals("ok", values.fetch(old.connection, retained.ref(), 0, 10).status());
+        agent.invalidateLargeValues();
+        assertTrue(old.freed.get());
+    }
+
     @Test
     void refusesNewLocatorsWhenRetainedPayloadBudgetIsFullAndRestoresCapacityOnRelease() throws Exception {
         OceanBaseLobValues values = new OceanBaseLobValues((connection, locator, offset, limit) -> chunk("x".repeat(1000), offset, limit), ignored -> 40L * 1024 * 1024);

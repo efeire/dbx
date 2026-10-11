@@ -135,6 +135,16 @@ final class OceanBaseLobValues {
         retainedByteCount = 0;
     }
 
+    synchronized java.util.Set<String> checkpoint() {
+        return java.util.Set.copyOf(entries.keySet());
+    }
+
+    synchronized void releaseSince(java.util.Set<String> checkpoint) {
+        for (String ref : List.copyOf(entries.keySet())) {
+            if (!checkpoint.contains(ref)) release(ref);
+        }
+    }
+
     private void prune() {
         long now = System.currentTimeMillis();
         Iterator<Entry> iterator = entries.values().iterator();

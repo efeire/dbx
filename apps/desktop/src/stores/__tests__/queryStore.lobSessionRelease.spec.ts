@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   closeClientConnectionSession: vi.fn(),
   cancelQuery: vi.fn(),
   disconnectDb: vi.fn(),
+  releaseLargeValue: vi.fn(),
 }));
 
 vi.mock("@/lib/backend/api", () => ({
@@ -37,6 +38,38 @@ describe("query Store LOB session release through public close and disconnect", 
     api.closeClientConnectionSession.mockResolvedValue(undefined);
     api.cancelQuery.mockResolvedValue(true);
     api.disconnectDb.mockResolvedValue(undefined);
+    api.releaseLargeValue.mockResolvedValue(true);
+  });
+
+  it("preserves locator ownership from hydrated earlier pages when appending", async () => {
+    const { appendQueryResultSegment } = await import("@/stores/queryStore");
+    const context = { connectionId: "ob-page", database: "SYS", clientSessionId: "original-session" };
+    const previous = { ...result("session"), large_value_context: context, large_value_refs: ["hydrated-old"], large_value_cells: [{ row_index: 0, column_index: 0, original_bytes: 5000, value_ref: "old-preview" }] };
+    const segment = { ...result("session"), large_value_refs: ["new"] };
+    const combined = appendQueryResultSegment(previous, segment, 100);
+    expect(combined.large_value_refs).toEqual(expect.arrayContaining(["hydrated-old", "old-preview", "new"]));
+    expect(combined.large_value_context).toEqual(context);
+  });
+
+  it.each([false, true])("releases discarded refs but retains captured results (capture=%s)", async (capture) => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const connections = useConnectionStore();
+    useSettingsStore().editorSettings.autoCalculateTotalRows = false;
+    connections.connections = [{ id: "ob-refresh", name: "OB", db_type: "oceanbase-oracle", database: "SYS", read_only: false } as ConnectionConfig];
+    connections.connectedIds.add("ob-refresh");
+    const store = useQueryStore();
+    const id = store.createTab("ob-refresh", "SYS", "LOB", "query", "APP");
+    const context = { connectionId: "ob-refresh", database: "SYS", clientSessionId: "old-client" };
+    api.executeMulti.mockResolvedValueOnce([{ ...result("old"), large_value_context: context, large_value_refs: ["old-ref"] }]).mockResolvedValueOnce([result("new")]);
+    await store.executeTabSql(id, "SELECT PAYLOAD FROM LOB_FIXTURE");
+    const tab = store.tabs.find((entry) => entry.id === id)!;
+    tab.resultAutoSave = capture;
+    await store.executeTabSql(id, "SELECT PAYLOAD FROM LOB_FIXTURE");
+    if (capture) expect(api.releaseLargeValue).not.toHaveBeenCalled();
+    else await vi.waitFor(() => expect(api.releaseLargeValue).toHaveBeenCalledWith(expect.objectContaining({ connectionId: "ob-refresh", database: "SYS", valueRef: "old-ref" })));
+    await store.flushPendingPersist();
   });
 
   it.each(["closeTab", "disconnect"] as const)("%s closes the original result and client sessions without touching another connection", async (action) => {

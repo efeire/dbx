@@ -383,6 +383,10 @@ export function appendQueryResultSegment(previous: QueryResult, segment: QueryRe
     spatial_columns: spatial_columns.length > 0 ? spatial_columns : undefined,
     spatial_values: appendParallelValues(previous.spatial_values, segment.spatial_values),
     large_value_cells: appendLargeValueCells(previous.large_value_cells, segment.large_value_cells, previous.rows.length, appendedRowCount),
+    large_value_context: segment.large_value_context ?? previous.large_value_context,
+    large_value_refs: [
+      ...new Set([...(previous.large_value_refs ?? []), ...(segment.large_value_refs ?? []), ...(previous.large_value_cells ?? []).flatMap((cell) => (cell.value_ref ? [cell.value_ref] : [])), ...(segment.large_value_cells ?? []).flatMap((cell) => (cell.value_ref ? [cell.value_ref] : []))]),
+    ],
     mongo_documents: appendParallelValues(previous.mongo_documents, segment.mongo_documents),
     mongo_copy_documents: appendParallelValues(previous.mongo_copy_documents, segment.mongo_copy_documents),
     execution_time_ms: (previous.execution_time_ms ?? 0) + (segment.execution_time_ms ?? 0),
@@ -7182,6 +7186,7 @@ export const useQueryStore = defineStore("query", () => {
     tab.resultTotalRowCountLoading = false;
     const previousResultSessionClose = closeResultSession(tab, options?.pagination?.sessionId);
     if (!preserveResultDuringExecution || !tab.result) {
+      if (!captureResultRun) void releaseResultLargeValues(tab.result, ...(tab.results ?? []));
       clearResultPayload(tab, { preserveCacheSnapshot: captureResultRun && pendingResultRunRestores.has(executionId) });
     }
     queryExecutionLog("info", "start", {

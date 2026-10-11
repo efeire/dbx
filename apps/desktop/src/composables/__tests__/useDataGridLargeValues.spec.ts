@@ -147,6 +147,17 @@ function previewResult(columnType = "bytea", value = "\\x00017f80ff...", origina
 }
 
 describe("useDataGridLargeValues", () => {
+  it("retains a hydrated locator for release even when the result has no ref array", async () => {
+    const result = previewResult("CLOB", "preview", 5000);
+    result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO" };
+    result.value.large_value_cells![0]!.value_ref = "old-page-locator";
+    mocks.readLargeValueChunk.mockResolvedValue({ status: "ok", data: "complete", next_offset: 8, eof: true, value_kind: "text" });
+    const { largeValues } = mountLargeValues("oceanbase-oracle", result);
+    expect(await largeValues.hydrateLargeValueCell(1, 1)).toBe(true);
+    expect(result.value.large_value_cells).toEqual([]);
+    expect(result.value.large_value_refs).toContain("old-page-locator");
+  });
+
   it.each(["read", "download", "save baseline"] as const)("ends a stalled %s on grid cleanup without accepting late success", async (operation) => {
     const result = previewResult("CLOB", "original preview", 5000);
     result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO" };

@@ -607,7 +607,8 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     if (!isLargeValuePreview(item, columnIndex) || item?.sourceIndex === undefined) return true;
     const sourceResult = options.result.value;
     const hydrationKey = largeValueCellKey(item.sourceIndex, columnIndex);
-    const ownsSnapshot = !!largeValueCellsByKey.value.get(hydrationKey)?.value_ref;
+    const valueRef = largeValueCellsByKey.value.get(hydrationKey)?.value_ref;
+    const ownsSnapshot = !!valueRef;
     const operation = options.resultLifecycle.beginOperation();
     return pendingLargeValueHydrations.run(hydrationKey, sourceResult, async () => {
       try {
@@ -625,6 +626,7 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
         }
         // Keep row identity so loading another LOB does not clear pending edits or undo history.
         sourceResult.rows[item.sourceIndex!]![columnIndex] = value ?? null;
+        if (valueRef) sourceResult.large_value_refs = [...new Set([...(sourceResult.large_value_refs ?? []), valueRef])];
         visibleLargeValuePreviewCaches.get(sourceResult)?.forget(item.sourceIndex!, columnIndex);
         sourceResult.large_value_cells = sourceResult.large_value_cells?.filter((cell) => cell.row_index !== item.sourceIndex || cell.column_index !== columnIndex);
         options.largeValueResolutionVersion.value += 1;

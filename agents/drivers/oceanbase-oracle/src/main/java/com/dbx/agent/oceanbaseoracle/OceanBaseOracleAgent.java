@@ -106,6 +106,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
 
     @Override
     public QueryResult executeQuery(String sql, String schema, ExecuteQueryOptions options) {
+        var lobCheckpoint = lobValues.checkpoint();
         try (QueryTiming timing = QueryTiming.begin()) {
             prepareLobExecution(sql, options.getDeferLobs());
             QueryResult result = super.executeQuery(sql, schema, options);
@@ -122,7 +123,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             result.setQuery_timings_ms(timing.finish());
             return result;
         } catch (RuntimeException error) {
-            lobValues.clear();
+            lobValues.releaseSince(lobCheckpoint);
             throw error;
         } finally {
             deferCharacterLobs = false;
@@ -131,6 +132,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
 
     @Override
     public QueryPageResult executeQueryPage(String sql, String schema, QueryPageOptions options) {
+        var lobCheckpoint = lobValues.checkpoint();
         try (QueryTiming timing = QueryTiming.begin()) {
             prepareLobExecution(sql, options.getDeferLobs());
             long prepareStarted = System.nanoTime();
@@ -144,7 +146,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             result.setQuery_timings_ms(timing.finish());
             return result;
         } catch (RuntimeException error) {
-            lobValues.clear();
+            lobValues.releaseSince(lobCheckpoint);
             throw error;
         } finally {
             deferCharacterLobs = false;
@@ -163,13 +165,14 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
 
     @Override
     public QueryPageResult startTableRead(String sql, String schema, QueryPageOptions options) {
+        var lobCheckpoint = lobValues.checkpoint();
         prepareLobExecution(sql, options.getDeferLobs());
         try {
             QueryPageResult result = super.startTableRead(sql, schema, options);
             markLobPage(result);
             return result;
         } catch (RuntimeException error) {
-            lobValues.clear();
+            lobValues.releaseSince(lobCheckpoint);
             throw error;
         } finally {
             deferCharacterLobs = false;
