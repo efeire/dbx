@@ -37,6 +37,8 @@ ON (t.id=s.id) WHEN MATCHED THEN UPDATE SET t.v=@value;
 
 ## 4. Oracle/OB Oracle 脚本切分错误
 
+共享 RPC 的 Transwarp 自定义事务另有回归：通过真实 `execute_transaction` dispatch 检查指定超时，在 `BEGIN TRANSACTION` 或首条写入阻塞期间取消，迟到成功后不得继续写入或 COMMIT，应尝试 ROLLBACK。使用 JDBC 边界夹具，修复前超时与取消两项失败，修复后通过，下一请求不继承取消状态。Transwarp 实库尚未验收。
+
 复现：将以下文本交给 `split_sql_statements_for_database`，基线会把字符串里的 `DELETE` 当成独立语句。
 
 ```sql

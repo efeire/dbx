@@ -64,6 +64,12 @@ public final class JdbcExecutor {
             nativeOperations.remove(this);
         }
     }
+    /** Apply the current RPC timeout to a native-driver statement. */
+    public void applyStatementTimeout(Statement statement) throws SQLException {
+        int timeoutSecs = AgentExecutionContext.statementTimeoutSecs();
+        if (timeoutSecs > 0) statement.setQueryTimeout(timeoutSecs);
+    }
+
     /** Register native-driver statements with this session's cancellation boundary. */
     public <S extends Statement> TrackedStatement<S> trackStatement(S statement) {
         java.util.Objects.requireNonNull(statement, "statement");
