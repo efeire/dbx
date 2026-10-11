@@ -528,6 +528,24 @@ class OceanBaseOracleAgentTest {
     }
 
     @Test
+    void sequenceOnlySearchUsesOceanBaseFilteringWithoutAddingFunctions() {
+        List<String> sql = new ArrayList<>();
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(sql, resultSet(
+            new String[]{"OWNER", "OBJECT_NAME", "OBJECT_TYPE"},
+            new Object[][]{{"APP", "ORDER_SEQ", "SEQUENCE"}}
+        )));
+        CompletionAssistantRequest request = completionRequest("APP", null, "ORDER", false);
+        setField(request, "object_kinds", List.of(CompletionAssistantObjectKind.SEQUENCE));
+        CompletionAssistantResponse response = agent.completionAssistantSearch(request);
+        Assertions.assertEquals(1, response.getCandidates().size());
+        Assertions.assertEquals(CompletionAssistantCandidateKind.SEQUENCE, response.getCandidates().get(0).getKind());
+        Assertions.assertTrue(sql.get(0).contains("OBJECT_TYPE IN ('SEQUENCE')"));
+        Assertions.assertFalse(sql.get(0).contains("'FUNCTION'"));
+        Assertions.assertFalse(response.getFallback_used());
+    }
+
+    @Test
     void routineSearchPreservesQuotedOwnersAndEscapesLiteralMasks() {
         List<String> sql = new ArrayList<>();
         List<String> params = new ArrayList<>();

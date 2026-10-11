@@ -3193,6 +3193,7 @@ export const useQueryStore = defineStore("query", () => {
       const { ddl } = await loadObjectDdl(
         {
           connectionId,
+          queryTimeoutSecs: connectionStore.getConfig(connectionId)?.query_timeout_secs,
           database,
           schema: ddlViewer.schema || database,
           tableName: ddlViewer.tableName,

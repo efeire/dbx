@@ -126,7 +126,7 @@ function invalidatePersistedPrefix(prefix: string): Promise<void> {
 export async function loadObjectMetadataFacet<T>(request: ObjectDdlRequest, facet: ObjectMetadataFacet, loader: () => Promise<T>, options?: { force?: boolean }): Promise<{ value: T; cacheStatus: "memory" | "disk" | "remote" }> {
   const token = activeLoads.begin(facetKey(request, facet));
   try {
-    return await waitForMetadata(loadObjectMetadataFacetInternal(request, facet, loader, token.controller.signal, options), metadataLoadBudgetMs(), token.controller.signal);
+    return await waitForMetadata(loadObjectMetadataFacetInternal(request, facet, loader, token.controller.signal, options), metadataLoadBudgetMs(request.queryTimeoutSecs), token.controller.signal);
   } catch (error) {
     token.controller.abort(error);
     throw error;
@@ -158,7 +158,7 @@ async function loadObjectMetadataFacetInternal<T>(request: ObjectDdlRequest, fac
     const readToken = activeCacheReads.begin(cacheKey);
     let cached: ReturnType<typeof decodeEnvelope<T>>;
     try {
-      cached = decodeEnvelope<T>(await waitForMetadata(loadSchemaCacheSafe<unknown>(cacheKey), metadataLoadBudgetMs(), signal));
+      cached = decodeEnvelope<T>(await waitForMetadata(loadSchemaCacheSafe<unknown>(cacheKey), metadataLoadBudgetMs(request.queryTimeoutSecs), signal));
     } finally {
       activeCacheReads.finish(readToken);
     }
@@ -201,7 +201,7 @@ async function loadObjectMetadataFacetInternal<T>(request: ObjectDdlRequest, fac
       }
       return value;
     }),
-    metadataLoadBudgetMs(),
+    metadataLoadBudgetMs(request.queryTimeoutSecs),
     signal,
   ).finally(() => {
     signal.removeEventListener("abort", cancel);

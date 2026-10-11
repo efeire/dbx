@@ -69,6 +69,7 @@ const mountedApps: Array<{ app: App; host: HTMLElement }> = [];
 beforeEach(() => {
   vi.clearAllMocks();
   connection.db_type = "oceanbase-oracle";
+  connection.query_timeout_secs = undefined;
   mocks.getTableComment.mockReset().mockResolvedValue(null);
   mocks.getTablePartitionStatus.mockReset().mockResolvedValue({ isPartitionedParent: true, isPartition: false });
   mocks.getTablePartitioning.mockReset().mockResolvedValue(null);
@@ -110,6 +111,23 @@ async function openConstraints() {
 }
 
 describe("OceanBase Oracle constraint information", () => {
+  it.each([120, 0])("keeps a constraint request alive beyond 35 seconds with timeout %s", async (timeout) => {
+    vi.useFakeTimers();
+    connection.query_timeout_secs = timeout;
+    let resolve!: (rows: unknown[]) => void;
+    mocks.listConstraints.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const host = await openConstraints();
+    await vi.waitFor(() => expect(mocks.listConstraints).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(40_000);
+    resolve([{ name: "SLOW_CONSTRAINT", constraint_type: "UNIQUE", definition: "UNIQUE (A)", columns: ["A"], ref_columns: [], enabled: true, valid: true }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.textContent).toContain("SLOW_CONSTRAINT");
+    expect(mocks.toast).not.toHaveBeenCalledWith(expect.stringContaining("Metadata loading timed out"), 5000);
+  });
   it.each(["overview", "partitions"])("ends a stalled %s metadata wait through the actual detail tab", async (kind) => {
     // Partition tabs are currently PostgreSQL-only; keep their shared lifecycle bounded too.
     if (kind === "partitions") connection.db_type = "postgres";

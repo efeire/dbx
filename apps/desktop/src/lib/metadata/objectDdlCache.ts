@@ -25,6 +25,7 @@ interface InFlightDdlLoad {
 
 export interface ObjectDdlRequest {
   connectionId: string;
+  queryTimeoutSecs?: number;
   database: string;
   schema: string;
   tableName: string;
@@ -161,7 +162,7 @@ async function loadRemoteDdl(request: ObjectDdlRequest, cacheKey: string, force:
       }
       return ddl;
     }),
-    metadataLoadBudgetMs(),
+    metadataLoadBudgetMs(request.queryTimeoutSecs),
     signal,
   ).finally(() => {
     signal.removeEventListener("abort", cancel);
@@ -174,7 +175,7 @@ async function loadRemoteDdl(request: ObjectDdlRequest, cacheKey: string, force:
 export async function loadObjectDdl(request: ObjectDdlRequest, options?: { force?: boolean }): Promise<ObjectDdlLoadResult> {
   const token = activeLoads.begin(objectDdlCacheKey(request));
   try {
-    return await waitForMetadata(loadObjectDdlInternal(request, token.controller.signal, options), metadataLoadBudgetMs(), token.controller.signal);
+    return await waitForMetadata(loadObjectDdlInternal(request, token.controller.signal, options), metadataLoadBudgetMs(request.queryTimeoutSecs), token.controller.signal);
   } catch (error) {
     token.controller.abort(error);
     throw error;
@@ -206,7 +207,7 @@ async function loadObjectDdlInternal(request: ObjectDdlRequest, signal: AbortSig
     const readToken = activeCacheReads.begin(cacheKey);
     let cached: string | null;
     try {
-      cached = decodeCachedDdl(await waitForMetadata(loadSchemaCacheSafe<unknown>(cacheKey), metadataLoadBudgetMs(), signal));
+      cached = decodeCachedDdl(await waitForMetadata(loadSchemaCacheSafe<unknown>(cacheKey), metadataLoadBudgetMs(request.queryTimeoutSecs), signal));
     } finally {
       activeCacheReads.finish(readToken);
     }

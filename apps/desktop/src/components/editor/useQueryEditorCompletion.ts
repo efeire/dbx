@@ -1419,10 +1419,11 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       if (parts.length > 2) return [];
       // One qualifier can name a schema or a package in the current schema.
       const groups = await Promise.allSettled([list(parts[0]), list(scope.schema, parts[0])]);
+      if (groups[0].status === "rejected" && groups[1].status === "rejected") throw groups[0].reason;
       let objects: SqlCompletionObject[] = [];
       for (const group of groups) {
         if (group.status === "fulfilled") objects = mergeCompletionObjects(objects, group.value);
-        else if (!/Package is not visible:/.test(String(group.reason))) throw group.reason;
+        else if (!/Package is not visible:/.test(String(group.reason)) && !/^(?:Error: )?(?:OceanBase agent does not support filtered routine completion(?:; update the agent)?|(?:unknown method|method not found)(?::?\s+completion_assistant_search)?)$/i.test(String(group.reason))) throw group.reason;
       }
       return objects;
     }

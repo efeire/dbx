@@ -347,7 +347,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             return unchecked(() -> completionAssistantTables(request));
         }
         if (request.getObject_kinds().stream().anyMatch(kind -> kind == CompletionAssistantObjectKind.ROUTINE
-            || kind == CompletionAssistantObjectKind.PROCEDURE || kind == CompletionAssistantObjectKind.FUNCTION)) {
+            || kind == CompletionAssistantObjectKind.PROCEDURE || kind == CompletionAssistantObjectKind.FUNCTION
+            || kind == CompletionAssistantObjectKind.SEQUENCE)) {
             return unchecked(() -> completionAssistantRoutines(request));
         }
         return super.completionAssistantSearch(request);
@@ -364,8 +365,9 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         String types = kinds.contains(CompletionAssistantObjectKind.ROUTINE)
             || (kinds.contains(CompletionAssistantObjectKind.PROCEDURE) && kinds.contains(CompletionAssistantObjectKind.FUNCTION))
             ? "'PROCEDURE', 'FUNCTION'"
-            : kinds.contains(CompletionAssistantObjectKind.PROCEDURE) ? "'PROCEDURE'" : "'FUNCTION'";
-        if (kinds.contains(CompletionAssistantObjectKind.SEQUENCE)) types += ", 'SEQUENCE'";
+            : kinds.contains(CompletionAssistantObjectKind.PROCEDURE) ? "'PROCEDURE'"
+                : kinds.contains(CompletionAssistantObjectKind.FUNCTION) ? "'FUNCTION'" : "";
+        if (kinds.contains(CompletionAssistantObjectKind.SEQUENCE)) types += types.isEmpty() ? "'SEQUENCE'" : ", 'SEQUENCE'";
         String pattern = completionLikePattern(request.getMask(), request.getMatch_mode());
         args.add(request.getCase_sensitive() ? pattern : pattern.toUpperCase(Locale.ROOT));
         String ownerFilter = "";

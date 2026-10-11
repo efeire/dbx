@@ -1303,6 +1303,7 @@ async function fetchTableOverview(force = false) {
 function tableMetadataRequest(row: ObjectBrowserRow): ObjectDdlRequest {
   return {
     connectionId: props.connection.id,
+    queryTimeoutSecs: props.connection.query_timeout_secs,
     database: props.database || "",
     schema: row.schema || selectedSchema.value || props.database,
     tableName: row.name,

@@ -29,6 +29,22 @@ describe.each(["ddl", "facet"] as const)("%s cache cancellation boundary", (kind
     vi.useRealTimers();
   });
 
+  it.each([120, 0])("honors a configured query timeout of %s beyond the default cache budget", async (queryTimeoutSecs) => {
+    vi.useFakeTimers();
+    const remote = deferred<string>();
+    api.getTableDisplayDdl.mockReturnValueOnce(remote.promise);
+    const configuredRequest = { ...request, queryTimeoutSecs };
+    const result = kind === "ddl" ? loadObjectDdl(configuredRequest) : loadObjectMetadataFacet(configuredRequest, "columns", api.getTableDisplayDdl);
+    const outcome = result.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    await vi.advanceTimersByTimeAsync(40_000);
+    remote.resolve("configured result");
+    expect(await outcome).toMatchObject({ value: { cacheStatus: "remote" } });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("times out a stalled remote read, releases its cache slot, and ignores its late success", async () => {
     vi.useFakeTimers();
     const old = deferred<string>();
