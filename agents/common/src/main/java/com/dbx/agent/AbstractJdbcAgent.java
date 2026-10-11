@@ -732,6 +732,15 @@ public abstract class AbstractJdbcAgent extends BaseDatabaseAgent {
         return JdbcSchemaSwitcher.resetBeforeReturn(connection);
     }
 
+    final synchronized void discardConnection(Connection failedConnection) throws java.sql.SQLException {
+        if (pooledLease != null && connection == failedConnection) {
+            // Evict the checked-out lease before closing its proxy; close alone returns it to the pool.
+            releasePooledConnection(true);
+        } else {
+            failedConnection.close();
+        }
+    }
+
     private void releasePooledConnection(boolean evict) {
         JdbcConnectionPoolRegistry.Lease lease = pooledLease;
         pooledLease = null;

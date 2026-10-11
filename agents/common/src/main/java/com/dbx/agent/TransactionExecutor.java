@@ -83,13 +83,13 @@ public final class TransactionExecutor {
                             "Transaction rollback was not confirmed; discard this connection and treat the operation outcome as unknown", "08007", e);
                         unsafe.addSuppressed(rollbackFailure);
                         discarded = true;
-                        try { conn.close(); } catch (Exception closeFailure) { unsafe.addSuppressed(closeFailure); }
+                        try { AgentExecutionContext.discardConnection(conn); } catch (Exception closeFailure) { unsafe.addSuppressed(closeFailure); }
                         throw unsafe;
                     }
                     throw e;
                 } finally {
                     if (finished) conn.setAutoCommit(savedAutoCommit);
-                    else if (!discarded) conn.close();
+                    else if (!discarded) AgentExecutionContext.discardConnection(conn);
                 }
             }
         });

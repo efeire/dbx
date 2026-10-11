@@ -398,7 +398,8 @@ public final class JsonRpcServer {
 
     private QueryResult executeStatementsWithTimeout(int timeoutSecs, DatabaseAgent.ThrowingSupplier<QueryResult> execute) throws Exception {
         try (JdbcExecutor.NativeOperation operation = jdbcExecutor.beginNativeOperation()) {
-            return AgentExecutionContext.withStatementTimeout(timeoutSecs, operation, () -> {
+            return AgentExecutionContext.withStatementTimeout(timeoutSecs, operation,
+                agent instanceof AbstractJdbcAgent jdbcAgent ? jdbcAgent : null, () -> {
                 operation.checkCancelled();
                 if (agent instanceof AbstractJdbcAgent jdbcAgent) {
                     jdbcAgent.beforeQueryExecution(jdbcAgent.requireConnected(), timeoutSecs);
