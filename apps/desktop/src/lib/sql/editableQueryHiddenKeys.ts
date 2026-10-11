@@ -82,6 +82,11 @@ function singleOracleSourceReference(sql: string, cursor: number): string | unde
   if (sources.length !== 1) return undefined;
 
   const source = sources[0]!;
-  if (source.aliasSpan) return sql.slice(source.aliasSpan.start, source.aliasSpan.end);
+  if (source.aliasSpan) {
+    const reference = sql.slice(source.aliasSpan.start, source.aliasSpan.end);
+    // The source parser does not yet distinguish partition suffixes from aliases.
+    if (/^(?:SUB)?PARTITION$/i.test(reference)) return undefined;
+    return reference;
+  }
   return source.qualifiedName?.parts[source.qualifiedName.parts.length - 1]?.raw;
 }

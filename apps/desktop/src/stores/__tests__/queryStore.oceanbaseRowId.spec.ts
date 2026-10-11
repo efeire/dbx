@@ -193,6 +193,11 @@ describe("OceanBase Oracle query ROWID preparation", () => {
     expect(sql).not.toContain("ROWID");
   });
 
+  it.each(["PARTITION(P0)", "SUBPARTITION(P0)", "PARTITION FOR (1)"])("executes table suffix %s without qualifying it as an alias", async (suffix) => {
+    const originalSql = `select * from sipf.t_sipf_debug_log ${suffix}`;
+    expect(await emittedSql(originalSql)).toBe(originalSql);
+  });
+
   it("preserves a business rowid alias and keeps its locator in a distinct hidden column", async () => {
     const { analyzeEditableQueryEditability } = await import("@/lib/sql/sqlAnalysis");
     mocks.analyze.mockImplementation(async (sql: string) => analyzeEditableQueryEditability(sql));

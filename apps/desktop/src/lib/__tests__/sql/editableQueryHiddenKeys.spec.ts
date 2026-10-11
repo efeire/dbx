@@ -3,6 +3,9 @@ import { buildQueryWithHiddenPrimaryKeys, hiddenResultColumnIndexes } from "@/li
 import { analyzeEditableQueryEditability, allPrimaryKeysPresent, sourceColumnsForResult, type EditableQueryInfo } from "@/lib/sql/sqlAnalysis";
 
 describe("editable query hidden primary keys", () => {
+  it.each(["PARTITION(P0)", "SUBPARTITION(P0)", "PARTITION FOR (1)"])("does not treat the Oracle table suffix %s as an alias", (suffix) => {
+    expect(buildQueryWithHiddenPrimaryKeys({ sql: `SELECT * FROM APP.ITEMS ${suffix}`, databaseType: "oceanbase-oracle", primaryKeys: ["__DBX_ROWID"], existingResultNames: ["LABEL"], sourceExpressions: { __DBX_ROWID: "ROWIDTOCHAR(ROWID)" } })).toBeUndefined();
+  });
   it.each(["oracle", "oceanbase-oracle"] as const)("preserves source spelling and projection boundaries for %s star queries", (databaseType) => {
     for (const [sql, expected] of [
       ['SELECT * FROM "Owner"."Items" "i"', 'SELECT "i".*, ROWIDTOCHAR(ROWID) AS "__DBX_PK_1" FROM "Owner"."Items" "i"'],
