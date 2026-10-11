@@ -1,0 +1,115 @@
+import { createPinia, setActivePinia } from "pinia";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ConnectionConfig, QueryResult } from "@/types/database";
+
+const api = vi.hoisted(() => ({
+  executeMulti: vi.fn(),
+  closeQuerySession: vi.fn(),
+  closeClientConnectionSession: vi.fn(),
+  cancelQuery: vi.fn(),
+  disconnectDb: vi.fn(),
+}));
+
+vi.mock("@/lib/backend/api", () => ({
+  ...api,
+  checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
+  analyzeEditableQueryEditability: vi.fn().mockResolvedValue({ editable: false, reason: "complex-query" }),
+  prepareQueryPaginationExecutionPlan: vi.fn(async (options) => ({ sqlToExecute: options.sql, pageSql: options.sql, pageLimit: options.pagination.limit, pageOffset: options.pagination.offset, useAgentResultSession: true })),
+  saveOpenTabsState: vi.fn().mockResolvedValue(undefined),
+  deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
+  loadSchemaCache: vi.fn().mockResolvedValue(null),
+  saveConnections: vi.fn().mockResolvedValue(undefined),
+  saveSidebarLayout: vi.fn().mockResolvedValue(undefined),
+}));
+
+function result(session: string): QueryResult {
+  return { columns: ["PAYLOAD"], rows: [["LOB preview"]], affected_rows: 0, execution_time_ms: 1, session_id: session, has_more: true };
+}
+
+describe("query Store LOB session release through public close and disconnect", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("localStorage", { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn() });
+    setActivePinia(createPinia());
+    api.closeQuerySession.mockResolvedValue(undefined);
+    api.closeClientConnectionSession.mockResolvedValue(undefined);
+    api.cancelQuery.mockResolvedValue(true);
+    api.disconnectDb.mockResolvedValue(undefined);
+  });
+
+  it.each(["closeTab", "disconnect"] as const)("%s closes the original result and client sessions without touching another connection", async (action) => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const connections = useConnectionStore();
+    const settings = useSettingsStore();
+    settings.editorSettings.disconnectTabHandlingMode = "keep-tabs-clear-results";
+    settings.editorSettings.autoCalculateTotalRows = false;
+    connections.connections = ["ob-a", "ob-b"].map((id) => ({ id, name: id, db_type: "oceanbase-oracle", host: "localhost", port: 2881, username: "fixture", password: "", database: "SYS", read_only: false }) as ConnectionConfig);
+    connections.connectedIds.add("ob-a");
+    connections.connectedIds.add("ob-b");
+    const store = useQueryStore();
+    const id = store.createTab("ob-a", "SYS", "LOB", "query", "APP");
+    const otherId = store.createTab("ob-b", "SYS", "Other", "query", "APP");
+    api.executeMulti.mockResolvedValueOnce([result("result-a")]).mockResolvedValueOnce([result("result-b")]);
+    await store.executeTabSql(id, "SELECT PAYLOAD FROM LOB_FIXTURE");
+    await store.executeTabSql(otherId, "SELECT PAYLOAD FROM LOB_FIXTURE");
+    const originalSession = api.executeMulti.mock.calls[0][5].clientSessionId;
+    const otherSession = api.executeMulti.mock.calls[1][5].clientSessionId;
+    expect(originalSession).toEqual(expect.any(String));
+    expect(originalSession).not.toBe(otherSession);
+    expect(store.tabs.find((tab) => tab.id === id)?.result?.rows).toEqual([["LOB preview"]]);
+    if (action === "closeTab") store.closeTab(id, { force: true });
+    else await connections.disconnect("ob-a");
+    await vi.waitFor(() => expect(api.closeClientConnectionSession).toHaveBeenCalledWith("ob-a", "SYS", originalSession));
+    expect(api.closeQuerySession).toHaveBeenCalledWith("ob-a", "SYS", "result-a", originalSession);
+    expect(api.closeClientConnectionSession.mock.calls.every((call) => call[0] === "ob-a")).toBe(true);
+    expect(api.closeQuerySession.mock.calls.every((call) => call[0] === "ob-a")).toBe(true);
+    expect(store.tabs.find((tab) => tab.id === id)?.result).toBeUndefined();
+    expect(store.tabs.find((tab) => tab.id === otherId)?.result?.rows).toEqual([["LOB preview"]]);
+    if (action === "disconnect") {
+      expect(api.disconnectDb).toHaveBeenCalledWith("ob-a", undefined);
+      expect(connections.connectedIds.has("ob-a")).toBe(false);
+      expect(connections.connectedIds.has("ob-b")).toBe(true);
+      expect(store.tabs.some((tab) => tab.id === id)).toBe(true);
+    }
+    await store.flushPendingPersist();
+  });
+
+  it.each(["closeTab", "disconnect"] as const)("%s cannot be undone by a late query result", async (action) => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const connections = useConnectionStore();
+    useSettingsStore().editorSettings.disconnectTabHandlingMode = "keep-tabs-clear-results";
+    useSettingsStore().editorSettings.autoCalculateTotalRows = false;
+    connections.connections = [{ id: "ob-late", name: "OB", db_type: "oceanbase-oracle", host: "localhost", port: 2881, username: "fixture", password: "", database: "SYS", read_only: false } as ConnectionConfig];
+    connections.connectedIds.add("ob-late");
+    const store = useQueryStore();
+    const id = store.createTab("ob-late", "SYS", "Pending LOB", "query", "APP");
+    let finish!: (results: QueryResult[]) => void;
+    api.executeMulti.mockImplementationOnce(
+      () =>
+        new Promise<QueryResult[]>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const executing = store.executeTabSql(id, "SELECT PAYLOAD FROM LOB_FIXTURE");
+    await vi.waitFor(() => expect(api.executeMulti).toHaveBeenCalledTimes(1));
+    const originalSession = api.executeMulti.mock.calls[0][5].clientSessionId;
+    if (action === "closeTab") store.closeTab(id, { force: true });
+    else await connections.disconnect("ob-late");
+    await vi.waitFor(() => expect(api.closeClientConnectionSession).toHaveBeenCalledWith("ob-late", "SYS", originalSession));
+    finish([result("late-result")]);
+    await executing;
+    expect(store.tabs.find((tab) => tab.id === id)?.result).toBeUndefined();
+    expect(store.tabs.find((tab) => tab.id === id)?.resultSessionId).toBeUndefined();
+    expect(store.tabs.find((tab) => tab.id === id)?.isExecuting ?? false).toBe(false);
+    expect(api.cancelQuery).toHaveBeenCalled();
+    if (action === "closeTab") expect(store.tabs.some((tab) => tab.id === id)).toBe(false);
+    else expect(connections.connectedIds.has("ob-late")).toBe(false);
+    await store.flushPendingPersist();
+  });
+});
