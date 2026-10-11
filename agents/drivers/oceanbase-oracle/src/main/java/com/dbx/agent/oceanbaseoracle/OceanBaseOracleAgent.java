@@ -224,8 +224,71 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     private void prepareLobExecution(String sql, boolean requested) {
         // Unproven statements may end the transaction or replace an object. Fail closed.
         String leading = sql.replaceFirst("(?s)^(?:\\s|--[^\\r\\n]*(?:\\r?\\n|$)|/\\*.*?\\*/)*", "");
-        if (!leading.matches("(?is)^SELECT\\b.*")) lobValues.clear();
+        if (!leading.matches("(?is)^SELECT\\b.*") && !isSelectWithClause(leading)) lobValues.clear();
         deferCharacterLobs = requested;
+    }
+
+    // Recognize ordinary subquery factoring only. PL/SQL declarations and unproven
+    // WITH forms retain the conservative invalidation behavior.
+    private static boolean isSelectWithClause(String sql) {
+        if (!sql.matches("(?is)^WITH\\b.*")) return false;
+        var matcher = java.util.regex.Pattern.compile("(?s)--[^\\r\\n]*|/\\*.*?\\*/|'(?:''|[^'])*+'|\"(?:\"\"|[^\"])*+\"|[A-Za-z_][A-Za-z0-9_$#]*|\\S").matcher(sql);
+        List<String> tokens = new ArrayList<>();
+        while (matcher.find()) {
+            String token = matcher.group();
+            int end = matcher.end();
+            if ((token.equalsIgnoreCase("q") || token.equalsIgnoreCase("nq")) && end + 1 < sql.length() && sql.charAt(end) == '\'') {
+                char opening = sql.charAt(end + 1);
+                char closing = switch (opening) {
+                    case '[' -> ']';
+                    case '{' -> '}';
+                    case '(' -> ')';
+                    case '<' -> '>';
+                    default -> opening;
+                };
+                int close = sql.indexOf("" + closing + '\'', end + 2);
+                if (Character.isWhitespace(opening) || close < 0) return false;
+                tokens.add("'literal'");
+                matcher.region(close + 2, sql.length());
+                continue;
+            }
+            if (!token.startsWith("--") && !token.startsWith("/*")) tokens.add(token);
+        }
+        if (tokens.isEmpty() || !tokens.get(0).equalsIgnoreCase("WITH")) return false;
+        int index = 1;
+        while (index < tokens.size()) {
+            String name = tokens.get(index++);
+            if (!name.matches("[A-Za-z_][A-Za-z0-9_$#]*|\"(?:\"\"|[^\"])++\"")) return false;
+            if (index < tokens.size() && tokens.get(index).equals("(")) {
+                index = afterLobQueryParentheses(tokens, index);
+                if (index < 0) return false;
+            }
+            if (index >= tokens.size() || !tokens.get(index++).equalsIgnoreCase("AS")) return false;
+            if (index + 1 >= tokens.size() || !tokens.get(index).equals("(") || !tokens.get(index + 1).equalsIgnoreCase("SELECT")) return false;
+            index = afterLobQueryParentheses(tokens, index);
+            if (index < 0 || index >= tokens.size()) return false;
+            if (tokens.get(index).equals(",")) {
+                index++;
+                continue;
+            }
+            if (!tokens.get(index).equalsIgnoreCase("SELECT")) return false;
+            for (int rest = index + 1; rest < tokens.size(); rest++) {
+                if (tokens.get(rest).equals(";") && rest != tokens.size() - 1) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static int afterLobQueryParentheses(List<String> tokens, int start) {
+        int depth = 0;
+        for (int index = start; index < tokens.size(); index++) {
+            String token = tokens.get(index);
+            if (token.equals(";")) return -1;
+            if (token.equals("(")) depth++;
+            else if (token.equals(")") && --depth == 0) return index + 1;
+        }
+        return -1;
     }
 
     @Override

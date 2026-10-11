@@ -20,8 +20,37 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 class OceanBaseLobValuesTest {
     @ParameterizedTest
-    @CsvSource({"query,false", "query,true", "page,false", "page,true", "table,false", "table,true"})
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"query", "page", "table"})
+    void longCteLiteralReachesJdbcAndRetainsPreviousLocator(String entryPoint) throws Exception {
+        checkFailedStatement(entryPoint, false, "WITH x AS (SELECT '" + "a".repeat(4000) + "' AS s FROM dual) SELECT * FROM x", true);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"query,false", "query,true", "page,false", "page,true", "table,false", "table,true", "cte-query,false", "cte-page,true", "cte-table,true"})
     void failedReadReleasesOnlyItsNewLocators(String entryPoint, boolean capturePartial) throws Exception {
+        String sql = entryPoint.startsWith("cte-") ? "WITH x AS (SELECT 1 AS n FROM dual) SELECT * FROM x" : "SELECT INVALID FROM DUAL";
+        checkFailedStatement(entryPoint.replace("cte-", ""), capturePartial, sql, true);
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', quoteCharacter = '`', value = {
+        "WITH x(n) AS (SELECT 1 FROM dual), y AS (SELECT n FROM x) SELECT * FROM y|true",
+        "WITH c AS (SELECT q'[it's (]' txt FROM dual) SELECT txt FROM c|true",
+        "WITH c AS (SELECT q'[it's ;]' txt FROM dual) SELECT txt FROM c|true",
+        "WITH c AS (SELECT Q'!it's ; (!' txt FROM dual) SELECT txt FROM c|true",
+        "WITH \"x\" AS (SELECT ') ; UPDATE' FROM dual /* ) */) SELECT * FROM \"x\"|true",
+        "WITH x AS (SELECT 1 FROM dual) UPDATE target SET n = 1|false",
+        "WITH x AS (DELETE FROM target RETURNING n) SELECT * FROM x|false",
+        "WITH x AS (SELECT 1 FROM dual) SELECT * FROM x; COMMIT|false",
+        "WITH FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; SELECT f FROM dual|false",
+        "COMMIT|false",
+        "ROLLBACK|false"
+    })
+    void onlyConfirmedCteQueriesRetainOldLocators(String sql, boolean retain) throws Exception {
+        checkFailedStatement("query", false, sql, retain);
+    }
+
+    private void checkFailedStatement(String entryPoint, boolean capturePartial, String sql, boolean retain) throws Exception {
         OceanBaseLobValues values = new OceanBaseLobValues((connection, locator, offset, limit) -> chunk("x".repeat(1000), offset, limit));
         Fixture old = new Fixture();
         var retained = (OceanBaseLobValues.Preview) values.preview(old.resultSet, 1, Types.CLOB, "CLOB");
@@ -40,14 +69,14 @@ class OceanBaseLobValuesTest {
         }));
         assertThrows(RuntimeException.class, () -> {
             switch (entryPoint) {
-                case "query" -> agent.executeQuery("SELECT INVALID FROM DUAL", null, new ExecuteQueryOptions(10, null, 5));
-                case "page" -> agent.executeQueryPage("SELECT INVALID FROM DUAL", null, new QueryPageOptions(10, null, 10, 5));
-                default -> agent.startTableRead("SELECT INVALID FROM DUAL", null, new QueryPageOptions(10, null, 10, 5));
+                case "query" -> agent.executeQuery(sql, null, new ExecuteQueryOptions(10, null, 5));
+                case "page" -> agent.executeQueryPage(sql, null, new QueryPageOptions(10, null, 10, 5));
+                default -> agent.startTableRead(sql, null, new QueryPageOptions(10, null, 10, 5));
             }
         });
-        assertFalse(old.freed.get());
+        assertEquals(!retain, old.freed.get());
         assertEquals(capturePartial, partial.freed.get());
-        assertEquals("ok", values.fetch(old.connection, retained.ref(), 0, 10).status());
+        if (retain) assertEquals("ok", values.fetch(old.connection, retained.ref(), 0, 10).status());
         agent.invalidateLargeValues();
         assertTrue(old.freed.get());
     }

@@ -51,7 +51,7 @@ describe("query Store LOB session release through public close and disconnect", 
     expect(combined.large_value_context).toEqual(context);
   });
 
-  it.each([false, true])("releases discarded refs but retains captured results (capture=%s)", async (capture) => {
+  it.each([false, true, "toggled"] as const)("releases discarded refs but retains captured results (capture=%s)", async (capture) => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const { useConnectionStore } = await import("@/stores/connectionStore");
     const { useSettingsStore } = await import("@/stores/settingsStore");
@@ -65,11 +65,41 @@ describe("query Store LOB session release through public close and disconnect", 
     api.executeMulti.mockResolvedValueOnce([{ ...result("old"), large_value_context: context, large_value_refs: ["old-ref"] }]).mockResolvedValueOnce([result("new")]);
     await store.executeTabSql(id, "SELECT PAYLOAD FROM LOB_FIXTURE");
     const tab = store.tabs.find((entry) => entry.id === id)!;
-    tab.resultAutoSave = capture;
+    if (capture === "toggled") {
+      expect(store.toggleResultAutoSave(id)).toBe(true);
+      expect(store.toggleResultAutoSave(id)).toBe(false);
+      expect(tab.activeResultRunId).toBeTruthy();
+    } else tab.resultAutoSave = capture;
     await store.executeTabSql(id, "SELECT PAYLOAD FROM LOB_FIXTURE");
-    if (capture) expect(api.releaseLargeValue).not.toHaveBeenCalled();
+    if (capture === true) expect(api.releaseLargeValue).not.toHaveBeenCalled();
     else await vi.waitFor(() => expect(api.releaseLargeValue).toHaveBeenCalledWith(expect.objectContaining({ connectionId: "ob-refresh", database: "SYS", valueRef: "old-ref" })));
     await store.flushPendingPersist();
+  });
+
+  it.each(["failed-append", "shared-result", "history"] as const)("retains old locators still used after an autosave toggle (%s)", async (scenario) => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const connections = useConnectionStore();
+    useSettingsStore().editorSettings.autoCalculateTotalRows = false;
+    connections.connections = [{ id: "ob-retain", name: "OB", db_type: "oceanbase-oracle", database: "SYS", read_only: false } as ConnectionConfig];
+    connections.connectedIds.add("ob-retain");
+    const store = useQueryStore();
+    const id = store.createTab("ob-retain", "SYS", "LOB", "query", "APP");
+    const old = { ...result("old"), large_value_context: { connectionId: "ob-retain", database: "SYS", clientSessionId: "old-client" }, large_value_refs: ["old-ref"] };
+    api.executeMulti.mockResolvedValueOnce([old]);
+    await store.executeTabSql(id, "SELECT PAYLOAD FROM LOB_FIXTURE");
+    store.toggleResultAutoSave(id);
+    store.toggleResultAutoSave(id);
+    const tab = store.tabs.find((entry) => entry.id === id)!;
+    if (scenario === "history") tab.resultRuns!.push({ ...tab.resultRuns![0], id: "other-retained-run" });
+    if (scenario === "failed-append") api.executeMulti.mockRejectedValueOnce(new Error("query failed"));
+    else api.executeMulti.mockResolvedValueOnce([scenario === "shared-result" ? { ...old, rows: [["new preview"]] } : result("new")]);
+    await store.executeTabSql(id, "SELECT PAYLOAD FROM LOB_FIXTURE", scenario === "failed-append" ? { appendResult: true } : undefined);
+    await store.flushPendingPersist();
+    expect(api.releaseLargeValue).not.toHaveBeenCalled();
+    if (scenario === "failed-append") expect(tab.result?.large_value_refs).toContain("old-ref");
+    else expect(tab.result?.rows).toEqual(scenario === "shared-result" ? [["new preview"]] : [["LOB preview"]]);
   });
 
   it.each(["closeTab", "disconnect"] as const)("%s closes the original result and client sessions without touching another connection", async (action) => {

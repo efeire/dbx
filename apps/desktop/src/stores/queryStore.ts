@@ -2144,6 +2144,16 @@ export const useQueryStore = defineStore("query", () => {
     return (tab.resultRuns?.reduce((max, run) => Math.max(max, run.sequence), 0) ?? 0) + 1;
   }
 
+  function resultLargeValueKey(result: QueryResult, valueRef: string): string {
+    const context = result.large_value_context;
+    return JSON.stringify([context?.connectionId, context?.database, context?.clientSessionId, context?.txnSessionId, context?.catalog, valueRef]);
+  }
+
+  function resultLargeValueKeys(result?: QueryResult): string[] {
+    if (!result?.large_value_context) return [];
+    return [...(result.large_value_refs ?? []), ...(result.large_value_cells ?? []).flatMap((cell) => (cell.value_ref ? [cell.value_ref] : []))].map((ref) => resultLargeValueKey(result, ref));
+  }
+
   async function releaseResultLargeValues(...results: Array<QueryResult | undefined>) {
     const released = new Set<string>();
     for (const result of results) {
@@ -2364,6 +2374,7 @@ export const useQueryStore = defineStore("query", () => {
     if (!tab.activeResultRunId || !tab.resultRuns?.length) return;
     const index = tab.resultRuns.findIndex((run) => run.id === tab.activeResultRunId);
     if (index < 0) return;
+    const previousRun = tab.resultRuns[index];
     const run = {
       ...tab.resultRuns[index],
       ...(sql ? { sql } : {}),
@@ -2411,6 +2422,14 @@ export const useQueryStore = defineStore("query", () => {
     };
     void persistResultRun(tab, run);
     tab.resultRuns[index] = run;
+    const retainedResults = [tab.result, ...(tab.results ?? []), ...tab.resultRuns.flatMap((item) => [item.result, ...(item.results ?? [])])];
+    const retainedRefs = new Set(retainedResults.flatMap((result) => resultLargeValueKeys(result)));
+    const discardedResults = [previousRun.result, ...(previousRun.results ?? [])].map((result) => {
+      if (!result) return undefined;
+      const refs = [...(result.large_value_refs ?? []), ...(result.large_value_cells ?? []).flatMap((cell) => (cell.value_ref ? [cell.value_ref] : []))];
+      return { ...result, large_value_cells: [], large_value_refs: refs.filter((valueRef) => !retainedRefs.has(resultLargeValueKey(result, valueRef))) };
+    });
+    void releaseResultLargeValues(...discardedResults);
   }
 
   function syncDisplayedResultRun(tab: QueryTab, sql: string, captureNewRun = false, options: ResultRunCaptureOptions = {}) {
