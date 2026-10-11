@@ -361,7 +361,8 @@ public final class JsonRpcServer {
         if (AgentProtocol.METHOD_EXECUTE_TRANSACTION.equals(method)) {
             Type statementsType = new TypeToken<List<String>>() {}.getType();
             List<String> statements = gson.fromJson(params.get("statements"), statementsType);
-            return agent.executeTransaction(statements, stringOrNull(params, "schema"));
+            return executeStatementsWithTimeout(intOrDefault(params, "timeoutSecs", 0),
+                () -> agent.executeTransaction(statements, stringOrNull(params, "schema")));
         }
         if (AgentProtocol.METHOD_BEGIN_MANUAL_TRANSACTION.equals(method)) {
             return agent.beginManualTransaction(stringOrNull(params, "schema"));
@@ -375,7 +376,8 @@ public final class JsonRpcServer {
         if (AgentProtocol.METHOD_EXECUTE_BATCH.equals(method)) {
             Type statementsType = new TypeToken<List<String>>() {}.getType();
             List<String> statements = gson.fromJson(params.get("statements"), statementsType);
-            return agent.executeBatch(statements, stringOrNull(params, "schema"));
+            return executeStatementsWithTimeout(intOrDefault(params, "timeoutSecs", 0),
+                () -> agent.executeBatch(statements, stringOrNull(params, "schema")));
         }
         if (AgentProtocol.METHOD_DISCONNECT.equals(method)) {
             jdbcExecutor.closeAllQuerySessions();
@@ -392,6 +394,19 @@ public final class JsonRpcServer {
             return Collections.singletonMap("ok", true);
         }
         throw new IllegalArgumentException("Unknown method: " + method);
+    }
+
+    private QueryResult executeStatementsWithTimeout(int timeoutSecs, DatabaseAgent.ThrowingSupplier<QueryResult> execute) throws Exception {
+        try (JdbcExecutor.NativeOperation operation = jdbcExecutor.beginNativeOperation()) {
+            return AgentExecutionContext.withStatementTimeout(timeoutSecs, operation, () -> {
+                operation.checkCancelled();
+                if (agent instanceof AbstractJdbcAgent jdbcAgent) {
+                    jdbcAgent.beforeQueryExecution(jdbcAgent.requireConnected(), timeoutSecs);
+                }
+                operation.checkCancelled();
+                return execute.get();
+            });
+        }
     }
 
     private void switchCatalog(JsonObject params) throws Exception {
