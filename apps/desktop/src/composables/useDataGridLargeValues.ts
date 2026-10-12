@@ -80,6 +80,18 @@ export interface UseDataGridLargeValuesOptions {
 }
 
 type ResolvedLargeValueCells = Map<number, Map<number, CellValue>>;
+export interface LargeValueSnapshotDownloadTarget {
+  readonly result: QueryResult;
+  readonly rowId: number;
+  readonly sourceIndex: number;
+  readonly columnIndex: number;
+  readonly valueRef: string;
+  readonly context: Readonly<NonNullable<QueryResult["large_value_context"]>>;
+  readonly connectionId: string | undefined;
+  readonly database: string;
+  readonly operation: number;
+  readonly signal: AbortSignal;
+}
 const materializedSnapshotBytes = new WeakMap<QueryResult, Map<string, number>>();
 type LargeValueCellRequest = {
   item: LargeValueRowItem;
@@ -140,21 +152,49 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     return largeValueCellsByKey.value.get(largeValueCellKey(item.sourceIndex, columnIndex))?.value_ref;
   }
 
-  async function downloadSnapshotCell(rowId: number, columnIndex: number, filePath: string, downloadEncoding?: "binary" | "utf8" | "gbk"): Promise<void> {
-    const signal = snapshotController.signal;
-    const sourceResult = options.result.value;
-    const ref = snapshotReference(options.getRowItem(rowId), columnIndex);
-    const context = sourceResult.large_value_context;
-    if (!ref || !context) throw new Error("LOB snapshot is unavailable");
+  function captureSnapshotDownloadTarget(rowId: number, columnIndex: number): LargeValueSnapshotDownloadTarget | undefined {
+    const result = options.result.value;
+    const item = options.getRowItem(rowId);
+    const valueRef = snapshotReference(item, columnIndex);
+    const context = result.large_value_context;
+    if (!valueRef || !context || item?.sourceIndex === undefined) return undefined;
+    return {
+      result,
+      rowId,
+      sourceIndex: item.sourceIndex,
+      columnIndex,
+      valueRef,
+      context: { ...context },
+      connectionId: options.connectionId.value,
+      database: options.executionDatabase.value,
+      operation: options.resultLifecycle.beginOperation(),
+      signal: snapshotController.signal,
+    };
+  }
+
+  function isSnapshotDownloadTargetCurrent(target: LargeValueSnapshotDownloadTarget): boolean {
+    if (target.signal.aborted || options.runtimeScope.disposed || !options.resultLifecycle.isCurrent(target.operation) || options.result.value !== target.result || options.connectionId.value !== target.connectionId || options.executionDatabase.value !== target.database) return false;
+    const item = options.getRowItem(target.rowId);
+    const context = options.result.value.large_value_context;
+    return item?.sourceIndex === target.sourceIndex && snapshotReference(item, target.columnIndex) === target.valueRef && !!context && (["connectionId", "database", "clientSessionId", "txnSessionId", "catalog"] as const).every((key) => context[key] === target.context[key]);
+  }
+
+  async function downloadSnapshotTarget(target: LargeValueSnapshotDownloadTarget, filePath: string, downloadEncoding?: "binary" | "utf8" | "gbk"): Promise<void> {
+    if (!isSnapshotDownloadTargetCurrent(target)) throw new Error("LOB result context changed");
     const executionId = options.uuid();
     snapshotExecutionIds.add(executionId);
     try {
-      await waitForLargeValueSnapshot(api.downloadLargeValue({ ...context, valueRef: ref, executionId, downloadEncoding }, filePath, signal), signal);
-      signal.throwIfAborted();
-      if (options.result.value !== sourceResult) throw new Error("LOB result context changed");
+      await waitForLargeValueSnapshot(api.downloadLargeValue({ ...target.context, valueRef: target.valueRef, executionId, downloadEncoding }, filePath, target.signal), target.signal);
+      if (!isSnapshotDownloadTargetCurrent(target)) throw new Error("LOB result context changed");
     } finally {
       snapshotExecutionIds.delete(executionId);
     }
+  }
+
+  async function downloadSnapshotCell(rowId: number, columnIndex: number, filePath: string, downloadEncoding?: "binary" | "utf8" | "gbk"): Promise<void> {
+    const target = captureSnapshotDownloadTarget(rowId, columnIndex);
+    if (!target) throw new Error("LOB snapshot is unavailable");
+    await downloadSnapshotTarget(target, filePath, downloadEncoding);
   }
 
   function formatGridItemCellForConfirmation(item: LargeValueRowItem, columnIndex: number): string {
@@ -690,6 +730,9 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
 
   return {
     snapshotReference,
+    captureSnapshotDownloadTarget,
+    isSnapshotDownloadTargetCurrent,
+    downloadSnapshotTarget,
     downloadSnapshotCell,
     isLargeValuePreview,
     largeValueOriginalBytes,

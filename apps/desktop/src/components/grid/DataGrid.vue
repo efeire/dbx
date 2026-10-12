@@ -414,7 +414,7 @@ import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useDataGridColumnFormatter } from "@/composables/useDataGridColumnFormatter";
 import { useDataGridTableMetadataLoaders } from "@/composables/useDataGridTableMetadataLoaders";
 import { DATA_GRID_SERVER_COLUMN_FILTER_LIMIT, useDataGridColumnFilters } from "@/composables/useDataGridColumnFilters";
-import { useDataGridLargeValues } from "@/composables/useDataGridLargeValues";
+import { useDataGridLargeValues, type LargeValueSnapshotDownloadTarget } from "@/composables/useDataGridLargeValues";
 import { useDataGridSaveConfirmation } from "@/composables/useDataGridSaveConfirmation";
 
 const SqlPreviewPanel = defineAsyncComponent(() => import("@/components/editor/SqlPreviewPanel.vue"));
@@ -10766,16 +10766,20 @@ function downloadCellBinaryValue(rowIndex: number, columnIndex: number, mode: Bi
   void downloadDetailBinaryValue(cellDetailFor(rowIndex, columnIndex), mode);
 }
 
-async function downloadDetailBinaryValue(detail: DataGridCellDetail | null, mode: BinaryCellDownloadMode) {
+async function downloadDetailBinaryValue(detail: DataGridCellDetail | null, mode: BinaryCellDownloadMode, snapshotTarget?: LargeValueSnapshotDownloadTarget) {
+  if (snapshotTarget && !largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(snapshotTarget)) return;
   if (!detail || !canDownloadDetailBinaryValue(detail)) return;
   try {
     const sourceResult = props.result;
-    if (largeValueRuntimeInstance.snapshotReference(getRowItem(detail.rowId), detail.colIndex)) {
+    if (snapshotTarget || largeValueRuntimeInstance.snapshotReference(getRowItem(detail.rowId), detail.colIndex)) {
+      const target = snapshotTarget ?? largeValueRuntimeInstance.captureSnapshotDownloadTarget(detail.rowId, detail.colIndex);
+      if (!target) throw new Error("LOB snapshot is unavailable");
+      if (!largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(target)) return;
       const extension = mode === "binary" ? binaryCellDownloadPayload(detail.value, mode, detail.type, resolvedDatabaseType.value).extension : "txt";
       const fileName = binaryCellDownloadFileName({ column: detail.column, rowNumber: detail.rowNumber, mode, extension });
       const path = isTauriRuntime() ? await promptExportSavePath({ defaultFileName: fileName, filters: [{ name: "LOB", extensions: [extension] }] }) : fileName;
-      if (!path || props.result !== sourceResult) return;
-      await largeValueRuntimeInstance.downloadSnapshotCell(detail.rowId, detail.colIndex, path, mode);
+      if (!path || !largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(target)) return;
+      await largeValueRuntimeInstance.downloadSnapshotTarget(target, path, mode);
       toast(isTauriRuntime() ? t("grid.downloadSaved", { path }) : t("grid.downloadStarted", { fileName }));
       return;
     }
@@ -10802,17 +10806,19 @@ async function downloadDetailBinaryValue(detail: DataGridCellDetail | null, mode
 }
 
 function binaryDownloadSubmenu(detail: DataGridCellDetail | null): ContextMenuItem | null {
+  const sourceResult = props.result;
+  const snapshotTarget = detail ? largeValueRuntimeInstance.captureSnapshotDownloadTarget(detail.rowId, detail.colIndex) : undefined;
   if (detail && largeValueRuntimeInstance.snapshotReference(getRowItem(detail.rowId), detail.colIndex) && !isBinaryCellColumnType(detail.type)) {
     return {
       label: t("grid.downloadSnapshotValue"),
       icon: Download,
       action: async () => {
-        const sourceResult = props.result;
+        if (!snapshotTarget || !largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(snapshotTarget)) return;
         const defaultFileName = `lob-row-${detail.rowNumber}.txt`;
         const path = isTauriRuntime() ? await promptExportSavePath({ defaultFileName, filters: [{ name: "Text", extensions: ["txt"] }] }) : defaultFileName;
-        if (!path || props.result !== sourceResult) return;
+        if (!path || !largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(snapshotTarget)) return;
         try {
-          await largeValueRuntimeInstance.downloadSnapshotCell(detail.rowId, detail.colIndex, path);
+          await largeValueRuntimeInstance.downloadSnapshotTarget(snapshotTarget, path);
           toast(isTauriRuntime() ? t("grid.downloadSaved", { path }) : t("grid.downloadStarted", { fileName: defaultFileName }));
         } catch (error) {
           reportLargeValueLoadError(error);
@@ -10827,7 +10833,8 @@ function binaryDownloadSubmenu(detail: DataGridCellDetail | null): ContextMenuIt
     children: BINARY_CELL_DOWNLOAD_MODES.map((mode) => ({
       label: t(`grid.binaryDownload.${mode}`),
       action: () => {
-        void downloadDetailBinaryValue(detail, mode);
+        if (props.result !== sourceResult) return;
+        return downloadDetailBinaryValue(detail, mode, snapshotTarget);
       },
     })),
   };

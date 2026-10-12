@@ -7,6 +7,7 @@ import i18n from "@/i18n";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { QueryResult } from "@/types/database";
 import type { DataGridCellDetail } from "@/lib/dataGrid/dataGridDetail";
+import type { ContextMenuItem } from "@/components/ui/customContextMenuRegistry";
 
 const mocks = vi.hoisted(() => ({ hydrate: vi.fn(), save: vi.fn(), native: vi.fn(() => false), prompt: vi.fn(), download: vi.fn() }));
 
@@ -92,7 +93,7 @@ async function mountGrid() {
       setupState: {
         cellDetailFor: (row: number, column: number) => DataGridCellDetail;
         downloadDetailBinaryValue: (detail: DataGridCellDetail, mode: "binary") => Promise<void>;
-        binaryDownloadSubmenu: (detail: DataGridCellDetail) => { action: () => Promise<void> };
+        binaryDownloadSubmenu: (detail: DataGridCellDetail) => ContextMenuItem;
         localColumnFilters: Record<number, Set<string>>;
       };
     }
@@ -109,6 +110,88 @@ async function mountGrid() {
 }
 
 describe("DataGrid binary download identity", () => {
+  it.each(["CLOB", "BLOB"])("does not download from a stale %s menu after the result is replaced", async (columnType) => {
+    const { result, state } = await mountGrid();
+    result.value = {
+      ...result.value,
+      column_types: ["NUMBER", columnType],
+      rows: [[1, columnType === "BLOB" ? "0x11" : "old preview"]],
+      large_value_context: { connectionId: "ob", database: "APP", clientSessionId: "original-session" },
+      large_value_cells: [{ row_index: 0, column_index: 1, original_bytes: 5000, value_ref: "original-locator" }],
+    };
+    await nextTick();
+    const menu = state.binaryDownloadSubmenu(state.cellDetailFor(0, 1));
+    result.value = { ...result.value, rows: [[2, columnType === "BLOB" ? "0x22" : "new preview"]], large_value_cells: [{ row_index: 0, column_index: 1, original_bytes: 5000, value_ref: "replacement-locator" }] };
+    await nextTick();
+    mocks.native.mockReturnValue(true);
+    mocks.prompt.mockResolvedValue("/tmp/snapshot.txt");
+    mocks.download.mockResolvedValue(undefined);
+    await (columnType === "BLOB" ? menu.children![0]!.action!() : menu.action!());
+    expect(mocks.prompt).not.toHaveBeenCalled();
+    expect(mocks.download).not.toHaveBeenCalled();
+  });
+
+  it.each(["CLOB", "BLOB"])("downloads the original locator from an unchanged %s menu", async (columnType) => {
+    const { result, state } = await mountGrid();
+    result.value = {
+      ...result.value,
+      column_types: ["NUMBER", columnType],
+      rows: [[1, columnType === "BLOB" ? "0x11" : "preview"]],
+      large_value_context: { connectionId: "ob", database: "APP", clientSessionId: "original-session" },
+      large_value_cells: [{ row_index: 0, column_index: 1, original_bytes: 5000, value_ref: "original-locator" }],
+    };
+    await nextTick();
+    const menu = state.binaryDownloadSubmenu(state.cellDetailFor(0, 1));
+    mocks.native.mockReturnValue(true);
+    mocks.prompt.mockResolvedValue("/tmp/snapshot.txt");
+    mocks.download.mockResolvedValue(undefined);
+    await (columnType === "BLOB" ? menu.children![0]!.action!() : menu.action!());
+    expect(mocks.download).toHaveBeenCalledWith(expect.objectContaining({ valueRef: "original-locator", clientSessionId: "original-session", downloadEncoding: columnType === "BLOB" ? "binary" : undefined }), "/tmp/snapshot.txt", expect.any(AbortSignal));
+  });
+
+  it.each(["CLOB", "BLOB"])("rejects a %s menu when its session changes during the save dialog", async (columnType) => {
+    const { result, state } = await mountGrid();
+    result.value = {
+      ...result.value,
+      column_types: ["NUMBER", columnType],
+      rows: [[1, columnType === "BLOB" ? "0x11" : "preview"]],
+      large_value_context: { connectionId: "ob", database: "APP", clientSessionId: "original-session" },
+      large_value_cells: [{ row_index: 0, column_index: 1, original_bytes: 5000, value_ref: "original-locator" }],
+    };
+    await nextTick();
+    const menu = state.binaryDownloadSubmenu(state.cellDetailFor(0, 1));
+    let finish!: (path: string) => void;
+    mocks.native.mockReturnValue(true);
+    mocks.prompt.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = columnType === "BLOB" ? menu.children![0]!.action!() : menu.action!();
+    result.value.large_value_context!.clientSessionId = "replacement-session";
+    finish("/tmp/snapshot.txt");
+    await pending;
+    expect(mocks.download).not.toHaveBeenCalled();
+  });
+
+  it.each(["CLOB", "BLOB"])("keeps save-dialog cancellation for %s snapshot downloads", async (columnType) => {
+    const { result, state } = await mountGrid();
+    result.value = {
+      ...result.value,
+      column_types: ["NUMBER", columnType],
+      rows: [[1, columnType === "BLOB" ? "0x11" : "preview"]],
+      large_value_context: { connectionId: "ob", database: "APP" },
+      large_value_cells: [{ row_index: 0, column_index: 1, original_bytes: 5000, value_ref: "original-locator" }],
+    };
+    await nextTick();
+    const menu = state.binaryDownloadSubmenu(state.cellDetailFor(0, 1));
+    mocks.native.mockReturnValue(true);
+    mocks.prompt.mockResolvedValue(null);
+    await (columnType === "BLOB" ? menu.children![0]!.action!() : menu.action!());
+    expect(mocks.download).not.toHaveBeenCalled();
+  });
+
   it("does not download a replacement CLOB result after the save dialog returns", async () => {
     const { result, state } = await mountGrid();
     result.value = {
@@ -127,7 +210,7 @@ describe("DataGrid binary download identity", () => {
         }),
     );
     mocks.native.mockReturnValue(true);
-    const pending = state.binaryDownloadSubmenu(state.cellDetailFor(0, 1)).action();
+    const pending = state.binaryDownloadSubmenu(state.cellDetailFor(0, 1)).action!();
     expect(mocks.prompt).toHaveBeenCalledOnce();
     result.value = { ...result.value, rows: [[2, "new preview"]], large_value_cells: [{ row_index: 0, column_index: 1, value_ref: "replacement-locator", value_kind: "text" }] };
     await nextTick();

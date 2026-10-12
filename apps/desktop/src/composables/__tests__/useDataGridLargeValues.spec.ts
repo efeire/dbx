@@ -147,6 +147,50 @@ function previewResult(columnType = "bytea", value = "\\x00017f80ff...", origina
 }
 
 describe("useDataGridLargeValues", () => {
+  it.each(["result", "locator", "clientSessionId", "txnSessionId", "catalog", "disposal"] as const)("rejects a captured download target after its %s changes", async (change) => {
+    const result = previewResult("CLOB", "preview", 5000);
+    result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO", clientSessionId: "original-session" };
+    result.value.large_value_cells![0]!.value_ref = "original-locator";
+    const { largeValues, runtimeScope } = mountLargeValues("oceanbase-oracle", result);
+    const target = largeValues.captureSnapshotDownloadTarget(1, 1)!;
+    expect(largeValues.isSnapshotDownloadTargetCurrent(target)).toBe(true);
+    if (change === "result") result.value = { ...result.value, rows: [[2, "new preview"]] };
+    else if (change === "locator") result.value.large_value_cells![0]!.value_ref = "replacement-locator";
+    else if (change === "disposal") runtimeScope.dispose();
+    else result.value.large_value_context![change] = "replacement-context";
+    expect(largeValues.isSnapshotDownloadTargetCurrent(target)).toBe(false);
+    await expect(largeValues.downloadSnapshotTarget(target, "lob.txt")).rejects.toThrow("context changed");
+    expect(mocks.downloadLargeValue).not.toHaveBeenCalled();
+    expect(target.context.clientSessionId).toBe("original-session");
+    expect(target.valueRef).toBe("original-locator");
+  });
+
+  it.each([undefined, "binary", "utf8", "gbk"] as const)("downloads a captured original target with %s encoding", async (encoding) => {
+    const result = previewResult("BLOB", "0x11", 5000);
+    result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO", txnSessionId: "original-transaction" };
+    result.value.large_value_cells![0]!.value_ref = "original-locator";
+    const { largeValues } = mountLargeValues("oceanbase-oracle", result);
+    mocks.downloadLargeValue.mockResolvedValue(undefined);
+    const target = largeValues.captureSnapshotDownloadTarget(1, 1)!;
+    await largeValues.downloadSnapshotTarget(target, "lob.bin", encoding);
+    expect(mocks.downloadLargeValue).toHaveBeenCalledWith(expect.objectContaining({ valueRef: "original-locator", txnSessionId: "original-transaction", downloadEncoding: encoding }), "lob.bin", target.signal);
+  });
+
+  it("cancels a captured target's pending download on cleanup", async () => {
+    const result = previewResult("CLOB", "preview", 5000);
+    result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO" };
+    result.value.large_value_cells![0]!.value_ref = "original-locator";
+    const { largeValues, runtimeScope } = mountLargeValues("oceanbase-oracle", result);
+    mocks.downloadLargeValue.mockImplementation(() => new Promise(() => {}));
+    mocks.cancelQuery.mockRejectedValue(new Error("cancel failed"));
+    const target = largeValues.captureSnapshotDownloadTarget(1, 1)!;
+    const pending = largeValues.downloadSnapshotTarget(target, "lob.txt");
+    runtimeScope.dispose();
+    await expect(pending).rejects.toThrow("cancelled locally");
+    expect(target.signal.aborted).toBe(true);
+    expect(mocks.cancelQuery).toHaveBeenCalledWith("execution-1");
+  });
+
   it("retains a hydrated locator for release even when the result has no ref array", async () => {
     const result = previewResult("CLOB", "preview", 5000);
     result.value.large_value_context = { connectionId: "oceanbase-oracle-1", database: "MAXIMO" };
