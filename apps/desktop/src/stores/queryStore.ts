@@ -42,6 +42,7 @@ import {
   analyzeSelectStructureForDisplay,
   foldUnquotedPostgresMetadataIdentifier,
   hasTopLevelKeyword,
+  hasUnparsedQuerySource,
   resolveMetadataColumnName,
   resolveSourceColumnsByOrdinal,
   sourceColumnsForResult,
@@ -6736,6 +6737,14 @@ export const useQueryStore = defineStore("query", () => {
     }
 
     queryExecutionLog("info", "metadata:editability:start", { traceId, elapsed: elapsed?.() });
+    if (hasUnparsedQuerySource(sql)) {
+      return {
+        queryAnalysis: undefined,
+        querySourceColumns: undefined,
+        queryEditabilityReason: "complex-source",
+        tableMeta: undefined,
+      };
+    }
     const editability = await api.analyzeEditableQueryEditability(sql);
     queryExecutionLog("info", "metadata:editability:done", {
       traceId,

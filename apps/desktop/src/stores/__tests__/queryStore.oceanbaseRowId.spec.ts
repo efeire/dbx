@@ -74,6 +74,21 @@ describe("OceanBase Oracle query ROWID preparation", () => {
     return (await executedQuery(sql)).sql;
   }
 
+  it.each(["PIVOT(SUM(TASKNAME) FOR KIND IN (1,2))", "UNPIVOT(TASKNAME FOR KIND IN (FIRST_NAME,SECOND_NAME))", "a UNPIVOT INCLUDE NULLS (TASKNAME FOR KIND IN (FIRST_NAME,SECOND_NAME))", "a UNKNOWN_SUFFIX(1)"])("keeps an unparsed source suffix unchanged and read-only: %s", async (suffix) => {
+    for (const projection of ["*", "a.*", "ROWID AS RID, TASKNAME"]) {
+      const originalSql = `select ${projection} from sipf.t_sipf_debug_log ${suffix}`;
+      mocks.analyze.mockResolvedValue({ editable: true, analysis: { schema: "SIPF", tableName: "T_SIPF_DEBUG_LOG", selectStar: true, columns: [] } });
+      mocks.executeMulti.mockClear();
+      const { store, id, sql } = await executedQuery(originalSql);
+      expect(sql).toBe(originalSql);
+      const tab = store.tabs.find((item) => item.id === id)!;
+      await vi.waitFor(() => expect(tab.queryEditabilityReason).toBe("complex-source"));
+      expect(tab.queryAnalysis).toBeUndefined();
+      expect(tab.querySourceColumns).toBeUndefined();
+      expect(tab.result?.hidden_column_indexes ?? []).toEqual([]);
+    }
+  });
+
   it("appends a ROWID expression to a single-column projection of a keyless table", async () => {
     const sql = await emittedSql("select a.taskname from sipf.t_sipf_debug_log a");
     expect(sql).toContain('ROWIDTOCHAR(ROWID) AS "__DBX_PK_0"');

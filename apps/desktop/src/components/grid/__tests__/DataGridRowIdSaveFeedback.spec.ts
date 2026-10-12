@@ -170,15 +170,16 @@ describe("DataGrid ROWID save feedback across reload", () => {
     expect(grid.reload).not.toHaveBeenCalled();
     expect(mocks.toast).not.toHaveBeenCalled();
   });
-  it("retains the edited value when the ROWID update guard reports zero matched rows", async () => {
-    mocks.prepare.mockResolvedValue({ statements: ["BEGIN UPDATE NOPK SET LABEL='edited' WHERE ROWIDTOCHAR(ROWID)='ROW-22'; IF SQL%ROWCOUNT = 0 THEN RAISE_APPLICATION_ERROR(-20001, '0 rows matched'); END IF; END;"], rollbackStatements: [] });
-    mocks.execute.mockRejectedValue(new Error("ORA-20001: 0 rows matched"));
+  it("retains the edited value when a plain ROWID update matches zero rows", async () => {
+    mocks.prepare.mockResolvedValue({ statements: ["UPDATE NOPK SET LABEL='edited' WHERE ROWIDTOCHAR(ROWID)='ROW-22';"], rollbackStatements: [], keylessGuards: [] });
+    mocks.execute.mockResolvedValue({ affected_rows: 0 });
     const grid = mountGrid();
     editor.deletedRows.value.clear();
     editor.dirtyRows.value = new Map([[0, new Map([[0, "edited"]])]]);
     await grid.commit();
-    expect(editor.saveError.value).toContain("0 rows matched");
+    expect(editor.saveError.value).toMatch(/no longer matches|不再匹配|不再符合/);
     expect(editor.dirtyRows.value.get(0)?.get(0)).toBe("edited");
     expect(grid.reload).not.toHaveBeenCalled();
+    expect(mocks.toast).not.toHaveBeenCalled();
   });
 });

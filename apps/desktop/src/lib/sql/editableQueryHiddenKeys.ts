@@ -1,6 +1,7 @@
 import { sqlSemanticDialectFor } from "@/lib/sql/semantic/dialect";
 import { buildSqlSemanticModel } from "@/lib/sql/semantic/model";
 import { tokenizeSqlSemantic } from "@/lib/sql/semantic/tokens";
+import { hasUnparsedQuerySource } from "@/lib/sql/sqlAnalysis";
 import type { DatabaseType } from "@/types/database";
 
 const HIDDEN_PRIMARY_KEY_ALIAS_PREFIX = "__DBX_PK_";
@@ -17,6 +18,7 @@ export interface HiddenPrimaryKeyQuery {
 
 export function buildQueryWithHiddenPrimaryKeys(options: { sql: string; databaseType: DatabaseType; primaryKeys: string[]; existingResultNames: string[]; sourceExpressions?: Record<string, string> }): HiddenPrimaryKeyQuery | undefined {
   if (options.primaryKeys.length === 0) return undefined;
+  if (hasUnparsedQuerySource(options.sql)) return undefined;
 
   const dialect = sqlSemanticDialectFor({ databaseType: options.databaseType });
   const usedNames = new Set(options.existingResultNames.map((name) => name.toLowerCase()));
@@ -82,11 +84,6 @@ function singleOracleSourceReference(sql: string, cursor: number): string | unde
   if (sources.length !== 1) return undefined;
 
   const source = sources[0]!;
-  if (source.aliasSpan) {
-    const reference = sql.slice(source.aliasSpan.start, source.aliasSpan.end);
-    // The source parser does not yet distinguish partition suffixes from aliases.
-    if (/^(?:SUB)?PARTITION$/i.test(reference)) return undefined;
-    return reference;
-  }
+  if (source.aliasSpan) return sql.slice(source.aliasSpan.start, source.aliasSpan.end);
   return source.qualifiedName?.parts[source.qualifiedName.parts.length - 1]?.raw;
 }
