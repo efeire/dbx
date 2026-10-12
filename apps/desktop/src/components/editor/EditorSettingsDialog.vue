@@ -607,6 +607,8 @@ function closeSettings() {
   requestCloseSettings(false);
 }
 
+defineExpose({ requestClose: closeSettings });
+
 function cancelUnsavedSettingsClose() {
   showUnsavedSettingsCloseConfirm.value = false;
 }
