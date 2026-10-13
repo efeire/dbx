@@ -1818,31 +1818,47 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         return unchecked(() -> {
             String owner = normalizeSchema(schema);
             String tableName = normalizeObjectName(table);
+            try (var stmt = requireConnection().prepareStatement(
+                "SELECT TABLE_NAME FROM SYS.ALL_TABLES WHERE OWNER = ? AND TABLE_NAME = ?")) {
+                stmt.setString(1, owner);
+                stmt.setString(2, tableName);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (!rs.next()) throw new SQLException("Table does not exist or is not accessible", "42000");
+                }
+            }
             String sql = """
-                SELECT c.CONSTRAINT_NAME, cc.COLUMN_NAME, rc.TABLE_NAME, rcc.COLUMN_NAME
-                FROM ALL_CONSTRAINTS c
-                JOIN ALL_CONS_COLUMNS cc ON c.CONSTRAINT_NAME = cc.CONSTRAINT_NAME AND c.OWNER = cc.OWNER
-                JOIN ALL_CONSTRAINTS rc ON c.R_CONSTRAINT_NAME = rc.CONSTRAINT_NAME AND c.R_OWNER = rc.OWNER
-                JOIN ALL_CONS_COLUMNS rcc
-                    ON rc.CONSTRAINT_NAME = rcc.CONSTRAINT_NAME
-                    AND rc.OWNER = rcc.OWNER
-                    AND cc.POSITION = rcc.POSITION
+                SELECT c.CONSTRAINT_NAME, c.R_OWNER, c.DELETE_RULE
+                FROM SYS.ALL_CONSTRAINTS c
                 WHERE c.CONSTRAINT_TYPE = 'R' AND c.OWNER = ? AND c.TABLE_NAME = ?
-                ORDER BY c.CONSTRAINT_NAME, cc.POSITION
+                ORDER BY c.CONSTRAINT_NAME
                 """.stripIndent().trim();
-
-            List<ForeignKeyInfo> result = new ArrayList<>();
+            record ForeignKeyReference(String name, String owner, String deleteRule) {}
+            List<ForeignKeyReference> references = new ArrayList<>();
+            var names = new java.util.HashSet<String>();
             try (var stmt = requireConnection().prepareStatement(sql)) {
                 stmt.setString(1, owner);
                 stmt.setString(2, tableName);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
-                        result.add(new ForeignKeyInfo(
-                            rs.getString(1),
-                            rs.getString(2),
-                            rs.getString(3),
-                            rs.getString(4)
-                        ));
+                        String name = rs.getString(1);
+                        if (name == null || !names.add(name)) throw new SQLException("Invalid foreign key metadata", "42000");
+                        references.add(new ForeignKeyReference(name, rs.getString(2), rs.getString(3)));
+                    }
+                }
+            }
+            List<ForeignKeyInfo> result = new ArrayList<>();
+            // ALL_CONS_COLUMNS positions do not retain reordered referenced columns on OceanBase.
+            // Read the actual constraint definition rather than guessing pairs from the parent key.
+            for (var reference : references) {
+                try (var stmt = requireConnection().prepareStatement(
+                    "SELECT DBMS_METADATA.GET_DDL('REF_CONSTRAINT', ?, ?) FROM DUAL")) {
+                    stmt.setString(1, reference.name());
+                    stmt.setString(2, owner);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        if (!rs.next()) throw new SQLException("Foreign key definition is unavailable", "42000");
+                        result.addAll(OracleForeignKeyDefinition.read(rs.getString(1), owner, tableName,
+                            reference.name(), reference.owner(), reference.deleteRule()));
+                        if (rs.next()) throw new SQLException("Foreign key definition is ambiguous", "42000");
                     }
                 }
             }
