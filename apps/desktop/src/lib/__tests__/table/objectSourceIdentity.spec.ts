@@ -1,9 +1,33 @@
 import { describe, expect, it } from "vitest";
+import i18n, { loadLocaleMessages } from "@/i18n";
 import { assertSourceIdentity, beginSourceSave, captureSourceIdentity, freezeSourceIdentities, renewSourceIdentity } from "@/lib/table/objectSourceIdentity";
 
 const identity = (name: string) => ({ connectionId: "identity-test", database: "ORCL", schema: "APP", objectType: "VIEW", name });
 
 describe("object source identity", () => {
+  it("shows source-save protection in the selected Chinese locale", async () => {
+    const previous = i18n.global.locale.value;
+    await loadLocaleMessages("zh-CN");
+    i18n.global.locale.value = "zh-CN";
+    try {
+      const stale = captureSourceIdentity(identity("localized-stale"));
+      const migration = freezeSourceIdentities([stale]);
+      migration.markDispatched();
+      migration.finish();
+      expect(() => beginSourceSave(stale)).toThrow("对象源码已变化或正在改名");
+      const saving = captureSourceIdentity(identity("localized-saving"));
+      const release = beginSourceSave(saving);
+      try {
+        expect(() => beginSourceSave(saving)).toThrow("对象源码正在保存");
+        expect(() => freezeSourceIdentities([saving])).toThrow("相关对象源码正在保存或改名");
+      } finally {
+        release();
+      }
+    } finally {
+      i18n.global.locale.value = previous;
+    }
+  });
+
   it("atomically excludes saving and migration across all affected identities", () => {
     const first = captureSourceIdentity(identity("first"));
     const second = captureSourceIdentity(identity("second"));

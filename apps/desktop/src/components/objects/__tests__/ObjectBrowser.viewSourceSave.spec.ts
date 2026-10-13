@@ -52,7 +52,10 @@ vi.mock("@/stores/settingsStore", () => ({
   }),
 }));
 vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key, locale: ref("en-US") }) }));
-vi.mock("@/i18n", () => ({ default: { install: () => undefined } }));
+vi.mock("@/i18n", async () => {
+  const { default: en } = await import("@/i18n/locales/en");
+  return { default: { install: () => undefined, global: { t: (key: string) => en.objects[key.split(".")[1] as keyof typeof en.objects] || key } } };
+});
 vi.mock("@/composables/useSqlHighlighter", () => ({ useSqlHighlighter: () => ({ highlight: (sql: string) => sql }) }));
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 vi.mock("vue-virtual-scroller", () => ({
