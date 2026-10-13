@@ -122,6 +122,37 @@ async function acceptClone() {
 }
 
 describe.each(["sidebar", "objects"] as const)("%s OceanBase clone entry points", (surface) => {
+  it("keeps the captured Spanner identifier quote while data-copy metadata is pending", async () => {
+    const { controller, context } = await mountEntry(surface);
+    const store = useConnectionStore();
+    const spanner = { ...connection, db_type: "spanner", driver_profile: "spanner", password: "fixture-only" } as ConnectionConfig;
+    store.connections = [spanner];
+    context.value = { connection: spanner, database: "APP", schema: "APP" };
+    await nextTick();
+    controller.pasteTableMode = "data-only";
+    vi.spyOn(api, "connectDb").mockResolvedValue(connection.id);
+    vi.spyOn(api, "connectionDatabaseInfo").mockResolvedValue(null);
+    const quote = vi.spyOn(api, "connectionIdentifierQuote").mockResolvedValue('"');
+    await store.connect(spanner);
+    expect(store.connectionIdentifierQuote(connection.id)).toBe('"');
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(api.getColumns).mockImplementationOnce(async () => {
+      await paused;
+      return [{ name: "ID", data_type: "NUMBER", is_nullable: true, is_primary_key: false, column_default: null }];
+    });
+    const pending = controller.confirmPasteTable();
+    await vi.waitFor(() => expect(api.getColumns).toHaveBeenCalled());
+    quote.mockResolvedValue("`");
+    await store.connect(spanner);
+    expect(store.connectionIdentifierQuote(connection.id)).toBe("`");
+    release();
+    await pending;
+    expect(backend.buildCopyTableDataSql).toHaveBeenCalledWith(expect.objectContaining({ identifierQuote: '"' }));
+  });
+
   it.each(["confirmDuplicateStructure", "confirmPasteTable"])("does not replace the pending confirmation when a repeated %s would fail planning", async (action) => {
     const { controller } = await mountEntry(surface);
     const pending = controller[action]();
