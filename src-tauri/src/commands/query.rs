@@ -874,6 +874,18 @@ pub fn build_view_ddl_sql(input: dbx_core::object_source_sql::BuildViewDdlInput)
 }
 
 #[tauri::command]
+pub fn parse_oracle_object_name(input: String) -> Result<String, String> {
+    dbx_core::oracle_view_rename::parse_oracle_object_name(&input)
+}
+
+#[tauri::command]
+pub fn build_oracle_view_rename_source(
+    input: dbx_core::oracle_view_rename::OracleViewRenameSourceInput,
+) -> Result<dbx_core::oracle_view_rename::OracleViewRenameSource, String> {
+    dbx_core::oracle_view_rename::build_oracle_view_rename_source(input)
+}
+
+#[tauri::command]
 pub fn build_table_structure_change_sql(
     options: dbx_core::table_structure_sql::TableStructureSqlOptions,
 ) -> Result<dbx_core::table_structure_sql::TableStructureSqlResult, String> {

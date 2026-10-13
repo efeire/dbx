@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QUERY_EDITOR_FULL_FEATURE_MAX_DOCUMENT_LENGTH } from "@/lib/editor/queryEditorLargeDocument";
+import { assertSourceIdentity, freezeSourceIdentities } from "@/lib/table/objectSourceIdentity";
 
 // issue #9035：源码 tab 必须先出现再加载。这批用例锁定 pending 占位 tab 的
 // 行为契约：立即出现、原地填充、就地重试、加载中被关闭则丢弃、重复点击去重。
@@ -62,6 +63,69 @@ describe("queryStore pending object source tab", () => {
     vi.stubGlobal("localStorage", { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn() });
     setActivePinia(createPinia());
     mocks.connectionStore.dbType = "oracle";
+  });
+
+  it("rejects a late source response after migration and preserves a dirty old draft", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    let resolveSource!: (value: unknown) => void;
+    mocks.getObjectSource.mockReturnValue(new Promise((resolve) => (resolveSource = resolve)));
+    const id = store.openObjectSourceTabPending(pendingOptions({ name: "late_migration", objectType: "VIEW" }));
+    await settle();
+    const migration = freezeSourceIdentities([{ connectionId: CONNECTION_ID, database: DATABASE, schema: SCHEMA, name: "late_migration", objectType: "VIEW" }]);
+    migration.markDispatched();
+    migration.finish();
+    resolveSource(objectSource("CREATE VIEW late_migration AS SELECT 1 FROM dual"));
+    await settle();
+    expect(store.tabs[0]!.objectSource).toBeUndefined();
+    expect(store.tabs[0]!.sourceLoad?.error).toContain("reload");
+
+    mocks.getObjectSource.mockResolvedValue(objectSource("CREATE VIEW late_migration AS SELECT 2 FROM dual"));
+    store.retryObjectSourceTab(id);
+    await settle();
+    const tab = store.tabs[0]!;
+    const old = store.getObjectSourceIdentitySnapshot(tab)!;
+    store.updateSql(id, "my dirty draft");
+    const second = freezeSourceIdentities([old]);
+    second.markDispatched();
+    second.finish();
+    store.openObjectSourceTabPending(pendingOptions({ name: "late_migration", objectType: "VIEW" }));
+    await settle();
+    expect(tab.sql).toBe("my dirty draft");
+    expect(() => assertSourceIdentity(store.getObjectSourceIdentitySnapshot(tab)!)).toThrow();
+    expect(store.isTabDirty(tab)).toBe(true);
+  });
+
+  it("does not let background revalidation revive a frozen source but allows explicit refresh", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    mocks.getObjectSource.mockResolvedValue(objectSource("original source"));
+    const options = pendingOptions({ name: "revalidate_migration", objectType: "VIEW" });
+    const id = store.openObjectSourceTabPending(options);
+    await settle();
+    const tab = store.tabs[0]!;
+    const old = store.getObjectSourceIdentitySnapshot(tab)!;
+    let complete!: (value: unknown) => void;
+    mocks.getObjectSource.mockReturnValueOnce(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    store.openObjectSourceTabPending(options);
+    await settle();
+    const migration = freezeSourceIdentities([old]);
+    migration.markDispatched();
+    migration.finish();
+    complete(objectSource("late old source"));
+    await settle();
+    expect(tab.sql).toBe("original source");
+    expect(() => assertSourceIdentity(store.getObjectSourceIdentitySnapshot(tab)!)).toThrow();
+    mocks.getObjectSource.mockResolvedValue(objectSource("fresh rebuilt source"));
+    expect(store.refreshObjectSourceTab(id)).toBe(true);
+    await settle();
+    expect(tab.sql).toBe("fresh rebuilt source");
+    expect(() => assertSourceIdentity(store.getObjectSourceIdentitySnapshot(tab)!)).not.toThrow();
+    expect(() => assertSourceIdentity(old)).toThrow();
   });
 
   it("creates a visible loading tab before the source arrives", async () => {

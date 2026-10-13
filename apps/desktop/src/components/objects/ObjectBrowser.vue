@@ -104,7 +104,9 @@ import { executeOceanbaseTableClone, executeOceanbaseTableCloneData, oceanbaseCl
 import { useOceanbaseCloneDialog } from "@/composables/useOceanbaseCloneDialog";
 import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
+import { assertSourceIdentity, beginSourceSave, captureSourceIdentity, renewSourceIdentity, type SourceIdentitySnapshot } from "@/lib/table/objectSourceIdentity";
 import { buildRenameObjectSql, supportsObjectRename } from "@/lib/table/objectRenameSql";
+import { prepareOracleViewRename, executeOracleViewRename, OracleViewRenameFailure, type OracleViewRenamePlan } from "@/lib/table/oracleViewRename";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
 import { generateDatabaseExportId } from "@/lib/export/databaseExport";
@@ -373,6 +375,7 @@ const renameTarget = ref<ObjectBrowserRow | null>(null);
 const renameInput = ref("");
 const renameError = ref("");
 const renamePreviewSqlText = ref("");
+let viewRenamePlan: OracleViewRenamePlan | undefined;
 const showTruncateConfirm = ref(false);
 const truncateTarget = ref<ObjectBrowserRow | null>(null);
 const truncatePreviewSql = ref("");
@@ -1677,6 +1680,8 @@ async function openSource(row: ObjectBrowserRow) {
   await loadSourcePanel(row);
 }
 
+let sourceIdentity: SourceIdentitySnapshot | undefined;
+
 async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditing?: boolean }) {
   // Starting a different object must invalidate slower source requests before
   // any state is reset, otherwise an old response can populate the new row.
@@ -1701,6 +1706,8 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
   const connectionId = props.connection.id;
   const database = props.database;
   const schema = row.schema || selectedSchema.value || database;
+  const identity = captureSourceIdentity({ connectionId, database, schema, objectType: row.type, name: row.name });
+  sourceIdentity = undefined;
   try {
     const result = await sidePanelGuard.wait(epoch, api.getObjectSource(connectionId, database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined), metadataLoadBudgetMs(props.connection.query_timeout_secs));
     if (sidePanelGuard.isStale(epoch)) return;
@@ -1721,6 +1728,7 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
     if (sidePanelGuard.isStale(epoch)) return;
     // Viewing database source must preserve its original whitespace and comments;
     // formatting remains an explicit editor action instead of altering it on open.
+    sourceIdentity = renewSourceIdentity(identity);
     sourceEditableText.value = editable;
     sourceContent.value = row.type === "SEQUENCE" ? result.source : editable;
     sourceDraft.value = editable;
@@ -1832,6 +1840,7 @@ let renamePreviewRequestId = 0;
 
 async function refreshRenamePreviewSql() {
   const requestId = ++renamePreviewRequestId;
+  viewRenamePlan = undefined;
   const row = renameTarget.value;
   const newName = renameInput.value.trim();
   if (!showRenameDialog.value || !row || !newName || newName === row.name) {
@@ -1843,6 +1852,15 @@ async function refreshRenamePreviewSql() {
     return;
   }
   try {
+    if (effectiveDatabaseType.value === "oceanbase-oracle" && row.type === "VIEW") {
+      const plan = await prepareOracleViewRename({ connectionId: props.connection.id, database: props.database, schema: row.schema || selectedSchema.value || props.database, oldName: row.name, newName });
+      if (requestId === renamePreviewRequestId) {
+        viewRenamePlan = plan;
+        renameError.value = "";
+        renamePreviewSqlText.value = `-- ${t("objects.viewRenameCoverage")}\n\n${plan.statements.join("\n\n")}`;
+      }
+      return;
+    }
     const sql = await buildRenameObjectSql({
       databaseType: effectiveDatabaseType.value,
       objectType: row.type,
@@ -1851,26 +1869,47 @@ async function refreshRenamePreviewSql() {
       newName,
     });
     if (requestId === renamePreviewRequestId) renamePreviewSqlText.value = sql;
-  } catch {
-    if (requestId === renamePreviewRequestId) renamePreviewSqlText.value = "";
+  } catch (error) {
+    if (requestId === renamePreviewRequestId) {
+      renamePreviewSqlText.value = "";
+      if (effectiveDatabaseType.value === "oceanbase-oracle" && row.type === "VIEW") renameError.value = error instanceof Error ? error.message : String(error);
+    }
   }
 }
 
-watch([showRenameDialog, renameTarget, renameInput, selectedSchema], () => {
-  void refreshRenamePreviewSql();
+watch([showRenameDialog, renameTarget, renameInput, selectedSchema, () => props.connection.id, () => props.database], (_value, _oldValue, onCleanup) => {
+  ++renamePreviewRequestId;
+  viewRenamePlan = undefined;
+  if (effectiveDatabaseType.value !== "oceanbase-oracle" || renameTarget.value?.type !== "VIEW") {
+    void refreshRenamePreviewSql();
+    return;
+  }
+  const timer = setTimeout(() => void refreshRenamePreviewSql(), 250);
+  onCleanup(() => clearTimeout(timer));
 });
 
 async function confirmRename() {
   const row = renameTarget.value;
-  const newName = renameInput.value.trim();
+  let newName = renameInput.value.trim();
   if (!row || !newName || newName === row.name) return;
   renameError.value = "";
   const oldPinnedNode = pinnedTreeNodeForObjectBrowserRow(row);
   const oldLegacyPinnedNodes = legacyPinnedTreeNodesForObjectBrowserRow(row);
   let renameApplied = false;
+  let updatedViewDependencies: number | undefined;
   try {
     const schema = row.schema || selectedSchema.value || props.database;
-    if (supportsSourceBackedRoutineRename(effectiveDatabaseType.value, row.type as ObjectSourceKind)) {
+    if (effectiveDatabaseType.value === "oceanbase-oracle" && row.type === "VIEW") {
+      const plan = viewRenamePlan;
+      if (!plan || plan.target.newName !== newName || plan.target.oldName !== row.name || plan.target.schema !== schema || plan.target.connectionId !== props.connection.id || plan.target.database !== props.database) throw new Error(t("objects.viewRenameRefresh"));
+      const executed = await executeObjectBrowserSqlWithProductionGuard(plan.statements.join("\n"), async () => {
+        await executeOracleViewRename(plan, () => viewRenamePlan === plan && showRenameDialog.value && props.connection.id === plan.target.connectionId && props.database === plan.target.database && (row.schema || selectedSchema.value || props.database) === plan.target.schema);
+        return true;
+      });
+      if (!executed) return;
+      newName = plan.canonicalNewName;
+      updatedViewDependencies = plan.views.length - 1;
+    } else if (supportsSourceBackedRoutineRename(effectiveDatabaseType.value, row.type as ObjectSourceKind)) {
       const source = await api.getObjectSource(props.connection.id, props.database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined);
       const statements = await buildRoutineRenameObjectSourceStatements({
         databaseType: effectiveDatabaseType.value,
@@ -1899,9 +1938,9 @@ async function confirmRename() {
       if (!executed) return;
     }
     renameApplied = true;
-    toast(t("contextMenu.renameObjectSuccess", { oldName: row.name, newName }));
+    toast(updatedViewDependencies === undefined ? t("contextMenu.renameObjectSuccess", { oldName: row.name, newName }) : t("objects.viewRenameSuccess", { oldName: row.name, newName, count: updatedViewDependencies }));
     showRenameDialog.value = false;
-    if (sourceRow.value?.id === row.id) closeSource();
+    if (sourceRow.value?.id === row.id && updatedViewDependencies === undefined) closeSource();
     const renamedTarget = { ...oldPinnedNode, label: newName, objectName: newName, tableName: newName };
     await reload();
     await connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, row.schema || selectedSchema.value);
@@ -1919,6 +1958,11 @@ async function confirmRename() {
       connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
     }
   } catch (e: any) {
+    if (e instanceof OracleViewRenameFailure) {
+      connectionStore.removePinnedTreeNodes([oldPinnedNode, ...oldLegacyPinnedNodes], canonicalizeObjectBrowserPinnedIdentity);
+      renamePreviewSqlText.value += `\n\n-- ${t("objects.viewRenameRecovery")}\n${e.plan.views.map((view) => view.source).join("\n\n")}`;
+      viewRenamePlan = undefined;
+    }
     if (renameApplied) {
       // The database mutation succeeded even when metadata refresh did not;
       // remove the old pin instead of allowing it to revive later.
@@ -3283,6 +3327,7 @@ function cancelEditSource() {
 }
 
 async function saveSource() {
+  if (sourceSaving.value || sourceLoading.value) return;
   if (!sourceCanEdit.value) {
     toast(t("objects.sourceReadOnly"), 3000);
     return;
@@ -3293,31 +3338,43 @@ async function saveSource() {
   const connectionId = props.connection.id;
   const database = props.database;
   const schema = row.schema || selectedSchema.value || database;
+  const connection = props.connection;
+  const databaseType = effectiveDatabaseType.value;
   sourceSaving.value = true;
   sourceSaveError.value = "";
   try {
+    if (!sourceIdentity) return;
+    const identity = sourceIdentity;
+    assertSourceIdentity(identity);
     const statements = await buildExecutableObjectSourceStatements({
-      databaseType: effectiveDatabaseType.value,
+      databaseType,
       objectType: row.type as ObjectSourceKind,
       schema,
       name: row.name,
       source: sourceDraft.value,
     });
+    const execute = async () => {
+      if (sidePanelGuard.isStale(epoch) || sourceRow.value !== row) return false;
+      const release = beginSourceSave(identity);
+      try {
+        await executeObjectSourceSave(connectionId, database, databaseType, statements, schema);
+        return true;
+      } finally {
+        release();
+      }
+    };
     const executableSql = statements.filter((sql) => sql.trim()).join(";\n");
     if (executableSql.trim()) {
       const saved = await executeWithProductionSqlGuard({
-        connection: props.connection,
+        connection,
         database,
         sql: executableSql,
         source: t("production.sourceObjectSource"),
-        execute: async () => {
-          await executeObjectSourceSave(connectionId, database, effectiveDatabaseType.value, statements, schema);
-          return true;
-        },
+        execute,
       });
       if (!saved || sidePanelGuard.isStale(epoch)) return;
     } else {
-      await executeObjectSourceSave(connectionId, database, effectiveDatabaseType.value, statements, schema);
+      if (!(await execute())) return;
       if (sidePanelGuard.isStale(epoch)) return;
     }
     toast(t("objects.sourceSaved"));
@@ -3326,7 +3383,7 @@ async function saveSource() {
     await openSource(row);
   } catch (e: unknown) {
     if (sidePanelGuard.isStale(epoch)) return;
-    sourceSaveError.value = formatObjectSourceSaveError(e, effectiveDatabaseType.value, row.type as ObjectSourceKind, t("objects.postgresViewColumnChangeHint"));
+    sourceSaveError.value = formatObjectSourceSaveError(e, databaseType, row.type as ObjectSourceKind, t("objects.postgresViewColumnChangeHint"));
   } finally {
     if (sidePanelGuard.isFresh(epoch)) sourceSaving.value = false;
   }

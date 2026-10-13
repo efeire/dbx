@@ -199,6 +199,7 @@ import type { DuplicateTableStructurePlan } from "@/lib/database/dbAdminSql";
 import { useOceanbaseCloneDialog } from "@/composables/useOceanbaseCloneDialog";
 import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
 import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
+import { prepareOracleViewRename, executeOracleViewRename, OracleViewRenameFailure, type OracleViewRenamePlan } from "@/lib/table/oracleViewRename";
 import { buildRoutineRenameObjectSourceStatements, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildViewDdl } from "@/lib/table/viewDdl";
 import { formatSqlForDisplay, sqlFormatDialectForDbType } from "@/lib/sql/sqlFormatter";
@@ -3501,10 +3502,12 @@ async function executeTreeNodeSqlWithProductionGuard(
 }
 
 let renameObjectPreviewRequestId = 0;
+let viewRenamePlan: OracleViewRenamePlan | undefined;
 
 async function refreshRenameObjectPreviewSql() {
-  const node = activeNode.value;
+  const node = sidebarFormTarget.value ?? activeNode.value;
   const requestId = ++renameObjectPreviewRequestId;
+  viewRenamePlan = undefined;
   const newName = renameObjectName.value.trim();
   if (!showRenameObjectDialog.value || !newName || newName === node.label) {
     renameObjectPreviewSql.value = "";
@@ -3534,6 +3537,15 @@ async function refreshRenameObjectPreviewSql() {
     return;
   }
   try {
+    if (databaseTypeForNode(node) === "oceanbase-oracle" && objectType === "VIEW" && node.connectionId && node.database) {
+      const plan = await prepareOracleViewRename({ connectionId: node.connectionId, database: node.database, schema: node.schema || node.database, oldName: node.objectName || node.label, newName });
+      if (requestId === renameObjectPreviewRequestId) {
+        viewRenamePlan = plan;
+        renameObjectError.value = "";
+        renameObjectPreviewSql.value = `-- ${t("objects.viewRenameCoverage")}\n\n${plan.statements.join("\n\n")}`;
+      }
+      return;
+    }
     const sql = await buildRenameObjectSql({
       databaseType: currentDatabaseType(),
       objectType,
@@ -3542,21 +3554,32 @@ async function refreshRenameObjectPreviewSql() {
       newName,
     });
     if (requestId === renameObjectPreviewRequestId) renameObjectPreviewSql.value = sql;
-  } catch {
-    if (requestId === renameObjectPreviewRequestId) renameObjectPreviewSql.value = "";
+  } catch (error) {
+    if (requestId === renameObjectPreviewRequestId) {
+      renameObjectPreviewSql.value = "";
+      if (databaseTypeForNode(node) === "oceanbase-oracle" && objectType === "VIEW") renameObjectError.value = error instanceof Error ? error.message : String(error);
+    }
   }
 }
 
-watch([showRenameObjectDialog, renameObjectName, () => activeNode.value.label, () => activeNode.value.schema, () => activeNode.value.type, () => currentDatabaseType()], () => {
-  void refreshRenameObjectPreviewSql();
+watch([showRenameObjectDialog, renameObjectName, () => activeNode.value.label, () => activeNode.value.schema, () => activeNode.value.type, () => currentDatabaseType()], (_value, _oldValue, onCleanup) => {
+  ++renameObjectPreviewRequestId;
+  viewRenamePlan = undefined;
+  if (currentDatabaseType() !== "oceanbase-oracle" || activeNode.value.type !== "view") {
+    void refreshRenameObjectPreviewSql();
+    return;
+  }
+  const timer = setTimeout(() => void refreshRenameObjectPreviewSql(), 250);
+  onCleanup(() => clearTimeout(timer));
 });
 
 async function confirmRenameObject() {
   const node = sidebarFormTarget.value ?? activeNode.value;
-  const newName = renameObjectName.value.trim();
+  let newName = renameObjectName.value.trim();
   if (!newName || newName === node.label || !node.connectionId || !node.database) return;
   renameObjectError.value = "";
   let renameApplied = false;
+  let updatedViewDependencies: number | undefined;
   try {
     const dbType = databaseTypeForNode(node);
     await connectionStore.ensureConnected(node.connectionId);
@@ -3615,7 +3638,20 @@ async function confirmRenameObject() {
 
     const objectType = node.type === "table" ? "TABLE" : node.type === "view" ? "VIEW" : node.type === "materialized_view" ? "MATERIALIZED_VIEW" : node.type === "procedure" ? "PROCEDURE" : node.type === "function" ? "FUNCTION" : null;
     if (!objectType) return;
-    if (supportsSourceBackedRoutineRename(dbType, objectType as any)) {
+    if (dbType === "oceanbase-oracle" && objectType === "VIEW") {
+      const plan = viewRenamePlan;
+      if (!plan || plan.target.newName !== newName || plan.target.oldName !== (node.objectName || node.label) || plan.target.schema !== (node.schema || node.database) || plan.target.connectionId !== node.connectionId || plan.target.database !== node.database)
+        throw new Error(t("objects.viewRenameRefresh"));
+      const executed = await executeTreeNodeSqlWithProductionGuard(node, plan.statements.join("\n"), {
+        execute: async () => {
+          await executeOracleViewRename(plan, () => viewRenamePlan === plan && showRenameObjectDialog.value);
+          return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 };
+        },
+      });
+      if (executed === undefined) return;
+      newName = plan.canonicalNewName;
+      updatedViewDependencies = plan.views.length - 1;
+    } else if (supportsSourceBackedRoutineRename(dbType, objectType as any)) {
       const schema = node.schema || node.database;
       const source = await api.getObjectSource(node.connectionId, node.database, schema, node.objectName || node.label, objectType as any, node.signature);
       const statements = await buildRoutineRenameObjectSourceStatements({
@@ -3627,7 +3663,8 @@ async function confirmRenameObject() {
         source: source.source,
       });
       for (const sql of statements) {
-        await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema });
+        const executed = await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema });
+        if (executed === undefined) return;
       }
     } else {
       const sql = await buildRenameObjectSql({
@@ -3637,15 +3674,21 @@ async function confirmRenameObject() {
         oldName: node.label,
         newName,
       });
-      await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema: node.schema });
+      const executed = await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema: node.schema });
+      if (executed === undefined) return;
     }
     renameApplied = true;
-    toast(t("contextMenu.renameObjectSuccess", { oldName: node.label, newName }), 3000);
+    toast(updatedViewDependencies === undefined ? t("contextMenu.renameObjectSuccess", { oldName: node.label, newName }) : t("objects.viewRenameSuccess", { oldName: node.label, newName, count: updatedViewDependencies }), 3000);
     showRenameObjectDialog.value = false;
     const renamedNode: TreeNode = { ...node, label: newName, objectName: newName, tableName: newName };
     await refreshTableList(node);
     connectionStore.replacePinnedTreeNode(node, renamedNode);
   } catch (e: any) {
+    if (e instanceof OracleViewRenameFailure) {
+      connectionStore.removePinnedTreeNodes([node]);
+      renameObjectPreviewSql.value += `\n\n-- ${t("objects.viewRenameRecovery")}\n${e.plan.views.map((view) => view.source).join("\n\n")}`;
+      viewRenamePlan = undefined;
+    }
     if (renameApplied) {
       // The database mutation succeeded even when metadata refresh did not;
       // remove the old pin instead of allowing it to revive later.

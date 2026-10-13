@@ -4375,6 +4375,10 @@ export default withEnglishFallback({
     gridfs: "GridFS",
   },
   objects: {
+    viewRenameSuccess: "已將 {oldName} 更名為 {newName}，並更新 {count} 個可見檢視相依性。",
+    viewRenameCoverage: "自動更新目前帳號可見的同擁有者靜態檢視相依性。不可見的跨擁有者相依性、動態 SQL 和應用程式參照不會遷移，改名後可能失效。",
+    viewRenameRefresh: "名稱或目標已變更，請等待預覽重新整理後再確認。",
+    viewRenameRecovery: "原始定義供核對復原使用；執行前請先檢查資料庫現況，避免覆寫並行修改。",
     validStatus: "VALID",
     invalidStatus: "INVALID",
     all: "全部",

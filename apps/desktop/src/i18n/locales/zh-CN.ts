@@ -5345,6 +5345,10 @@ export default withEnglishFallback({
     anyPrivilegeDisabled: "ANY 类权限已被 DM8 禁用（ENABLE_DDL_ANY_PRIV=0），无法授予或回收",
   },
   objects: {
+    viewRenameSuccess: "已将 {oldName} 更名为 {newName}，并更新 {count} 个可见视图依赖。",
+    viewRenameCoverage: "自动更新当前账号可见的同属主静态视图依赖。不可见的跨属主依赖、动态 SQL 和应用引用不会迁移，改名后可能失效。",
+    viewRenameRefresh: "名称或目标已变化，请等待预览刷新后再确认。",
+    viewRenameRecovery: "原始定义供核对恢复使用；执行前请先检查数据库现状，避免覆盖并发修改。",
     all: "全部",
     tables: "表",
     collections: "集合",

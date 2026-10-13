@@ -864,6 +864,8 @@ async fn serve() -> Result<(), String> {
             post(routes::query::build_routine_rename_object_source_statements),
         )
         .route("/query/build-view-ddl-sql", post(routes::query::build_view_ddl_sql))
+        .route("/query/parse-oracle-object-name", post(routes::query::parse_oracle_object_name))
+        .route("/query/build-oracle-view-rename-source", post(routes::query::build_oracle_view_rename_source))
         .route("/query/build-table-structure-change-sql", post(routes::query::build_table_structure_change_sql))
         .route("/query/build-table-owner-change-sql", post(routes::query::build_table_owner_change_sql))
         .route("/query/build-table-partition-operation-sql", post(routes::query::build_table_partition_operation_sql))

@@ -4688,6 +4688,10 @@ export default withEnglishFallback({
     anyPrivilegeDisabled: "ANY系権限はDM8で無効化されています（ENABLE_DDL_ANY_PRIV=0）ため、付与・取り消しはできません",
   },
   objects: {
+    viewRenameSuccess: "{oldName} を {newName} に変更し、見えるビュー依存関係を {count} 件更新しました。",
+    viewRenameCoverage: "現在のユーザーに見える同一所有者の静的ビュー依存関係を更新します。見えない別所有者の依存関係、動的 SQL、アプリケーションの参照は移行されず、名前変更後に動作しなくなる可能性があります。",
+    viewRenameRefresh: "名前または対象が変更されました。プレビューの更新後に確認してください。",
+    viewRenameRecovery: "復旧を検討するための元の定義です。同時変更を上書きしないよう、実行前にデータベースの現在の状態を確認してください。",
     validStatus: "VALID",
     invalidStatus: "INVALID",
     all: "すべて",

@@ -4681,6 +4681,10 @@ export default withEnglishFallback({
     anyPrivilegeDisabled: "ANY 유형 권한은 DM8에서 비활성화되어(ENABLE_DDL_ANY_PRIV=0) 부여하거나 회수할 수 없습니다",
   },
   objects: {
+    viewRenameSuccess: "{oldName}의 이름을 {newName}(으)로 변경하고 보이는 뷰 종속성 {count}개를 업데이트했습니다.",
+    viewRenameCoverage: "현재 계정에 보이는 동일 소유자의 정적 뷰 종속성을 업데이트합니다. 보이지 않는 다른 소유자의 종속성, 동적 SQL 및 애플리케이션 참조는 이전되지 않으며 이름 변경 후 실패할 수 있습니다.",
+    viewRenameRefresh: "이름 또는 대상이 변경되었습니다. 미리 보기가 새로 고쳐진 후 확인하세요.",
+    viewRenameRecovery: "복구 검토용 원본 정의입니다. 동시 변경 사항을 덮어쓰지 않도록 실행 전에 현재 데이터베이스 상태를 확인하세요.",
     validStatus: "VALID",
     invalidStatus: "INVALID",
     all: "전체",

@@ -2275,6 +2275,8 @@ pub fn run() {
             commands::query::build_executable_object_source_sql,
             commands::query::build_editable_object_source,
             commands::query::build_routine_rename_object_source_statements,
+            commands::query::parse_oracle_object_name,
+            commands::query::build_oracle_view_rename_source,
             commands::query::build_view_ddl_sql,
             commands::query::build_table_structure_change_sql,
             commands::query::build_table_owner_change_sql,

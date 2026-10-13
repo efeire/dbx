@@ -4806,6 +4806,10 @@ export default withEnglishFallback({
     anyPrivilegeDisabled: "Los privilegios de tipo ANY están deshabilitados por DM8 (ENABLE_DDL_ANY_PRIV=0) y no se pueden otorgar ni revocar",
   },
   objects: {
+    viewRenameSuccess: "Se cambió el nombre de {oldName} a {newName} y se actualizaron {count} dependencias de vistas visibles.",
+    viewRenameCoverage: "Actualiza las dependencias estáticas de vistas visibles del mismo propietario. Las dependencias no visibles de otros propietarios, el SQL dinámico y las referencias de aplicaciones no se migran y pueden fallar tras el cambio de nombre.",
+    viewRenameRefresh: "El nombre o el destino ha cambiado. Espere a que se actualice la vista previa antes de confirmar.",
+    viewRenameRecovery: "Definiciones originales para revisar la recuperación. Compruebe el estado actual de la base de datos antes de ejecutar para evitar sobrescribir cambios simultáneos.",
     validStatus: "VALID",
     invalidStatus: "INVALID",
     all: "Todos",

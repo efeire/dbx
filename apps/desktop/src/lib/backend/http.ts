@@ -237,6 +237,7 @@ import type { BuildTableSelectSqlOptions } from "@/lib/table/tableSelectSql";
 import type { DatabaseSearchSql, DatabaseSearchSqlOptions, SearchResultWhereOptions } from "@/lib/database/databaseSearch";
 import type { DatabaseStructureSearchSql, DatabaseStructureSearchSqlOptions } from "@/lib/database/databaseStructureSearch";
 import type { BuildEditableObjectSourceSqlInput, BuildRoutineRenameObjectSourceInput } from "@/lib/table/objectSourceEditor";
+import type { OracleViewRenameSource, OracleViewRenameSourceInput } from "@/types/database";
 import type { BuildViewDdlInput } from "@/lib/table/viewDdl";
 import type { BuildRenameObjectSqlOptions } from "@/lib/table/objectRenameSql";
 import type { CreateDatabaseSqlOptions } from "@/lib/database/createDatabaseSql";
@@ -1965,6 +1966,14 @@ export async function buildRoutineRenameObjectSourceStatements(input: BuildRouti
 
 export async function buildViewDdlSql(input: BuildViewDdlInput): Promise<string> {
   return post("/api/query/build-view-ddl-sql", { input });
+}
+
+export async function parseOracleObjectName(input: string): Promise<string> {
+  return post("/api/query/parse-oracle-object-name", { input });
+}
+
+export async function buildOracleViewRenameSource(input: OracleViewRenameSourceInput): Promise<OracleViewRenameSource> {
+  return post("/api/query/build-oracle-view-rename-source", { input });
 }
 
 export async function buildTableStructureChangeSql(options: BuildTableStructureChangeSqlOptions): Promise<TableStructureChangeSql> {

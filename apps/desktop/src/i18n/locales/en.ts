@@ -5354,6 +5354,10 @@ export default {
     anyPrivilegeDisabled: "ANY-type privileges are disabled by DM8 (ENABLE_DDL_ANY_PRIV=0) and cannot be granted or revoked",
   },
   objects: {
+    viewRenameSuccess: "Renamed {oldName} to {newName} and updated {count} visible view dependencies.",
+    viewRenameCoverage: "Updates visible static view dependencies owned by the same user. Invisible cross-owner dependencies, dynamic SQL and application references are not migrated and may fail after renaming.",
+    viewRenameRefresh: "The name or target changed. Wait for the preview to refresh before confirming.",
+    viewRenameRecovery: "Original definitions for recovery review. Check the current database state before executing to avoid overwriting concurrent changes.",
     all: "All",
     tables: "Tables",
     collections: "Collections",
