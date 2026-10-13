@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { createOracleUserAdminActions, oraclePrivilegeSql, oraclePasswordSql } from "@/lib/database/oracleUserAdmin";
+import { buildOracleObjectAuthorizationPlan, createOracleUserAdminActions, oracleDirectGrantsSql, oraclePrivilegeSql, oraclePasswordSql } from "@/lib/database/oracleUserAdmin";
 import { loadOracleSecurity } from "@/lib/database/oracleSecurity";
 
 describe("Oracle user administration", () => {
+  it("uses exact selected metadata identities and rejects implicit or incompatible object scopes", async () => {
+    const snapshot = await loadOracleSecurity(async (sql) => ({ columns: ["USERNAME"], rows: sql.includes("DBA_USERS") ? [["Reader"]] : [] }));
+    const actions = createOracleUserAdminActions(snapshot, "Reader", false)!;
+    const selection = { database: " Mixed.Owner ", preset: "custom" as const, privileges: ["SELECT"], tables: [{ name: "Mixed.Table", objectType: "TABLE" }] };
+    expect(buildOracleObjectAuthorizationPlan(actions, "Reader", [selection], false).steps[0].sql).toBe('GRANT SELECT ON " Mixed.Owner "."Mixed.Table" TO "Reader";');
+    for (const tables of [undefined, [], [{ name: "P", objectType: "PROCEDURE" }]]) expect(() => buildOracleObjectAuthorizationPlan(actions, "Reader", [{ ...selection, tables }], false)).toThrow();
+  });
+  it("displays only visible direct grants without turning inherited or PUBLIC grants into user grants", async () => {
+    const snapshot = await loadOracleSecurity(async () => ({ columns: [], rows: [] }));
+    snapshot.roleGrants.rows = [{ grantee: "Reader", role: "R1", adminOption: false }];
+    snapshot.systemGrants.rows = [{ grantee: "R1", privilege: "CREATE TABLE", adminOption: false }];
+    snapshot.objectGrants.rows = ["Reader", "R1", "PUBLIC"].map((grantee) => ({ grantee, owner: " Mixed.Owner ", objectName: "T", grantor: "OWNER", privilege: "SELECT", grantable: false }));
+    expect(oracleDirectGrantsSql(snapshot, "Reader")).toEqual(['GRANT "R1" TO "Reader";', 'GRANT SELECT ON " Mixed.Owner "."T" TO "Reader";']);
+  });
   it("quotes credentials without allowing a second SQL statement", () => {
     expect(oraclePasswordSql("MixedUser", "test';--/*pass", "old-pass")).toBe('ALTER USER "MixedUser" IDENTIFIED BY "test\';--/*pass" REPLACE "old-pass";');
     for (const password of ["", 'bad"value', "bad\nvalue", "bad\0value"]) expect(() => oraclePasswordSql("APP", password)).toThrow();

@@ -10,7 +10,7 @@ import PasswordInput from "@/components/ui/PasswordInput.vue";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import AuthorizationScopeEditor from "@/components/admin/AuthorizationScopeEditor.vue";
 import OracleSecurityDetails from "@/components/admin/OracleSecurityDetails.vue";
-import { createOracleUserAdminActions, oraclePrivilegesForScope } from "@/lib/database/oracleUserAdmin";
+import { buildOracleObjectAuthorizationPlan, createOracleUserAdminActions, oracleGrantObjectsSql, oraclePrivilegesForScope } from "@/lib/database/oracleUserAdmin";
 import { loadOracleSecurity, supportsOracleSecurity, ORACLE_SECURITY_ROW_LIMIT, type OracleSecuritySnapshot } from "@/lib/database/oracleSecurity";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useToast } from "@/composables/useToast";
@@ -116,6 +116,7 @@ const tableGrantLoadError = ref("");
 let createPlanRequestId = 0;
 let tableGrantRequestId = 0;
 let databaseLoadPromise: Promise<void> | undefined;
+let databaseRequestId = 0;
 let preserveRestoredPrivilegeSelection = restoredUiState.selectedPrivileges !== undefined || restoredUiState.grantOption !== undefined;
 
 trackUiState(() => ({
@@ -164,9 +165,22 @@ const grantsSqlText = computed(() => grants.value.join("\n") || t("userAdmin.noG
 const highlightedGrantsSql = computed(() => highlight(grantsSqlText.value));
 const highlightedPendingSql = computed(() => highlight(pendingDisplaySql.value || pendingSql.value));
 const createDatabaseAuthorizationsValid = computed(() => authorizationSelectionsValid(createDatabaseAuthorizations.value));
-const usePrivilegeScopeEditor = computed(() => canEditPrivileges.value && supportsCreateTableGrants.value && privilegeScope.value !== "role" && (provider.value?.authorizationModel !== "postgres" || privilegeScope.value === "table"));
+const usePrivilegeScopeEditor = computed(() => canEditPrivileges.value && (isOracle.value ? privilegeScope.value === "table" : supportsCreateTableGrants.value && privilegeScope.value !== "role" && (provider.value?.authorizationModel !== "postgres" || privilegeScope.value === "table")));
+const oracleObjectScope = computed(() => {
+  if (!isOracle.value) return undefined;
+  const connectionId = props.connection.id;
+  return {
+    privileges: oraclePrivilegesForScope("table"),
+    async loadObjects(owner: string) {
+      const result = await api.executeQuery(connectionId, "", oracleGrantObjectsSql(owner), undefined, undefined, { maxRows: ORACLE_SECURITY_ROW_LIMIT });
+      if (result.execution_error) throw new Error(t("oracleSecurity.error"));
+      if (result.truncated || result.has_more || result.rows.length >= ORACLE_SECURITY_ROW_LIMIT) throw new Error(t("oracleSecurity.truncated"));
+      return result.rows.map((row) => ({ name: String(row[0]), objectType: String(row[1]) }));
+    },
+  };
+});
 const privilegeAuthorizationsValid = computed(() => authorizationSelectionsValid(privilegeAuthorizations.value));
-const tableGrantDiffReady = computed(() => provider.value?.authorizationModel === "mysql" || currentTableGrantsLoaded.value);
+const tableGrantDiffReady = computed(() => isOracle.value || provider.value?.authorizationModel === "mysql" || currentTableGrantsLoaded.value);
 const pendingStatus = computed(() => (pendingResults.value.length > 0 ? authorizationPlanStatus(pendingResults.value) : undefined));
 const canPreviewHostChange = computed(() => {
   const host = newHost.value.trim();
@@ -206,10 +220,6 @@ function userDetail(user: DatabaseUserIdentity): string {
     return account ? account.accountStatus || t("oracleSecurity.accountUnavailable") : "";
   }
   return provider.value?.detail(user) || "";
-}
-
-async function ensureConnection() {
-  await connectionStore.ensureConnected(props.connection.id, { skipIfClosedByUser: true });
 }
 
 async function loadUsers() {
@@ -397,32 +407,39 @@ function loadDatabases(): Promise<void> {
   if (passwordReconnectRequired.value) return Promise.resolve();
   if (databaseLoadPromise) return databaseLoadPromise;
   let request!: Promise<void>;
+  const config = { ...props.connection };
+  const generation = ++databaseRequestId;
+  const current = () => config.id === props.connection.id && generation === databaseRequestId;
   request = (async () => {
     createDatabases.value = [];
     createDatabasesLoading.value = true;
     createDatabasesLoadError.value = "";
     try {
-      await ensureConnection();
-      if (passwordReconnectRequired.value) return;
-      const config = props.connection;
+      await connectionStore.ensureConnected(config.id, { skipIfClosedByUser: true });
+      if (!current() || passwordReconnectRequired.value) return;
       if (provider.value?.authorizationModel === "starrocks") {
         const catalogs = await api.listDorisCatalogs(config.id);
         if (catalogs.length > 0) {
           const catalogDatabases = await Promise.all(catalogs.map(async (catalog) => (await api.listDorisCatalogDatabases(config.id, catalog.name)).map((database) => ({ catalog: catalog.name, database: database.name }))));
+          if (!current()) return;
           createDatabases.value = catalogDatabases.flat();
         } else {
-          createDatabases.value = (await api.listDatabases(config.id)).map((database) => ({ database: database.name }));
+          const databases = await api.listDatabases(config.id);
+          if (!current()) return;
+          createDatabases.value = databases.map((database) => ({ database: database.name }));
         }
       } else {
-        const databases = config.db_type === "dameng" ? await fetchNamespaceOptionsForConnection(config.id, config) : (await api.listDatabases(config.id)).map((database) => database.name);
+        const databases = config.db_type === "dameng" || supportsOracleSecurity(config) ? await fetchNamespaceOptionsForConnection(config.id, config) : (await api.listDatabases(config.id)).map((database) => database.name);
+        if (!current()) return;
         createDatabases.value = databases.map((database) => ({ database }));
       }
       if (currentTableGrantsLoaded.value) syncAuthorizationSelectionsFromTableGrants();
     } catch (error: any) {
+      if (!current()) return;
       createDatabasesLoadError.value = error?.message || String(error);
       toast(t("userAdmin.loadDatabasesFailed", { message: createDatabasesLoadError.value }), 5000);
     } finally {
-      createDatabasesLoading.value = false;
+      if (current()) createDatabasesLoading.value = false;
       if (databaseLoadPromise === request) databaseLoadPromise = undefined;
     }
   })();
@@ -444,6 +461,15 @@ async function openCreateUserDialog() {
  * 表级与库级可用权限不同（例如 MySQL 表级不支持 CREATE ROUTINE / EVENT），因此按选择的目标作用域取权限集合。
  */
 function authorizationSelectionsValid(selections: DatabaseAuthorizationSelection[]): boolean {
+  if (isOracle.value) {
+    if (!selections.length) return false;
+    try {
+      buildOracleObjectAuthorizationPlan(actions.value!, selectedUser.value?.user ?? "", selections, grantOption.value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   const userProvider = provider.value;
   if (!userProvider) return false;
   return selections.every((selection) => {
@@ -508,7 +534,18 @@ async function applyPendingSql() {
       execute: async () => {
         if (!sqlDialogOpen.value || pendingSql.value !== sql || props.connection.id !== connection.id || generation !== previewGeneration) return undefined;
         if (plan) {
-          return executeAuthorizationPlan(plan, (step) => api.executeMulti(connection.id, step.database, step.sql, undefined, undefined, { maxRows: 1000, catalog: step.targetCatalog, continueOnError: step.targetCatalog ? false : true }));
+          return executeAuthorizationPlan(plan, async (step) => {
+            if (oracleAction && (!sqlDialogOpen.value || props.connection.id !== connection.id || generation !== previewGeneration)) throw new Error(t("oracleSecurity.writeUnknown"));
+            const results = await api.executeMulti(connection.id, step.database, step.sql, undefined, undefined, { maxRows: 1000, catalog: step.targetCatalog, continueOnError: oracleAction || step.targetCatalog ? false : true }).catch((error) => {
+              if (oracleAction) throw new Error(oracleWriteError(String(error)));
+              throw error;
+            });
+            if (oracleAction) {
+              if (!Array.isArray(results) || results.length !== 1) throw new Error(t("oracleSecurity.writeUnknown"));
+              if (results[0].execution_error) throw new Error(oracleWriteError(String(results[0].rows[0]?.[0] ?? ""), true));
+            }
+            return results;
+          });
         }
         const queryResults = await api.executeMulti(connection.id, "", sql, undefined, undefined, { maxRows: 1000, continueOnError: true });
         if (oracleAction && queryResults.length !== 1) throw new Error("Missing statement acknowledgement");
@@ -537,6 +574,7 @@ async function applyPendingSql() {
     if (!result) return;
     if (passwordChange?.selfChange) return;
     if (props.connection.id !== connection.id) return;
+    if (oracleAction && generation !== previewGeneration) return;
     pendingResults.value = result;
     const status = result.length > 0 ? authorizationPlanStatus(result) : "success";
     toast(t(status === "success" ? "userAdmin.applySuccess" : status === "partial" ? "userAdmin.applyPartial" : "userAdmin.applyFailedSummary"), status === "success" ? 2500 : 5000);
@@ -548,11 +586,7 @@ async function applyPendingSql() {
   } catch (error: any) {
     let message = error?.message || String(error);
     if (oracleAction) {
-      const match = String(message).match(/^(?:Error:\s*)?((?:ORA|OBE)-(\d{4,5}))\b/);
-      // executeMulti also wraps transport failures as execution_error. Only
-      // explicit statement refusals establish that the mutation was rejected.
-      const rejected = executionError && ["01031", "00942", "00904", "00990", "01917", "01919", "01926", "01720", "28003", "28007", "28008"].includes(match?.[2] ?? "");
-      message = `${match ? match[1] + " · " : ""}${t(rejected ? "oracleSecurity.writeRejected" : "oracleSecurity.writeUnknown")}`;
+      message = oracleWriteError(String(message), executionError);
     }
     for (const secret of passwordSecrets) {
       message = message.replaceAll(secret.replaceAll("'", "''"), "***").replaceAll(secret, "***");
@@ -561,6 +595,13 @@ async function applyPendingSql() {
   } finally {
     applying.value = false;
   }
+}
+
+function oracleWriteError(message: string, executionError = false): string {
+  const match = message.match(/^(?:Error:\s*)?((?:ORA|OBE)-(\d{4,5}))\b/);
+  // Transport errors can also arrive as execution_error; only explicit refusal codes establish rejection.
+  const rejected = executionError && ["01031", "00942", "00904", "00990", "01917", "01919", "01926", "01720", "28003", "28007", "28008"].includes(match?.[2] ?? "");
+  return `${match ? match[1] + " · " : ""}${t(rejected ? "oracleSecurity.writeRejected" : "oracleSecurity.writeUnknown")}`;
 }
 
 function clearPendingSql() {
@@ -735,6 +776,9 @@ function previewLoginChange(enabled: boolean) {
  */
 function previewPlan(plan: AuthorizationPlan, options: { danger?: boolean } = {}) {
   if (plan.steps.length === 0) return;
+  previewGeneration++;
+  pendingDisplaySql.value = "";
+  pendingPasswordChange.value = undefined;
   pendingPlan.value = plan;
   pendingSql.value = authorizationPlanSql(plan);
   pendingResults.value = [];
@@ -748,6 +792,10 @@ async function previewGrant() {
   const userProvider = provider.value;
   const grantPrivilegesSql = actions.value?.grantPrivilegesSql;
   if (!user || !grantPrivilegesSql || (privilegeScope.value === "role" && !privilegeRole.value.trim())) return;
+  if (isOracle.value && usePrivilegeScopeEditor.value) {
+    if (privilegeAuthorizationsValid.value) previewPlan(buildOracleObjectAuthorizationPlan(actions.value!, user.user, privilegeAuthorizations.value, grantOption.value));
+    return;
+  }
   if (usePrivilegeScopeEditor.value && userProvider) {
     if (!privilegeAuthorizationsValid.value || !tableGrantDiffReady.value) return;
     const databases = await prepareAuthorizationSelections(privilegeAuthorizations.value);
@@ -780,6 +828,10 @@ async function previewRevoke() {
   const userProvider = provider.value;
   const revokePrivilegesSql = actions.value?.revokePrivilegesSql;
   if (!user || !revokePrivilegesSql || (privilegeScope.value === "role" && !privilegeRole.value.trim())) return;
+  if (isOracle.value && usePrivilegeScopeEditor.value) {
+    if (privilegeAuthorizationsValid.value) previewPlan(buildOracleObjectAuthorizationPlan(actions.value!, user.user, privilegeAuthorizations.value, false, true), { danger: true });
+    return;
+  }
   if (usePrivilegeScopeEditor.value && userProvider) {
     if (!privilegeAuthorizationsValid.value || !tableGrantDiffReady.value) return;
     const databases = await prepareAuthorizationSelections(privilegeAuthorizations.value);
@@ -863,6 +915,8 @@ watch(
   () => {
     usersRequestId++;
     grantsRequestId++;
+    databaseRequestId++;
+    databaseLoadPromise = undefined;
     oracleSnapshot.value = undefined;
     clearPendingSql();
     passwordDialogOpen.value = false;
@@ -914,7 +968,7 @@ watch(
 
 watch([privilegeDatabase, privilegeTable], syncPrivilegeSelectionFromGrants);
 watch(
-  [privilegeDatabase, privilegeTable, privilegeScope, privilegeRole, grantOption, selectedPrivileges, newPassword, oldPassword],
+  [privilegeDatabase, privilegeTable, privilegeScope, privilegeRole, grantOption, selectedPrivileges, privilegeAuthorizations, newPassword, oldPassword],
   () => {
     if (isOracle.value && sqlDialogOpen.value) clearPendingSql();
   },
@@ -937,6 +991,7 @@ onBeforeUnmount(() => {
   clearPendingSql();
   usersRequestId++;
   grantsRequestId++;
+  databaseRequestId++;
 });
 </script>
 
@@ -1062,7 +1117,7 @@ onBeforeUnmount(() => {
               <div class="text-xs font-semibold">{{ t("userAdmin.privilegeEditor") }}</div>
               <div class="mt-1 text-[11px] leading-4 text-muted-foreground">{{ t(isOracle ? "oracleSecurity.managementHint" : usePrivilegeScopeEditor && provider?.authorizationModel === "mysql" ? "userAdmin.privilegeAppendHint" : "userAdmin.privilegeHint") }}</div>
             </div>
-            <div class="min-h-0 flex-1 overflow-auto p-3">
+            <div class="min-h-0 flex-1 overflow-auto p-3" :class="{ 'flex flex-col': isOracle }">
               <template v-if="isPostgres || isOracle">
                 <label class="mb-2 block text-xs font-medium">{{ t("userAdmin.scope") }}</label>
                 <Select v-model="privilegeScope">
@@ -1083,22 +1138,25 @@ onBeforeUnmount(() => {
                 <label class="mb-2 block text-xs font-medium">{{ t("userAdmin.memberRole") }}</label>
                 <Input v-model="privilegeRole" class="mb-3 h-8 text-xs" :placeholder="t('userAdmin.memberRole')" />
               </template>
-              <div v-else-if="usePrivilegeScopeEditor" class="flex h-full min-h-0 flex-col gap-2">
-                <AuthorizationScopeEditor v-model="privilegeAuthorizations" compact :provider="provider" :databases="createDatabases" :databases-loading="createDatabasesLoading" :connection-id="connection.id" />
+              <div v-else-if="usePrivilegeScopeEditor" class="flex min-h-0 flex-col gap-2" :class="isOracle ? 'flex-1' : 'h-full'">
+                <p v-if="isOracle" class="text-[11px] text-muted-foreground">{{ t("oracleSecurity.limited") }}</p>
+                <p v-if="createDatabasesLoadError" class="text-[11px] text-destructive">{{ createDatabasesLoadError }}</p>
+                <p v-if="isOracle && privilegeAuthorizations.length && !privilegeAuthorizationsValid" class="text-[11px] text-destructive">{{ t("oracleSecurity.invalidObjectSelection") }}</p>
+                <AuthorizationScopeEditor :key="connection.id" v-model="privilegeAuthorizations" compact :provider="provider" :object-scope="oracleObjectScope" :databases="createDatabases" :databases-loading="createDatabasesLoading" :connection-id="connection.id" />
                 <div v-if="currentTableGrantsLoading" class="flex items-center gap-2 text-[11px] text-muted-foreground">
                   <Loader2 class="h-3.5 w-3.5 animate-spin" />
                   {{ t("userAdmin.loadingGrants") }}
                 </div>
                 <p v-else-if="tableGrantLoadError" class="text-[11px] text-destructive">{{ tableGrantLoadError }}</p>
               </div>
-              <template v-else-if="!isOracle || privilegeScope === 'table'">
+              <template v-else-if="!isOracle">
                 <label class="mb-2 block text-xs font-medium">
-                  {{ isOracle ? t("oracleSecurity.owner") : isPostgres && privilegeScope !== "database" ? t("userAdmin.schema") : t("userAdmin.database") }}
+                  {{ isPostgres && privilegeScope !== "database" ? t("userAdmin.schema") : t("userAdmin.database") }}
                 </label>
-                <Input v-model="privilegeDatabase" class="mb-3 h-8 text-xs" :placeholder="isOracle ? 'APP_OWNER' : isPostgres ? 'public' : '*'" />
+                <Input v-model="privilegeDatabase" class="mb-3 h-8 text-xs" :placeholder="isPostgres ? 'public' : '*'" />
                 <template v-if="!isPostgres || privilegeScope === 'table'">
-                  <label class="mb-2 block text-xs font-medium">{{ t(isOracle ? "oracleSecurity.objectName" : "userAdmin.table") }}</label>
-                  <Input v-model="privilegeTable" class="mb-3 h-8 text-xs" :placeholder="isOracle ? 'ORDERS' : '*'" />
+                  <label class="mb-2 block text-xs font-medium">{{ t("userAdmin.table") }}</label>
+                  <Input v-model="privilegeTable" class="mb-3 h-8 text-xs" placeholder="*" />
                 </template>
               </template>
 

@@ -66,8 +66,13 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    directSqlNotice: "僅顯示可見的直接授權，不代表工作階段有效權限，也不是完整重播指令碼。繼承及授予者請見來源詳情。",
+    searchOwner: "搜尋 owner/schema",
+    chooseObjects: "選擇物件",
+    searchObjects: "搜尋物件",
+    invalidObjectSelection: "請選擇具體物件，以及適用於每個所選物件的權限。",
     sourceNotice: "授予來源不代表目前工作階段的有效權限。",
-    managementHint: "管理語句可能隱含提交。撤銷僅針對所選主體的直接授權，其他來源可能仍有效。物件名稱預設轉為大寫，雙引號保留大小寫。",
+    managementHint: "管理語句可能隱含提交。撤銷僅針對所選主體的直接授權，其他來源可能仍有效。",
     writeRejected: "資料庫拒絕此操作。請核對權限、物件和輸入後重新預覽。",
     writeUnknown: "執行結果不明。請讀回狀態或重新連線核實，不要直接重試。",
     readDetails: "讀取詳情",

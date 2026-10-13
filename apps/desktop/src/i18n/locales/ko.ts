@@ -64,8 +64,13 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    directSqlNotice: "조회 가능한 직접 부여만 표시하며 세션의 유효 권한이나 완전한 재실행 스크립트가 아닙니다. 상속과 부여자는 출처 상세 정보에 표시됩니다.",
+    searchOwner: "owner/schema 검색",
+    chooseObjects: "객체 선택",
+    searchObjects: "객체 검색",
+    invalidObjectSelection: "구체적인 객체와 선택한 모든 객체에 적용 가능한 권한을 선택하세요.",
     sourceNotice: "권한 부여 출처는 현재 세션의 유효 권한을 의미하지 않습니다.",
-    managementHint: "관리 구문은 암시적으로 커밋될 수 있습니다. 회수는 선택한 주체의 직접 부여만 대상으로 하며 다른 출처는 여전히 유효할 수 있습니다. 이름은 기본적으로 대문자로 변환되며 큰따옴표는 대소문자를 유지합니다.",
+    managementHint: "관리 구문은 암시적으로 커밋될 수 있습니다. 회수는 선택한 주체의 직접 부여만 대상으로 하며 다른 출처는 계속 유효할 수 있습니다.",
     writeRejected: "데이터베이스가 작업을 거부했습니다. 권한, 객체 및 입력을 확인한 후 다시 미리 보세요.",
     writeUnknown: "실행 결과를 알 수 없습니다. 재시도하기 전에 상태를 다시 조회하거나 재연결하여 확인하세요.",
     readDetails: "조회 상세",

@@ -7,6 +7,8 @@ import en from "@/i18n/locales/en";
 const mocks = vi.hoisted(() => ({
   ensureConnected: vi.fn().mockResolvedValue(undefined),
   executeQuery: vi.fn(),
+  listSchemas: vi.fn().mockResolvedValue(["APP_OWNER"]),
+  listDatabases: vi.fn().mockResolvedValue([]),
   executeMulti: vi.fn().mockResolvedValue([{ columns: [], rows: [], execution_error: false }]),
   retirePasswordAfterChange: vi.fn().mockResolvedValue(undefined),
   requestConfirmation: vi.fn().mockResolvedValue(true),
@@ -18,7 +20,7 @@ vi.mock("@/stores/productionSafetyStore", () => ({ useProductionSafetyStore: () 
 vi.mock("@/composables/useSqlHighlighter", () => ({ useSqlHighlighter: () => ({ highlight: (sql: string) => sql }) }));
 vi.mock("@/lib/tabs/tabUiState", () => ({ useTabUiState: () => ({ initialState: {}, track: vi.fn() }) }));
 vi.mock("@/stores/connectionStore", () => ({ useConnectionStore: () => ({ ensureConnected: mocks.ensureConnected, retirePasswordAfterChange: mocks.retirePasswordAfterChange }) }));
-vi.mock("@/lib/backend/api", () => ({ executeQuery: mocks.executeQuery, executeMulti: mocks.executeMulti }));
+vi.mock("@/lib/backend/api", () => ({ executeQuery: mocks.executeQuery, executeMulti: mocks.executeMulti, listSchemas: mocks.listSchemas, listDatabases: mocks.listDatabases }));
 vi.mock("@/components/ui/button", () => ({
   Button: defineComponent({
     setup:
@@ -229,7 +231,8 @@ describe("Oracle security page", () => {
     expect([...host.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
     expect(host.querySelector('[role="status"]')?.closest("details")).toBeNull();
     expect(host.querySelector('[role="status"]')?.textContent).toContain("incomplete");
-    expect(host.querySelector("[data-oracle-security] > p")?.textContent).toContain("Grant sources do not represent");
+    expect(host.querySelector("[data-oracle-security] > p")?.textContent).toContain(en.oracleSecurity.directSqlNotice);
+    expect(host.querySelector("[data-direct-grants]")?.closest("details")).toBeNull();
     const buttons = [...host.querySelectorAll("button")].map((button) => button.textContent);
     for (const text of [en.userAdmin.newUser, en.userAdmin.changePassword, en.userAdmin.dropUser, en.userAdmin.lock, en.userAdmin.unlock]) expect(buttons).not.toContain(text);
     expect(buttons).toContain(en.userAdmin.grant);
@@ -328,7 +331,18 @@ describe("Oracle security page", () => {
 
 describe("Oracle management through the shared page", () => {
   function setup() {
-    mocks.executeQuery.mockImplementation(async (_id: string, _db: string, sql: string) => ({ columns: ["USERNAME"], rows: sql.includes("FROM DUAL") || sql.includes("DBA_USERS") ? [["Reader"]] : [] }));
+    mocks.executeQuery.mockImplementation(async (_id: string, _db: string, sql: string) =>
+      sql.includes("ALL_OBJECTS")
+        ? {
+            columns: ["OBJECT_NAME", "OBJECT_TYPE"],
+            rows: [
+              ["Mixed.Table", "TABLE"],
+              ["Second", "TABLE"],
+              ["Third", "TABLE"],
+            ],
+          }
+        : { columns: ["USERNAME"], rows: sql.includes("FROM DUAL") || sql.includes("DBA_USERS") ? [["Reader"]] : [] },
+    );
   }
   async function click(text: string) {
     const button = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === text);
@@ -400,14 +414,86 @@ describe("Oracle management through the shared page", () => {
     setup();
     mount();
     await settle();
-    await fill("APP_OWNER", "app_owner");
-    await fill("ORDERS", '"Mixed.Table"');
+    expect(document.querySelector('input[placeholder="APP_OWNER"]')).toBeNull();
+    expect(document.body.textContent).not.toContain(en.userAdmin.globalScope);
+    await click("APP_OWNER");
+    expect(document.body.textContent).not.toContain(en.userAdmin.allTables);
+    await click(`${en.oracleSecurity.chooseObjects} (0)`);
+    await click("Mixed.Table · TABLE");
     await click(en.userAdmin.grant);
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
     await click(en.userAdmin.applySql);
     expect(mocks.executeMulti.mock.calls[0][2]).toBe('GRANT SELECT ON "APP_OWNER"."Mixed.Table" TO "Reader";');
+    expect(mocks.executeQuery.mock.calls.filter((call) => call[2].includes("FROM DUAL")).length).toBe(2);
+    await click(en.common.close);
     await click(en.userAdmin.revoke);
     await click(en.userAdmin.applySql);
     expect(mocks.executeMulti.mock.calls[1][2]).toBe('REVOKE SELECT ON "APP_OWNER"."Mixed.Table" FROM "Reader";');
+  });
+  it.each([
+    { results: [] },
+    {
+      results: [
+        { columns: [], rows: [] },
+        { columns: [], rows: [] },
+      ],
+    },
+  ])("keeps invalid plan acknowledgements unknown and stops subsequent objects: %j", async ({ results }) => {
+    setup();
+    mount();
+    await settle();
+    await click("APP_OWNER");
+    await click(`${en.oracleSecurity.chooseObjects} (0)`);
+    await click("Mixed.Table · TABLE");
+    await click("Second · TABLE");
+    mocks.executeMulti.mockResolvedValueOnce(results);
+    await click(en.userAdmin.grant);
+    await click(en.userAdmin.applySql);
+    expect(mocks.executeMulti).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain(en.oracleSecurity.writeUnknown);
+  });
+  it("preserves a successful first step and stops after a second object is rejected", async () => {
+    setup();
+    mount();
+    await settle();
+    await click("APP_OWNER");
+    await click(`${en.oracleSecurity.chooseObjects} (0)`);
+    for (const name of ["Mixed.Table", "Second", "Third"]) await click(`${name} · TABLE`);
+    mocks.executeMulti.mockResolvedValueOnce([{ columns: [], rows: [] }]).mockResolvedValueOnce([{ execution_error: true, columns: ["error"], rows: [["ORA-01031 rejected"]] }]);
+    await click(en.userAdmin.grant);
+    await click(en.userAdmin.applySql);
+    expect(mocks.executeMulti).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain(en.oracleSecurity.writeRejected);
+    expect(mocks.toast.mock.calls.at(-1)?.[0]).toContain(en.userAdmin.applyPartial);
+  });
+  it("cancels an object plan while production confirmation is pending", async () => {
+    setup();
+    const confirmation = deferred<boolean>();
+    mocks.requestConfirmation.mockReturnValueOnce(confirmation.promise);
+    mount("oracle", { is_production: true });
+    await settle();
+    await click("APP_OWNER");
+    await click(`${en.oracleSecurity.chooseObjects} (0)`);
+    await click("Mixed.Table · TABLE");
+    await click(en.userAdmin.grant);
+    await click(en.userAdmin.applySql);
+    await click(en.dangerDialog.cancel);
+    await click("PUBLIC");
+    confirmation.resolve(true);
+    await settle();
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+  it("blocks truncated object lists without presenting them as an empty successful read", async () => {
+    setup();
+    const query = mocks.executeQuery.getMockImplementation()!;
+    mocks.executeQuery.mockImplementation((id, db, sql) => (sql.includes("ALL_OBJECTS") ? Promise.resolve({ columns: ["OBJECT_NAME", "OBJECT_TYPE"], rows: [["T", "TABLE"]], truncated: true }) : query(id, db, sql)));
+    mount();
+    await settle();
+    await click("APP_OWNER");
+    await click(`${en.oracleSecurity.chooseObjects} (0)`);
+    expect(document.body.textContent).toContain(en.oracleSecurity.truncated);
+    expect([...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === en.userAdmin.grant)?.disabled).toBe(true);
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
   });
   it.each(["connection reset", "statement timed out", "ORA-03113: end-of-file on communication channel"])("keeps a returned execution error outcome unknown: %s", async (message) => {
     setup();

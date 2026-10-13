@@ -64,8 +64,13 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    directSqlNotice: "Solo concessioni dirette visibili, non privilegi effettivi della sessione né uno script completo da rieseguire. Eredità e concedenti sono nei dettagli delle origini.",
+    searchOwner: "Cerca owner/schema",
+    chooseObjects: "Scegli oggetti",
+    searchObjects: "Cerca oggetti",
+    invalidObjectSelection: "Seleziona oggetti specifici e privilegi applicabili a tutti gli oggetti selezionati.",
     sourceNotice: "Le origini dei privilegi non rappresentano i privilegi effettivi della sessione.",
-    managementHint: "Le istruzioni di gestione possono eseguire commit impliciti. La revoca riguarda i privilegi diretti del soggetto selezionato; altre origini possono restare valide. I nomi diventano maiuscoli; le virgolette doppie preservano il caso.",
+    managementHint: "Le istruzioni di gestione possono eseguire commit impliciti. La revoca riguarda solo le concessioni dirette al soggetto selezionato; altre origini possono restare valide.",
     writeRejected: "Il database ha rifiutato l’operazione. Verificare privilegi, oggetti e dati prima di prepararla di nuovo.",
     writeUnknown: "Esito sconosciuto. Rileggere lo stato o riconnettersi per verificarlo prima di riprovare.",
     readDetails: "Dettagli della lettura",

@@ -65,8 +65,13 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    directSqlNotice: "Apenas concessões diretas visíveis, não permissões efetivas da sessão nem um script completo para reprodução. Herança e concedentes estão nos detalhes de origem.",
+    searchOwner: "Pesquisar owner/schema",
+    chooseObjects: "Escolher objetos",
+    searchObjects: "Pesquisar objetos",
+    invalidObjectSelection: "Selecione objetos específicos e privilégios aplicáveis a todos os objetos selecionados.",
     sourceNotice: "As origens das concessões não representam as permissões efetivas da sessão.",
-    managementHint: "Instruções de gestão podem confirmar implicitamente. A revogação afeta concessões diretas ao principal selecionado; outras origens podem continuar válidas. Nomes viram maiúsculas; aspas duplas preservam a caixa.",
+    managementHint: "As instruções de gerenciamento podem confirmar alterações implicitamente. A revogação afeta somente concessões diretas ao principal selecionado; outras origens podem continuar válidas.",
     writeRejected: "O banco de dados rejeitou a operação. Verifique privilégios, objetos e entradas antes de prepará-la novamente.",
     writeUnknown: "O resultado é desconhecido. Consulte o estado ou reconecte-se para verificar antes de tentar novamente.",
     readDetails: "Detalhes da leitura",

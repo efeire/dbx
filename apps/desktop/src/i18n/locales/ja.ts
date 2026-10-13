@@ -65,8 +65,13 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    directSqlNotice: "参照できる直接付与のみを表示します。セッションの有効な権限や完全な再実行スクリプトではありません。継承と付与者は付与元の詳細を参照してください。",
+    searchOwner: "owner/schema を検索",
+    chooseObjects: "オブジェクトを選択",
+    searchObjects: "オブジェクトを検索",
+    invalidObjectSelection: "具体的なオブジェクトと、選択したすべてのオブジェクトに適用できる権限を選択してください。",
     sourceNotice: "付与元は現在のセッションで有効な権限を示すものではありません。",
-    managementHint: "管理文は暗黙的にコミットされる場合があります。取消は選択した主体への直接付与のみを対象とし、他の付与元は有効な場合があります。名前は既定で大文字になり、二重引用符で大小文字を保持できます。",
+    managementHint: "管理文は暗黙的にコミットする場合があります。取消対象は選択した主体への直接付与のみで、他の付与元は引き続き有効な場合があります。",
     writeRejected: "データベースが操作を拒否しました。権限、オブジェクト、入力を確認してから再度プレビューしてください。",
     writeUnknown: "実行結果は不明です。再試行する前に状態を読み直すか再接続して確認してください。",
     readDetails: "読み取りの詳細",

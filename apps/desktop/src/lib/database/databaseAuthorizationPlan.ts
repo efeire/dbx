@@ -19,6 +19,7 @@ export interface DatabaseAuthorizationSelection {
 export interface AuthorizationTableSelection {
   name: string;
   schema?: string;
+  objectType?: string;
 }
 
 export interface AuthorizationDatabaseOption {

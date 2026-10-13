@@ -10,8 +10,13 @@ import { damengDumpZhCN as damengDump } from "./damengDump";
 
 export default withEnglishFallback({
   oracleSecurity: {
+    directSqlNotice: "仅显示可见的直接授权，不代表会话有效权限，也不是完整重放脚本。继承及授予者见来源详情。",
+    searchOwner: "搜索 owner/schema",
+    chooseObjects: "选择对象",
+    searchObjects: "搜索对象",
+    invalidObjectSelection: "请选择具体对象，以及适用于每个所选对象的权限。",
     sourceNotice: "授予来源不代表当前会话的有效权限。",
-    managementHint: "管理语句可能隐式提交。撤销仅针对选中主体的直接授权，其他来源可能仍有效。对象名默认转为大写，双引号保留大小写。",
+    managementHint: "管理语句可能隐式提交。撤销仅针对选中主体的直接授权，其他来源可能仍有效。",
     writeRejected: "数据库拒绝了此操作。请核对权限、对象和输入后重新预览。",
     writeUnknown: "执行结果不明。请读回状态或重新连接核实，不要直接重试。",
     readDetails: "读取详情",

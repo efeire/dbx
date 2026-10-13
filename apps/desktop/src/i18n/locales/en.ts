@@ -64,8 +64,13 @@ const consul = {
 
 export default {
   oracleSecurity: {
+    directSqlNotice: "Visible direct grants only, not effective session permissions or a complete replay script. Inheritance and grantors are in the source details.",
+    searchOwner: "Search owner/schema",
+    chooseObjects: "Choose objects",
+    searchObjects: "Search objects",
+    invalidObjectSelection: "Select specific objects and privileges applicable to every selected object.",
     sourceNotice: "Grant sources do not represent effective session permissions.",
-    managementHint: "Management statements may commit implicitly. Revoke targets direct grants to the selected principal; other sources may still apply. Names default to uppercase; double quotes preserve case.",
+    managementHint: "Management statements may commit implicitly. Revoke targets direct grants to the selected principal; other sources may still apply.",
     writeRejected: "The database rejected the operation. Check privileges, objects and inputs before preparing it again.",
     writeUnknown: "The outcome is unknown. Read back the state or reconnect to verify before retrying.",
     readDetails: "Read details",
