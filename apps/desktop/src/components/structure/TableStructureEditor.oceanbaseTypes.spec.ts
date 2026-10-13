@@ -6,6 +6,7 @@ import i18n from "@/i18n";
 import TableStructureEditor from "./TableStructureEditor.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import type { ConnectionConfig } from "@/types/database";
+import type { EditableStructureColumn } from "@/lib/table/tableStructureEditorSql";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import LightTooltip from "@/components/ui/LightTooltip.vue";
 
@@ -43,7 +44,7 @@ it("filters rejected JDBC recommendations without replacing an existing nonrecom
   const store = useConnectionStore();
   store.connections = [connection];
   store.connectedIds.add(connection.id);
-  const column = {
+  const column: EditableStructureColumn = {
     id: "existing:C",
     name: "C",
     dataType: "NCLOB",
@@ -51,6 +52,7 @@ it("filters rejected JDBC recommendations without replacing an existing nonrecom
     defaultValue: "",
     comment: "original comment",
     isPrimaryKey: false,
+    extra: {},
     original: { name: "C", data_type: "NCLOB", is_nullable: true, column_default: null, comment: "original comment", is_primary_key: false },
     originalPosition: 0,
     markedForDrop: false,
