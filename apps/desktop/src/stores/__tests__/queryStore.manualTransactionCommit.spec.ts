@@ -124,6 +124,35 @@ describe.each(["oracle", "oceanbase-oracle"] as const)("queryStore %s commit lif
   });
 
   describe.each(["success", "failure"] as const)("old commit %s", (outcome) => {
+    it("keeps a reopened tab's new transaction independent of the old pending commit", async () => {
+      const { store, id, tab } = await setupManualTab(dbType);
+      const oldCommit = deferred<void>();
+      const newCommit = deferred<void>();
+      mocks.commitManualTransaction.mockReturnValueOnce(oldCommit.promise).mockReturnValueOnce(newCommit.promise);
+      const oldCommitting = store.commitTransaction(id);
+      store.closeTab(id);
+      expect(store.reopenClosedTab()).toBe(id);
+      const reopened = store.tabs.find((candidate) => candidate.id === id)!;
+      expect(reopened).not.toBe(tab);
+      expect(reopened.txnSessionId).toBeUndefined();
+      store.setAutoCommit(id, false);
+      mocks.beginManualTransaction.mockResolvedValueOnce("txn-reopened");
+      await store.ensureManualTransactionSession(id, "ORCL", "APP");
+      store.markManualTransactionDirty(id);
+      const newCommitting = store.commitTransaction(id);
+
+      await finishCommit(oldCommit, oldCommitting, outcome);
+      expect(reopened.txnSessionId).toBe("txn-reopened");
+      expect(reopened.txnPossiblyDirty).toBe(true);
+      const duplicate = store.commitTransaction(id);
+      expect(mocks.commitManualTransaction.mock.calls.map(([sessionId]) => sessionId)).toEqual(["txn-old", "txn-reopened"]);
+
+      newCommit.resolve();
+      await Promise.all([newCommitting, duplicate]);
+      expect(reopened.txnSessionId).toBeUndefined();
+      expect(reopened.txnPossiblyDirty).toBe(false);
+    });
+
     it.each(["mode", "schema", "database", "connection"] as const)("preserves a replacement transaction after a %s change", async (change) => {
       const { store, id, tab } = await setupManualTab(dbType);
       const commit = deferred<void>();

@@ -50,6 +50,14 @@ describe("normalizeEditorSettings", () => {
     expect(normalizeEditorSettings({ webLogoPosition: undefined }).webLogoPosition).toBe("left");
   });
 
+  it("defaults caretBrowsingEnabled to false and normalizes boolean values (#11827)", () => {
+    expect(DEFAULT_EDITOR_SETTINGS.caretBrowsingEnabled).toBe(false);
+    expect(normalizeEditorSettings({}).caretBrowsingEnabled).toBe(false);
+    expect(normalizeEditorSettings({ caretBrowsingEnabled: true }).caretBrowsingEnabled).toBe(true);
+    expect(normalizeEditorSettings({ caretBrowsingEnabled: false }).caretBrowsingEnabled).toBe(false);
+    expect(normalizeEditorSettings({ caretBrowsingEnabled: "true" as any }).caretBrowsingEnabled).toBe(false);
+  });
+
   it("defaults the welcome page to the workspace overview and honors an explicitly saved intro mode", () => {
     expect(DEFAULT_EDITOR_SETTINGS.welcomePageMode).toBe("workspace");
     expect(normalizeEditorSettings({}).welcomePageMode).toBe("workspace");
@@ -1162,6 +1170,23 @@ describe("normalizeEditorSettings - autoOpenExportFolder", () => {
     expect(normalizeEditorSettings({ autoOpenExportFolder: "true" } as any).autoOpenExportFolder).toBe(false);
     expect(normalizeEditorSettings({ autoOpenExportFolder: null } as any).autoOpenExportFolder).toBe(false);
     expect(normalizeEditorSettings({ autoOpenExportFolder: 1 } as any).autoOpenExportFolder).toBe(false);
+  });
+});
+
+describe("normalizeEditorSettings - applyColumnFormattersOnExport", () => {
+  it("defaults applyColumnFormattersOnExport to true", () => {
+    expect(normalizeEditorSettings({}).applyColumnFormattersOnExport).toBe(true);
+  });
+
+  it("preserves boolean values", () => {
+    expect(normalizeEditorSettings({ applyColumnFormattersOnExport: true }).applyColumnFormattersOnExport).toBe(true);
+    expect(normalizeEditorSettings({ applyColumnFormattersOnExport: false }).applyColumnFormattersOnExport).toBe(false);
+  });
+
+  it("falls back to default for non-boolean values", () => {
+    expect(normalizeEditorSettings({ applyColumnFormattersOnExport: "false" } as any).applyColumnFormattersOnExport).toBe(true);
+    expect(normalizeEditorSettings({ applyColumnFormattersOnExport: null } as any).applyColumnFormattersOnExport).toBe(true);
+    expect(normalizeEditorSettings({ applyColumnFormattersOnExport: 0 } as any).applyColumnFormattersOnExport).toBe(true);
   });
 });
 

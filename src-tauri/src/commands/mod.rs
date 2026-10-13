@@ -9,6 +9,7 @@ pub mod connection;
 #[allow(dead_code, unused_imports)]
 mod connection_secrets;
 pub mod csv_export;
+pub mod dameng_dump;
 pub mod data_compare;
 pub mod database_export;
 pub mod deep_link;
@@ -54,6 +55,7 @@ pub mod salesforce_oauth;
 pub mod saved_sql;
 pub mod schema_cache;
 pub mod schema_diff;
+pub mod shortcut_recording;
 pub mod sql_file;
 pub mod sqlite_backup;
 pub mod ssh_config;

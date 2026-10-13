@@ -182,6 +182,7 @@ import { normalizeRedisKeyTemplates } from "@/lib/redis/redisKeyTemplates";
 import { appendAgentDriverUpdateHint, connectionUsesSsh, hasAgentDriverUpdate, hasInstalledAgentVersion, type AgentDriverInstallState } from "@/lib/connection/agentDriverInstallHint";
 import { appendConnectionErrorHints, isMysqlMissingPasswordFailure, isSqliteMissingEncryptionPasswordFailure } from "@/lib/connection/connectionErrorHints";
 import { connectionNeedsPasswordPrompt, pluginConnectionNeedsPasswordPrompt } from "@/lib/connection/connectionPassword";
+import { isSavedCredential } from "@/lib/security/passwordViewer";
 import { createFrontendPluginRegistry } from "@/lib/plugins/frontendPlugin";
 import { appendVisibleDatabaseSelection } from "@/lib/connection/connectionVisibleDatabases";
 import { buildXuguTypeMemberNodes, isXuguTypeMemberContainer } from "@/lib/sidebar/xuguTypeMembers";
@@ -641,6 +642,7 @@ export const useConnectionStore = defineStore("connection", () => {
     tableName?: string;
   } | null>(null);
   const mongoDatabaseDumpSource = ref<{ connectionId: string; database: string; mode: "dump" | "restore" } | null>(null);
+  const damengDumpSource = ref<{ connectionId: string; database: string; mode: "export" | "import" } | null>(null);
   const mongoImportSource = ref<{
     connectionId: string;
     database: string;
@@ -660,6 +662,7 @@ export const useConnectionStore = defineStore("connection", () => {
   } | null>(null);
   const fieldLineageSource = ref<{
     connectionId: string;
+    databaseType?: DatabaseType;
     database: string;
     schema?: string;
     tableName: string;
@@ -4599,7 +4602,7 @@ export const useConnectionStore = defineStore("connection", () => {
    * after a successful connection when the user selects "remember password".
    */
   async function ensureConnectionPassword(config: ConnectionConfig, force = false): Promise<{ config: ConnectionConfig; rememberPassword: boolean }> {
-    if (!force && (config.save_password !== false || config.password)) return { config, rememberPassword: false };
+    if (!force && (config.save_password !== false || (config.password && !isSavedCredential(config.password)))) return { config, rememberPassword: false };
     const { useConnectionPasswordPromptStore } = await import("@/stores/connectionPasswordPromptStore");
     const result = await useConnectionPasswordPromptStore().requestPassword({
       connectionId: config.id,
@@ -10637,6 +10640,7 @@ export const useConnectionStore = defineStore("connection", () => {
     dataDictionarySource,
     tableImportSource,
     mongoDatabaseDumpSource,
+    damengDumpSource,
     mongoImportSource,
     mongoImportCompleted,
     tableDataGenerateSource,
