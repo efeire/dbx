@@ -71,7 +71,8 @@ export default {
     error: "Read failed",
     unsupported: "Unsupported",
     title: "Users, roles and grants",
-    notice: "Shows grants visible to the current account. Role inheritance does not imply that a role is enabled in this session. Limited visibility cannot prove the absence of other grants.",
+    notice:
+      "Shows grants visible to the current account. Role inheritance does not imply that a role is enabled in this session. Limited visibility cannot prove the absence of other grants. One discovered inheritance path is shown per role from each of the selected principal and PUBLIC; other paths may exist.",
     full: "Full dictionary scope",
     limited: "Limited visibility",
     truncated: ", row limit reached",

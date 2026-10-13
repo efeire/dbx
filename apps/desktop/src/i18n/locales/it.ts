@@ -71,7 +71,8 @@ export default withEnglishFallback({
     error: "Lettura non riuscita",
     unsupported: "Non supportato",
     title: "Utenti, ruoli e privilegi",
-    notice: "Mostra i privilegi visibili all’account corrente. L’ereditarietà non implica che il ruolo sia abilitato nella sessione. La visibilità limitata non dimostra l’assenza di altri privilegi.",
+    notice:
+      "Mostra i privilegi visibili all’account corrente. L’ereditarietà non implica che il ruolo sia abilitato nella sessione. La visibilità limitata non dimostra l’assenza di altri privilegi. Per ogni ruolo viene mostrato un percorso di ereditarietà individuato dal soggetto selezionato e uno da PUBLIC; possono esistere altri percorsi.",
     full: "Ambito completo del dizionario",
     limited: "Visibilità limitata",
     truncated: ", limite di righe raggiunto",

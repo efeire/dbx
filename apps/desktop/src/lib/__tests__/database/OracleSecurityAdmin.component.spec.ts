@@ -82,6 +82,14 @@ describe("Oracle security page", () => {
     expect(host.textContent).toContain("Account status unavailable");
     expect(host.textContent).toContain("Other.T");
     expect(host.textContent).toContain("grantor: Unknown");
+    const search = host.querySelector("input") as HTMLInputElement;
+    search.value = "No matching account";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    const principal = host.querySelector("select") as HTMLSelectElement;
+    expect(principal.value).toBe("Reader");
+    expect(principal.selectedOptions[0]?.textContent).toBe("Reader");
+    expect(host.textContent).toContain("One discovered inheritance path is shown per role");
     const owner = host.querySelector('input[placeholder="Exact object owner"]') as HTMLInputElement;
     owner.value = "Owner";
     owner.dispatchEvent(new Event("input", { bubbles: true }));

@@ -19,7 +19,7 @@ const owner = ref("");
 const objectName = ref("");
 const search = ref("");
 let generation = 0;
-const principals = computed(() => (snapshot.value ? [...new Set([...snapshot.value.users.rows.map((row) => row.name), ...snapshot.value.roles.rows.map((row) => row.name), "PUBLIC"])].filter((name) => name.includes(search.value)) : []));
+const principals = computed(() => (snapshot.value ? [...new Set([...snapshot.value.users.rows.map((row) => row.name), ...snapshot.value.roles.rows.map((row) => row.name), "PUBLIC", principal.value])].filter((name) => name && (name === principal.value || name.includes(search.value))) : []));
 const sources = computed(() => (snapshot.value ? (principal.value ? oracleGrantSources(snapshot.value, principal.value) : { grants: oracleObjectGrantSources(snapshot.value), bounded: false }) : { grants: [], bounded: false }));
 const grants = computed(() => sources.value.grants.filter((row) => (!owner.value && !objectName.value) || oracleSecurityObjectMatches(row.grant, owner.value, objectName.value)));
 const memberships = computed(() => snapshot.value?.roleGrants.rows.filter((row) => !principal.value || row.grantee === principal.value || row.role === principal.value) ?? []);

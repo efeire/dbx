@@ -72,7 +72,8 @@ export default withEnglishFallback({
     error: "Falha na leitura",
     unsupported: "Não suportado",
     title: "Usuários, funções e privilégios",
-    notice: "Mostra os privilégios visíveis para a conta atual. A herança de funções não implica que a função esteja habilitada nesta sessão. A visibilidade limitada não comprova a ausência de outros privilégios.",
+    notice:
+      "Mostra os privilégios visíveis para a conta atual. A herança de funções não implica que a função esteja habilitada nesta sessão. A visibilidade limitada não comprova a ausência de outros privilégios. Para cada função, é mostrado um caminho de herança encontrado a partir do principal selecionado e outro a partir de PUBLIC; outros caminhos podem existir.",
     full: "Escopo completo do dicionário",
     limited: "Visibilidade limitada",
     truncated: ", limite de linhas atingido",

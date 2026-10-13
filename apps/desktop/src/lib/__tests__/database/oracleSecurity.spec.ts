@@ -24,6 +24,7 @@ describe("Oracle security dictionary reads", () => {
     expect(snapshot.users.rows.map((user) => user.name)).toEqual(["Reader", "READER"]);
     expect(snapshot.objectGrants.rows[0]).toMatchObject({ owner: "Owner", objectName: "Mixed.Name", grantable: true });
     expect(query.mock.calls.every(([sql]) => /^SELECT\s/.test(sql))).toBe(true);
+    expect(query.mock.calls.filter(([sql]) => /FROM DBA_(TAB|COL)_PRIVS/.test(sql)).every(([sql]) => !/ORDER BY/i.test(sql))).toBe(true);
     expect(oracleSecurityObjectMatches(snapshot.objectGrants.rows[0], "OWNER", "Mixed.Name")).toBe(false);
   });
 
@@ -175,6 +176,19 @@ describe("Oracle security dictionary reads", () => {
     const snapshot = await loadOracleSecurity(blankQuery);
     snapshot.objectGrants.rows = ["A", "B"].map((grantee) => ({ grantee, owner: "Owner", objectName: "T", grantor: "Owner", privilege: "SELECT", grantable: false }));
     expect(oracleObjectGrantSources(snapshot).map((row) => row.grant.grantee)).toEqual(["A", "B"]);
+  });
+
+  it("keeps one discovered path per role when inheritance paths converge", async () => {
+    const snapshot = await loadOracleSecurity(blankQuery);
+    snapshot.roleGrants.rows = [
+      { grantee: "Reader", role: "R1", adminOption: false },
+      { grantee: "Reader", role: "R2", adminOption: false },
+      { grantee: "R1", role: "R3", adminOption: false },
+      { grantee: "R2", role: "R3", adminOption: false },
+      { grantee: "PUBLIC", role: "R3", adminOption: false },
+    ];
+    snapshot.systemGrants.rows = [{ grantee: "R3", privilege: "CREATE SESSION", adminOption: false }];
+    expect(oracleGrantSources(snapshot, "Reader").grants).toEqual([expect.objectContaining({ source: "role", rolePath: ["R1", "R3"] }), expect.objectContaining({ source: "public", rolePath: ["PUBLIC", "R3"] })]);
   });
 
   it("bounds a large role graph without inventing inaccessible paths", async () => {

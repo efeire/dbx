@@ -73,7 +73,8 @@ export default withEnglishFallback({
     error: "Error de lectura",
     unsupported: "No compatible",
     title: "Usuarios, roles y permisos",
-    notice: "Muestra los permisos visibles para la cuenta actual. La herencia de roles no implica que el rol esté habilitado en esta sesión. La visibilidad limitada no demuestra la ausencia de otros permisos.",
+    notice:
+      "Muestra los permisos visibles para la cuenta actual. La herencia de roles no implica que el rol esté habilitado en esta sesión. La visibilidad limitada no demuestra la ausencia de otros permisos. Para cada rol se muestra una ruta de herencia descubierta desde el sujeto seleccionado y otra desde PUBLIC; pueden existir otras rutas.",
     full: "Ámbito completo del diccionario",
     limited: "Visibilidad limitada",
     truncated: ", límite de filas alcanzado",
