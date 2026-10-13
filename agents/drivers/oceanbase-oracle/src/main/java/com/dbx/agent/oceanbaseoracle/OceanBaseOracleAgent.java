@@ -2067,6 +2067,9 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 yield len == null ? base : base + "(" + len + ")";
             }
             case "NUMBER" -> {
+                if (numPrec == null && numScale != null) {
+                    yield base + "(*," + numScale + ")";
+                }
                 if (numPrec != null && numScale != null && numScale != 0) {
                     yield base + "(" + numPrec + "," + numScale + ")";
                 }
@@ -2075,6 +2078,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 }
                 yield base;
             }
+            case "FLOAT" -> numPrec != null && numPrec > 0 ? base + "(" + numPrec + ")" : base;
             case "RAW" -> dataLen == null ? "RAW" : "RAW(" + dataLen + ")";
             default -> base;
         };

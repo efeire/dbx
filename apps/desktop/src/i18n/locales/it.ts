@@ -4066,6 +4066,7 @@ export default withEnglishFallback({
     emptyTableSubmitted: 'Attività di svuotamento inviata per "{name}"',
     truncateTableSuccess: 'Tabella "{name}" troncata',
     duplicateStructureSuccess: 'Tabella clonata come "{name}"',
+    oceanbaseClonePreview: "Destinazione: {target}\n\nDa copiare:\n{copied}\n\nDa escludere:\n{excluded}\n\nSQL:\n{sql}\n\nLe istruzioni DDL vengono confermate singolarmente. Un errore non annulla automaticamente i passaggi precedenti. Continuare?",
     tableOperationFailed: "Operazione non riuscita: {message}",
     tableOperationTimedOut: 'L\'operazione su "{name}" sta impiegando più tempo del previsto e non è stata annullata: potrebbe essere ancora in esecuzione sul database. Controlla il risultato più tardi oppure fai clic su Annulla per interromperla. ({message})',
     tableOperationCancelled: 'Operazione su "{name}" annullata',

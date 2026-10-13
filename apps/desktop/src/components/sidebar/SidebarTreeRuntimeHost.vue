@@ -193,6 +193,7 @@ import {
   type MysqlAutoIncrementSqlOptions,
   type TableChildObjectType,
 } from "@/lib/database/dbAdminSql";
+import { confirmOceanbaseTableClone, executeOceanbaseTableClone, OceanbaseTableCloneError, showOceanbaseTableCloneFailure } from "@/lib/database/oceanbaseTableClone";
 import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
 import { buildRoutineRenameObjectSourceStatements, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildViewDdl } from "@/lib/table/viewDdl";
@@ -3446,6 +3447,7 @@ async function executeTreeNodeSqlWithProductionGuard(
     beforeExecute?: () => Promise<void>;
     markDispatched?: () => void;
     timeoutSecs?: number;
+    execute?: (timeoutSecs: number) => ReturnType<typeof api.executeQuery>;
   } = {},
 ) {
   if (!node.connectionId) return undefined;
@@ -3471,6 +3473,7 @@ async function executeTreeNodeSqlWithProductionGuard(
       await options.beforeExecute?.();
       if (options.isCancelledBeforeDispatch?.()) throw new Error("Operation cancelled before it was sent to the database.");
       options.markDispatched?.();
+      if (options.execute) return options.execute(options.timeoutSecs ?? timeoutSecs);
       return options.executeAsScript ? api.executeScript(node.connectionId!, database, sql, options.schema ?? node.schema) : api.executeQuery(node.connectionId!, database, sql, options.schema ?? node.schema, executionId, { timeoutSecs: options.timeoutSecs ?? timeoutSecs });
     },
   });
@@ -4816,14 +4819,21 @@ async function confirmDuplicateStructure() {
       tableComment: node.comment,
       identifierQuote: connectionStore.connectionIdentifierQuote?.(node.connectionId),
     });
-    await executeTreeNodeSqlWithProductionGuard(node, plan.sql, {
+    if (!confirmOceanbaseTableClone(plan, t)) return;
+    const executed = await executeTreeNodeSqlWithProductionGuard(node, plan.sql, {
       database: node.database,
       schema: node.schema,
       executeAsScript: plan.executeAsScript,
+      execute: plan.oceanbaseClone ? (timeoutSecs) => executeOceanbaseTableClone(plan.oceanbaseClone!, (sql) => api.executeQuery(node.connectionId, node.database, sql, plan.oceanbaseClone!.targetSchema, undefined, { timeoutSecs, catalog: node.catalog })) : undefined,
     });
+    if (!executed) return;
     toast(t("contextMenu.duplicateStructureSuccess", { name: newName }), 3000);
     await refreshTableList(node);
   } catch (e: any) {
+    if (e instanceof OceanbaseTableCloneError) {
+      showOceanbaseTableCloneFailure(e);
+      await connectionStore.refreshObjectListTreeNode(node.connectionId, node.database, e.targetSchema).catch((refreshError) => console.warn("Failed to refresh clone target", refreshError));
+    }
     toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
   }
 }
@@ -4852,7 +4862,8 @@ async function confirmPasteTable() {
     });
   };
   for (const entry of entries) {
-    const targetName = entry.targetName.trim();
+    let targetName = entry.targetName.trim();
+    let schema = entry.schema;
     try {
       await connectionStore.ensureConnected(entry.connectionId);
       const databaseType = entry.connectionId ? effectiveDatabaseTypeForConnection(connectionStore.getConfig(entry.connectionId)) : undefined;
@@ -4869,17 +4880,26 @@ async function confirmPasteTable() {
           identifierQuote: connectionStore.connectionIdentifierQuote?.(entry.connectionId),
         });
         sourceColumns = plan.sourceColumns;
+        if (!confirmOceanbaseTableClone(plan, t)) {
+          pasteCancelled = true;
+          break;
+        }
+        if (plan.oceanbaseClone) {
+          targetName = plan.oceanbaseClone.targetName;
+          schema = plan.oceanbaseClone.targetSchema;
+        }
         const structureExecuted = await executeTreeNodeSqlWithProductionGuard(entry, plan.sql, {
           database: entry.database,
           schema: entry.schema,
           executeAsScript: plan.executeAsScript,
+          execute: plan.oceanbaseClone ? (timeoutSecs) => executeOceanbaseTableClone(plan.oceanbaseClone!, (sql) => api.executeQuery(entry.connectionId, entry.database, sql, plan.oceanbaseClone!.targetSchema, undefined, { timeoutSecs })) : undefined,
         });
         if (!structureExecuted) {
           pasteCancelled = true;
           break;
         }
         hasMutatedTable = true;
-        queueRefreshTarget(entry);
+        queueRefreshTarget({ ...entry, schema });
       }
       if (copyData) {
         if (!sourceColumns) {
@@ -4891,14 +4911,14 @@ async function confirmPasteTable() {
         }
         const dataSql = await buildCopyTableDataSql({
           databaseType,
-          schema: entry.schema,
+          schema,
           sourceName: entry.sourceName,
           targetName,
-          normalizeNewTargetName: mode === "structure-and-data",
+          normalizeNewTargetName: mode === "structure-and-data" && databaseType !== "oceanbase-oracle",
           identifierQuote: connectionStore.connectionIdentifierQuote?.(entry.connectionId),
           ...dataCopyColumnOptions,
         });
-        const dataExecuted = await executeTreeNodeSqlWithProductionGuard(entry, dataSql, { database: entry.database, schema: entry.schema, timeoutSecs: 0 });
+        const dataExecuted = await executeTreeNodeSqlWithProductionGuard(entry, dataSql, { database: entry.database, schema, timeoutSecs: 0 });
         if (!dataExecuted) {
           pasteCancelled = true;
           break;
@@ -4908,6 +4928,11 @@ async function confirmPasteTable() {
       }
       successCount++;
     } catch (e: any) {
+      if (e instanceof OceanbaseTableCloneError) {
+        showOceanbaseTableCloneFailure(e);
+        hasMutatedTable = true;
+        queueRefreshTarget({ ...entry, schema: e.targetSchema });
+      }
       pasteFailCount++;
       firstPasteError ??= e;
       console.error(`Failed to paste table "${entry.sourceName}" -> "${targetName}":`, e);

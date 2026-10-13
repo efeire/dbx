@@ -4234,6 +4234,7 @@ export default withEnglishFallback({
     emptyTableSubmitted: "Задача очистки для «{name}» отправлена",
     truncateTableSuccess: "Выполнен TRUNCATE для таблицы «{name}»",
     duplicateStructureSuccess: "Таблица клонирована как «{name}»",
+    oceanbaseClonePreview: "Целевая таблица: {target}\n\nКопировать:\n{copied}\n\nИсключить:\n{excluded}\n\nSQL:\n{sql}\n\nКаждая команда DDL фиксируется отдельно. При ошибке предыдущие шаги автоматически не откатываются. Продолжить?",
     tableOperationFailed: "Операция не выполнена: {message}",
     tableOperationTimedOut: "Операция с «{name}» выполняется дольше ожидаемого и не была отменена — возможно, она всё ещё выполняется в базе данных. Проверьте результат позже или нажмите «Отмена», чтобы остановить её. ({message})",
     tableOperationCancelled: "Операция с «{name}» отменена",

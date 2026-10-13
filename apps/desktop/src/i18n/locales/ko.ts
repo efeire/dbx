@@ -4014,6 +4014,7 @@ export default withEnglishFallback({
     emptyTableSubmitted: '"{name}"의 비우기 작업이 제출되었습니다',
     truncateTableSuccess: '테이블 "{name}" TRUNCATE됨',
     duplicateStructureSuccess: '테이블이 "{name}"(으)로 복제됨',
+    oceanbaseClonePreview: "복제 대상: {target}\n\n복사:\n{copied}\n\n제외:\n{excluded}\n\n실행 SQL:\n{sql}\n\nDDL은 개별적으로 커밋됩니다. 실패해도 이전 단계는 자동으로 롤백되지 않습니다. 계속하시겠습니까?",
     tableOperationFailed: "작업 실패: {message}",
     tableOperationTimedOut: '"{name}"에 대한 작업이 예상보다 오래 걸리고 있으며 취소되지 않았습니다. 데이터베이스에서 계속 실행 중일 수 있습니다. 나중에 결과를 확인하거나 취소를 클릭하여 중지하세요. ({message})',
     tableOperationCancelled: '"{name}" 작업이 취소되었습니다',
