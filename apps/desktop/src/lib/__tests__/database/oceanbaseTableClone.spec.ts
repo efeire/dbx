@@ -32,6 +32,7 @@ beforeEach(() => {
     if (sql.includes("SYS_CONTEXT")) return result([[options.schema]]);
     if (sql.includes("ALL_TAB_COMMENTS")) return result([[" table's comment "]]);
     if (sql.includes("ALL_TABLES")) return result([["NO", "N"]]);
+    if (sql.includes("ALL_INDEXES")) return result([["IX_SOURCE", "VISIBLE"]]);
     if (sql.includes("ALL_IND_COLUMNS"))
       return result([
         ["IX_SOURCE", 'Mixed"Case', 1, "DESC"],
@@ -43,6 +44,38 @@ beforeEach(() => {
 });
 
 describe("OceanBase Oracle structure clone", () => {
+  it("allows a target name already used by an independently namespaced index", async () => {
+    const original = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args) => {
+      if (args[2].includes("ROWNUM <= 1")) return result(args[2].includes("OBJECT_TYPE <> 'INDEX'") ? [] : [[options.targetName]]);
+      return original(...args);
+    });
+    await expect(buildDuplicateTableStructurePlan(options)).resolves.toMatchObject({ oceanbaseClone: { targetName: 'New"Table' } });
+  });
+
+  it("preserves an invisible normal index in the executable plan", async () => {
+    const original = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args) => (args[2].includes("ALL_INDEXES") ? result([["IX_SOURCE", "INVISIBLE"]]) : original(...args)));
+    const plan = await buildDuplicateTableStructurePlan(options);
+    expect(plan.oceanbaseClone?.steps.find((step) => step.label.startsWith("INDEX "))?.sql).toContain('("Mixed""Case" DESC, "b" ASC) INVISIBLE;');
+  });
+
+  it.each(
+    [
+      [],
+      [["IX_SOURCE", null]],
+      [["IX_SOURCE", "UNKNOWN"]],
+      [
+        ["IX_SOURCE", "VISIBLE"],
+        ["IX_SOURCE", "INVISIBLE"],
+      ],
+    ].map((rows) => [rows]),
+  )("refuses incomplete or ambiguous index visibility %j", async (rows) => {
+    const original = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args) => (args[2].includes("ALL_INDEXES") ? result(rows) : original(...args)));
+    await expect(buildDuplicateTableStructurePlan(options)).rejects.toThrow("index visibility");
+  });
+
   it.each(["", '""', '"unfinished', "two words", "a.b", "a;drop table b"])("rejects an invalid new target %j before reading metadata", async (targetName) => {
     await expect(buildDuplicateTableStructurePlan({ ...options, targetName })).rejects.toThrow("ordinary table name");
     expect(api.getColumns).not.toHaveBeenCalled();
@@ -85,7 +118,7 @@ describe("OceanBase Oracle structure clone", () => {
     expect(plan.oceanbaseClone?.steps.find((step) => step.label.startsWith("COMMENT") && step.sql.includes('"a"'))?.sql).toContain(`"${stored}"."a"`);
   });
 
-  it.each(["ALL_TAB_COLS", "ALL_IND_COLUMNS", "ALL_CONSTRAINTS"])("rejects short truncated %s metadata even without has_more", async (dictionary) => {
+  it.each(["ALL_TAB_COLS", "ALL_IND_COLUMNS", "ALL_CONSTRAINTS", "ALL_INDEXES"])("rejects short truncated %s metadata even without has_more", async (dictionary) => {
     const original = api.executeQuery.getMockImplementation()!;
     api.executeQuery.mockImplementation(async (...args: Parameters<typeof original>) => {
       if (!args[2].includes(dictionary)) return original(...args);
@@ -93,7 +126,8 @@ describe("OceanBase Oracle structure clone", () => {
       return { ...partial, truncated: true, has_more: false };
     });
     await expect(buildDuplicateTableStructurePlan(options)).rejects.toThrow("Clone metadata was truncated. No DDL was executed.");
-    expect(api.buildCreateTableSql).not.toHaveBeenCalled();
+    if (dictionary !== "ALL_INDEXES") expect(api.buildCreateTableSql).not.toHaveBeenCalled();
+    expect(api.executeQuery.mock.calls.every((call) => call[2].startsWith("SELECT "))).toBe(true);
   });
   it("excludes UNIQUE backing indexes and reports foreign keys missing from the constraints API", async () => {
     api.listConstraints.mockResolvedValue([
@@ -106,6 +140,7 @@ describe("OceanBase Oracle structure clone", () => {
     ]);
     const original = api.executeQuery.getMockImplementation()!;
     api.executeQuery.mockImplementation(async (...args: Parameters<typeof original>) => {
+      if (args[2].includes("ALL_INDEXES")) return result([["IX_STANDALONE", "VISIBLE"]]);
       if (args[2].includes("ALL_CONSTRAINTS"))
         return result([
           ["UQ_SOURCE", "U", "UQ_BACKING"],

@@ -51,7 +51,7 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
     api.listTriggers(options.connectionId, options.database, sourceSchema, options.sourceName, options.catalog),
     query(`SELECT COMMENTS FROM SYS.ALL_TAB_COMMENTS WHERE ${where} AND TABLE_TYPE = 'TABLE'`),
     query(`SELECT INDEX_NAME, COLUMN_NAME, COLUMN_POSITION, DESCEND FROM SYS.ALL_IND_COLUMNS WHERE TABLE_OWNER = ${literal(sourceSchema)} AND TABLE_NAME = ${literal(options.sourceName)} ORDER BY INDEX_NAME, COLUMN_POSITION`),
-    query(`SELECT OBJECT_NAME FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(targetSchema)} AND OBJECT_NAME = ${literal(targetName)} AND ROWNUM <= 1`),
+    query(`SELECT OBJECT_NAME FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(targetSchema)} AND OBJECT_NAME = ${literal(targetName)} AND OBJECT_TYPE <> 'INDEX' AND ROWNUM <= 1`),
     query(`SELECT COLUMN_NAME FROM SYS.ALL_TAB_COLS WHERE ${where} AND VIRTUAL_COLUMN = 'YES'`),
     query(`SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE, INDEX_NAME FROM SYS.ALL_CONSTRAINTS WHERE ${where} AND CONSTRAINT_TYPE IN ('U', 'R')`),
     query(`SELECT PARTITIONED, TEMPORARY FROM SYS.ALL_TABLES WHERE ${where}`),
@@ -117,17 +117,20 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
     return true;
   });
   const newIndexNames = normalIndexes.map((_, index) => cloneIndexName(targetName, index));
+  const visibility = normalIndexes.length ? await query(`SELECT INDEX_NAME, VISIBILITY FROM SYS.ALL_INDEXES WHERE TABLE_OWNER = ${literal(sourceSchema)} AND TABLE_NAME = ${literal(options.sourceName)}`) : [];
   if (newIndexNames.length) {
     const taken = await query(`SELECT OBJECT_NAME FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(targetSchema)} AND OBJECT_TYPE = 'INDEX' AND OBJECT_NAME IN (${newIndexNames.map(literal).join(", ")})`);
     if (taken.length) throw new Error(`Target index name already exists: ${taken.map((row) => ident(String(row[0]))).join(", ")}. Choose another target table name. No DDL was executed.`);
   }
   normalIndexes.forEach((index, position) => {
+    const indexVisibility = visibility.filter((row) => row[0] === index.name);
+    if (indexVisibility.length !== 1 || !["VISIBLE", "INVISIBLE"].includes(String(indexVisibility[0]?.[1]))) throw new Error(`Incomplete or ambiguous index visibility for ${ident(index.name)}. No DDL was executed.`);
     const keys = directions.filter((row) => row[0] === index.name);
     if (!keys.length || keys.length !== index.columns.length || keys.some((row, keyPosition) => Number(row[2]) !== keyPosition + 1 || row[1] !== index.columns[keyPosition] || !columnNames.has(String(row[1])) || !["ASC", "DESC"].includes(String(row[3])))) {
       throw new Error(`Incomplete column order/direction for index ${ident(index.name)}. No DDL was executed.`);
     }
     const name = `${ident(targetSchema)}.${ident(newIndexNames[position]!)}`;
-    steps.push({ label: `INDEX ${name}`, sql: `CREATE ${index.is_unique ? "UNIQUE " : ""}INDEX ${name} ON ${target} (${keys.map((row) => `${ident(String(row[1]))} ${row[3]}`).join(", ")});` });
+    steps.push({ label: `INDEX ${name}`, sql: `CREATE ${index.is_unique ? "UNIQUE " : ""}INDEX ${name} ON ${target} (${keys.map((row) => `${ident(String(row[1]))} ${row[3]}`).join(", ")})${indexVisibility[0]![1] === "INVISIBLE" ? " INVISIBLE" : ""};` });
     copied.push(`INDEX ${ident(index.name)} → ${name}`);
   });
   const tableComment = comments[0]![0];
