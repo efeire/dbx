@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "@/lib/backend/api";
-import { executeOceanbasePrimaryKeyPlan, readOceanbasePrimaryKeySnapshot } from "@/lib/database/oceanbasePrimaryKey";
+import { executeOceanbasePrimaryKeyPlan, readOceanbasePrimaryKeySnapshot, prepareOraclePrimaryKeyChange } from "@/lib/database/oceanbasePrimaryKey";
 
 vi.mock("@/lib/backend/api", () => ({ executeQuery: vi.fn(), getColumns: vi.fn(), listConstraints: vi.fn(), listIndexes: vi.fn() }));
 
@@ -117,6 +117,114 @@ describe("OceanBase existing primary key preflight", () => {
     await readOceanbasePrimaryKeySnapshot(target, { ...change, columns: [] });
     expect(api.executeQuery.mock.calls.some((call) => call[2].includes("GROUP BY"))).toBe(false);
     expect(api.executeQuery.mock.calls.some((call) => call[2].includes("R_CONSTRAINT_NAME"))).toBe(true);
+  });
+});
+
+describe("Native Oracle primary key index policy", () => {
+  const oracleTarget = { ...target, databaseType: "oracle" as const };
+
+  it("rejects a new index name taken after preview before executing DDL", async () => {
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      if (args[2].startsWith("SELECT INDEX_NAME")) return { columns: [], rows: [["SOURCE_V_IDX"]], affected_rows: 0, execution_time_ms: 0 };
+      return read(...args);
+    });
+    const verifiedChange = { ...change, oracleIndex: { policy: "keep" as const, owner: "APP", name: "PK_SOURCE", newName: "SOURCE_V_IDX" } };
+    await expect(readOceanbasePrimaryKeySnapshot(oracleTarget, verifiedChange)).rejects.toMatchObject({ key: "definitionChanged" });
+    expect(api.executeQuery.mock.calls.every((call) => call[2].startsWith("SELECT "))).toBe(true);
+  });
+
+  it("stops when the database rejects DROP for an invisible or concurrent reference", async () => {
+    const deletion = { ...change, columns: [], oracleIndex: { policy: "keep" as const, owner: "APP", name: "PK_SOURCE" } };
+    const snapshot = await readOceanbasePrimaryKeySnapshot(oracleTarget, deletion);
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      if (args[2].startsWith("ALTER ")) return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 0, execution_error: true, error: { detail: "ORA-02273: referenced by foreign keys" } };
+      if (args[2].includes("PARTITIONED, TABLE_OWNER")) return { columns: [], rows: fixture.index.map((row) => [...row, "APP", "SOURCE"]), affected_rows: 0, execution_time_ms: 0 };
+      return read(...args);
+    });
+    const result = await executeOceanbasePrimaryKeyPlan({ target: oracleTarget, change: deletion, snapshot, statements: ['ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE" KEEP INDEX;'] }, 30, () => true);
+    expect(result?.steps[0]?.state).toBe("rejected");
+    expect(result?.recoverySql).toBeUndefined();
+    expect(result?.indexStates).toEqual([{ name: "APP.PK_SOURCE", state: "indexPresent" }]);
+    expect(api.executeQuery.mock.calls.filter((call) => call[2].startsWith("ALTER "))).toHaveLength(1);
+  });
+
+  it("allocates the new index name in the owner's namespace without changing the draft", async () => {
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      if (args[2].startsWith("SELECT INDEX_NAME")) return { columns: [], rows: [["PK_SOURCE"], ["SOURCE_V_IDX"]], affected_rows: 0, execution_time_ms: 0 };
+      return read(...args);
+    });
+    const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, change);
+    expect(prepared.change.oracleIndex).toEqual({ policy: "keep", owner: "APP", name: "PK_SOURCE", newName: "SOURCE_V_IDX_2" });
+    expect(change).not.toHaveProperty("oracleIndex");
+    expect(api.executeQuery.mock.calls.every((call) => call[2].startsWith("SELECT "))).toBe(true);
+  });
+
+  it("allows editing a reordered key backed by the original index order", async () => {
+    fixture.keyColumns = [
+      ["V", 1],
+      ["ID", 2],
+    ];
+    fixture.indexColumns = [
+      ["ID", 1, "ASC"],
+      ["V", 2, "ASC"],
+    ];
+    vi.mocked(api.getColumns).mockResolvedValue(["ID", "V"].map((name) => ({ name, data_type: "NUMBER", is_nullable: false, is_primary_key: true })));
+    vi.mocked(api.listConstraints).mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["V", "ID"], definition: "", ref_columns: [], enabled: true, valid: true, deferrable: false, initially_deferred: false }]);
+    vi.mocked(api.listIndexes).mockResolvedValue([{ name: "PK_SOURCE", columns: ["ID", "V"], is_unique: true, is_primary: true, index_type: "NORMAL" }]);
+    const draft = { name: "PK_SOURCE", originalColumns: ["V", "ID"], columns: ["ID", "V"] };
+    const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, draft);
+    expect(prepared.change.oracleIndex).toEqual({ policy: "keep", owner: "APP", name: "PK_SOURCE" });
+    await expect(readOceanbasePrimaryKeySnapshot(oracleTarget, { ...prepared.change, columns: [] })).resolves.toBe(prepared.snapshot);
+    await expect(readOceanbasePrimaryKeySnapshot(target, draft)).rejects.toMatchObject({ key: "unsupportedIndex" });
+  });
+
+  it.each(["keep", "drop"] as const)("reads index state and supplies recovery after successful deletion with %s", async (policy) => {
+    const deletion = { ...change, columns: [], oracleIndex: { policy, owner: "APP", name: "PK_SOURCE" } };
+    const snapshot = await readOceanbasePrimaryKeySnapshot(oracleTarget, deletion);
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    let dropped = false;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      const sql = args[2];
+      if (sql.startsWith("ALTER ")) {
+        dropped = true;
+        vi.mocked(api.listConstraints).mockResolvedValue([]);
+        return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 };
+      }
+      if (dropped && sql.includes("SYS.ALL_INDEXES")) return { columns: [], rows: policy === "keep" ? fixture.index.map((row) => [...row, "APP", "SOURCE"]) : [], affected_rows: 0, execution_time_ms: 0 };
+      if (dropped && sql.includes("SYS.ALL_IND_COLUMNS")) return { columns: [], rows: policy === "keep" ? fixture.indexColumns : [], affected_rows: 0, execution_time_ms: 0 };
+      return read(...args);
+    });
+    const result = await executeOceanbasePrimaryKeyPlan({ target: oracleTarget, change: deletion, snapshot, statements: [`ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE" ${policy.toUpperCase()} INDEX;`] }, 30, () => true);
+    expect(result?.steps[0]?.state).toBe("committed");
+    expect(result?.readbackError).toBeUndefined();
+    expect(result?.indexStates).toEqual([{ name: "APP.PK_SOURCE", state: policy === "keep" ? "indexPresent" : "indexAbsent" }]);
+    expect(result?.recoverySql).toBe(`ALTER TABLE "APP"."SOURCE" ADD CONSTRAINT "PK_SOURCE" PRIMARY KEY ("ID")${policy === "keep" ? ' USING INDEX "APP"."PK_SOURCE"' : ""};`);
+    expect(api.executeQuery.mock.calls.filter((call) => call[2].startsWith("ALTER "))).toHaveLength(1);
+  });
+
+  it("does not recommend reusing an index whose definition changed after DROP", async () => {
+    const deletion = { ...change, columns: [], oracleIndex: { policy: "keep" as const, owner: "APP", name: "PK_SOURCE" } };
+    const snapshot = await readOceanbasePrimaryKeySnapshot(oracleTarget, deletion);
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    let dropped = false;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      if (args[2].startsWith("ALTER ")) {
+        dropped = true;
+        vi.mocked(api.listConstraints).mockResolvedValue([]);
+        return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 };
+      }
+      if (dropped && args[2].includes("SYS.ALL_INDEXES")) return { columns: [], rows: fixture.index.map((row) => [...row, "APP", "SOURCE"]), affected_rows: 0, execution_time_ms: 0 };
+      if (dropped && args[2].includes("SYS.ALL_IND_COLUMNS")) return { columns: [], rows: [["V", 1, "ASC"]], affected_rows: 0, execution_time_ms: 0 };
+      return read(...args);
+    });
+    const result = await executeOceanbasePrimaryKeyPlan({ target: oracleTarget, change: deletion, snapshot, statements: ['ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE" KEEP INDEX;'] }, 30, () => true);
+    expect(result?.readbackError).toBe("definitionChanged");
+    expect(result?.indexStates?.[0]?.state).toBe("indexChanged");
+    expect(result?.recoverySql).not.toContain("USING INDEX");
+    expect(result?.recoverySql?.split("\n").every((line) => line.startsWith("-- "))).toBe(true);
   });
 });
 

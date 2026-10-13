@@ -9,6 +9,14 @@ import { meilisearchManagementRu } from "./meilisearchManagement";
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    indexPolicy: "Опорный индекс",
+    keepIndex: "Сохранить исходный индекс",
+    dropIndex: "Удалить исходный индекс",
+    oracleImpact: "При сохранении индекса его уникальность продолжает действовать. При удалении теряются физические параметры. DROP и ADD фиксируются отдельно; после сбоя ADD первичный ключ может отсутствовать. Проверьте SQL и при необходимости восстановите вручную.",
+    indexPresent: "Существует, определение совпадает",
+    indexAbsent: "Отсутствует",
+    indexChanged: "Определение изменено",
+    indexUnknown: "Состояние неизвестно",
     incompleteMetadata: "Обязательные метаданные неполны. Обновите определение таблицы.",
     duplicateColumns: "Столбцы первичного ключа не должны повторяться.",
     unsupportedTable: "Этот тип таблицы не поддерживает данную операцию с первичным ключом.",

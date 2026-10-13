@@ -68,6 +68,14 @@ const consul = {
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    indexPolicy: "支撐索引",
+    keepIndex: "保留原索引",
+    dropIndex: "刪除原索引",
+    oracleImpact: "保留索引後，原索引的唯一性限制仍生效；刪除索引會遺失其實體屬性。替換的 DROP 與 ADD 分別提交，ADD 失敗後可能沒有主鍵。請核對 SQL，必要時手動還原。",
+    indexPresent: "存在，定義一致",
+    indexAbsent: "不存在",
+    indexChanged: "定義已變更",
+    indexUnknown: "狀態未知",
     incompleteMetadata: "必要中繼資料不完整，請重新整理資料表定義。",
     duplicateColumns: "主鍵欄位不能重複。",
     unsupportedTable: "此資料表類型不支援這項主鍵操作。",

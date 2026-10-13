@@ -47,7 +47,7 @@ New-table creation can use preset fields from settings for common primary keys, 
 
 ### Edit an Existing OceanBase Oracle Primary Key
 
-Use the existing primary key's constraint card to edit or drop it in OceanBase Oracle. This operation supports ordinary tables with an enabled, validated, non-deferrable primary key. Its supporting index must be a valid, visible, non-partitioned normal unique index with the same column order and no other constraints sharing it. This entry point does not apply to native Oracle.
+Use the existing primary key's constraint card to edit or drop it in OceanBase Oracle. This operation supports ordinary tables with an enabled, validated, non-deferrable primary key. Its supporting index must be a valid, visible, non-partitioned normal unique index with the same column order and no other constraints sharing it.
 
 <Callout type="warn">Changing a primary key drops the original key and its supporting index before creating the new key. The two DDL statements commit independently, leaving the table without a primary key between them and possibly after a failed add. Dropping a key runs only the drop step.</Callout>
 
@@ -57,6 +57,14 @@ Use the existing primary key's constraint card to edit or drop it in OceanBase O
 4. Review the execution result and reloaded structure. If a statement fails or its outcome is unknown, inspect the database before attempting another change.
 
 When the original key was dropped and a subsequent read confirms that the table has no primary key, the result details include candidate SQL for manual recovery. Recheck the data, names, and indexes before running it. DBX never executes recovery automatically. This SQL restores only the original logical primary key, not physical properties such as tablespace, compression, or storage settings.
+
+### Edit an Existing Native Oracle Primary Key
+
+Native Oracle uses the same constraint card, ordered column selection, preview, and save entry points. The supported ordinary key states are described above. Index columns may have a different order from the constraint, but must contain the same set of columns.
+
+Choose **Keep the original index** or **Drop the original index** before saving. Keeping it is the default and preserves the old uniqueness rules. For example, changing a single-column key to a composite key does not remove the original column's uniqueness when its unique index is retained. Dropping the index loses its physical settings; preview identifies the affected index. A changed column set uses a new index name to avoid colliding with the retained index.
+
+DBX blocks known references, and the database rejects references that are invisible or added concurrently. No cascade is used. The two DDL statements commit independently; after partial failure, inspect the actual key and index states. Manual recovery recommends reusing an old index only when its complete definition still matches. If a same-name index changed or its state is unknown, the candidate remains commented out for manual inspection. Native Oracle live-database acceptance is still pending; OceanBase results do not establish native Oracle acceptance.
 
 ## Indexes, Foreign Keys, and Triggers
 

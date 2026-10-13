@@ -67,6 +67,14 @@ const consul = {
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    indexPolicy: "制約を支えるインデックス",
+    keepIndex: "元のインデックスを保持",
+    dropIndex: "元のインデックスを削除",
+    oracleImpact: "保持すると元の一意性制約が残ります。削除すると物理属性が失われます。DROP と ADD は個別にコミットされ、ADD の失敗後は主キーがない場合があります。SQL を確認し、必要に応じて手動で復元してください。",
+    indexPresent: "存在し、定義が一致",
+    indexAbsent: "存在しません",
+    indexChanged: "定義が変更されています",
+    indexUnknown: "状態不明",
     incompleteMetadata: "必要なメタデータが不完全です。テーブル定義を更新してください。",
     duplicateColumns: "主キー列は重複できません。",
     unsupportedTable: "このテーブル種別ではこの主キー操作を実行できません。",

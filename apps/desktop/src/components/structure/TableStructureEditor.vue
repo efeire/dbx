@@ -5,7 +5,7 @@ import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
 import StructureIndexColumnPicker from "./StructureIndexColumnPicker.vue";
 import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
-import { executeOceanbasePrimaryKeyPlan, readOceanbasePrimaryKeySnapshot, OceanbasePrimaryKeyValidationError, type ExistingPrimaryKeyChange, type OceanbasePrimaryKeyPlan, type PrimaryKeyTarget } from "@/lib/database/oceanbasePrimaryKey";
+import { executeOceanbasePrimaryKeyPlan, readOceanbasePrimaryKeySnapshot, prepareOraclePrimaryKeyChange, OceanbasePrimaryKeyValidationError, type ExistingPrimaryKeyChange, type OceanbasePrimaryKeyPlan, type PrimaryKeyTarget } from "@/lib/database/oceanbasePrimaryKey";
 
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from "vue";
 import { uuid } from "@/lib/common/utils";
@@ -1975,12 +1975,17 @@ watch(
     if (primaryKeyBusy.value) saving.value = false;
   },
 );
-const canEditExistingPrimaryKey = computed(() => !isCreateMode.value && databaseType.value === "oceanbase-oracle");
+const canEditExistingPrimaryKey = computed(() => !isCreateMode.value && (databaseType.value === "oracle" || databaseType.value === "oceanbase-oracle"));
 const existingPrimaryKeyChanged = computed(() => !!existingPrimaryKeyDraft.value && JSON.stringify(existingPrimaryKeyDraft.value.columns) !== JSON.stringify(existingPrimaryKeyDraft.value.originalColumns));
 const primaryKeyAvailableColumns = computed(() => columns.value.filter((column) => column.original && !column.markedForDrop && !existingPrimaryKeyDraft.value?.columns.includes(column.name)));
+const currentPrimaryKeyIndex = computed(() => {
+  const plan = existingPrimaryKeyPlan.value;
+  if (!plan || JSON.stringify(plan.draft ?? plan.change) !== JSON.stringify(existingPrimaryKeyDraft.value) || JSON.stringify(plan.target) !== JSON.stringify(primaryKeyTarget())) return undefined;
+  return plan.change.oracleIndex;
+});
 
 function primaryKeyTarget(): PrimaryKeyTarget {
-  return { connectionId: props.connectionId, database: props.database, schema: metadataSchema.value, tableName: props.tableName, catalog: props.catalog };
+  return { connectionId: props.connectionId, database: props.database, schema: metadataSchema.value, tableName: props.tableName, catalog: props.catalog, databaseType: databaseType.value === "oracle" ? "oracle" : "oceanbase-oracle" };
 }
 
 function primaryKeyError(error: unknown): string {
@@ -1998,6 +2003,7 @@ async function editExistingPrimaryKey(constraint: ConstraintInfo, remove = false
     return;
   }
   existingPrimaryKeyDraft.value = { name: current.name, originalColumns: [...current.columns], columns: remove ? [] : [...current.columns] };
+  if (databaseType.value === "oracle") existingPrimaryKeyDraft.value.oracleIndex = { policy: "keep", owner: metadataSchema.value, name: "" };
   primaryKeyNewColumn.value = "";
 }
 
@@ -2831,12 +2837,22 @@ async function refreshSqlPreview() {
     try {
       if (!canEditExistingPrimaryKey.value || hasPendingStructureChanges(false)) throw new OceanbasePrimaryKeyValidationError("mixedDraft");
       const target = primaryKeyTarget();
-      const change = cloneDraftValue(existingPrimaryKeyDraft.value!);
-      const [snapshot, result] = await Promise.all([readOceanbasePrimaryKeySnapshot(target, change), api.buildTableStructureChangeSql(structureChangeOptions())]);
+      let change = cloneDraftValue(existingPrimaryKeyDraft.value!);
+      const draft = cloneDraftValue(change);
+      let snapshot: string;
+      if (target.databaseType === "oracle") {
+        const prepared = await prepareOraclePrimaryKeyChange(target, change);
+        change = prepared.change;
+        snapshot = prepared.snapshot;
+      } else {
+        snapshot = await readOceanbasePrimaryKeySnapshot(target, change);
+      }
+      if (requestId !== sqlPreviewRequestId) return;
+      const result = await api.buildTableStructureChangeSql({ ...structureChangeOptions(), primaryKeyChange: change });
       if (requestId !== sqlPreviewRequestId) return;
       if (result.warnings.length) throw new Error(result.warnings.join("\n"));
       if (result.statements.length !== (change.columns.length ? 2 : 1)) throw new OceanbasePrimaryKeyValidationError("incompletePlan");
-      existingPrimaryKeyPlan.value = { target, change, snapshot, statements: [...result.statements] };
+      existingPrimaryKeyPlan.value = { target, change, draft, snapshot, statements: [...result.statements] };
       pendingStatements.value = [...result.statements];
       warnings.value = [];
     } catch (error) {
@@ -5141,7 +5157,7 @@ async function applyExistingPrimaryKey(): Promise<boolean> {
   if (primaryKeyBusy.value || !existingPrimaryKeyPlan.value) return false;
   const plan = cloneDraftValue(existingPrimaryKeyPlan.value);
   const identity = JSON.stringify(plan.target);
-  const draft = JSON.stringify(plan.change);
+  const draft = JSON.stringify(plan.draft ?? plan.change);
   const sameTarget = () => !primaryKeyUnmounted && identity === JSON.stringify(primaryKeyTarget());
   const stillCurrent = () => sameTarget() && draft === JSON.stringify(existingPrimaryKeyDraft.value) && !hasPendingStructureChanges(false) && !ddlDirty.value;
   if (!stillCurrent()) return false;
@@ -5167,6 +5183,7 @@ async function applyExistingPrimaryKey(): Promise<boolean> {
     if (!result) return false;
     const completed = result.steps.every((step) => step.state === "committed");
     let details = result.steps.map((step, index) => `${index + 1}. ${t(`oceanbasePrimaryKey.${step.state}`)}\n${step.sql}${step.error ? `\n${step.error}` : ""}`).join("\n\n");
+    if (result.indexStates?.length) details += `\n\n${result.indexStates.map((index) => `${index.name}: ${t(`oceanbasePrimaryKey.${index.state}`)}`).join("\n")}`;
     for (const step of result.steps.filter((item) => item.state !== "notExecuted")) {
       try {
         await historyStore.add({
@@ -6887,7 +6904,18 @@ watch(
                     <Button variant="outline" size="sm" :disabled="primaryKeyBusy || !primaryKeyNewColumn" @click="addExistingPrimaryKeyColumn">{{ t("structureEditor.addColumn") }}</Button>
                     <Button variant="ghost" size="sm" :disabled="primaryKeyBusy" @click="existingPrimaryKeyDraft = undefined">{{ t("common.cancel") }}</Button>
                   </div>
-                  <p v-if="existingPrimaryKeyChanged" class="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs">{{ t("oceanbasePrimaryKey.impact") }}</p>
+                  <div v-if="existingPrimaryKeyDraft.oracleIndex" class="space-y-1">
+                    <span>{{ t("oceanbasePrimaryKey.indexPolicy") }}</span>
+                    <p v-if="currentPrimaryKeyIndex" data-primary-key-index-identity class="break-all font-mono text-xs">{{ currentPrimaryKeyIndex.owner }}.{{ currentPrimaryKeyIndex.name }}</p>
+                    <Select v-model="existingPrimaryKeyDraft.oracleIndex.policy" :disabled="primaryKeyBusy">
+                      <SelectTrigger :aria-label="t('oceanbasePrimaryKey.indexPolicy')"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="keep">{{ t("oceanbasePrimaryKey.keepIndex") }}</SelectItem>
+                        <SelectItem value="drop">{{ t("oceanbasePrimaryKey.dropIndex") }}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <p v-if="existingPrimaryKeyChanged" class="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs">{{ t(existingPrimaryKeyDraft.oracleIndex ? "oceanbasePrimaryKey.oracleImpact" : "oceanbasePrimaryKey.impact") }}</p>
                 </div>
                 <div v-if="constraint.columns.length" class="mt-1 truncate font-mono text-muted-foreground">{{ constraint.columns.join(", ") }}</div>
                 <div v-if="constraint.ref_table" class="mt-1 truncate font-mono text-muted-foreground">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>

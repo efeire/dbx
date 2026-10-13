@@ -12,6 +12,14 @@ import { damengDumpZhCN as damengDump } from "./damengDump";
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    indexPolicy: "支撑索引",
+    keepIndex: "保留原索引",
+    dropIndex: "删除原索引",
+    oracleImpact: "保留索引后，原索引的唯一性限制仍生效；删除索引会丢失其物理属性。替换的 DROP 与 ADD 分别提交，ADD 失败后可能没有主键。请核对 SQL，必要时人工恢复。",
+    indexPresent: "存在，定义一致",
+    indexAbsent: "不存在",
+    indexChanged: "定义已变化",
+    indexUnknown: "状态未知",
     incompleteMetadata: "必要元数据不完整，请刷新表定义。",
     duplicateColumns: "主键列不能重复。",
     unsupportedTable: "此表类型不支持本次主键操作。",

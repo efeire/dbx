@@ -66,6 +66,14 @@ const consul = {
 export default {
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    indexPolicy: "Supporting index",
+    keepIndex: "Keep the original index",
+    dropIndex: "Drop the original index",
+    oracleImpact: "Keeping the index preserves its uniqueness rules. Dropping it removes its physical settings. Replacement commits DROP and ADD separately; ADD may fail and leave no primary key. Review the SQL and restore manually if needed.",
+    indexPresent: "Present; definition matches",
+    indexAbsent: "Absent",
+    indexChanged: "Definition changed",
+    indexUnknown: "State unknown",
     incompleteMetadata: "Required metadata is incomplete. Refresh the table definition.",
     duplicateColumns: "Primary key columns must not repeat.",
     unsupportedTable: "This table type does not support this primary key operation.",

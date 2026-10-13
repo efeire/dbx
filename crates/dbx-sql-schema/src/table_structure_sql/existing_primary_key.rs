@@ -9,8 +9,11 @@ pub(super) fn build_existing_primary_key_change(mut options: TableStructureSqlOp
     let change = options.primary_key_change.take().expect("existing primary key change");
     let reject =
         |message: &str| TableStructureSqlResult { statements: Vec::new(), warnings: vec![message.to_string()] };
-    if options.database_type != Some(DatabaseType::OceanbaseOracle) || options.is_gaussdb_m_mode {
-        return reject("Ordered existing primary key changes are only supported for OceanBase Oracle.");
+    let oracle = options.database_type == Some(DatabaseType::Oracle);
+    if !matches!(options.database_type, Some(DatabaseType::Oracle | DatabaseType::OceanbaseOracle))
+        || options.is_gaussdb_m_mode
+    {
+        return reject("Ordered existing primary key changes are only supported for Oracle and OceanBase Oracle.");
     }
     if change.name.trim().is_empty() || change.original_columns.is_empty() {
         return reject("The original primary key name and ordered columns are required.");
@@ -19,6 +22,36 @@ pub(super) fn build_existing_primary_key_change(mut options: TableStructureSqlOp
     let target: HashSet<_> = change.columns.iter().collect();
     if original.len() != change.original_columns.len() || target.len() != change.columns.len() {
         return reject("Primary key columns must not repeat.");
+    }
+    if oracle {
+        let Some(index) = &change.oracle_index else {
+            return reject("The original Oracle index identity and explicit index policy are required.");
+        };
+        if !matches!(index.policy.as_str(), "keep" | "drop")
+            || index.owner.trim().is_empty()
+            || options.schema.as_deref() != Some(index.owner.as_str())
+            || index.name.trim().is_empty()
+        {
+            return reject("The Oracle index identity or policy is invalid.");
+        }
+        let new_index_required = !change.columns.is_empty() && (index.policy == "drop" || original != target);
+        if new_index_required {
+            let Some(name) = index.new_name.as_deref() else {
+                return reject("A verified new Oracle index name is required.");
+            };
+            if name.is_empty()
+                || name.len() > 30
+                || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                || !name.as_bytes()[0].is_ascii_alphabetic()
+                || name == index.name
+            {
+                return reject("The new Oracle index name is invalid or conflicts with the original index.");
+            }
+        } else if index.new_name.is_some() {
+            return reject("This Oracle primary key plan does not create a new index.");
+        }
+    } else if change.oracle_index.is_some() {
+        return reject("Oracle index policies are not supported for OceanBase Oracle.");
     }
     let known_original: HashSet<_> = options
         .columns
@@ -51,10 +84,30 @@ pub(super) fn build_existing_primary_key_change(mut options: TableStructureSqlOp
     let dialect = StructureDialect::Oracle;
     let table = qualified_table(dialect, options.schema.as_deref(), &options.table_name);
     let name = quote_ident(dialect, &change.name);
-    let mut statements = vec![format!("ALTER TABLE {table} DROP CONSTRAINT {name};")];
+    let index_policy =
+        change.oracle_index.as_ref().map_or(
+            "",
+            |index| {
+                if index.policy == "keep" {
+                    " KEEP INDEX"
+                } else {
+                    " DROP INDEX"
+                }
+            },
+        );
+    let mut statements = vec![format!("ALTER TABLE {table} DROP CONSTRAINT {name}{index_policy};")];
     if !change.columns.is_empty() {
         let columns = change.columns.iter().map(|name| quote_ident(dialect, name)).collect::<Vec<_>>().join(", ");
-        statements.push(format!("ALTER TABLE {table} ADD CONSTRAINT {name} PRIMARY KEY ({columns});"));
+        let using_index = change.oracle_index.as_ref().map_or_else(String::new, |index| {
+            if let Some(new_name) = &index.new_name {
+                let index_name = qualified_table(dialect, Some(&index.owner), new_name);
+                format!(" USING INDEX (CREATE UNIQUE INDEX {index_name} ON {table} ({columns}))")
+            } else {
+                let index_name = qualified_table(dialect, Some(&index.owner), &index.name);
+                format!(" USING INDEX {index_name}")
+            }
+        });
+        statements.push(format!("ALTER TABLE {table} ADD CONSTRAINT {name} PRIMARY KEY ({columns}){using_index};"));
     }
     TableStructureSqlResult { statements, warnings: Vec::new() }
 }

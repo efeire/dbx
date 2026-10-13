@@ -118,6 +118,65 @@ fn oceanbase_existing_primary_key_delete_payload() {
 }
 
 #[test]
+fn oracle_existing_primary_key_explicit_index_policy() {
+    let options = structure_change_options(
+        DatabaseType::Oracle,
+        Some("APP"),
+        "SOURCE",
+        vec![existing_pk_column("ID", "NUMBER", true, true), existing_pk_column("V", "NUMBER", true, true)],
+    );
+    for (policy, columns, new_name, expected_add) in [
+        ("keep", vec!["V", "ID"], None, Some("ALTER TABLE \"APP\".\"SOURCE\" ADD CONSTRAINT \"PK_SOURCE\" PRIMARY KEY (\"V\", \"ID\") USING INDEX \"APP\".\"ORIGINAL_IDX\";")),
+        ("keep", vec!["V"], Some("SOURCE_V_IDX"), Some("ALTER TABLE \"APP\".\"SOURCE\" ADD CONSTRAINT \"PK_SOURCE\" PRIMARY KEY (\"V\") USING INDEX (CREATE UNIQUE INDEX \"APP\".\"SOURCE_V_IDX\" ON \"APP\".\"SOURCE\" (\"V\"));")),
+        ("drop", vec!["V", "ID"], Some("SOURCE_V_ID_IDX"), Some("ALTER TABLE \"APP\".\"SOURCE\" ADD CONSTRAINT \"PK_SOURCE\" PRIMARY KEY (\"V\", \"ID\") USING INDEX (CREATE UNIQUE INDEX \"APP\".\"SOURCE_V_ID_IDX\" ON \"APP\".\"SOURCE\" (\"V\", \"ID\"));")),
+        ("keep", vec![], None, None),
+        ("drop", vec![], None, None),
+    ] {
+        let mut payload = serde_json::to_value(&options).unwrap();
+        payload["primaryKeyChange"] = serde_json::json!({
+            "name": "PK_SOURCE", "originalColumns": ["ID", "V"], "columns": columns,
+            "oracleIndex": { "policy": policy, "owner": "APP", "name": "ORIGINAL_IDX", "newName": new_name }
+        });
+        let result = build_table_structure_change_sql(serde_json::from_value(payload).unwrap());
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        let mut expected = vec![format!("ALTER TABLE \"APP\".\"SOURCE\" DROP CONSTRAINT \"PK_SOURCE\" {} INDEX;", policy.to_uppercase())];
+        if let Some(add) = expected_add { expected.push(add.to_string()); }
+        assert_eq!(result.statements, expected);
+    }
+}
+
+#[test]
+fn oracle_existing_primary_key_rejects_unverified_index_plan() {
+    let options = structure_change_options(
+        DatabaseType::Oracle,
+        Some("APP"),
+        "SOURCE",
+        vec![existing_pk_column("ID", "NUMBER", true, true), existing_pk_column("V", "NUMBER", false, false)],
+    );
+    let mut payload = serde_json::to_value(options).unwrap();
+    payload["primaryKeyChange"] = serde_json::json!({
+        "name": "PK_SOURCE", "originalColumns": ["ID"], "columns": ["V"],
+        "oracleIndex": {"policy": "keep", "owner": "APP", "name": "PK_SOURCE", "newName": "SOURCE_V_IDX"}
+    });
+    for (pointer, value) in [
+        ("/primaryKeyChange/oracleIndex", serde_json::Value::Null),
+        ("/primaryKeyChange/oracleIndex/policy", serde_json::json!("cascade")),
+        ("/primaryKeyChange/oracleIndex/owner", serde_json::json!("OTHER")),
+        ("/primaryKeyChange/oracleIndex/name", serde_json::json!("")),
+        ("/primaryKeyChange/oracleIndex/newName", serde_json::Value::Null),
+        ("/primaryKeyChange/oracleIndex/newName", serde_json::json!("PK_SOURCE")),
+        ("/primaryKeyChange/oracleIndex/newName", serde_json::json!("INVALID; DROP TABLE X")),
+        ("/databaseType", serde_json::json!("oceanbase-oracle")),
+    ] {
+        let mut invalid = payload.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        let result = build_table_structure_change_sql(serde_json::from_value(invalid).unwrap());
+        assert!(result.statements.is_empty(), "{pointer}: {:?}", result.statements);
+        assert!(!result.warnings.is_empty(), "{pointer}");
+    }
+}
+
+#[test]
 fn oceanbase_existing_primary_key_rejects_invalid_or_combined_drafts() {
     let options = structure_change_options(
         DatabaseType::OceanbaseOracle,
@@ -159,6 +218,7 @@ fn oceanbase_existing_primary_key_unchanged_order_is_a_noop() {
         name: "PK_SOURCE".to_string(),
         original_columns: vec!["ID".to_string()],
         columns: vec!["ID".to_string()],
+        oracle_index: None,
     });
     let result = build_table_structure_change_sql(options);
     assert!(result.statements.is_empty());

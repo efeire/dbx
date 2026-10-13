@@ -292,7 +292,7 @@ pub struct TableStructureSqlOptions {
     /// that did not exist before; replacing an existing key never renames it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_key_name: Option<String>,
-    /// An ordered change to an existing OceanBase Oracle primary key.
+    /// An ordered change to an existing Oracle-family primary key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_key_change: Option<ExistingPrimaryKeyChange>,
 }
@@ -304,6 +304,18 @@ pub struct ExistingPrimaryKeyChange {
     pub original_columns: Vec<String>,
     /// Empty means remove the existing key.
     pub columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_index: Option<OraclePrimaryKeyIndex>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OraclePrimaryKeyIndex {
+    pub policy: String,
+    pub owner: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

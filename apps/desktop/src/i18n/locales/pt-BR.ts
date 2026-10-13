@@ -67,6 +67,14 @@ const consul = {
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    indexPolicy: "Índice de suporte",
+    keepIndex: "Manter o índice original",
+    dropIndex: "Excluir o índice original",
+    oracleImpact: "Manter o índice preserva sua unicidade. Excluí-lo perde suas propriedades físicas. DROP e ADD são confirmados separadamente; se ADD falhar, a chave primária poderá ficar ausente. Confira o SQL e restaure manualmente se necessário.",
+    indexPresent: "Presente, definição correspondente",
+    indexAbsent: "Ausente",
+    indexChanged: "Definição alterada",
+    indexUnknown: "Estado desconhecido",
     incompleteMetadata: "Os metadados necessários estão incompletos. Atualize a definição da tabela.",
     duplicateColumns: "As colunas da chave primária não podem se repetir.",
     unsupportedTable: "Este tipo de tabela não oferece suporte a esta operação de chave primária.",

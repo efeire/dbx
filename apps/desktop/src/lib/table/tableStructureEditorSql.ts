@@ -121,8 +121,13 @@ export interface BuildTableStructureChangeSqlOptions {
    * auto-name the constraint. Ignored when the draft only replaces an
    * existing primary key (renaming is out of scope). */
   primaryKeyName?: string;
-  /** Ordered change to an existing OceanBase Oracle primary key; an empty target removes it. */
-  primaryKeyChange?: { name: string; originalColumns: string[]; columns: string[] };
+  /** Ordered change to an existing Oracle-family primary key; an empty target removes it. */
+  primaryKeyChange?: {
+    name: string;
+    originalColumns: string[];
+    columns: string[];
+    oracleIndex?: { policy: "keep" | "drop"; owner: string; name: string; newName?: string };
+  };
 }
 
 export interface TranswarpCreateTableOptions {
