@@ -24,6 +24,7 @@ describe.each(["oracle", "oceanbase-oracle"] as const)("%s numeric column fideli
       is_nullable: true,
       is_primary_key: false,
       column_default: null,
+      extra: null,
     };
     const draft = createColumnDrafts([metadata], databaseType)[0];
     draft.comment = "updated comment";
@@ -62,7 +63,7 @@ describe("OceanBase Oracle built-in type recommendations", () => {
   });
 
   it("preserves existing non-recommended types in edit and copy drafts", () => {
-    const column: ColumnInfo = { name: "EXISTING_VALUE", data_type: "VECTOR(3, FLOAT32)", is_nullable: true, is_primary_key: false, column_default: null };
+    const column: ColumnInfo = { name: "EXISTING_VALUE", data_type: "VECTOR(3, FLOAT32)", is_nullable: true, is_primary_key: false, column_default: null, extra: null };
     expect(createColumnDrafts([column], "oceanbase-oracle")[0].dataType).toBe(column.data_type);
     expect(createCopiedColumnDrafts([column], "oceanbase-oracle", () => "copy")[0].dataType).toBe(column.data_type);
   });

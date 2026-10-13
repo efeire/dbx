@@ -53,7 +53,7 @@ it("filters rejected JDBC recommendations without replacing an existing nonrecom
     comment: "original comment",
     isPrimaryKey: false,
     extra: {},
-    original: { name: "C", data_type: "NCLOB", is_nullable: true, column_default: null, comment: "original comment", is_primary_key: false },
+    original: { name: "C", data_type: "NCLOB", is_nullable: true, column_default: null, comment: "original comment", is_primary_key: false, extra: null },
     originalPosition: 0,
     markedForDrop: false,
   };
