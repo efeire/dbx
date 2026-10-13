@@ -65,6 +65,11 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    sourceNotice: "付与元は現在のセッションで有効な権限を示すものではありません。",
+    managementHint: "管理文は暗黙的にコミットされる場合があります。取消は選択した主体への直接付与のみを対象とし、他の付与元は有効な場合があります。名前は既定で大文字になり、二重引用符で大小文字を保持できます。",
+    writeRejected: "データベースが操作を拒否しました。権限、オブジェクト、入力を確認してから再度プレビューしてください。",
+    writeUnknown: "実行結果は不明です。再試行する前に状態を読み直すか再接続して確認してください。",
+    readDetails: "読み取りの詳細",
     loaded: "読み込み済み",
     empty: "表示可能な範囲は空です",
     denied: "権限がありません",

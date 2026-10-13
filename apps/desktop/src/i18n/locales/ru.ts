@@ -7,6 +7,11 @@ import { meilisearchManagementRu } from "./meilisearchManagement";
 // Russian locale. Entries omitted here fall back to English at runtime.
 export default withEnglishFallback({
   oracleSecurity: {
+    sourceNotice: "Источники прав не отражают действующие права текущего сеанса.",
+    managementHint: "Команды управления могут выполнять неявную фиксацию. Отзыв касается прямых прав выбранного субъекта; другие источники могут остаться действующими. Имена приводятся к верхнему регистру; двойные кавычки сохраняют регистр.",
+    writeRejected: "База данных отклонила операцию. Проверьте права, объекты и ввод перед повторной подготовкой.",
+    writeUnknown: "Результат неизвестен. Прочитайте состояние или переподключитесь для проверки перед повторной попыткой.",
+    readDetails: "Подробности чтения",
     loaded: "Загружено",
     empty: "Видимая область пуста",
     denied: "Доступ запрещён",

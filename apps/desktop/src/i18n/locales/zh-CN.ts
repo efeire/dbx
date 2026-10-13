@@ -10,6 +10,11 @@ import { damengDumpZhCN as damengDump } from "./damengDump";
 
 export default withEnglishFallback({
   oracleSecurity: {
+    sourceNotice: "授予来源不代表当前会话的有效权限。",
+    managementHint: "管理语句可能隐式提交。撤销仅针对选中主体的直接授权，其他来源可能仍有效。对象名默认转为大写，双引号保留大小写。",
+    writeRejected: "数据库拒绝了此操作。请核对权限、对象和输入后重新预览。",
+    writeUnknown: "执行结果不明。请读回状态或重新连接核实，不要直接重试。",
+    readDetails: "读取详情",
     loaded: "已读取",
     empty: "当前范围为空",
     denied: "无权读取",

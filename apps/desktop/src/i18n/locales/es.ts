@@ -66,6 +66,11 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    sourceNotice: "Las fuentes de permisos no representan los permisos efectivos de la sesión.",
+    managementHint: "Las sentencias de gestión pueden confirmar implícitamente. La revocación afecta a permisos directos del principal seleccionado; otras fuentes pueden seguir vigentes. Los nombres pasan a mayúsculas; las comillas dobles conservan el caso.",
+    writeRejected: "La base de datos rechazó la operación. Revise permisos, objetos y entradas antes de prepararla de nuevo.",
+    writeUnknown: "El resultado es desconocido. Consulte el estado o vuelva a conectarse para verificarlo antes de reintentar.",
+    readDetails: "Detalles de lectura",
     loaded: "Cargado",
     empty: "Ámbito visible vacío",
     denied: "Permiso denegado",

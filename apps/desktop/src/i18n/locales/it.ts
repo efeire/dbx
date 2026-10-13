@@ -64,6 +64,11 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    sourceNotice: "Le origini dei privilegi non rappresentano i privilegi effettivi della sessione.",
+    managementHint: "Le istruzioni di gestione possono eseguire commit impliciti. La revoca riguarda i privilegi diretti del soggetto selezionato; altre origini possono restare valide. I nomi diventano maiuscoli; le virgolette doppie preservano il caso.",
+    writeRejected: "Il database ha rifiutato l’operazione. Verificare privilegi, oggetti e dati prima di prepararla di nuovo.",
+    writeUnknown: "Esito sconosciuto. Rileggere lo stato o riconnettersi per verificarlo prima di riprovare.",
+    readDetails: "Dettagli della lettura",
     loaded: "Caricato",
     empty: "Ambito visibile vuoto",
     denied: "Permesso negato",

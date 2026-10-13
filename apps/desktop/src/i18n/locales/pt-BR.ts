@@ -65,6 +65,11 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    sourceNotice: "As origens das concessões não representam as permissões efetivas da sessão.",
+    managementHint: "Instruções de gestão podem confirmar implicitamente. A revogação afeta concessões diretas ao principal selecionado; outras origens podem continuar válidas. Nomes viram maiúsculas; aspas duplas preservam a caixa.",
+    writeRejected: "O banco de dados rejeitou a operação. Verifique privilégios, objetos e entradas antes de prepará-la novamente.",
+    writeUnknown: "O resultado é desconhecido. Consulte o estado ou reconecte-se para verificar antes de tentar novamente.",
+    readDetails: "Detalhes da leitura",
     loaded: "Carregado",
     empty: "Escopo visível vazio",
     denied: "Permissão negada",

@@ -4,7 +4,7 @@ import { effectiveDatabaseTypeForConnection, gaussdbConnectionMode } from "@/lib
 import { supportsOracleSecurity } from "@/lib/database/oracleSecurity";
 
 export type UserAdminDialect = "mysql" | "postgres";
-export type PrivilegeScope = "mysql" | "database" | "schema" | "table" | "role";
+export type PrivilegeScope = "mysql" | "database" | "schema" | "table" | "role" | "system";
 export type AuthorizationModel = "mysql" | "postgres" | "starrocks";
 
 export interface DatabaseUserIdentity {

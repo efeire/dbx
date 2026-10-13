@@ -66,6 +66,11 @@ const consul = {
 
 export default withEnglishFallback({
   oracleSecurity: {
+    sourceNotice: "授予來源不代表目前工作階段的有效權限。",
+    managementHint: "管理語句可能隱含提交。撤銷僅針對所選主體的直接授權，其他來源可能仍有效。物件名稱預設轉為大寫，雙引號保留大小寫。",
+    writeRejected: "資料庫拒絕此操作。請核對權限、物件和輸入後重新預覽。",
+    writeUnknown: "執行結果不明。請讀回狀態或重新連線核實，不要直接重試。",
+    readDetails: "讀取詳情",
     loaded: "已讀取",
     empty: "目前範圍為空",
     denied: "無權讀取",

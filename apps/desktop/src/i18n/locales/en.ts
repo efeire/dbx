@@ -64,6 +64,11 @@ const consul = {
 
 export default {
   oracleSecurity: {
+    sourceNotice: "Grant sources do not represent effective session permissions.",
+    managementHint: "Management statements may commit implicitly. Revoke targets direct grants to the selected principal; other sources may still apply. Names default to uppercase; double quotes preserve case.",
+    writeRejected: "The database rejected the operation. Check privileges, objects and inputs before preparing it again.",
+    writeUnknown: "The outcome is unknown. Read back the state or reconnect to verify before retrying.",
+    readDetails: "Read details",
     loaded: "Loaded",
     empty: "Empty in visible scope",
     denied: "Permission denied",
