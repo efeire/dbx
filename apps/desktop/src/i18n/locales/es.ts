@@ -1,4 +1,5 @@
 import { sidebarMenuEs as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogEs as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
 import { mongodbDatabaseDumpEs as mongoDump } from "./mongodbDatabaseDump";
 import { damengDumpEs as damengDump } from "./damengDump";
@@ -65,6 +66,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "Generar modelo",
@@ -4245,7 +4247,6 @@ export default withEnglishFallback({
     emptyTableSubmitted: 'Tarea de vaciado enviada para "{name}"',
     truncateTableSuccess: 'Tabla "{name}" truncada',
     duplicateStructureSuccess: 'Tabla clonada como "{name}"',
-    oceanbaseClonePreview: "Destino: {target}\n\nCopiar:\n{copied}\n\nExcluir:\n{excluded}\n\nSQL:\n{sql}\n\nCada sentencia DDL se confirma por separado. Un fallo no revierte automáticamente los pasos anteriores. ¿Continuar?",
     tableOperationFailed: "Error en la operación: {message}",
     tableOperationTimedOut: 'La operación en "{name}" está tardando más de lo esperado y no se ha cancelado; es posible que siga ejecutándose en la base de datos. Compruebe el resultado más tarde o haga clic en Cancelar para detenerla. ({message})',
     tableOperationCancelled: 'Operación en "{name}" cancelada',

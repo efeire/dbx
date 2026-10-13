@@ -1,4 +1,5 @@
 import { sidebarMenuJa as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogJa as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
 import { mongodbDatabaseDumpJa as mongoDump } from "./mongodbDatabaseDump";
 import { damengDumpJa as damengDump } from "./damengDump";
@@ -64,6 +65,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "モデルを生成",
@@ -4080,7 +4082,6 @@ export default withEnglishFallback({
     emptyTableSubmitted: "「{name}」の空化タスクを送信しました",
     truncateTableSuccess: "テーブル「{name}」をトランケートしました",
     duplicateStructureSuccess: "テーブルを「{name}」として複製しました",
-    oceanbaseClonePreview: "複製先：{target}\n\nコピー対象：\n{copied}\n\n対象外：\n{excluded}\n\n実行 SQL：\n{sql}\n\nDDL は個別にコミットされます。失敗しても前の処理は自動的にロールバックされません。続行しますか？",
     tableOperationFailed: "操作に失敗しました: {message}",
     tableOperationTimedOut: "「{name}」の操作に予想より時間がかかっており、まだキャンセルされていません。データベース側では実行が続いている可能性があります。後で結果を確認するか、キャンセルをクリックして停止してください。（{message}）",
     tableOperationCancelled: "「{name}」の操作をキャンセルしました",

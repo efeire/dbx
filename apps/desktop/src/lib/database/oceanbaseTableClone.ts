@@ -6,19 +6,29 @@ import type { DuplicateTableStructurePlan, DuplicateTableStructurePlanOptions } 
 export interface OceanbaseTableClone {
   targetSchema: string;
   targetName: string;
-  copied: string[];
-  excluded: string[];
-  steps: Array<{ label: string; sql: string }>;
+  columnCount: number;
+  indexNames: string[];
+  exclusions: Array<{ kind: "constraint" | "partitioning" | "trigger" | "index"; name?: string; type?: string }>;
+  steps: Array<{ kind: "table" | "primaryKey" | "index" | "comment" | "data"; name: string; sql: string }>;
 }
 
 const ident = (name: string) => `"${name.replace(/"/g, '""')}"`;
 const literal = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
+export class OceanbaseCloneValidationError extends Error {
+  constructor(
+    readonly key: string,
+    readonly values: Record<string, string> = {},
+  ) {
+    super(key);
+  }
+}
+
 export function oceanbaseCloneTargetName(input: string): string {
   const name = input.trim();
   if (/^[A-Za-z][A-Za-z0-9_$#]*$/.test(name)) return name.toUpperCase();
   if (/^"(?:[^"]|"")+"$/.test(name)) return name.slice(1, -1).replace(/""/g, '"');
-  throw new Error("Use an ordinary table name or an explicitly double-quoted name.");
+  throw new OceanbaseCloneValidationError("invalidName");
 }
 
 function cloneIndexName(table: string, position: number): string {
@@ -32,13 +42,13 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
   let sourceSchema = options.schema || "";
   const query = async (sql: string) => {
     const result = await api.executeQuery(options.connectionId, options.database, sql, sourceSchema, undefined, { catalog: options.catalog, maxRows: 10001 });
-    if (result.execution_error) throw new Error(result.error?.detail || "Unable to read clone metadata.");
-    if (result.truncated === true || result.rows.length >= 10001 || result.has_more) throw new Error("Clone metadata was truncated. No DDL was executed.");
+    if (result.execution_error) throw result.error?.detail ? new Error(result.error.detail) : new OceanbaseCloneValidationError("metadataRead");
+    if (result.truncated === true || result.rows.length >= 10001 || result.has_more) throw new OceanbaseCloneValidationError("metadataTruncated");
     return result.rows;
   };
   if (!sourceSchema) {
     const current = await query("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL");
-    if (current.length !== 1 || typeof current[0]?.[0] !== "string" || !current[0][0]) throw new Error("Current schema is unavailable. No DDL was executed.");
+    if (current.length !== 1 || typeof current[0]?.[0] !== "string" || !current[0][0]) throw new OceanbaseCloneValidationError("currentSchema");
     sourceSchema = current[0][0];
   }
   const targetSchema = sourceSchema;
@@ -56,14 +66,14 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
     query(`SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE, INDEX_NAME FROM SYS.ALL_CONSTRAINTS WHERE ${where} AND CONSTRAINT_TYPE IN ('U', 'R')`),
     query(`SELECT PARTITIONED, TEMPORARY FROM SYS.ALL_TABLES WHERE ${where}`),
   ]);
-  if (tableFlags.length !== 1 || !["YES", "NO"].includes(String(tableFlags[0]?.[0])) || !["Y", "N"].includes(String(tableFlags[0]?.[1]))) throw new Error("Source table properties are unavailable. No DDL was executed.");
-  if (tableFlags[0]![1] === "Y") throw new Error("Cloning temporary tables is not supported. No DDL was executed.");
-  if (virtualColumns.length) throw new Error(`Cloning virtual columns is not supported: ${virtualColumns.map((row) => ident(String(row[0]))).join(", ")}. No DDL was executed.`);
-  if (!columns.length || comments.length !== 1) throw new Error("Source table metadata is missing or inaccessible. No DDL was executed.");
-  if (conflicts.length) throw new Error(`Target already exists: ${ident(targetSchema)}.${ident(targetName)}. No DDL was executed.`);
+  if (tableFlags.length !== 1 || !["YES", "NO"].includes(String(tableFlags[0]?.[0])) || !["Y", "N"].includes(String(tableFlags[0]?.[1]))) throw new OceanbaseCloneValidationError("tableProperties");
+  if (tableFlags[0]![1] === "Y") throw new OceanbaseCloneValidationError("temporaryTable");
+  if (virtualColumns.length) throw new OceanbaseCloneValidationError("virtualColumns", { names: virtualColumns.map((row) => ident(String(row[0]))).join(", ") });
+  if (!columns.length || comments.length !== 1) throw new OceanbaseCloneValidationError("sourceMetadata");
+  if (conflicts.length) throw new OceanbaseCloneValidationError("targetExists", { name: `${ident(targetSchema)}.${ident(targetName)}` });
   const primaryKeys = constraints.filter((constraint) => constraint.constraint_type === "PRIMARY KEY");
   if (primaryKeys.length > 1 || (columns.some((column) => column.is_primary_key) && primaryKeys.length !== 1)) {
-    throw new Error("Source primary-key metadata is incomplete. No DDL was executed.");
+    throw new OceanbaseCloneValidationError("primaryKeyMetadata");
   }
   const target = `${ident(targetSchema)}.${ident(targetName)}`;
   const result = await api.buildCreateTableSql({
@@ -82,36 +92,33 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
     foreignKeys: [],
     triggers: [],
   });
-  if (result.warnings.length || result.statements.length !== 1) throw new Error(result.warnings.join("\n") || "Unable to generate complete OceanBase Oracle table columns.");
-  const steps: OceanbaseTableClone["steps"] = [{ label: `TABLE ${target}`, sql: result.statements[0]! }];
-  const copied = [`COLUMNS: ${columns.map((column) => ident(column.name)).join(", ")}`];
+  if (result.warnings.length || result.statements.length !== 1) throw result.warnings.length ? new Error(result.warnings.join("\n")) : new OceanbaseCloneValidationError("createColumns");
+  const steps: OceanbaseTableClone["steps"] = [{ kind: "table", name: target, sql: result.statements[0]! }];
   for (const primaryKey of primaryKeys) {
-    if (!primaryKey.columns.length || primaryKey.columns.some((name) => !columns.some((column) => column.name === name))) throw new Error("Source primary-key column order is unavailable.");
-    if (primaryKey.enabled !== true || primaryKey.valid !== true || primaryKey.deferrable !== false) throw new Error("Cloning disabled, unvalidated, deferrable or unknown-state primary keys is not supported.");
+    if (!primaryKey.columns.length || primaryKey.columns.some((name) => !columns.some((column) => column.name === name))) throw new OceanbaseCloneValidationError("primaryKeyMetadata");
+    if (primaryKey.enabled !== true || primaryKey.valid !== true || primaryKey.deferrable !== false) throw new OceanbaseCloneValidationError("primaryKeyState");
     const markedColumns = columns.filter((column) => column.is_primary_key).map((column) => column.name);
-    if (new Set(primaryKey.columns).size !== primaryKey.columns.length || markedColumns.length !== primaryKey.columns.length || markedColumns.some((name) => !primaryKey.columns.includes(name))) throw new Error("Source primary-key metadata is inconsistent. No DDL was executed.");
+    if (new Set(primaryKey.columns).size !== primaryKey.columns.length || markedColumns.length !== primaryKey.columns.length || markedColumns.some((name) => !primaryKey.columns.includes(name))) throw new OceanbaseCloneValidationError("primaryKeyMetadata");
     const sql = `ALTER TABLE ${target} ADD PRIMARY KEY (${primaryKey.columns.map(ident).join(", ")});`;
-    steps.push({ label: `PRIMARY KEY (${primaryKey.columns.map(ident).join(", ")})`, sql });
-    copied.push(steps[steps.length - 1]!.label);
+    steps.push({ kind: "primaryKey", name: primaryKey.columns.map(ident).join(", "), sql });
   }
-  const excluded = constraints.filter((constraint) => constraint.constraint_type !== "PRIMARY KEY").map((constraint) => `${constraint.constraint_type}: ${ident(constraint.name)}`);
-  if (tableFlags[0]![0] === "YES") excluded.push("PARTITIONING: the target will be an unpartitioned table");
+  const exclusions: OceanbaseTableClone["exclusions"] = constraints.filter((constraint) => constraint.constraint_type !== "PRIMARY KEY").map((constraint) => ({ kind: "constraint", name: constraint.name, type: constraint.constraint_type }));
+  if (tableFlags[0]![0] === "YES") exclusions.push({ kind: "partitioning" });
   const uniqueConstraintIndexes = new Set<string>();
-  if (constraints.some((constraint) => constraint.constraint_type === "UNIQUE" && !excludedConstraints.some((row) => row[0] === constraint.name && row[1] === "U"))) throw new Error("Source unique-constraint index metadata is unavailable. No DDL was executed.");
+  if (constraints.some((constraint) => constraint.constraint_type === "UNIQUE" && !excludedConstraints.some((row) => row[0] === constraint.name && row[1] === "U"))) throw new OceanbaseCloneValidationError("uniqueIndexMetadata");
   for (const row of excludedConstraints) {
     if (row[1] === "U") {
-      if (typeof row[2] !== "string" || !row[2]) throw new Error("Source unique-constraint index metadata is unavailable. No DDL was executed.");
+      if (typeof row[2] !== "string" || !row[2]) throw new OceanbaseCloneValidationError("uniqueIndexMetadata");
       uniqueConstraintIndexes.add(row[2]);
     }
-    const label = `${row[1] === "U" ? "UNIQUE" : "FOREIGN KEY"}: ${ident(String(row[0]))}`;
-    if (!excluded.includes(label)) excluded.push(label);
+    if (!exclusions.some((item) => item.kind === "constraint" && item.name === row[0])) exclusions.push({ kind: "constraint", name: String(row[0]), type: row[1] === "U" ? "UNIQUE" : "FOREIGN KEY" });
   }
-  excluded.push(...triggers.map((trigger) => `TRIGGER: ${ident(trigger.name)}`));
+  exclusions.push(...triggers.map((trigger) => ({ kind: "trigger" as const, name: trigger.name })));
   const columnNames = new Set(columns.map((column) => column.name));
   const normalIndexes = indexes.filter((index) => {
     if (index.is_primary || uniqueConstraintIndexes.has(index.name)) return false;
     if (index.index_type?.toUpperCase() !== "NORMAL" || index.key_is_expression?.some(Boolean)) {
-      excluded.push(`INDEX (${index.index_type || "unknown"}): ${ident(index.name)}`);
+      exclusions.push({ kind: "index", name: index.name, type: index.index_type ?? undefined });
       return false;
     }
     return true;
@@ -120,41 +127,24 @@ export async function buildOceanbaseTableClone(options: DuplicateTableStructureP
   const visibility = normalIndexes.length ? await query(`SELECT INDEX_NAME, VISIBILITY FROM SYS.ALL_INDEXES WHERE TABLE_OWNER = ${literal(sourceSchema)} AND TABLE_NAME = ${literal(options.sourceName)}`) : [];
   if (newIndexNames.length) {
     const taken = await query(`SELECT OBJECT_NAME FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(targetSchema)} AND OBJECT_TYPE = 'INDEX' AND OBJECT_NAME IN (${newIndexNames.map(literal).join(", ")})`);
-    if (taken.length) throw new Error(`Target index name already exists: ${taken.map((row) => ident(String(row[0]))).join(", ")}. Choose another target table name. No DDL was executed.`);
+    if (taken.length) throw new OceanbaseCloneValidationError("indexExists", { names: taken.map((row) => ident(String(row[0]))).join(", ") });
   }
   normalIndexes.forEach((index, position) => {
     const indexVisibility = visibility.filter((row) => row[0] === index.name);
-    if (indexVisibility.length !== 1 || !["VISIBLE", "INVISIBLE"].includes(String(indexVisibility[0]?.[1]))) throw new Error(`Incomplete or ambiguous index visibility for ${ident(index.name)}. No DDL was executed.`);
+    if (indexVisibility.length !== 1 || !["VISIBLE", "INVISIBLE"].includes(String(indexVisibility[0]?.[1]))) throw new OceanbaseCloneValidationError("indexVisibility", { name: ident(index.name) });
     const keys = directions.filter((row) => row[0] === index.name);
     if (!keys.length || keys.length !== index.columns.length || keys.some((row, keyPosition) => Number(row[2]) !== keyPosition + 1 || row[1] !== index.columns[keyPosition] || !columnNames.has(String(row[1])) || !["ASC", "DESC"].includes(String(row[3])))) {
-      throw new Error(`Incomplete column order/direction for index ${ident(index.name)}. No DDL was executed.`);
+      throw new OceanbaseCloneValidationError("indexColumns", { name: ident(index.name) });
     }
     const name = `${ident(targetSchema)}.${ident(newIndexNames[position]!)}`;
-    steps.push({ label: `INDEX ${name}`, sql: `CREATE ${index.is_unique ? "UNIQUE " : ""}INDEX ${name} ON ${target} (${keys.map((row) => `${ident(String(row[1]))} ${row[3]}`).join(", ")})${indexVisibility[0]![1] === "INVISIBLE" ? " INVISIBLE" : ""};` });
-    copied.push(`INDEX ${ident(index.name)} → ${name}`);
+    steps.push({ kind: "index", name, sql: `CREATE ${index.is_unique ? "UNIQUE " : ""}INDEX ${name} ON ${target} (${keys.map((row) => `${ident(String(row[1]))} ${row[3]}`).join(", ")})${indexVisibility[0]![1] === "INVISIBLE" ? " INVISIBLE" : ""};` });
   });
   const tableComment = comments[0]![0];
-  if (tableComment != null) steps.push({ label: `COMMENT ${target}`, sql: `COMMENT ON TABLE ${target} IS ${literal(String(tableComment))};` });
+  if (tableComment != null) steps.push({ kind: "comment", name: target, sql: `COMMENT ON TABLE ${target} IS ${literal(String(tableComment))};` });
   for (const column of columns) {
-    if (column.comment != null) steps.push({ label: `COMMENT ${target}.${ident(column.name)}`, sql: `COMMENT ON COLUMN ${target}.${ident(column.name)} IS ${literal(column.comment)};` });
+    if (column.comment != null) steps.push({ kind: "comment", name: `${target}.${ident(column.name)}`, sql: `COMMENT ON COLUMN ${target}.${ident(column.name)} IS ${literal(column.comment)};` });
   }
-  copied.push(`COMMENTS: ${steps.filter((step) => step.label.startsWith("COMMENT ")).length}`);
-  return { sql: steps.map((step) => step.sql).join("\n"), sourceColumns: columns, executeAsScript: false, oceanbaseClone: { targetSchema, targetName, copied, excluded, steps } };
-}
-
-export function confirmOceanbaseTableClone(plan: DuplicateTableStructurePlan, t: (key: string, values?: Record<string, string>) => string): boolean {
-  const clone = plan.oceanbaseClone;
-  return (
-    !clone ||
-    window.confirm(
-      t("contextMenu.oceanbaseClonePreview", {
-        target: `${ident(clone.targetSchema)}.${ident(clone.targetName)}`,
-        copied: clone.copied.join("\n"),
-        excluded: clone.excluded.join("\n") || "—",
-        sql: plan.sql,
-      }),
-    )
-  );
+  return { sql: steps.map((step) => step.sql).join("\n"), sourceColumns: columns, executeAsScript: false, oceanbaseClone: { targetSchema, targetName, columnCount: columns.length, indexNames: newIndexNames, exclusions, steps } };
 }
 
 export class OceanbaseTableCloneError extends Error {
@@ -162,6 +152,7 @@ export class OceanbaseTableCloneError extends Error {
     message: string,
     readonly targetSchema: string,
     readonly targetName: string,
+    readonly execution?: { steps: OceanbaseTableClone["steps"]; failedPosition: number; rejected: boolean; notExecuted?: boolean; cause: unknown },
   ) {
     super(message);
   }
@@ -169,7 +160,6 @@ export class OceanbaseTableCloneError extends Error {
 
 /** OB DDL commits independently. Stop at the first failure and preserve an actionable ledger. */
 export async function executeOceanbaseTableClone(clone: OceanbaseTableClone, execute: (sql: string) => Promise<QueryResult>): Promise<QueryResult> {
-  const completed: string[] = [];
   let result: QueryResult | undefined;
   for (const [position, step] of clone.steps.entries()) {
     let rejected = false;
@@ -177,26 +167,37 @@ export async function executeOceanbaseTableClone(clone: OceanbaseTableClone, exe
       result = await execute(step.sql.replace(/;\s*$/, ""));
       if (result.execution_error) {
         rejected = true;
-        throw new Error(result.error?.detail || "DDL execution failed");
+        throw result.error?.detail ? new Error(result.error.detail) : new OceanbaseCloneValidationError("executionFailed");
       }
-      completed.push(step.label);
     } catch (error) {
-      const target = `${ident(clone.targetSchema)}.${ident(clone.targetName)}`;
-      throw new OceanbaseTableCloneError(
-        `Clone stopped at ${step.label}: ${error instanceof Error ? error.message : String(error)}\n\nCompleted (committed):\n${completed.join("\n") || "None confirmed"}\n\n${rejected ? "Rejected by the database" : "Result unknown; the statement may have reached the server"}\n\nNot executed:\n${
-          clone.steps
-            .slice(position + 1)
-            .map((pending) => pending.label)
-            .join("\n") || "None"
-        }\n\nNo automatic rollback or cleanup was attempted. Inspect ${target} before retrying.\n\nStatement:\n${step.sql}`,
-        clone.targetSchema,
-        clone.targetName,
-      );
+      throw new OceanbaseTableCloneError(error instanceof Error ? error.message : String(error), clone.targetSchema, clone.targetName, { steps: clone.steps, failedPosition: position, rejected, cause: error });
     }
   }
   return result!;
 }
 
-export function showOceanbaseTableCloneFailure(error: unknown): void {
-  if (error instanceof OceanbaseTableCloneError) window.alert(error.message);
+/** Called only after the structure has committed and data-copy production safety is confirmed. */
+export async function executeOceanbaseTableCloneData(clone: OceanbaseTableClone, sql: string, execute: (sql: string) => Promise<QueryResult>): Promise<QueryResult> {
+  const name = `${ident(clone.targetSchema)}.${ident(clone.targetName)}`;
+  const step: OceanbaseTableClone["steps"][number] = { kind: "data", name, sql };
+  try {
+    return await executeOceanbaseTableClone({ ...clone, steps: [step] }, execute);
+  } catch (error) {
+    if (error instanceof OceanbaseTableCloneError && error.execution) {
+      throw new OceanbaseTableCloneError(error.message, clone.targetSchema, clone.targetName, { ...error.execution, steps: [...clone.steps, step], failedPosition: clone.steps.length });
+    }
+    throw error;
+  }
+}
+
+/** The structure committed, but preparation/protection failed before data execution. */
+export function oceanbaseCloneDataPreparationError(clone: OceanbaseTableClone, cause: unknown): OceanbaseTableCloneError {
+  const name = `${ident(clone.targetSchema)}.${ident(clone.targetName)}`;
+  return new OceanbaseTableCloneError(cause instanceof Error ? cause.message : String(cause), clone.targetSchema, clone.targetName, {
+    steps: [...clone.steps, { kind: "data", name, sql: "" }],
+    failedPosition: clone.steps.length,
+    rejected: false,
+    notExecuted: true,
+    cause,
+  });
 }

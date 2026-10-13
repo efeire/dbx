@@ -1,4 +1,5 @@
 import { sidebarMenuZhTW as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogZhTW as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { redisGroupingZhTW as redisGrouping } from "./redisGrouping";
 import { withEnglishFallback } from "./fallback";
 import { mongodbDatabaseDumpZhTW as mongoDump } from "./mongodbDatabaseDump";
@@ -65,6 +66,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "產生模型",
@@ -4069,7 +4071,6 @@ export default withEnglishFallback({
     emptyTableSubmitted: "已提交「{name}」的清空工作",
     truncateTableSuccess: "資料表「{name}」已截斷",
     duplicateStructureSuccess: "已克隆為新資料表「{name}」",
-    oceanbaseClonePreview: "複製目標：{target}\n\n複製：\n{copied}\n\n不複製：\n{excluded}\n\n執行 SQL：\n{sql}\n\nDDL 逐筆提交，失敗不會自動回復。確認執行？",
     tableOperationFailed: "操作失敗：{message}",
     tableOperationTimedOut: "「{name}」的操作耗時較長，尚未被取消，可能仍在資料庫端繼續執行。請稍後自行確認執行結果，或點擊「取消」手動終止。（{message}）",
     tableOperationCancelled: "「{name}」的操作已取消",

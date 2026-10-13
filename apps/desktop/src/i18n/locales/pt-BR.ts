@@ -1,4 +1,5 @@
 import { sidebarMenuPtBR as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogPtBR as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
 import { mongodbDatabaseDumpPtBR as mongoDump } from "./mongodbDatabaseDump";
 import { damengDumpPtBR as damengDump } from "./damengDump";
@@ -64,6 +65,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "Gerar modelo",
@@ -4062,7 +4064,6 @@ export default withEnglishFallback({
     emptyTableSubmitted: 'Tarefa de esvaziamento enviada para "{name}"',
     truncateTableSuccess: 'Tabela "{name}" truncada',
     duplicateStructureSuccess: 'Tabela clonada como "{name}"',
-    oceanbaseClonePreview: "Destino: {target}\n\nCopiar:\n{copied}\n\nExcluir:\n{excluded}\n\nSQL:\n{sql}\n\nAs instruções DDL são confirmadas individualmente. Uma falha não desfaz automaticamente as etapas anteriores. Continuar?",
     tableOperationFailed: "Falha na operação: {message}",
     tableOperationTimedOut: 'A operação em "{name}" está demorando mais do que o esperado e não foi cancelada — ela pode continuar em execução no banco de dados. Verifique o resultado mais tarde ou clique em Cancelar para interrompê-la. ({message})',
     tableOperationCancelled: 'Operação em "{name}" cancelada',

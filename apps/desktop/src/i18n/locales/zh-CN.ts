@@ -1,4 +1,5 @@
 import { sidebarMenuZhCN as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogZhCN as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { redisGroupingZhCN as redisGrouping } from "./redisGrouping";
 import { withEnglishFallback } from "./fallback";
 import docs from "./docs/zh-CN";
@@ -9,6 +10,7 @@ import { mongodbDatabaseDumpZhCN as mongoDump } from "./mongodbDatabaseDump";
 import { damengDumpZhCN as damengDump } from "./damengDump";
 
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "生成模型",
@@ -4321,7 +4323,6 @@ export default withEnglishFallback({
     emptyTableSubmitted: "已提交「{name}」的清空任务",
     truncateTableSuccess: "表「{name}」已截断",
     duplicateStructureSuccess: "已克隆为新表「{name}」",
-    oceanbaseClonePreview: "克隆目标：{target}\n\n复制：\n{copied}\n\n不复制：\n{excluded}\n\n执行 SQL：\n{sql}\n\nDDL 逐条提交，失败不会自动回滚。确认执行？",
     tableOperationFailed: "操作失败：{message}",
     tableOperationTimedOut: "「{name}」的操作耗时较长，尚未被取消，可能仍在数据库端继续执行。请稍后自行确认执行结果，或点击「取消」手动终止。（{message}）",
     tableOperationCancelled: "「{name}」的操作已取消",
