@@ -1,4 +1,5 @@
 import { sidebarMenuEn as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogEn as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { redisGroupingEn as redisGrouping } from "./redisGrouping";
 import docs from "./docs/en";
 import { dataDictionaryEn as dataDictionary } from "./dataDictionaryMessages";
@@ -63,6 +64,7 @@ const consul = {
 };
 
 export default {
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "Generate model",
@@ -9259,6 +9261,7 @@ export default {
     shortcutDisconnectSidebarConnection: "Disconnect sidebar connection",
     shortcutOpenDataInNewTab: "Open data in new tab (mouse click)",
     shortcutViewTableDdl: "View table DDL",
+    shortcutEditSidebarTableStructure: "Edit table structure",
     shortcutSendSelectionToAi: "Send selection to AI",
     shortcutToggleAiPanel: "Toggle AI panel",
     shortcutSqlIntentionActions: "SQL Intention Actions (Expand * / Qualify Identifier)",

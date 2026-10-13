@@ -1,4 +1,5 @@
 import { sidebarMenuKo as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogKo as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
 import { mongodbDatabaseDumpKo as mongoDump } from "./mongodbDatabaseDump";
 import { damengDumpKo as damengDump } from "./damengDump";
@@ -63,6 +64,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "모델 생성",
@@ -8109,6 +8111,7 @@ export default withEnglishFallback({
     shortcutDisconnectSidebarConnection: "사이드바 연결 끊기",
     shortcutOpenDataInNewTab: "새 탭에서 데이터 열기 (마우스 클릭)",
     shortcutViewTableDdl: "테이블 DDL 보기",
+    shortcutEditSidebarTableStructure: "테이블 구조 편집",
     shortcutSendSelectionToAi: "선택 영역을 AI로 보내기",
     shortcutToggleAiPanel: "AI 패널 전환",
     shortcutSqlIntentionActions: "SQL 인텐트 동작 (* 펼치기 / 식별자 한정)",

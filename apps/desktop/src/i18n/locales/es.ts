@@ -1,4 +1,5 @@
 import { sidebarMenuEs as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogEs as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
 import { mongodbDatabaseDumpEs as mongoDump } from "./mongodbDatabaseDump";
 import { damengDumpEs as damengDump } from "./damengDump";
@@ -65,6 +66,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "Generar modelo",
@@ -8464,6 +8466,7 @@ export default withEnglishFallback({
     shortcutDisconnectSidebarConnection: "Desconectar conexión de la barra lateral",
     shortcutOpenDataInNewTab: "Abrir datos en una pestaña nueva (clic del ratón)",
     shortcutViewTableDdl: "Ver DDL de la tabla",
+    shortcutEditSidebarTableStructure: "Editar estructura de tabla",
     shortcutSendSelectionToAi: "Enviar selección a IA",
     shortcutToggleAiPanel: "Alternar panel de IA",
     shortcutSqlIntentionActions: "Acciones de intención SQL (Expandir * / Calificar identificador)",

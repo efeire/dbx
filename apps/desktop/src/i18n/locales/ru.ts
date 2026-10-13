@@ -1,4 +1,5 @@
 import { sidebarMenuRu as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogRu as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
 import docs from "./docs/ru";
 import { dataDictionaryRu as dataDictionary } from "./dataDictionaryMessages";
@@ -6,6 +7,7 @@ import { meilisearchManagementRu } from "./meilisearchManagement";
 
 // Russian locale. Entries omitted here fall back to English at runtime.
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "Создать модель",
@@ -9593,6 +9595,7 @@ export default withEnglishFallback({
     shortcutDisconnectSidebarConnection: "Отключить подключение в боковой панели",
     shortcutOpenDataInNewTab: "Открыть данные в новой вкладке (клик мышью)",
     shortcutViewTableDdl: "Просмотреть DDL таблицы",
+    shortcutEditSidebarTableStructure: "Изменить структуру таблицы",
     shortcutSendSelectionToAi: "Отправить выделенное в AI",
     shortcutToggleAiPanel: "Переключить панель AI",
     shortcutSqlIntentionActions: "SQL-действия по намерению (развернуть * / уточнить идентификатор)",

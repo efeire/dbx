@@ -1,4 +1,5 @@
 import { sidebarMenuZhCN as sidebarMenu } from "./sidebarMenuMessages";
+import { oceanbaseCloneDialogZhCN as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { redisGroupingZhCN as redisGrouping } from "./redisGrouping";
 import { withEnglishFallback } from "./fallback";
 import docs from "./docs/zh-CN";
@@ -9,6 +10,7 @@ import { mongodbDatabaseDumpZhCN as mongoDump } from "./mongodbDatabaseDump";
 import { damengDumpZhCN as damengDump } from "./damengDump";
 
 export default withEnglishFallback({
+  oceanbaseCloneDialog,
   sidebarMenu,
   modelGeneration: {
     title: "生成模型",
@@ -9243,6 +9245,7 @@ export default withEnglishFallback({
     shortcutDisconnectSidebarConnection: "断开侧边栏连接",
     shortcutOpenDataInNewTab: "在新数据标签页中打开（鼠标点击）",
     shortcutViewTableDdl: "查看表 DDL",
+    shortcutEditSidebarTableStructure: "编辑表结构",
     shortcutSendSelectionToAi: "发送选中代码到 AI",
     shortcutToggleAiPanel: "切换 AI 面板",
     shortcutSqlIntentionActions: "SQL 意图操作（展开 * / 限定标识符）",
