@@ -4,6 +4,7 @@ mod columns;
 mod comments;
 mod create_table;
 mod dialect;
+mod existing_primary_key;
 mod foreign_keys;
 mod indexes;
 mod mysql_engine;
@@ -43,6 +44,9 @@ use validation::validate_concurrent_index_scope;
 pub use validation::validate_draft;
 
 pub fn build_table_structure_change_sql(mut options: TableStructureSqlOptions) -> TableStructureSqlResult {
+    if options.primary_key_change.is_some() {
+        return existing_primary_key::build_existing_primary_key_change(options);
+    }
     let mysql_engine_errors = validate_mysql_engine(&options);
     if !mysql_engine_errors.is_empty() {
         return TableStructureSqlResult { statements: Vec::new(), warnings: mysql_engine_errors };

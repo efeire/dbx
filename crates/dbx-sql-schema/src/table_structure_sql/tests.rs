@@ -69,7 +69,100 @@ fn structure_change_options(
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     }
+}
+
+#[test]
+fn oceanbase_existing_primary_key_ordered_change_payload() {
+    let options = structure_change_options(
+        DatabaseType::OceanbaseOracle,
+        Some("APP"),
+        "SOURCE",
+        vec![existing_pk_column("ID", "NUMBER", true, true), existing_pk_column("V", "NUMBER", true, true)],
+    );
+    let mut payload = serde_json::to_value(options).unwrap();
+    payload["primaryKeyChange"] = serde_json::json!({
+        "name": "PK_SOURCE",
+        "originalColumns": ["ID", "V"],
+        "columns": ["V", "ID"]
+    });
+    let result = build_table_structure_change_sql(serde_json::from_value(payload).unwrap());
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"APP\".\"SOURCE\" DROP CONSTRAINT \"PK_SOURCE\";",
+            "ALTER TABLE \"APP\".\"SOURCE\" ADD CONSTRAINT \"PK_SOURCE\" PRIMARY KEY (\"V\", \"ID\");",
+        ]
+    );
+}
+
+#[test]
+fn oceanbase_existing_primary_key_delete_payload() {
+    let options = structure_change_options(
+        DatabaseType::OceanbaseOracle,
+        Some("APP"),
+        "SOURCE",
+        vec![existing_pk_column("ID", "NUMBER", true, true)],
+    );
+    let mut payload = serde_json::to_value(options).unwrap();
+    payload["primaryKeyChange"] = serde_json::json!({
+        "name": "PK_SOURCE",
+        "originalColumns": ["ID"],
+        "columns": []
+    });
+    let result = build_table_structure_change_sql(serde_json::from_value(payload).unwrap());
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.statements, vec!["ALTER TABLE \"APP\".\"SOURCE\" DROP CONSTRAINT \"PK_SOURCE\";"]);
+}
+
+#[test]
+fn oceanbase_existing_primary_key_rejects_invalid_or_combined_drafts() {
+    let options = structure_change_options(
+        DatabaseType::OceanbaseOracle,
+        Some("APP"),
+        "SOURCE",
+        vec![existing_pk_column("ID", "NUMBER", true, true), existing_pk_column("V", "NUMBER", false, false)],
+    );
+    let mut payload = serde_json::to_value(options).unwrap();
+    payload["primaryKeyChange"] =
+        serde_json::json!({ "name": "PK_SOURCE", "originalColumns": ["ID"], "columns": ["V"] });
+    for (pointer, value) in [
+        ("/databaseType", serde_json::json!("oracle")),
+        ("/databaseType", serde_json::json!("saphana")),
+        ("/databaseType", serde_json::json!("mysql")),
+        ("/primaryKeyChange/name", serde_json::json!("")),
+        ("/primaryKeyChange/columns", serde_json::json!(["V", "V"])),
+        ("/primaryKeyChange/columns", serde_json::json!(["UNKNOWN"])),
+        ("/primaryKeyChange/originalColumns", serde_json::json!(["V"])),
+        ("/columns/0/comment", serde_json::json!("changed comment")),
+        ("/columns/1/markedForDrop", serde_json::json!(true)),
+    ] {
+        let mut invalid = payload.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        let result = build_table_structure_change_sql(serde_json::from_value(invalid).unwrap());
+        assert!(result.statements.is_empty(), "{pointer}: {:?}", result.statements);
+        assert!(!result.warnings.is_empty(), "{pointer}");
+    }
+}
+
+#[test]
+fn oceanbase_existing_primary_key_unchanged_order_is_a_noop() {
+    let mut options = structure_change_options(
+        DatabaseType::OceanbaseOracle,
+        Some("APP"),
+        "SOURCE",
+        vec![existing_pk_column("ID", "NUMBER", true, true)],
+    );
+    options.primary_key_change = Some(ExistingPrimaryKeyChange {
+        name: "PK_SOURCE".to_string(),
+        original_columns: vec!["ID".to_string()],
+        columns: vec!["ID".to_string()],
+    });
+    let result = build_table_structure_change_sql(options);
+    assert!(result.statements.is_empty());
+    assert!(result.warnings.is_empty());
 }
 
 #[test]
@@ -396,6 +489,7 @@ fn index_change_options(
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     }
 }
 
@@ -482,6 +576,7 @@ fn builds_mysql_column_and_index_changes() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -848,6 +943,7 @@ fn builds_xugu_type_change_with_native_syntax() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1118,6 +1214,7 @@ fn builds_mysql_unsigned_integer_column_with_length_before_attribute() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1159,6 +1256,7 @@ fn doris_table_editor_renames_column_without_mysql_change_syntax() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1225,6 +1323,7 @@ fn dameng_integer_column_omits_mysql_display_width() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1273,6 +1372,7 @@ fn builds_highgo_foreign_key_changes_with_postgres_syntax() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1352,6 +1452,7 @@ fn builds_informix_column_and_index_changes() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1414,6 +1515,7 @@ fn oracle_does_not_generate_drop_sql_for_all_columns() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -1492,6 +1594,7 @@ fn oracle_create_table_places_default_before_not_null() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1564,6 +1667,7 @@ fn oracle_create_table_preserves_character_length_units() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert!(result.statements[0].contains("BYTE_COL VARCHAR2(12 BYTE)"));
@@ -1605,6 +1709,7 @@ fn oracle_create_table_uses_unquoted_identifiers_for_new_objects() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1647,6 +1752,7 @@ fn oracle_create_table_leaves_uppercase_regular_identifier_unquoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1688,6 +1794,7 @@ fn oracle_create_table_quotes_special_and_reserved_identifiers() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1732,6 +1839,7 @@ fn oracle_create_table_distinguishes_new_and_referenced_foreign_key_identifiers(
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1777,6 +1885,7 @@ fn oracle_create_table_extracts_single_line_trigger_source_into_the_body() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1814,6 +1923,7 @@ fn oracle_create_table_warns_instead_of_emitting_an_unparsed_trigger_declaration
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, vec!["CREATE TABLE \"APP\".dbx_copy (\n  \"id\" NUMBER\n);"]);
@@ -1855,6 +1965,7 @@ fn oracle_existing_quoted_identifiers_keep_exact_spelling() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -1893,6 +2004,7 @@ fn oracle_new_identifier_formatting_does_not_change_other_dialects() {
             is_gaussdb_m_mode: false,
             table_collation: None,
             primary_key_name: None,
+            primary_key_change: None,
         });
 
         assert_eq!(result.warnings, Vec::<String>::new(), "{database_type:?}");
@@ -1993,6 +2105,7 @@ fn iris_drop_index_includes_table_name() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2040,6 +2153,7 @@ fn iris_ignores_comment_changes_but_keeps_supported_column_alters() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(
@@ -2128,6 +2242,7 @@ fn oracle_compatible_databases_keep_comment_on_sql() {
             is_gaussdb_m_mode: false,
             table_collation: None,
             primary_key_name: None,
+            primary_key_change: None,
         });
 
         assert_eq!(result.warnings, Vec::<String>::new(), "{database_type:?}");
@@ -2168,6 +2283,7 @@ fn mysql_create_index_with_comment() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2207,6 +2323,7 @@ fn manticoresearch_builds_create_table_sql_only() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2256,6 +2373,7 @@ fn manticoresearch_builds_add_and_drop_column_sql() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2330,6 +2448,7 @@ fn gbase8a_uses_limited_mysql_ddl() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(
@@ -2406,6 +2525,7 @@ fn gbase8a_allows_mysql_style_column_reorder() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2453,6 +2573,7 @@ fn gbase8s_uses_informix_ddl_not_mysql() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2492,6 +2613,7 @@ fn gbase_without_driver_profile_still_uses_mysql_ddl() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2533,6 +2655,7 @@ fn manticoresearch_does_not_drop_id_column() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -2607,6 +2730,7 @@ fn manticoresearch_warns_when_existing_column_properties_change() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -2648,6 +2772,7 @@ fn manticoresearch_ignores_mysql_column_options() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2692,6 +2817,7 @@ fn manticoresearch_builds_text_column_properties() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2728,6 +2854,7 @@ fn manticoresearch_builds_json_secondary_index_property() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2760,6 +2887,7 @@ fn mysql_create_unique_index_with_comment_and_btree() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2794,6 +2922,7 @@ fn mysql_create_functional_index_preserves_key_part_syntax() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2828,6 +2957,7 @@ fn mysql_add_timestamp_column_drops_invalid_precision() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2862,6 +2992,7 @@ fn mysql_add_timestamp_column_preserves_valid_precision() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2903,6 +3034,7 @@ fn builds_postgres_create_table_with_comments_and_index() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -2941,6 +3073,7 @@ fn quotes_expression_like_new_index_columns_without_provenance() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3019,6 +3152,7 @@ fn create_table_trims_table_name_whitespace_for_all_statements() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3062,6 +3196,7 @@ fn warns_for_sqlite_unsafe_column_changes() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -3111,6 +3246,7 @@ fn qualifies_attached_sqlite_table_and_index_changes() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3186,6 +3322,7 @@ fn builds_rqlite_changes_with_sqlite_dialect() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3222,6 +3359,7 @@ fn builds_kingbase_add_column_without_column_keyword() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3293,6 +3431,7 @@ fn builds_mysql_column_reorder_statements() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3355,6 +3494,7 @@ fn mysql_add_column_before_existing_column_does_not_reorder_shifted_column() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3424,6 +3564,7 @@ fn mysql_existing_column_reorder_does_not_reorder_columns_shifted_by_prior_move(
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3505,6 +3646,7 @@ fn mysql_moving_first_column_to_end_uses_single_reorder_statement() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3536,6 +3678,7 @@ fn builds_sql_server_quoted_column_and_index_statements() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3573,6 +3716,7 @@ fn sqlserver_strips_mysql_display_width_from_fixed_integer_types() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3604,6 +3748,7 @@ fn sqlserver_strips_scale_from_float() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3635,6 +3780,7 @@ fn sqlserver_preserves_float_mantissa_bits() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3691,6 +3837,7 @@ fn sqlserver_default_changes_drop_old_constraints_with_isolated_batches() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3914,6 +4061,7 @@ fn sqlserver_unchanged_foreign_key_does_not_warn_when_saving_other_changes() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3950,6 +4098,7 @@ fn sqlserver_add_column_with_identity() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -3987,6 +4136,7 @@ fn sqlserver_legacy_column_comment_change_uses_legacy_extended_properties() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -4027,6 +4177,7 @@ fn dameng_add_column_with_identity() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -4057,6 +4208,7 @@ fn dameng_uppercases_lowercase_column_type() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -4094,6 +4246,7 @@ fn dameng_rejects_identity_on_incompatible_type() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -4133,6 +4286,7 @@ fn sqlserver_rejects_identity_on_incompatible_type() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -4175,6 +4329,7 @@ fn sqlserver_changed_foreign_key_still_warns_as_unsupported() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -4222,6 +4377,7 @@ fn sqlserver_unchanged_identity_extra_does_not_mark_existing_column_changed() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -4269,6 +4425,7 @@ fn dameng_unchanged_identity_extra_does_not_mark_existing_column_changed() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -4529,6 +4686,7 @@ fn dameng_rejects_adding_second_identity_column() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -4588,6 +4746,7 @@ fn sqlserver_existing_column_identity_change_warns_without_unchanged_foreign_key
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.statements, Vec::<String>::new());
@@ -4626,6 +4785,7 @@ fn builds_duckdb_create_table_statements() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -4753,6 +4913,7 @@ fn builds_clickhouse_nullable_comment_and_reorder_statements() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -4806,6 +4967,7 @@ fn builds_h2_schema_qualified_existing_column_statements() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -5989,6 +6151,7 @@ fn mysql_create_table_with_auto_increment() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6023,6 +6186,7 @@ fn mysql_create_table_keeps_column_charset_collation_and_comment() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6061,6 +6225,7 @@ fn mysql_compatible_databases_do_not_emit_mysql_column_charset_clauses() {
             is_gaussdb_m_mode: false,
             table_collation: None,
             primary_key_name: None,
+            primary_key_change: None,
         });
 
         assert_eq!(result.warnings, Vec::<String>::new());
@@ -6096,6 +6261,7 @@ fn mysql_create_table_with_on_update_current_timestamp() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6263,6 +6429,7 @@ fn postgres_create_table_with_identity() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6498,6 +6665,7 @@ fn dameng_create_table_with_identity() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6531,6 +6699,7 @@ fn dameng_create_table_preserves_character_length_units() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6572,6 +6741,7 @@ fn dameng_alter_column_preserves_character_length_unit() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6614,6 +6784,7 @@ fn dameng_rejects_multiple_identity_columns() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert!(result.statements.is_empty());
@@ -6649,6 +6820,7 @@ fn dameng_rejects_zero_identity_increment() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert!(result.statements.is_empty());
@@ -6685,6 +6857,7 @@ fn sqlserver_create_table_with_identity() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6716,6 +6889,7 @@ fn mysql_quotes_datetime_literal_default() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6747,6 +6921,7 @@ fn mysql_does_not_quote_current_timestamp() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6779,6 +6954,7 @@ fn mysql_does_not_quote_temporal_function_with_parens() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6810,6 +6986,7 @@ fn mysql_date_literal_default_is_quoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6841,6 +7018,7 @@ fn mysql_time_literal_default_is_quoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -6872,6 +7050,7 @@ fn non_temporal_types_are_not_quoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7007,6 +7186,7 @@ fn builds_mysql_foreign_key_changes() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7043,6 +7223,7 @@ fn builds_mysql_composite_foreign_key() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7082,6 +7263,7 @@ fn builds_oracle_foreign_key_with_supported_actions() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7125,6 +7307,7 @@ fn builds_oracle_foreign_key_replacement() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7167,6 +7350,7 @@ fn builds_mysql_trigger_changes() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7200,6 +7384,7 @@ fn builds_sqlserver_trigger_with_multiple_events() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7249,6 +7434,7 @@ fn rebuilds_changed_sqlserver_trigger_from_complete_metadata_source() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7292,6 +7478,7 @@ fn sqlserver_trigger_edit_restores_disabled_state() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(
@@ -7341,6 +7528,7 @@ fn unchanged_postgres_trigger_does_not_block_column_rename() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7377,6 +7565,7 @@ fn changed_postgres_trigger_remains_unsupported() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert!(result.statements.is_empty());
@@ -7418,6 +7607,7 @@ fn rejects_editing_existing_oracle_trigger_without_complete_source() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert!(result.statements.is_empty());
@@ -7448,6 +7638,7 @@ fn builds_oracle_statement_trigger_without_row_clause() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7490,6 +7681,7 @@ fn drops_existing_oracle_trigger_without_reconstructing_it() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7517,6 +7709,7 @@ fn rejects_unsupported_oracle_compound_trigger_shape() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert!(result.statements.is_empty());
@@ -7548,6 +7741,7 @@ fn mysql_varchar_default_is_quoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7580,6 +7774,7 @@ fn mysql_char_default_is_quoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7613,6 +7808,7 @@ fn mysql_text_default_is_quoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7644,6 +7840,7 @@ fn mysql_enum_default_is_quoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7675,6 +7872,7 @@ fn mysql_int_default_is_not_quoted() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7816,6 +8014,7 @@ fn mysql_character_column_add_with_charset_collation() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7937,6 +8136,7 @@ fn mysql_numeric_column_omits_charset_collation_in_column_definition() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -7986,6 +8186,7 @@ fn mysql_numeric_column_ignores_charset_collation_in_change_detection() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     // No ALTER should be emitted — charset/collation changes on
@@ -8030,6 +8231,7 @@ fn mysql_character_column_detects_charset_collation_change() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -8079,6 +8281,7 @@ fn mysql_character_column_preserves_charset_collation_on_other_change() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -8161,6 +8364,7 @@ fn mysql_inherited_column_charset_is_omitted_from_generated_ddl() {
         is_gaussdb_m_mode: false,
         table_collation: Some("utf8mb4_0900_ai_ci".to_string()),
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -8211,6 +8415,7 @@ fn mysql_explicit_column_charset_survives_the_table_default_comparison() {
         is_gaussdb_m_mode: false,
         table_collation: Some("utf8mb4_0900_ai_ci".to_string()),
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -8262,6 +8467,7 @@ fn mysql_inherited_column_charset_does_not_register_as_a_change() {
         is_gaussdb_m_mode: false,
         table_collation: Some("utf8mb4_0900_ai_ci".to_string()),
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -8306,6 +8512,7 @@ fn mysql_collation_switched_away_from_the_table_default_is_emitted() {
         is_gaussdb_m_mode: false,
         table_collation: Some("utf8mb4_0900_ai_ci".to_string()),
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -8355,6 +8562,7 @@ fn mysql_column_charset_switched_to_the_table_default_drops_the_clause() {
         is_gaussdb_m_mode: false,
         table_collation: Some("utf8mb4_0900_ai_ci".to_string()),
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -8401,6 +8609,7 @@ fn mysql_column_charset_is_kept_when_the_table_default_is_unknown() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -8442,6 +8651,7 @@ fn mysql_create_table_omits_inherited_column_charset() {
         is_gaussdb_m_mode: false,
         table_collation: Some("utf8mb4_0900_ai_ci".to_string()),
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -9152,6 +9362,7 @@ fn mysql_create_table_with_generated_column() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
         foreign_table: false,
     });
 
@@ -9199,6 +9410,7 @@ fn oscar_create_table_with_primary_key_and_comments() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -9400,6 +9612,7 @@ fn oscar_drop_index_with_schema_qualifier() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -9427,6 +9640,7 @@ fn oscar_table_comment_uses_comment_on_table() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -9516,6 +9730,7 @@ fn postgres_partitioned_parent_concurrent_request_rejected() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     // Fail closed: PostgreSQL rejects CREATE INDEX CONCURRENTLY on a
@@ -9553,6 +9768,7 @@ fn postgres_partitioned_parent_plain_index_unchanged() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -9602,6 +9818,7 @@ fn postgres_create_table_partitioned_concurrent_request_rejected() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(
@@ -9735,6 +9952,7 @@ fn postgres_create_table_concurrent_index() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -9857,6 +10075,7 @@ fn gaussdb_m_options(columns: Vec<EditableStructureColumn>) -> TableStructureSql
         is_gaussdb_m_mode: true,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     }
 }
 
@@ -10097,6 +10316,7 @@ fn gaussdb_m_rebuild_index_unchanged_type_does_not_rebuild() {
         is_gaussdb_m_mode: true,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     };
     let result = build_table_structure_change_sql(options);
     assert!(result.warnings.is_empty());
@@ -10150,6 +10370,7 @@ fn mysql_create_table_nullable_timestamp_without_default_gets_explicit_null() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -10185,6 +10406,7 @@ fn mysql_create_table_nullable_timestamp_with_default_still_gets_explicit_null()
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -10218,6 +10440,7 @@ fn mysql_create_table_nullable_datetime_does_not_gain_null_keyword() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
@@ -10251,6 +10474,7 @@ fn mysql_add_column_nullable_timestamp_without_default_gets_explicit_null() {
         is_gaussdb_m_mode: false,
         table_collation: None,
         primary_key_name: None,
+        primary_key_change: None,
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());

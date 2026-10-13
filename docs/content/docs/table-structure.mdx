@@ -45,6 +45,19 @@ Column reorder has two meanings:
 
 New-table creation can use preset fields from settings for common primary keys, timestamps, or audit columns.
 
+### Edit an Existing OceanBase Oracle Primary Key
+
+Use the existing primary key's constraint card to edit or drop it in OceanBase Oracle. This operation supports ordinary tables with an enabled, validated, non-deferrable primary key. Its supporting index must be a valid, visible, non-partitioned normal unique index with the same column order and no other constraints sharing it. This entry point does not apply to native Oracle.
+
+<Callout type="warn">Changing a primary key drops the original key and its supporting index before creating the new key. The two DDL statements commit independently, leaving the table without a primary key between them and possibly after a failed add. Dropping a key runs only the drop step.</Callout>
+
+1. Choose **Edit** on the primary key's constraint card, select the target columns, and use **Move up** and **Move down** to set their order. Choose **Delete** to remove the entire key.
+2. Save other structure changes separately, then preview the primary key SQL. DBX checks the latest definition, supporting index, foreign-key references, and null or duplicate target values. References, including disabled foreign keys, incomplete metadata, and unsupported states prevent execution.
+3. Review the table, constraint name, and column order before saving. DBX checks the definition again before execution. If it changed, refresh and preview again.
+4. Review the execution result and reloaded structure. If a statement fails or its outcome is unknown, inspect the database before attempting another change.
+
+When the original key was dropped and a subsequent read confirms that the table has no primary key, the result details include candidate SQL for manual recovery. Recheck the data, names, and indexes before running it. DBX never executes recovery automatically. This SQL restores only the original logical primary key, not physical properties such as tablespace, compression, or storage settings.
+
 ## Indexes, Foreign Keys, and Triggers
 
 Index capabilities vary by dialect and can include:

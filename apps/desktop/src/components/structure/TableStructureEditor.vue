@@ -4,6 +4,8 @@ import { keymap as codeMirrorKeymap } from "@codemirror/view";
 import { applyDdlStoragePreference } from "@/lib/sql/ddlStorage";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
 import StructureIndexColumnPicker from "./StructureIndexColumnPicker.vue";
+import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
+import { executeOceanbasePrimaryKeyPlan, readOceanbasePrimaryKeySnapshot, OceanbasePrimaryKeyValidationError, type ExistingPrimaryKeyChange, type OceanbasePrimaryKeyPlan, type PrimaryKeyTarget } from "@/lib/database/oceanbasePrimaryKey";
 
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from "vue";
 import { uuid } from "@/lib/common/utils";
@@ -1951,6 +1953,66 @@ const tableOwnerRolesLoading = ref(false);
 const tableOwnerRolesLoadError = ref("");
 const supportsTableOwner = computed(() => !isCreateMode.value && databaseType.value === "postgres");
 const primaryKeyName = ref("");
+const existingPrimaryKeyDraft = ref<ExistingPrimaryKeyChange>();
+const existingPrimaryKeyPlan = shallowRef<OceanbasePrimaryKeyPlan>();
+const primaryKeyNewColumn = ref("");
+const primaryKeyBusy = ref(false);
+const primaryKeyResultOpen = ref(false);
+const primaryKeyResultMessage = ref("");
+const primaryKeyResultDetails = ref("");
+let primaryKeyUnmounted = false;
+const primaryKeyConfirmationScope = `structure-primary-key:${uuid()}`;
+onBeforeUnmount(() => {
+  primaryKeyUnmounted = true;
+  if (primaryKeyBusy.value) productionSafetyStore.cancelScope(primaryKeyConfirmationScope);
+});
+watch(
+  () => [props.connectionId, props.database, props.schema, props.tableName, props.catalog],
+  () => {
+    if (primaryKeyBusy.value) productionSafetyStore.cancelScope(primaryKeyConfirmationScope);
+    existingPrimaryKeyDraft.value = undefined;
+    existingPrimaryKeyPlan.value = undefined;
+    if (primaryKeyBusy.value) saving.value = false;
+  },
+);
+const canEditExistingPrimaryKey = computed(() => !isCreateMode.value && databaseType.value === "oceanbase-oracle");
+const existingPrimaryKeyChanged = computed(() => !!existingPrimaryKeyDraft.value && JSON.stringify(existingPrimaryKeyDraft.value.columns) !== JSON.stringify(existingPrimaryKeyDraft.value.originalColumns));
+const primaryKeyAvailableColumns = computed(() => columns.value.filter((column) => column.original && !column.markedForDrop && !existingPrimaryKeyDraft.value?.columns.includes(column.name)));
+
+function primaryKeyTarget(): PrimaryKeyTarget {
+  return { connectionId: props.connectionId, database: props.database, schema: metadataSchema.value, tableName: props.tableName, catalog: props.catalog };
+}
+
+function primaryKeyError(error: unknown): string {
+  return error instanceof OceanbasePrimaryKeyValidationError ? t(`oceanbasePrimaryKey.${error.key}`, error.values) : error instanceof Error ? error.message : String(error);
+}
+
+async function editExistingPrimaryKey(constraint: ConstraintInfo, remove = false) {
+  if (!canEditExistingPrimaryKey.value || saving.value || primaryKeyBusy.value) return;
+  const target = JSON.stringify(primaryKeyTarget());
+  await loadStructure(true, { columns: true, indexes: true, constraints: true, foreignKeys: false, triggers: false, partitions: false, tableComment: false }, true, { blockSecondaryMetadata: true, preserveDraft: true });
+  if (primaryKeyUnmounted || target !== JSON.stringify(primaryKeyTarget())) return;
+  const current = constraints.value.find((item) => item.name === constraint.name && item.constraint_type === "PRIMARY KEY");
+  if (!current || !current.columns.length) {
+    errorMessage.value = t("oceanbasePrimaryKey.incompleteMetadata");
+    return;
+  }
+  existingPrimaryKeyDraft.value = { name: current.name, originalColumns: [...current.columns], columns: remove ? [] : [...current.columns] };
+  primaryKeyNewColumn.value = "";
+}
+
+function moveExistingPrimaryKeyColumn(index: number, direction: number) {
+  const draft = existingPrimaryKeyDraft.value;
+  if (!draft || primaryKeyBusy.value || index + direction < 0 || index + direction >= draft.columns.length) return;
+  const [name] = draft.columns.splice(index, 1);
+  draft.columns.splice(index + direction, 0, name!);
+}
+
+function addExistingPrimaryKeyColumn() {
+  if (primaryKeyBusy.value || !primaryKeyAvailableColumns.value.some((column) => column.name === primaryKeyNewColumn.value)) return;
+  existingPrimaryKeyDraft.value?.columns.push(primaryKeyNewColumn.value);
+  primaryKeyNewColumn.value = "";
+}
 // Mirrors Rust `supports_named_primary_key`: engines that persist a user-supplied
 // PK constraint name. Other dialects ignore the symbol, so the field is hidden.
 const canNamePrimaryKey = computed(() => {
@@ -2340,6 +2402,7 @@ function createCurrentDraft(initialized = true): TableStructureEditorDraft {
     indexes: cloneDraftValue(indexes.value),
     foreignKeys: cloneDraftValue(foreignKeys.value),
     constraints: cloneDraftValue(constraints.value),
+    existingPrimaryKey: existingPrimaryKeyDraft.value ? cloneDraftValue(existingPrimaryKeyDraft.value) : undefined,
     constraintsLoaded: constraintsLoaded.value,
     triggers: cloneDraftValue(triggers.value),
     triggersLoaded: triggersLoaded.value,
@@ -2431,6 +2494,7 @@ function restoreDraft(draft: TableStructureEditorDraft) {
   normalizeConcurrentIndexDraftsForCurrentAvailability();
   foreignKeys.value = cloneDraftValue(draft.foreignKeys || []);
   constraints.value = cloneDraftValue(draft.constraints || []);
+  existingPrimaryKeyDraft.value = draft.existingPrimaryKey ? cloneDraftValue(draft.existingPrimaryKey) : undefined;
   // Drafts created before constraint loading existed have no saved facet.
   constraintsLoaded.value = draft.constraintsLoaded ?? false;
   triggers.value = cloneDraftValue(draft.triggers || []);
@@ -2506,7 +2570,8 @@ function markDraftHydratedAndSync() {
   syncDraftToParent();
 }
 
-function hasPendingStructureChanges(): boolean {
+function hasPendingStructureChanges(includeExistingPrimaryKey = true): boolean {
+  if (includeExistingPrimaryKey && existingPrimaryKeyChanged.value) return true;
   if (isCreateMode.value) {
     return (
       !!newTableName.value.trim() ||
@@ -2709,6 +2774,7 @@ function structureChangeOptions(): BuildTableStructureChangeSqlOptions {
     foreignTable: isForeignTable.value,
     isGaussdbMMode: connection.value?.driver_profile?.toLowerCase() === "gaussdb-m",
     primaryKeyName: willCreateNewPrimaryKey.value ? primaryKeyName.value.trim() || undefined : undefined,
+    primaryKeyChange: existingPrimaryKeyChanged.value ? cloneDraftValue(existingPrimaryKeyDraft.value) : undefined,
   };
 }
 
@@ -2728,6 +2794,7 @@ function partitionSqlOptions(): TablePartitionSqlOptions {
 
 async function refreshSqlPreview() {
   const requestId = ++sqlPreviewRequestId;
+  existingPrimaryKeyPlan.value = undefined;
   if (concurrentAvailabilityInvalidated.value) {
     // Availability gap in effect: never regenerate SQL here — doing so would
     // turn a lost Concurrent request into a silent blocking CREATE INDEX. Keep
@@ -2757,6 +2824,31 @@ async function refreshSqlPreview() {
     sqliteSchemaRevision.value = undefined;
     sqlPreviewLoading.value = false;
     sqlPreviewPending.value = false;
+    return;
+  }
+  if (existingPrimaryKeyChanged.value) {
+    sqlPreviewLoading.value = true;
+    try {
+      if (!canEditExistingPrimaryKey.value || hasPendingStructureChanges(false)) throw new OceanbasePrimaryKeyValidationError("mixedDraft");
+      const target = primaryKeyTarget();
+      const change = cloneDraftValue(existingPrimaryKeyDraft.value!);
+      const [snapshot, result] = await Promise.all([readOceanbasePrimaryKeySnapshot(target, change), api.buildTableStructureChangeSql(structureChangeOptions())]);
+      if (requestId !== sqlPreviewRequestId) return;
+      if (result.warnings.length) throw new Error(result.warnings.join("\n"));
+      if (result.statements.length !== (change.columns.length ? 2 : 1)) throw new OceanbasePrimaryKeyValidationError("incompletePlan");
+      existingPrimaryKeyPlan.value = { target, change, snapshot, statements: [...result.statements] };
+      pendingStatements.value = [...result.statements];
+      warnings.value = [];
+    } catch (error) {
+      if (requestId !== sqlPreviewRequestId) return;
+      pendingStatements.value = [];
+      warnings.value = [primaryKeyError(error)];
+    } finally {
+      if (requestId === sqlPreviewRequestId) {
+        sqlPreviewLoading.value = false;
+        sqlPreviewPending.value = false;
+      }
+    }
     return;
   }
   const indexWarnings = indexes.value
@@ -2841,6 +2933,7 @@ const canApply = computed(
   () =>
     !loading.value &&
     !saving.value &&
+    !primaryKeyBusy.value &&
     !postSaveRefreshing.value &&
     !secondaryMetadataLoading.value &&
     !mysqlTableEngineLoading.value &&
@@ -2886,6 +2979,9 @@ function resetState() {
   sqliteSchemaRevision.value = undefined;
   foreignKeys.value = [];
   constraints.value = [];
+  existingPrimaryKeyDraft.value = undefined;
+  existingPrimaryKeyPlan.value = undefined;
+  primaryKeyNewColumn.value = "";
   constraintsLoaded.value = false;
   partitioning.value = null;
   triggers.value = [];
@@ -3367,6 +3463,7 @@ async function loadStructure(
     } else {
       console.warn("[DBX][structure-editor:refresh-failed]", e);
     }
+    return { error: e?.message || String(e) };
   } finally {
     if (!secondaryMetadataScheduled && requestId === structureLoadRequestId) {
       setSecondaryMetadataLoading(effectiveScope, false);
@@ -5040,8 +5137,105 @@ function toggleSqlPreviewCollapsed() {
   safeLocalStorageSet(STRUCTURE_SQL_PREVIEW_COLLAPSED_STORAGE_KEY, String(sqlPreviewCollapsed.value));
 }
 
+async function applyExistingPrimaryKey(): Promise<boolean> {
+  if (primaryKeyBusy.value || !existingPrimaryKeyPlan.value) return false;
+  const plan = cloneDraftValue(existingPrimaryKeyPlan.value);
+  const identity = JSON.stringify(plan.target);
+  const draft = JSON.stringify(plan.change);
+  const sameTarget = () => !primaryKeyUnmounted && identity === JSON.stringify(primaryKeyTarget());
+  const stillCurrent = () => sameTarget() && draft === JSON.stringify(existingPrimaryKeyDraft.value) && !hasPendingStructureChanges(false) && !ddlDirty.value;
+  if (!stillCurrent()) return false;
+  primaryKeyBusy.value = true;
+  saving.value = true;
+  const connectionAtStart = store.getConfig(plan.target.connectionId);
+  const startedAt = Date.now();
+  try {
+    const protection = productionContextForDatabase(connectionAtStart, plan.target.database);
+    if (protection.active) {
+      const accepted = await productionSafetyStore.requestConfirmation({
+        sql: plan.statements.join("\n"),
+        connectionName: connectionAtStart?.name,
+        database: plan.target.database,
+        productionDatabases: protection.databases,
+        source: t("production.sourceStructure"),
+        scopeId: primaryKeyConfirmationScope,
+      });
+      if (!accepted || !stillCurrent()) return false;
+    }
+    const timeout = queryTimeoutSecsForConnection(connectionAtStart, settingsStore.editorSettings.globalQueryTimeoutSecs);
+    const result = await executeOceanbasePrimaryKeyPlan(plan, timeout, stillCurrent);
+    if (!result) return false;
+    const completed = result.steps.every((step) => step.state === "committed");
+    let details = result.steps.map((step, index) => `${index + 1}. ${t(`oceanbasePrimaryKey.${step.state}`)}\n${step.sql}${step.error ? `\n${step.error}` : ""}`).join("\n\n");
+    for (const step of result.steps.filter((item) => item.state !== "notExecuted")) {
+      try {
+        await historyStore.add({
+          connection_id: plan.target.connectionId,
+          connection_name: connectionAtStart?.name || "",
+          database: plan.target.database,
+          sql: step.sql,
+          execution_time_ms: Date.now() - startedAt,
+          success: step.state === "committed",
+          error: step.state === "committed" ? undefined : `${t(`oceanbasePrimaryKey.${step.state}`)}: ${step.error || ""}`,
+          activity_kind: "schema_change",
+          operation: "ALTER TABLE",
+          target: plan.target.tableName,
+        });
+      } catch (error) {
+        console.warn("[DBX][structure-history:save-failed]", error);
+      }
+    }
+    try {
+      invalidateTableMetadataCache(plan.target);
+      await invalidateObjectMetadataCache(plan.target);
+      await invalidateObjectDdl(plan.target);
+    } catch (error) {
+      result.readbackError = [result.readbackError, primaryKeyError(error)].filter(Boolean).join("\n");
+    }
+    if (stillCurrent()) {
+      existingPrimaryKeyPlan.value = undefined;
+      pendingStatements.value = [];
+      if (completed && !result.readbackError) {
+        existingPrimaryKeyDraft.value = undefined;
+        loadedMetadataFacets.clear();
+        ddlFetched.value = false;
+        rawDdlContent.value = "";
+        const refresh = await loadStructure(true, { columns: true, indexes: true, constraints: true, foreignKeys: false, triggers: false, partitions: false, tableComment: false }, true, { forceMetadata: true, blockSecondaryMetadata: true });
+        if (refresh?.error) result.readbackError = refresh.error;
+        if (sameTarget()) {
+          const refreshErrors = [errorMessage.value, ...Object.values(secondaryMetadataErrors.value)].filter(Boolean);
+          if (refreshErrors.length) result.readbackError = refreshErrors.join("\n");
+          emit("saved", false);
+        }
+      } else {
+        warnings.value = [t("oceanbasePrimaryKey.refreshRequired")];
+      }
+      syncDraftToParent();
+    }
+    const succeeded = completed && !result.readbackError;
+    if (succeeded) {
+      toast(t("structureEditor.saved"), 2500);
+      if (!result.recoverySql) return true;
+    }
+    if (result.readbackError) details += `\n\n${t("oceanbasePrimaryKey.readbackFailed")}: ${result.readbackError === "definitionChanged" ? t("oceanbasePrimaryKey.definitionChanged") : result.readbackError}`;
+    if (result.recoverySql) details += `\n\n${t("oceanbasePrimaryKey.recoveryNotice")}\n${result.recoverySql}`;
+    primaryKeyResultMessage.value = `${plan.target.schema}.${plan.target.tableName}: ${t(succeeded ? "structureEditor.saved" : "oceanbasePrimaryKey.executionFailed")}`;
+    primaryKeyResultDetails.value = details;
+    if (!primaryKeyUnmounted) primaryKeyResultOpen.value = true;
+    else toast(primaryKeyResultMessage.value, 10000);
+    return succeeded;
+  } catch (error) {
+    if (sameTarget()) errorMessage.value = primaryKeyError(error);
+    return false;
+  } finally {
+    primaryKeyBusy.value = false;
+    if (sameTarget()) saving.value = false;
+  }
+}
+
 async function applyChanges() {
   if (!canApply.value || !props.connectionId || !props.database) return false;
+  if (existingPrimaryKeyChanged.value) return applyExistingPrimaryKey();
   // Layer B runtime guard: a stale `concurrently: true` whose availability is
   // no longer enabled must never be executed — reject the save with an
   // explicit error even if normalization was skipped (race / non-UI caller).
@@ -5521,6 +5715,7 @@ watch(
     mysqlTableDefaultCollation,
     tableOwner,
     ddlDraft,
+    existingPrimaryKeyDraft,
     columns,
     indexes,
     foreignKeys,
@@ -5646,6 +5841,15 @@ watch(
 
 <template>
   <div ref="rootRef" class="flex h-full min-h-0 flex-col gap-2 overflow-hidden p-[var(--structure-shell-padding)] text-[length:var(--structure-font-size)]" :data-structure-density="localStructureDensity" :style="structureDensityStyle">
+    <DangerConfirmDialog v-model:open="primaryKeyResultOpen" :title="t('oceanbasePrimaryKey.resultTitle')" :message="primaryKeyResultMessage" :confirm-label="t('common.close')">
+      <template #options>
+        <details class="rounded border p-2 text-xs">
+          <summary class="cursor-pointer">{{ t("oceanbasePrimaryKey.details") }}</summary>
+          <Button variant="ghost" size="sm" @click="copyColumnNamesText(primaryKeyResultDetails)">{{ t("dangerDialog.copyFullText") }}</Button>
+          <pre data-native-clipboard class="max-h-72 overflow-auto whitespace-pre-wrap break-all">{{ primaryKeyResultDetails }}</pre>
+        </details>
+      </template>
+    </DangerConfirmDialog>
     <div class="flex shrink-0 items-center gap-2 rounded-md border bg-muted/20 px-[var(--structure-cell-px)] py-[var(--structure-header-py)] text-[length:var(--structure-font-size)]">
       <Database :class="[structureIconClass, 'text-muted-foreground']" />
       <span class="min-w-0 flex-1 truncate font-medium">{{ targetLabel || t("editor.noDatabase") }}</span>
@@ -6660,6 +6864,30 @@ watch(
                   <Badge variant="outline" class="shrink-0">{{ constraint.constraint_type }}</Badge>
                   <Badge variant="outline" class="shrink-0 text-muted-foreground">{{ t(constraint.enabled === true ? "grid.tableInfoConstraintEnabled" : constraint.enabled === false ? "structureEditor.constraintDisabled" : "grid.tableInfoConstraintEnabledUnknown") }}</Badge>
                   <Badge variant="outline" class="shrink-0 text-muted-foreground">{{ t(constraint.valid === true ? "grid.tableInfoConstraintValidated" : constraint.valid === false ? "structureEditor.constraintNotValidated" : "grid.tableInfoConstraintValidationUnknown") }}</Badge>
+                  <template v-if="canEditExistingPrimaryKey && constraint.constraint_type === 'PRIMARY KEY'">
+                    <Button variant="ghost" size="sm" :disabled="loading || saving || primaryKeyBusy" @click="editExistingPrimaryKey(constraint)">{{ t("common.edit") }}</Button>
+                    <Button variant="ghost" size="sm" :disabled="loading || saving || primaryKeyBusy" @click="editExistingPrimaryKey(constraint, true)">{{ t("common.delete") }}</Button>
+                  </template>
+                </div>
+                <div v-if="existingPrimaryKeyDraft?.name === constraint.name" class="mt-2 space-y-2" data-existing-primary-key-editor>
+                  <div v-for="(name, position) in existingPrimaryKeyDraft.columns" :key="name" class="flex items-center gap-1">
+                    <span class="min-w-0 flex-1 truncate font-mono">{{ position + 1 }}. {{ name }}</span>
+                    <Button variant="ghost" size="icon-xs" :title="t('oceanbasePrimaryKey.moveUp')" :disabled="primaryKeyBusy || position === 0" @click="moveExistingPrimaryKeyColumn(position, -1)"><ChevronUp class="h-4 w-4" /></Button>
+                    <Button variant="ghost" size="icon-xs" :title="t('oceanbasePrimaryKey.moveDown')" :disabled="primaryKeyBusy || position === existingPrimaryKeyDraft.columns.length - 1" @click="moveExistingPrimaryKeyColumn(position, 1)"><ChevronDown class="h-4 w-4" /></Button>
+                    <Button variant="ghost" size="icon-xs" :title="t('common.delete')" :disabled="primaryKeyBusy" @click="existingPrimaryKeyDraft.columns.splice(position, 1)"><X class="h-4 w-4" /></Button>
+                  </div>
+                  <p v-if="!existingPrimaryKeyDraft.columns.length" class="text-destructive">{{ t("oceanbasePrimaryKey.removeKey") }}</p>
+                  <div class="flex items-center gap-2">
+                    <Select v-model="primaryKeyNewColumn" :disabled="primaryKeyBusy || !primaryKeyAvailableColumns.length">
+                      <SelectTrigger class="h-7 min-w-0 flex-1"><SelectValue :placeholder="t('structureEditor.addColumn')" /></SelectTrigger>
+                      <SelectContent
+                        ><SelectItem v-for="column in primaryKeyAvailableColumns" :key="column.id" :value="column.name">{{ column.name }}</SelectItem></SelectContent
+                      >
+                    </Select>
+                    <Button variant="outline" size="sm" :disabled="primaryKeyBusy || !primaryKeyNewColumn" @click="addExistingPrimaryKeyColumn">{{ t("structureEditor.addColumn") }}</Button>
+                    <Button variant="ghost" size="sm" :disabled="primaryKeyBusy" @click="existingPrimaryKeyDraft = undefined">{{ t("common.cancel") }}</Button>
+                  </div>
+                  <p v-if="existingPrimaryKeyChanged" class="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs">{{ t("oceanbasePrimaryKey.impact") }}</p>
                 </div>
                 <div v-if="constraint.columns.length" class="mt-1 truncate font-mono text-muted-foreground">{{ constraint.columns.join(", ") }}</div>
                 <div v-if="constraint.ref_table" class="mt-1 truncate font-mono text-muted-foreground">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>
