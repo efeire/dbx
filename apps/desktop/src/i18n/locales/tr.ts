@@ -7729,6 +7729,8 @@ export default withEnglishFallback({
     syncDownload: "İndir",
     syncTestSuccess: "WebDAV hedefine erişilebiliyor.",
     syncUploadSuccess: "{path} konumuna {bytes} bayt yüklendi.",
+    syncLastSuccessful: "Son başarılı eşitleme: {time}",
+    syncNeverSuccessful: "Henüz başarılı eşitleme yok",
     syncAutoUpload: "Anlık görüntüleri otomatik yükle",
     syncAutoUploadInterval: "Her",
     syncAutoUploadMinutes: "dakika",
