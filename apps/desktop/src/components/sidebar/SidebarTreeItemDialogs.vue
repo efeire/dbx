@@ -1,5 +1,9 @@
 <script setup lang="ts">
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
+import OracleViewRenamePreview from "@/components/objects/OracleViewRenamePreview.vue";
+import OracleRoutineRenamePreview from "@/components/objects/OracleRoutineRenamePreview.vue";
+import OracleTableRenamePreview from "@/components/objects/OracleTableRenamePreview.vue";
+import OraclePackageSaveAsDialog from "@/components/objects/OraclePackageSaveAsDialog.vue";
 import { structurePreviewDdlStorageType } from "./sidebarTreeDialogState";
 import { computed, toRefs, watch } from "vue";
 import { AlertTriangle, Check, Loader2, Clipboard, Plus, Trash2, Upload } from "@lucide/vue";
@@ -36,6 +40,31 @@ const {
   renameObjectPreviewSql,
   renameObjectError,
   confirmRenameObject,
+  viewRenamePlan,
+  viewRenameDrafts,
+  routineRenamePlan,
+  tableRenamePlan,
+  tableRenameDrafts,
+  packageSaveAsOpen,
+  packageSaveAsTarget,
+  packageSaveAsName,
+  packageSaveAsPlan,
+  packageSaveAsLoading,
+  packageSaveAsExecuting,
+  packageSaveAsError,
+  packageSaveAsDiagnostic,
+  confirmPackageSaveAs,
+  viewRenameLoading,
+  viewRenameValidating,
+  viewRenameExecuting,
+  isOracleViewRename,
+  isOracleRoutineRename,
+  isOracleTableRename,
+  editSidebarViewRenameDraft,
+  editSidebarTableRenameDraft,
+  validateSidebarViewRenameDrafts,
+  validateSidebarTableRenameDrafts,
+  refreshRenameObjectPreviewSql,
   showStructurePreviewDialog,
   structurePreviewTitle,
   isLoadingStructurePreview,
@@ -285,19 +314,58 @@ watch(
     </DialogContent>
   </Dialog>
 
+  <OraclePackageSaveAsDialog
+    :open="packageSaveAsOpen"
+    :old-name="packageSaveAsTarget?.objectName || packageSaveAsTarget?.label || ''"
+    :new-name="packageSaveAsName"
+    :plan="packageSaveAsPlan || null"
+    :error="packageSaveAsError"
+    :diagnostic="packageSaveAsDiagnostic"
+    :loading="packageSaveAsLoading"
+    :executing="packageSaveAsExecuting"
+    @update:open="packageSaveAsOpen = $event"
+    @update:new-name="packageSaveAsName = $event"
+    @confirm="confirmPackageSaveAs"
+  />
   <Dialog v-model:open="showRenameObjectDialog">
-    <DialogContent class="sm:max-w-[420px]">
+    <DialogContent :class="isOracleViewRename || isOracleRoutineRename || isOracleTableRename ? 'sm:max-w-[min(90vw,900px)]' : 'sm:max-w-[420px]'">
       <DialogHeader>
         <DialogTitle>{{ renameObjectDialogTitle }}</DialogTitle>
       </DialogHeader>
       <div class="grid gap-3">
         <Input v-model="renameObjectName" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" @keydown.enter.prevent="confirmRenameObject" />
-        <pre v-if="renameObjectPreviewSql" class="max-h-32 min-w-0 max-w-full overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(renameObjectPreviewSql)"></pre>
+        <OracleViewRenamePreview
+          v-if="isOracleViewRename"
+          :plan="viewRenamePlan || null"
+          :drafts="viewRenameDrafts"
+          :loading="viewRenameLoading"
+          :validating="viewRenameValidating"
+          :executing="viewRenameExecuting"
+          @edit="editSidebarViewRenameDraft"
+          @validate="validateSidebarViewRenameDrafts()"
+          @reload="validateSidebarViewRenameDrafts()"
+        />
+        <OracleRoutineRenamePreview v-else-if="isOracleRoutineRename" :plan="routineRenamePlan || null" :loading="viewRenameLoading" :executing="viewRenameExecuting" @reload="refreshRenameObjectPreviewSql()" />
+        <OracleTableRenamePreview
+          v-else-if="isOracleTableRename"
+          :plan="tableRenamePlan || null"
+          :drafts="tableRenameDrafts"
+          :loading="viewRenameLoading"
+          :validating="viewRenameValidating"
+          :executing="viewRenameExecuting"
+          @edit="editSidebarTableRenameDraft"
+          @validate="validateSidebarTableRenameDrafts()"
+          @reload="validateSidebarTableRenameDrafts()"
+        />
+        <pre v-else-if="renameObjectPreviewSql" class="max-h-32 min-w-0 max-w-full overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(renameObjectPreviewSql)"></pre>
         <p v-if="renameObjectError" class="min-w-0 max-w-full overflow-x-auto text-sm text-destructive">{{ renameObjectError }}</p>
       </div>
       <DialogFooter>
         <Button variant="outline" @click="showRenameObjectDialog = false">{{ t("dangerDialog.cancel") }}</Button>
-        <Button :disabled="!renameObjectName.trim() || renameObjectName.trim() === node.label" @click="confirmRenameObject">
+        <Button
+          :disabled="!renameObjectName.trim() || renameObjectName.trim() === node.label || viewRenameExecuting || (isOracleViewRename && !viewRenamePlan?.executable) || (isOracleRoutineRename && !routineRenamePlan?.executable) || (isOracleTableRename && !tableRenamePlan?.executable)"
+          @click="confirmRenameObject"
+        >
           {{ t("contextMenu.renameObject") }}
         </Button>
       </DialogFooter>

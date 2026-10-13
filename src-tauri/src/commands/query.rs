@@ -869,6 +869,20 @@ pub fn build_routine_rename_object_source_statements(
 }
 
 #[tauri::command]
+pub fn rewrite_oracle_routine_references(
+    input: dbx_core::object_source_sql::OracleRoutineReferenceRewriteInput,
+) -> Result<String, String> {
+    dbx_core::object_source_sql::rewrite_oracle_routine_references(input)
+}
+
+#[tauri::command]
+pub fn rewrite_oracle_table_references(
+    input: dbx_core::object_source_sql::OracleTableReferenceRewriteInput,
+) -> Result<String, String> {
+    dbx_core::object_source_sql::rewrite_oracle_table_references(input)
+}
+
+#[tauri::command]
 pub fn build_view_ddl_sql(input: dbx_core::object_source_sql::BuildViewDdlInput) -> Result<String, String> {
     Ok(dbx_core::object_source_sql::build_view_ddl_sql(input))
 }
@@ -883,6 +897,13 @@ pub fn build_oracle_view_rename_source(
     input: dbx_core::oracle_view_rename::OracleViewRenameSourceInput,
 ) -> Result<dbx_core::oracle_view_rename::OracleViewRenameSource, String> {
     dbx_core::oracle_view_rename::build_oracle_view_rename_source(input)
+}
+
+#[tauri::command]
+pub fn review_oracle_view_rename_source(
+    input: dbx_core::oracle_view_rename::OracleViewRenameSourceInput,
+) -> dbx_core::oracle_view_rename::OracleViewRenameSourceReview {
+    dbx_core::oracle_view_rename::review_oracle_view_rename_source(input)
 }
 
 #[tauri::command]

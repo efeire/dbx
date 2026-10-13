@@ -13,12 +13,22 @@ export type BuildRoutineRenameObjectSourceInput = BuildEditableObjectSourceSqlIn
   newName: string;
 };
 
+export type RewriteOracleRoutineReferencesInput = {
+  databaseType: DatabaseType;
+  callerType: Extract<ObjectSourceKind, "VIEW" | "PROCEDURE" | "FUNCTION">;
+  targetType: Extract<ObjectSourceKind, "PROCEDURE" | "FUNCTION">;
+  schema?: string | null;
+  oldName: string;
+  newName: string;
+  source: string;
+};
+
 export type ObjectSourceSaveExecutionMode = "single" | "script";
 
 const postgresLikeRoutineRenameTypes = new Set<DatabaseType>(["postgres", "redshift", "gaussdb", "kwdb", "kingbase", "highgo", "uxdb", "vastbase"]);
 const postgresLikeViewTypes = new Set<DatabaseType>(["postgres", "redshift", "gaussdb", "kwdb", "opengauss", "questdb", "kingbase", "highgo", "uxdb", "vastbase"]);
 const mysqlLikeRoutineRenameTypes = new Set<DatabaseType>(["mysql", "goldendb"]);
-const oracleLikeRoutineRenameTypes = new Set<DatabaseType>(["oracle", "dameng"]);
+const oracleLikeRoutineRenameTypes = new Set<DatabaseType>(["oracle", "dameng", "oceanbase-oracle"]);
 
 // SQLSTATE 42P16 covers unrelated invalid table definitions, so only match the
 // confirmed PostgreSQL view-column errors and their localized equivalents.
@@ -52,6 +62,10 @@ export function buildRoutineRenameObjectSourceStatements(input: BuildRoutineRena
   return api.buildRoutineRenameObjectSourceStatements(input);
 }
 
+export function rewriteOracleRoutineReferences(input: RewriteOracleRoutineReferencesInput): Promise<string> {
+  return api.rewriteOracleRoutineReferences(input);
+}
+
 export function buildExecutableObjectSourceStatements(input: BuildEditableObjectSourceSqlInput): Promise<string[]> {
   return api.buildExecutableObjectSourceStatements(input);
 }
@@ -73,7 +87,7 @@ export function objectSourceSaveExecutionMode(_databaseType: DatabaseType): Obje
   return "single";
 }
 
-export async function executeObjectSourceSave(connectionId: string, database: string, databaseType: DatabaseType, statements: string[], schema?: string): Promise<void> {
+export async function executeObjectSourceSave(connectionId: string, database: string, databaseType: DatabaseType, statements: string[], schema?: string, timeoutSecs?: number): Promise<void> {
   const nonEmptyStatements = statements.filter((sql) => sql.trim().length > 0);
   if (nonEmptyStatements.length === 0) return;
 
@@ -86,7 +100,8 @@ export async function executeObjectSourceSave(connectionId: string, database: st
 
   for (const sql of nonEmptyStatements) {
     if (objectSourceSaveExecutionMode(databaseType) === "single") {
-      await api.executeQuery(connectionId, database, sql, schema);
+      if (timeoutSecs === undefined) await api.executeQuery(connectionId, database, sql, schema);
+      else await api.executeQuery(connectionId, database, sql, schema, undefined, { timeoutSecs });
     } else {
       await api.executeScript(connectionId, database, sql, schema);
     }

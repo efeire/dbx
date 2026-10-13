@@ -1139,12 +1139,16 @@ export const useQueryStore = defineStore("query", () => {
       snapshot = captureSourceIdentity({ connectionId: tab.connectionId, database: tab.database, schema: tab.objectSource.schema || tab.schema || tab.database, objectType: tab.objectSource.objectType, name: tab.objectSource.name });
       sourceIdentities.set(tab.objectSource, snapshot);
     }
+    if (snapshot.connectionId !== tab.connectionId || snapshot.database !== tab.database || (snapshot.schema || snapshot.database) !== (tab.objectSource.schema || tab.schema || tab.database) || snapshot.objectType !== tab.objectSource.objectType || snapshot.name !== tab.objectSource.name)
+      throw new Error(i18n.global.t("objects.sourceIdentityChanged"));
     return snapshot;
   }
   watch(
     () => tabs.value.map((tab) => tab.objectSource),
     () => {
-      for (const tab of tabs.value) getObjectSourceIdentitySnapshot(tab);
+      for (const tab of tabs.value) {
+        if (tab.objectSource && !sourceIdentities.has(tab.objectSource)) getObjectSourceIdentitySnapshot(tab);
+      }
     },
     { flush: "sync" },
   );
@@ -3148,9 +3152,9 @@ export const useQueryStore = defineStore("query", () => {
     const { connectionId } = tab;
     const { database } = tab;
     const schema = objectSource.schema || tab.schema || database;
-    const identity = getObjectSourceIdentitySnapshot(tab)!;
     sourceRevalidateInFlight.add(id);
     try {
+      const identity = getObjectSourceIdentitySnapshot(tab)!;
       assertSourceIdentity(identity);
       const connectionStore = useConnectionStore();
       await connectionStore.ensureConnected(connectionId);
@@ -3173,6 +3177,7 @@ export const useQueryStore = defineStore("query", () => {
       const current = tabs.value.find((candidate) => candidate.id === id);
       assertSourceIdentity(identity);
       if (current?.objectSource !== objectSource || resolvedType !== objectSource.objectType) return;
+      if (current.connectionId !== connectionId || current.database !== database || (current.objectSource.schema || current.schema || current.database) !== schema) return;
       if (raw.editable === false || (OBJECT_SOURCE_READ_ONLY_TYPES.includes(resolvedType) && !(databaseType === "oceanbase-oracle" && resolvedType === "SEQUENCE"))) return;
       if (isTabDirty(current)) return;
       updateSql(id, editableSource);
@@ -3245,6 +3250,7 @@ export const useQueryStore = defineStore("query", () => {
         signature: request.signature,
       });
       if (tabs.value.find((candidate) => candidate.id === id)?.sourceLoad !== sourceLoad) return;
+      if (tab.connectionId !== connectionId || tab.database !== database || (tab.schema || tab.database) !== schema) throw new Error(i18n.global.t("objects.sourceIdentityChanged"));
       const renewedIdentity = renewSourceIdentity(identity);
       // Fallback can resolve another kind; never activate a frozen resolved object.
       const resolvedIdentity = resolvedType === request.objectType ? renewedIdentity : captureSourceIdentity({ ...identity, objectType: resolvedType });

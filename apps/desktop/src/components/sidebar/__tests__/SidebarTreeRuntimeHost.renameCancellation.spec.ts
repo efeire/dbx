@@ -12,13 +12,76 @@ vi.mock("@/lib/backend/api", async (original) => ({
   ...(await original<object>()),
   listPlugins: vi.fn().mockResolvedValue([]),
   getObjectSource: vi.fn().mockResolvedValue({ source: "CREATE PROCEDURE OLD AS BEGIN NULL; END;" }),
+  buildRenameObjectSql: vi.fn().mockResolvedValue("ALTER TABLE OLD RENAME TO NEW"),
   buildRoutineRenameObjectSourceStatements: vi.fn().mockResolvedValue(["CREATE PROCEDURE NEW AS BEGIN NULL; END;", "DROP PROCEDURE OLD"]),
+}));
+vi.mock("@/lib/table/oracleRoutineRename", () => ({
+  prepareOracleRoutineRename: vi.fn(async (target: any) => ({
+    target,
+    canonicalNewName: target.newName,
+    root: { name: target.oldName, objectType: target.objectType, objectId: "1", source: "source", signature: "[]", grants: "[]", status: "VALID", errors: "[]" },
+    callers: [],
+    dependencyEdges: [],
+    statements: ["CREATE PROCEDURE NEW AS BEGIN NULL; END;"],
+    steps: [],
+    issues: [],
+    metadataComplete: true,
+    executable: true,
+  })),
+  executeOracleRoutineRename: vi.fn(),
+  OracleRoutineRenameFailure: class extends Error {},
 }));
 import SidebarTreeRuntimeHost from "@/components/sidebar/SidebarTreeRuntimeHost.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { assertSourceIdentity, captureSourceIdentity } from "@/lib/table/objectSourceIdentity";
 import { renameObjectName, showRenameObjectDialog } from "../sidebarTreeDialogState";
 
 describe("sidebar rename production cancellation", () => {
+  it("updates Oracle rename capabilities when switching tree object types", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useConnectionStore();
+    store.connections = [{ id: "rename-switch-c", name: "Owner", db_type: "oceanbase-oracle", host: "localhost", port: 2881, username: "SYS" } as any];
+    const host = ref<any>();
+    let controller: any;
+    const table: TreeNode = { id: "rename-switch-table", type: "table", label: "TABLE_OLD", tableName: "TABLE_OLD", connectionId: "rename-switch-c", database: "SYS", schema: "SYS" };
+    const procedure: TreeNode = { id: "rename-switch-procedure", type: "procedure", label: "PROC_OLD", objectName: "PROC_OLD", connectionId: "rename-switch-c", database: "SYS", schema: "SYS" };
+    const root = defineComponent({
+      setup: () => () =>
+        h(SidebarTreeRuntimeHost, {
+          ref: host,
+          node: table,
+          depth: 0,
+          onOpenDialogController: (value: unknown) => {
+            controller = value;
+          },
+        }),
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp(root).use(pinia).use(i18n);
+    const openRename = (node: TreeNode) => {
+      const items: ContextMenuItem[] = host.value.buildContextMenu(node);
+      const rename = items.find((item) => item.label === i18n.global.t("contextMenu.renameObject"));
+      expect(rename).toBeDefined();
+      rename!.action!();
+    };
+    try {
+      app.mount(container);
+      await nextTick();
+      openRename(table);
+      expect(controller.isOracleTableRename).toBe(true);
+      expect(controller.isOracleRoutineRename).toBe(false);
+      openRename(procedure);
+      expect(controller.isOracleTableRename).toBe(false);
+      expect(controller.isOracleRoutineRename).toBe(true);
+    } finally {
+      app.unmount();
+      container.remove();
+      showRenameObjectDialog.value = false;
+    }
+  });
+
   it("stops after the first cancelled statement and keeps the old identity", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -55,6 +118,53 @@ describe("sidebar rename production cancellation", () => {
       await controller.confirmRenameObject();
       expect(guard).toHaveBeenCalledTimes(1);
       expect(replacePin).not.toHaveBeenCalled();
+      expect(showRenameObjectDialog.value).toBe(true);
+    } finally {
+      app.unmount();
+      container.remove();
+      showRenameObjectDialog.value = false;
+    }
+  });
+
+  it("holds the table source identity during confirmation and releases it when the user cancels", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useConnectionStore();
+    store.connections = [{ id: "rename-table-c", name: "Owner", db_type: "oracle", host: "localhost", port: 1521, username: "OWNER" } as any];
+    vi.spyOn(store, "ensureConnected").mockResolvedValue(undefined);
+    const host = ref<any>();
+    let controller: any;
+    const node: TreeNode = { id: "rename-table", type: "table", label: "OLD", tableName: "OLD", connectionId: "rename-table-c", database: "OWNER", schema: "OWNER" };
+    const root = defineComponent({
+      setup: () => () =>
+        h(SidebarTreeRuntimeHost, {
+          ref: host,
+          node,
+          depth: 0,
+          onOpenDialogController: (value: unknown) => {
+            controller = value;
+          },
+        }),
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp(root).use(pinia).use(i18n);
+    const identity = captureSourceIdentity({ connectionId: "rename-table-c", database: "OWNER", schema: "OWNER", objectType: "TABLE", name: "OLD" });
+    try {
+      app.mount(container);
+      await nextTick();
+      const items: ContextMenuItem[] = host.value.buildContextMenu(node);
+      const rename = items.find((item) => item.label === i18n.global.t("contextMenu.renameObject"));
+      expect(rename).toBeDefined();
+      rename!.action!();
+      renameObjectName.value = "NEW";
+      await nextTick();
+      guard.mockImplementationOnce(async () => {
+        expect(() => assertSourceIdentity(identity)).toThrow();
+        return undefined;
+      });
+      await controller.confirmRenameObject();
+      expect(() => assertSourceIdentity(identity)).not.toThrow();
       expect(showRenameObjectDialog.value).toBe(true);
     } finally {
       app.unmount();

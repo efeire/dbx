@@ -25,6 +25,111 @@ pub struct OracleViewRenameSourceInput {
 pub struct OracleViewRenameSource {
     pub source: String,
     pub fingerprint: String,
+    pub references: Vec<OracleViewRenameReference>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleViewRenameReference {
+    pub owner: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleViewRenameIssueLocation {
+    pub line: u64,
+    pub column: u64,
+    pub end_line: u64,
+    pub end_column: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleViewRenameIssue {
+    pub code: String,
+    pub message: String,
+    pub view_name: String,
+    pub hint_text: Option<String>,
+    pub location: Option<OracleViewRenameIssueLocation>,
+    pub repairable: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleViewRenameSourceReview {
+    pub source: Option<OracleViewRenameSource>,
+    pub references: Vec<OracleViewRenameReference>,
+    pub issues: Vec<OracleViewRenameIssue>,
+}
+
+pub fn review_oracle_view_rename_source(input: OracleViewRenameSourceInput) -> OracleViewRenameSourceReview {
+    let mut issues = Vec::new();
+    for name in [
+        &input.owner,
+        &input.view_name,
+        &input.old_name,
+        &input.new_name,
+        input.target_view_name.as_ref().unwrap_or(&input.view_name),
+    ] {
+        if let Err(message) = validate_exact_name(name) {
+            issues.push(OracleViewRenameIssue {
+                code: "invalid_metadata".into(),
+                message,
+                view_name: input.view_name.clone(),
+                hint_text: None,
+                location: None,
+                repairable: false,
+            });
+            return OracleViewRenameSourceReview { source: None, references: Vec::new(), issues };
+        }
+    }
+    let result = build_source(&input, &mut issues);
+    let references = match &result {
+        Ok(source) => source.references.clone(),
+        Err(_) => Vec::new(),
+    };
+    match result {
+        Ok(source) => OracleViewRenameSourceReview { source: Some(source), references, issues },
+        Err(message) => {
+            let code = if message == "The view declaration does not match the selected owner and name." {
+                "invalid_declaration"
+            } else {
+                "invalid_definition"
+            };
+            let location = issue_location(code, &message, &input.source);
+            issues.push(OracleViewRenameIssue {
+                code: code.into(),
+                message,
+                view_name: input.view_name.clone(),
+                hint_text: None,
+                location,
+                repairable: true,
+            });
+            OracleViewRenameSourceReview { source: None, references, issues }
+        }
+    }
+}
+
+fn issue_location(code: &str, message: &str, source: &str) -> Option<OracleViewRenameIssueLocation> {
+    if code == "invalid_declaration" {
+        let tokens = Tokenizer::new(&OracleDialect {}, source).tokenize_with_location().ok()?;
+        let view_index = tokens
+            .iter()
+            .position(|token| matches!(&token.token, Token::Word(word) if word.value.eq_ignore_ascii_case("VIEW")))?;
+        let declaration = tokens.get(view_index + 1)?;
+        return Some(OracleViewRenameIssueLocation {
+            line: declaration.span.start.line,
+            column: declaration.span.start.column,
+            end_line: declaration.span.end.line,
+            end_column: declaration.span.end.column,
+        });
+    }
+    let location = message.rsplit_once(" at Line: ")?.1;
+    let (line, column) = location.split_once(", Column: ")?;
+    let line = line.parse::<u64>().ok()?;
+    let column = column.parse::<u64>().ok()?;
+    Some(OracleViewRenameIssueLocation { line, column, end_line: line, end_column: column.saturating_add(1) })
 }
 
 pub fn parse_oracle_object_name(input: &str) -> Result<String, String> {
@@ -49,6 +154,17 @@ pub fn parse_oracle_object_name(input: &str) -> Result<String, String> {
 }
 
 pub fn build_oracle_view_rename_source(input: OracleViewRenameSourceInput) -> Result<OracleViewRenameSource, String> {
+    let review = review_oracle_view_rename_source(input);
+    if !review.issues.is_empty() {
+        return Err(review.issues.into_iter().map(|issue| issue.message).collect::<Vec<_>>().join("\n"));
+    }
+    review.source.ok_or_else(|| "Invalid view definition.".into())
+}
+
+fn build_source(
+    input: &OracleViewRenameSourceInput,
+    issues: &mut Vec<OracleViewRenameIssue>,
+) -> Result<OracleViewRenameSource, String> {
     for name in [&input.owner, &input.view_name, &input.old_name, &input.new_name] {
         validate_exact_name(name)?;
     }
@@ -71,15 +187,21 @@ pub fn build_oracle_view_rename_source(input: OracleViewRenameSourceInput) -> Re
     if target != input.view_name {
         add_ident_edit(&input.source, declaration[declaration.len() - 1], target, &mut edits)?;
     }
-    rewrite_query(&view.query, &[], &input, &mut edits)?;
+    let mut references = Vec::new();
+    rewrite_query(&view.query, &[], input, &mut edits, issues, &mut references)?;
     let source = apply_edits(&input.source, edits)?;
     let (mut parsed, properties, _) = parse_view(&source)?;
+    if issues.is_empty() && hint_bindings(&view.query)? != hint_bindings(&parsed.query)? {
+        return Err("Reparsed optimizer hints changed their relation bindings.".into());
+    }
     // GET_DDL may omit OR REPLACE and qualify the declaration. Neither changes the view.
     parsed.or_replace = true;
     parsed.name = ObjectName::from(vec![Ident::with_quote('"', &input.owner), Ident::with_quote('"', target)]);
-    let fingerprint =
-        serde_json::to_string(&(canonical_tokens(&parsed.to_string())?, properties)).map_err(|e| e.to_string())?;
-    Ok(OracleViewRenameSource { source, fingerprint })
+    let mut hints = Vec::new();
+    take_hint_fingerprints(&mut parsed.query, &mut hints)?;
+    let fingerprint = serde_json::to_string(&(canonical_tokens(&parsed.to_string())?, properties, hints))
+        .map_err(|e| e.to_string())?;
+    Ok(OracleViewRenameSource { source, fingerprint, references })
 }
 
 fn validate_exact_name(name: &str) -> Result<(), String> {
@@ -197,6 +319,301 @@ fn canonical_tokens(source: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+// Keep each hint attached to its query block, and prevent single-line Display
+// output from turning the rest of the formatted statement into a comment.
+fn take_hint_fingerprints(query: &mut Query, output: &mut Vec<Vec<String>>) -> Result<(), String> {
+    if let Some(with) = &mut query.with {
+        for cte in &mut with.cte_tables {
+            take_hint_fingerprints(&mut cte.query, output)?;
+        }
+    }
+    let SetExpr::Select(select) = query.body.as_mut() else {
+        return Err("Unsupported query block.".into());
+    };
+    let mut block = Vec::new();
+    for hint in &select.optimizer_hints {
+        let tokens = significant_tokens(&hint.text)?;
+        let known = hint.prefix.is_empty() && hint_arguments(&tokens).is_some();
+        block.push(if known {
+            let semantic: Vec<_> = tokens
+                .iter()
+                .map(|token| match &token.token {
+                    Token::Word(w) if w.quote_style.is_some() => format!("quoted:{}", w.value),
+                    Token::Word(w) => format!("word:{}", w.value.to_uppercase()),
+                    other => format!("{other:?}"),
+                })
+                .collect();
+            serde_json::to_string(&semantic).map_err(|e| e.to_string())?
+        } else {
+            format!("{}+{}", hint.prefix, hint.text)
+        });
+    }
+    output.push(block);
+    select.optimizer_hints.clear();
+    Ok(())
+}
+
+// Return only table-spec tokens, never INDEX's index names or QB_NAME's block name.
+fn hint_arguments(tokens: &[TokenWithSpan]) -> Option<Vec<usize>> {
+    let mut tables = Vec::new();
+    let mut pos = 0;
+    while pos < tokens.len() {
+        let Token::Word(name) = &tokens[pos].token else {
+            return None;
+        };
+        if name.quote_style.is_some() {
+            return None;
+        }
+        let name = name.value.to_uppercase();
+        pos += 1;
+        if matches!(name.as_str(), "ALL_ROWS" | "FIRST_ROWS" | "RULE")
+            && !tokens.get(pos).is_some_and(|t| t.token == Token::LParen)
+        {
+            continue;
+        }
+        if !tokens.get(pos).is_some_and(|t| t.token == Token::LParen) {
+            return None;
+        }
+        pos += 1;
+        let start = pos;
+        while tokens
+            .get(pos)
+            .is_some_and(|t| matches!(&t.token, Token::Word(w) if w.quote_style.is_some() || !w.value.contains('@')))
+        {
+            pos += 1;
+        }
+        if pos == start || !tokens.get(pos).is_some_and(|t| t.token == Token::RParen) {
+            return None;
+        }
+        match name.as_str() {
+            "FULL" | "QB_NAME" if pos - start == 1 => {
+                if name == "FULL" {
+                    tables.push(start);
+                }
+            }
+            "INDEX" | "INDEX_ASC" | "INDEX_DESC" | "INDEX_FFS" | "NO_INDEX" => tables.push(start),
+            "LEADING" | "USE_NL" | "USE_HASH" => tables.extend(start..pos),
+            _ => return None,
+        }
+        pos += 1;
+    }
+    Some(tables)
+}
+
+fn hint_name(token: &TokenWithSpan) -> Option<String> {
+    match &token.token {
+        Token::Word(w) => Some(if w.quote_style.is_some() { w.value.clone() } else { w.value.to_uppercase() }),
+        _ => None,
+    }
+}
+
+fn hint_groups(tokens: &[TokenWithSpan]) -> Vec<&[TokenWithSpan]> {
+    let mut groups = Vec::new();
+    let mut start = 0;
+    while start < tokens.len() {
+        let mut end = start + 1;
+        if tokens.get(end).is_some_and(|t| t.token == Token::LParen) {
+            let mut depth = 0;
+            while end < tokens.len() {
+                match tokens[end].token {
+                    Token::LParen => depth += 1,
+                    Token::RParen => depth -= 1,
+                    _ => {}
+                }
+                end += 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+        }
+        groups.push(&tokens[start..end]);
+        start = end;
+    }
+    groups
+}
+
+fn hint_bindings(query: &Query) -> Result<Vec<Vec<Vec<usize>>>, String> {
+    let mut blocks = Vec::new();
+    if let Some(with) = &query.with {
+        for cte in &with.cte_tables {
+            blocks.extend(hint_bindings(&cte.query)?);
+        }
+    }
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return Err("Unsupported query block.".into());
+    };
+    let mut exposed = Vec::new();
+    for from in &select.from {
+        for relation in std::iter::once(&from.relation).chain(from.joins.iter().map(|j| &j.relation)) {
+            let TableFactor::Table { name, alias, .. } = relation else {
+                return Err("Unsupported relation.".into());
+            };
+            exposed.push(if let Some(alias) = alias {
+                canonical(&alias.name)
+            } else {
+                canonical(name_parts(name)?.last().ok_or("Empty relation name.")?)
+            });
+        }
+    }
+    let mut block = Vec::new();
+    for hint in &select.optimizer_hints {
+        if !hint.prefix.is_empty() {
+            continue;
+        }
+        let tokens = significant_tokens(&hint.text)?;
+        for group in hint_groups(&tokens) {
+            if let Some(args) = hint_arguments(group) {
+                for arg in args {
+                    let name = hint_name(&group[arg]).ok_or("Invalid hint identifier.")?;
+                    block.push(
+                        exposed.iter().enumerate().filter(|(_, value)| **value == name).map(|(i, _)| i).collect(),
+                    );
+                }
+            }
+        }
+    }
+    blocks.push(block);
+    Ok(blocks)
+}
+
+fn rewrite_hints(
+    select: &Select,
+    bindings: &[Binding],
+    input: &OracleViewRenameSourceInput,
+    edits: &mut Vec<Edit>,
+    issues: &mut Vec<OracleViewRenameIssue>,
+) -> Result<(), String> {
+    use sqlparser::ast::OptimizerHintStyle;
+    use sqlparser::tokenizer::Whitespace;
+    if select.optimizer_hints.is_empty() {
+        return Ok(());
+    }
+    let original =
+        Tokenizer::new(&OracleDialect {}, &input.source).tokenize_with_location().map_err(|e| e.to_string())?;
+    let select_index = original
+        .iter()
+        .position(|t| t.span == select.select_token.0.span && word(t, "SELECT"))
+        .ok_or("Missing original SELECT token.")?;
+    let mut comments = Vec::new();
+    for token in original.iter().skip(select_index + 1) {
+        let Token::Whitespace(whitespace) = &token.token else {
+            break;
+        };
+        let (text, style, marker) = match whitespace {
+            Whitespace::MultiLineComment(text) => (text, OptimizerHintStyle::MultiLine, 2),
+            Whitespace::SingleLineComment { comment, prefix } => {
+                (comment, OptimizerHintStyle::SingleLine { prefix: prefix.clone() }, prefix.len())
+            }
+            _ => continue,
+        };
+        if let Some(plus) = text.find('+') {
+            if text[..plus].chars().all(|c| c.is_ascii_alphanumeric()) {
+                comments.push((token, &text[..plus], &text[plus + 1..], style, marker + plus + 1));
+            }
+        }
+    }
+    if comments.len() != select.optimizer_hints.len() {
+        return Err("Original hint comments do not match parsed hints.".into());
+    }
+    for (hint, (comment, prefix, text, style, marker)) in select.optimizer_hints.iter().zip(comments) {
+        if hint.prefix != prefix || hint.text != text || hint.style != style {
+            return Err("Original hint comment does not match parsed hint.".into());
+        }
+        let tokens = significant_tokens(text)?;
+        let affected = bindings.iter().any(|b| b.renamed) && input.old_name != input.new_name;
+        if !affected {
+            continue;
+        }
+        let mut problem = None;
+        for group in hint_groups(&tokens) {
+            let table_args = if prefix.is_empty() { hint_arguments(group) } else { None };
+            let related = group.iter().any(|token| {
+                let Token::Word(w) = &token.token else {
+                    return false;
+                };
+                if w.quote_style.is_some() {
+                    return w.value == input.old_name || w.value == input.new_name;
+                }
+                w.value.split('@').any(|part| {
+                    let name = part.to_uppercase();
+                    name == input.old_name || name == input.new_name
+                })
+            });
+            if let Some(args) = table_args {
+                for index in args {
+                    let name = hint_name(&group[index]).ok_or("Invalid hint identifier.")?;
+                    let before: Vec<_> =
+                        bindings.iter().enumerate().filter(|(_, b)| b.exposed == name).map(|(i, _)| i).collect();
+                    if before.is_empty() && name == input.old_name {
+                        problem = Some((
+                            "unsupported_hint",
+                            "This hint names the renamed relation instead of its visible query alias.",
+                        ));
+                        break;
+                    }
+                    let replacement =
+                        if before.len() == 1 && bindings[before[0]].renamed && !bindings[before[0]].aliased {
+                            input.new_name.as_str()
+                        } else {
+                            name.as_str()
+                        };
+                    let after: Vec<_> = bindings
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| {
+                            (if b.renamed && !b.aliased { &input.new_name } else { &b.exposed }) == replacement
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    if before.len() > 1 && before.iter().any(|i| bindings[*i].renamed && !bindings[*i].aliased) {
+                        problem = Some((
+                            "ambiguous_binding",
+                            "An optimizer hint table-spec has ambiguous relation bindings.",
+                        ));
+                        break;
+                    }
+                    if before != after {
+                        problem = Some(("hint_capture", "Renaming would change an optimizer hint's relation binding."));
+                        break;
+                    }
+                    if replacement != name {
+                        let base = offset(&input.source, comment.span.start)? + marker;
+                        edits.push(Edit {
+                            start: base + offset(text, group[index].span.start)?,
+                            end: base + offset(text, group[index].span.end)?,
+                            value: format!("\"{}\"", replacement.replace('"', "\"\"")),
+                        });
+                    }
+                }
+            } else if related {
+                problem = Some((
+                    "unsupported_hint",
+                    "This optimizer hint may refer to the renamed relation but its table-spec cannot be safely bound.",
+                ));
+            }
+            if problem.is_some() {
+                break;
+            }
+        }
+        if let Some((code, message)) = problem {
+            issues.push(OracleViewRenameIssue {
+                code: code.into(),
+                message: format!("{} [{}]", message, text),
+                view_name: input.view_name.clone(),
+                hint_text: Some(text.into()),
+                location: Some(OracleViewRenameIssueLocation {
+                    line: comment.span.start.line,
+                    column: comment.span.start.column,
+                    end_line: comment.span.end.line,
+                    end_column: comment.span.end.column,
+                }),
+                repairable: true,
+            });
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct Edit {
     start: usize,
@@ -267,6 +684,8 @@ fn rewrite_query(
     inherited_ctes: &[String],
     input: &OracleViewRenameSourceInput,
     edits: &mut Vec<Edit>,
+    issues: &mut Vec<OracleViewRenameIssue>,
+    references: &mut Vec<OracleViewRenameReference>,
 ) -> Result<(), String> {
     let mut ctes = inherited_ctes.to_vec();
     if let Some(with) = &query.with {
@@ -286,7 +705,7 @@ fn rewrite_query(
             {
                 body_ctes.push(input.new_name.clone());
             }
-            rewrite_query(&cte.query, &body_ctes, input, edits)?;
+            rewrite_query(&cte.query, &body_ctes, input, edits, issues, references)?;
             ctes.push(name);
         }
     }
@@ -303,9 +722,9 @@ fn rewrite_query(
     }
     let mut bindings = Vec::new();
     for from in &select.from {
-        add_binding(&from.relation, &ctes, input, &mut bindings, edits)?;
+        add_binding(&from.relation, &ctes, input, &mut bindings, edits, references)?;
         for join in &from.joins {
-            add_binding(&join.relation, &ctes, input, &mut bindings, edits)?;
+            add_binding(&join.relation, &ctes, input, &mut bindings, edits, references)?;
         }
     }
     if bindings.iter().any(|b| b.renamed && !b.aliased)
@@ -313,6 +732,7 @@ fn rewrite_query(
     {
         return Err("The new name would collide with an existing query alias or relation.".into());
     }
+    rewrite_hints(select, &bindings, input, edits, issues)?;
     let mut visitor = References { input, bindings: &bindings, edits };
     visit_result(select.visit(&mut visitor))?;
     visit_result(query.order_by.visit(&mut visitor))?;
@@ -327,6 +747,7 @@ fn add_binding(
     input: &OracleViewRenameSourceInput,
     bindings: &mut Vec<Binding>,
     edits: &mut Vec<Edit>,
+    references: &mut Vec<OracleViewRenameReference>,
 ) -> Result<(), String> {
     let TableFactor::Table {
         name,
@@ -364,6 +785,12 @@ fn add_binding(
     let relation_name = canonical(parts[parts.len() - 1]);
     let owner = if parts.len() == 2 { canonical(parts[0]) } else { input.owner.clone() };
     let is_cte = parts.len() == 1 && ctes.contains(&relation_name);
+    if !is_cte {
+        let reference = OracleViewRenameReference { owner: owner.clone(), name: relation_name.clone() };
+        if !references.contains(&reference) {
+            references.push(reference);
+        }
+    }
     let renamed = !is_cte && owner == input.owner && relation_name == input.old_name;
     if renamed {
         if parts.len() == 1 && ctes.contains(&input.new_name) {
@@ -507,9 +934,28 @@ mod tests {
 
     #[test]
     fn preserves_source_and_changes_bound_relations_and_qualifiers() {
-        let source = "CREATE VIEW \"APP\".\"DEP\" (\"列\") AS\r\nSELECT /*+ FULL(OLD) */ OLD.N FROM APP.OLD -- OLD\r\nWHERE OLD.N > 1 AND 'OLD' = 'OLD' WITH READ ONLY";
+        let source = "CREATE VIEW \"APP\".\"DEP\" (\"列\") AS\r\nSELECT /*+ ALL_ROWS */ OLD.N FROM APP.OLD -- OLD\r\nWHERE OLD.N > 1 AND 'OLD' = 'OLD' WITH READ ONLY";
         let result = build_oracle_view_rename_source(input(source)).unwrap();
-        assert_eq!(result.source, "CREATE OR REPLACE VIEW \"APP\".\"DEP\" (\"列\") AS\r\nSELECT /*+ FULL(OLD) */ \"New View\".N FROM APP.\"New View\" -- OLD\r\nWHERE \"New View\".N > 1 AND 'OLD' = 'OLD' WITH READ ONLY");
+        assert_eq!(result.source, "CREATE OR REPLACE VIEW \"APP\".\"DEP\" (\"列\") AS\r\nSELECT /*+ ALL_ROWS */ \"New View\".N FROM APP.\"New View\" -- OLD\r\nWHERE \"New View\".N > 1 AND 'OLD' = 'OLD' WITH READ ONLY");
+    }
+
+    #[test]
+    fn rewrites_hints_whose_relation_spec_would_become_stale() {
+        for source in [
+            "CREATE VIEW DEP AS SELECT /*+ FULL(OLD) */ OLD.N FROM OLD",
+            "CREATE VIEW DEP AS SELECT --+ INDEX(OLD IDX)\n OLD.N FROM OLD",
+            "CREATE VIEW DEP AS SELECT /*+ LEADING(\"OLD\") */ * FROM APP.OLD",
+        ] {
+            assert!(build_oracle_view_rename_source(input(source)).is_ok(), "{source}");
+        }
+        for source in [
+            "CREATE VIEW DEP AS SELECT /*+ FULL(X) */ X.N FROM OLD X",
+            "CREATE VIEW DEP AS SELECT /*+ FULL(OLD) */ OLD.N FROM OLD OLD",
+            "CREATE VIEW DEP AS SELECT /*+ FULL(OLD) */ OLD.N FROM OTHER.OLD",
+            "CREATE VIEW DEP AS SELECT /* FULL(OLD) */ OLD.N FROM OLD",
+        ] {
+            assert!(build_oracle_view_rename_source(input(source)).is_ok(), "{source}");
+        }
     }
 
     #[test]
@@ -646,5 +1092,104 @@ mod tests {
         request.old_name = "old\"name".into();
         request.new_name = "新\"名".into();
         assert_eq!(build_oracle_view_rename_source(request).unwrap().source, "CREATE OR REPLACE /* 保留 */ VIEW DEP AS SELECT \"新\"\"名\".N FROM \"新\"\"名\" WITH CHECK OPTION CONSTRAINT \"中文约束\"");
+    }
+
+    #[test]
+    fn rewrites_hint_table_roles_and_preserves_other_parameters() {
+        let source = "CREATE VIEW DEP AS\r\nSELECT /*+ FULL(OLD) INDEX(OLD OLD IDX) QB_NAME(OLD) LEADING(OLD X) USE_NL(OLD X) USE_HASH(X OLD) MYSTERY(X) */ 'OLD' N FROM APP.OLD JOIN OTHER.T X ON 1=1";
+        let result = build_oracle_view_rename_source(input(source)).unwrap();
+        assert!(result.source.contains("FULL(\"New View\") INDEX(\"New View\" OLD IDX) QB_NAME(OLD) LEADING(\"New View\" X) USE_NL(\"New View\" X) USE_HASH(X \"New View\") MYSTERY(X)"));
+        for name in ["INDEX_ASC", "INDEX_DESC", "INDEX_FFS", "NO_INDEX"] {
+            let result = build_oracle_view_rename_source(input(&format!(
+                "CREATE VIEW DEP AS SELECT --+ {name}(OLD IDX)\r\n OLD.N FROM OLD"
+            )))
+            .unwrap();
+            assert!(result.source.contains(&format!("--+ {name}(\"New View\" IDX)\r\n")));
+        }
+        let result =
+            build_oracle_view_rename_source(input("CREATE VIEW DEP AS SELECT /*+ INDEX(T OLD) */ * FROM OLD T"))
+                .unwrap();
+        assert!(result.source.contains("INDEX(T OLD)"));
+    }
+
+    #[test]
+    fn reports_related_unsupported_hints_and_binding_capture_with_locations() {
+        for hint in ["FULL(OLD@Q)", "FULL(APP.OLD)", "LEADING((OLD X))", "UNKNOWN(OLD)"] {
+            let source = format!("CREATE VIEW DEP AS\r\nSELECT /*+ {hint} */ * FROM OLD");
+            let review = review_oracle_view_rename_source(input(&source));
+            assert!(review.source.is_some(), "{hint}");
+            assert_eq!(review.issues[0].code, "unsupported_hint");
+            assert_eq!(review.issues[0].location.as_ref().unwrap().line, 2);
+            assert_eq!(review.issues[0].location.as_ref().unwrap().column, 8);
+            assert!(review.issues[0].hint_text.as_ref().unwrap().contains(hint));
+            let proposed = review.source.unwrap().source;
+            assert!(proposed.contains(hint), "unsupported hint must remain visible for manual repair: {proposed}");
+            assert!(
+                proposed.contains("FROM \"New View\""),
+                "safe relation rewrite should remain available: {proposed}"
+            );
+        }
+        let review =
+            review_oracle_view_rename_source(input("CREATE VIEW DEP AS SELECT /*+ FULL(\"New View\") */ * FROM OLD"));
+        assert_eq!(review.issues[0].code, "hint_capture");
+        let review =
+            review_oracle_view_rename_source(input("CREATE VIEW DEP AS SELECT /*+ FULL(OLD) */ * FROM OLD, OTHER.OLD"));
+        assert_eq!(review.issues[0].code, "ambiguous_binding");
+        assert_eq!(review.references.len(), 2);
+        assert!(build_oracle_view_rename_source(input("CREATE VIEW DEP AS SELECT /*+ UNKNOWN(X@Q) */ * FROM OLD X"))
+            .is_ok());
+
+        let source = "CREATE VIEW \"DBX_G8_HINT\" (\"Value X\") AS SELECT /*+ FULL(DBX_G8_BASE@Q) */ \"Value X\" FROM DBX_G8_BASE B";
+        let mut request = input(source);
+        request.owner = "DBX_G8_UI_261013".into();
+        request.view_name = "DBX_G8_HINT".into();
+        request.old_name = "DBX_G8_BASE".into();
+        request.new_name = "DBX_G8_BASE_NEW".into();
+        let review = review_oracle_view_rename_source(request);
+        assert!(review.issues.iter().any(|issue| issue.code == "unsupported_hint"));
+        assert!(review.source.unwrap().source.contains("FROM \"DBX_G8_BASE_NEW\" B"));
+    }
+
+    #[test]
+    fn keeps_hint_bindings_separate_across_repeated_cte_comments() {
+        let source = "CREATE VIEW DEP AS WITH X AS (SELECT /*+ FULL(OLD) */ * FROM OTHER.OLD), Y AS (SELECT /*+ FULL(OLD) */ * FROM APP.OLD) SELECT /*+ FULL(X) */ * FROM X, Y";
+        let result = build_oracle_view_rename_source(input(source)).unwrap();
+        assert!(result.source.contains("SELECT /*+ FULL(OLD) */ * FROM OTHER.OLD"));
+        assert!(result.source.contains("SELECT /*+ FULL(\"New View\") */ * FROM APP.\"New View\""));
+        assert_eq!(
+            result.references,
+            vec![
+                OracleViewRenameReference { owner: "OTHER".into(), name: "OLD".into() },
+                OracleViewRenameReference { owner: "APP".into(), name: "OLD".into() }
+            ]
+        );
+    }
+
+    #[test]
+    fn fingerprints_hint_semantics_and_single_line_sql_body() {
+        let fingerprint = |sql: &str| build_oracle_view_rename_source(input(sql)).unwrap().fingerprint;
+        let a = fingerprint("CREATE VIEW DEP AS SELECT --+ FULL(OLD)\n N FROM OLD WHERE N=1");
+        assert_eq!(a, fingerprint("create view DEP as SELECT /*+ full( old ) */ N from OLD -- ordinary\n where N = 1"));
+        assert_ne!(a, fingerprint("CREATE VIEW DEP AS SELECT --+ FULL(OLD)\n N FROM OLD WHERE N=2"));
+        assert_ne!(a, fingerprint("CREATE VIEW DEP AS SELECT /*+ INDEX(OLD IDX) */ N FROM OLD WHERE N=1"));
+        assert_ne!(
+            fingerprint("CREATE VIEW DEP AS SELECT /*+ UNKNOWN('a') */ N FROM OLD"),
+            fingerprint("CREATE VIEW DEP AS SELECT /*+ UNKNOWN('b') */ N FROM OLD")
+        );
+        let source =
+            build_oracle_view_rename_source(input("CREATE VIEW DEP AS SELECT --+ INDEX(OLD IDX)\n OLD.N FROM OLD"))
+                .unwrap();
+        assert_eq!(source.fingerprint, build_oracle_view_rename_source(input(&source.source)).unwrap().fingerprint);
+    }
+
+    #[test]
+    fn review_returns_parse_problem_without_a_source() {
+        let review = review_oracle_view_rename_source(input("CREATE VIEW DEP AS unsupported original"));
+        assert!(review.source.is_none());
+        assert_eq!(review.issues[0].code, "invalid_definition");
+        assert!(review.issues[0].location.is_some());
+        let declaration = review_oracle_view_rename_source(input("CREATE VIEW WRONG AS SELECT 1 FROM OLD"));
+        assert_eq!(declaration.issues[0].code, "invalid_declaration");
+        assert!(declaration.issues[0].location.is_some());
     }
 }

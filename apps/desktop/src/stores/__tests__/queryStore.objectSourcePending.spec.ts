@@ -128,6 +128,71 @@ describe("queryStore pending object source tab", () => {
     expect(() => assertSourceIdentity(old)).toThrow();
   });
 
+  it.each(["connection", "database"])("requires a successful reload after source %s retargeting", async (target) => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    mocks.getObjectSource.mockResolvedValue(objectSource("original retarget source"));
+    const id = store.openObjectSourceTabPending(pendingOptions({ name: `retarget_${target}`, objectType: "VIEW" }));
+    await settle();
+    const tab = store.tabs[0]!;
+    const original = store.getObjectSourceIdentitySnapshot(tab)!;
+    store.updateSql(id, "dirty retarget draft");
+    if (target === "connection") store.updateConnection(id, "ora-2", DATABASE);
+    else store.updateDatabase(id, "ORCL2");
+    expect(() => store.getObjectSourceIdentitySnapshot(tab)).toThrow();
+    expect(tab.sql).toBe("dirty retarget draft");
+    expect(store.isTabDirty(tab)).toBe(true);
+    store.createTab(CONNECTION_ID, DATABASE, "Unrelated query");
+    if (target === "connection") store.updateConnection(id, CONNECTION_ID, DATABASE);
+    else store.updateDatabase(id, DATABASE);
+    expect(store.getObjectSourceIdentitySnapshot(tab)).toBe(original);
+    if (target === "connection") store.updateConnection(id, "ora-2", DATABASE);
+    else store.updateDatabase(id, "ORCL2");
+    mocks.getObjectSource.mockResolvedValue(objectSource("reloaded target source"));
+    expect(store.refreshObjectSourceTab(id)).toBe(true);
+    await settle();
+    const reloaded = store.getObjectSourceIdentitySnapshot(tab)!;
+    expect(reloaded.connectionId).toBe(tab.connectionId);
+    expect(reloaded.database).toBe(tab.database);
+    expect(() => assertSourceIdentity(reloaded)).not.toThrow();
+    expect(original.connectionId).toBe(CONNECTION_ID);
+    expect(original.database).toBe(DATABASE);
+    expect(tab.sql).toBe("reloaded target source");
+  });
+
+  it("discards a source load retargeted before its response arrives", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    let complete!: (value: unknown) => void;
+    mocks.getObjectSource.mockReturnValue(new Promise((resolve) => (complete = resolve)));
+    const id = store.openObjectSourceTabPending(pendingOptions({ name: "retarget_pending", objectType: "VIEW" }));
+    await settle();
+    store.updateDatabase(id, "ORCL2");
+    complete(objectSource("late old target source"));
+    await settle();
+    expect(store.tabs[0]!.objectSource).toBeUndefined();
+    expect(store.tabs[0]!.sql).not.toBe("late old target source");
+    expect(store.tabs[0]!.sourceLoad?.error).toContain("reload");
+  });
+
+  it("keeps loaded source when a background response arrives after retargeting", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const options = pendingOptions({ name: "retarget_background", objectType: "VIEW" });
+    mocks.getObjectSource.mockResolvedValue(objectSource("original background source"));
+    const id = store.openObjectSourceTabPending(options);
+    await settle();
+    let complete!: (value: unknown) => void;
+    mocks.getObjectSource.mockReturnValueOnce(new Promise((resolve) => (complete = resolve)));
+    store.openObjectSourceTabPending(options);
+    await settle();
+    store.updateConnection(id, "ora-2", DATABASE);
+    complete(objectSource("late old background source"));
+    await settle();
+    expect(store.tabs[0]!.sql).toBe("original background source");
+    expect(() => store.getObjectSourceIdentitySnapshot(store.tabs[0]!)).toThrow();
+  });
+
   it("creates a visible loading tab before the source arrives", async () => {
     let resolveSource: ((value: unknown) => void) | undefined;
     mocks.getObjectSource.mockReturnValue(new Promise((resolve) => (resolveSource = resolve)));

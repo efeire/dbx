@@ -279,6 +279,18 @@ pub struct BuildRoutineRenameObjectSourceRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteOracleRoutineReferencesRequest {
+    pub input: dbx_core::object_source_sql::OracleRoutineReferenceRewriteInput,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteOracleTableReferencesRequest {
+    pub input: dbx_core::object_source_sql::OracleTableReferenceRewriteInput,
+}
+
+#[derive(Deserialize)]
 pub struct ParseOracleObjectNameRequest {
     pub input: String,
 }
@@ -1265,6 +1277,18 @@ pub async fn build_routine_rename_object_source_statements(
         .map_err(AppError::from)
 }
 
+pub async fn rewrite_oracle_routine_references(
+    Json(req): Json<RewriteOracleRoutineReferencesRequest>,
+) -> Result<Json<String>, AppError> {
+    dbx_core::object_source_sql::rewrite_oracle_routine_references(req.input).map(Json).map_err(AppError::from)
+}
+
+pub async fn rewrite_oracle_table_references(
+    Json(req): Json<RewriteOracleTableReferencesRequest>,
+) -> Result<Json<String>, AppError> {
+    dbx_core::object_source_sql::rewrite_oracle_table_references(req.input).map(Json).map_err(AppError::from)
+}
+
 pub async fn build_view_ddl_sql(Json(req): Json<BuildViewDdlRequest>) -> Json<String> {
     Json(dbx_core::object_source_sql::build_view_ddl_sql(req.input))
 }
@@ -1277,6 +1301,12 @@ pub async fn build_oracle_view_rename_source(
     Json(req): Json<BuildOracleViewRenameSourceRequest>,
 ) -> Result<Json<dbx_core::oracle_view_rename::OracleViewRenameSource>, AppError> {
     dbx_core::oracle_view_rename::build_oracle_view_rename_source(req.input).map(Json).map_err(AppError::from)
+}
+
+pub async fn review_oracle_view_rename_source(
+    Json(req): Json<BuildOracleViewRenameSourceRequest>,
+) -> Json<dbx_core::oracle_view_rename::OracleViewRenameSourceReview> {
+    Json(dbx_core::oracle_view_rename::review_oracle_view_rename_source(req.input))
 }
 
 pub async fn build_table_structure_change_sql(

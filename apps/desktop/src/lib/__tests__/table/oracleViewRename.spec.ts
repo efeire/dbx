@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareOracleViewRename, executeOracleViewRename } from "@/lib/table/oracleViewRename";
 
-const api = vi.hoisted(() => ({ executeQuery: vi.fn(), parseOracleObjectName: vi.fn(), buildOracleViewRenameSource: vi.fn(), deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined) }));
+const api = vi.hoisted(() => ({ executeQuery: vi.fn(), parseOracleObjectName: vi.fn(), buildOracleViewRenameSource: vi.fn(), reviewOracleViewRenameSource: vi.fn(), deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/backend/api", () => api);
 
 const target = { connectionId: "c", database: "OWNER", schema: "OWNER", oldName: "OLD", newName: "NEW" };
@@ -17,6 +17,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.parseOracleObjectName.mockImplementation(async (name) => name.toUpperCase());
   api.buildOracleViewRenameSource.mockImplementation(async ({ source, targetViewName }) => ({ source, fingerprint: targetViewName || source }));
+  api.reviewOracleViewRenameSource.mockImplementation(async ({ source, viewName, oldName, newName, targetViewName }) => {
+    const rewrittenSource = source.replaceAll(oldName, newName).replace(`VIEW ${viewName}`, `VIEW ${targetViewName || viewName}`);
+    const references = [...source.matchAll(/\bFROM\s+([A-Z][A-Z0-9_$#]*)/gi)].map((match) => ({ owner: "OWNER", name: match[1] }));
+    const fingerprint = rewrittenSource.replace(/\bVIEW\s+[^\s]+/i, "VIEW <NAME>");
+    return { source: { source: rewrittenSource, fingerprint, references }, references, issues: [] };
+  });
   api.executeQuery.mockImplementation(async (_connection, _database, sql: string) => {
     statements.push(sql);
     if (sql.includes("SYS_CONTEXT")) return result([["OWNER", "OWNER"]]);
@@ -27,7 +33,7 @@ beforeEach(() => {
       return result(renamed ? [] : [["VIEW", "VALID"]]);
     }
     if (sql.includes("DBMS_LOB.GETLENGTH")) return result([[3]]);
-    if (sql.includes("DBMS_LOB.SUBSTR")) return result([[renamed ? "NEW" : "OLD"]]);
+    if (sql.includes("DBMS_LOB.SUBSTR")) return result([[1, renamed ? "NEW" : "OLD"]]);
     if (sql.startsWith("RENAME")) {
       renamed = true;
       return result([]);
@@ -46,13 +52,17 @@ describe("OceanBase view rename plan", () => {
 
   it("blocks a visible foreign dependency before any mutation", async () => {
     graph = [["OTHER", "DEP", "VIEW", null]];
-    await expect(prepareOracleViewRename(target)).rejects.toThrow(/OTHER/);
+    const plan = await prepareOracleViewRename(target);
+    expect(plan.executable).toBe(false);
+    expect(plan.issues[0].message).toContain("OTHER");
     expect(renamed).toBe(false);
   });
 
   it("rejects truncated metadata instead of treating it as a complete graph", async () => {
     api.executeQuery.mockResolvedValue({ ...result([]), truncated: true });
-    await expect(prepareOracleViewRename(target)).rejects.toThrow(/incomplete/i);
+    const plan = await prepareOracleViewRename(target);
+    expect(plan.metadataComplete).toBe(false);
+    expect(plan.executable).toBe(false);
     expect(renamed).toBe(false);
   });
 
@@ -65,7 +75,9 @@ describe("OceanBase view rename plan", () => {
 
   it("checks metadata identity before using an unqualified RENAME", async () => {
     api.executeQuery.mockResolvedValue(result([["SOMEONE_ELSE", "OWNER"]]));
-    await expect(prepareOracleViewRename(target)).rejects.toThrow(/owner/i);
+    const plan = await prepareOracleViewRename(target);
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.length).toBeGreaterThan(0);
     expect(renamed).toBe(false);
   });
 
@@ -108,7 +120,9 @@ describe("OceanBase view rename plan", () => {
 
   it("does not hide a known foreign dependency behind a fallback query", async () => {
     graph = [["OTHER", "DEP", "VIEW", null]];
-    await expect(prepareOracleViewRename(target)).rejects.toThrow(/OTHER/);
+    const plan = await prepareOracleViewRename(target);
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some((item) => item.message.includes("OTHER"))).toBe(true);
     expect(statements.some((sql) => sql.includes("SYS.ALL_DEPENDENCIES"))).toBe(false);
   });
 
@@ -129,7 +143,9 @@ describe("OceanBase view rename plan", () => {
 
   it("refuses dependency cycles", async () => {
     graph = [["OWNER", "OLD", "VIEW", null]];
-    await expect(prepareOracleViewRename(target)).rejects.toThrow(/cyclic/i);
+    const plan = await prepareOracleViewRename(target);
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some((item) => item.code === "dependency_cycle")).toBe(true);
     expect(renamed).toBe(false);
   });
 
@@ -146,7 +162,7 @@ describe("OceanBase view rename plan", () => {
 function dependencyFixture(options: { drift?: boolean; failSecond?: boolean } = {}) {
   const sources = new Map([
     ["OLD", "CREATE VIEW OLD AS SELECT 42 X FROM DUAL"],
-    ["DEP", "CREATE VIEW DEP AS SELECT /*+ FULL(OLD) */ * FROM OLD"],
+    ["DEP", "CREATE VIEW DEP AS SELECT /*+ FULL(X) */ * FROM OLD X"],
     ["DEP2", "CREATE VIEW DEP2 AS SELECT * FROM DEP"],
   ]);
   const writes: string[] = [];
@@ -167,7 +183,7 @@ function dependencyFixture(options: { drift?: boolean; failSecond?: boolean } = 
     if (sql.includes("DBMS_LOB")) {
       const name = /GET_DDL\('VIEW','([^']+)'/.exec(sql)![1];
       const source = sources.get(name)!;
-      return result([[sql.includes("GETLENGTH") ? source.length : source]]);
+      return sql.includes("GETLENGTH") ? result([[source.length]]) : result([[1, source]]);
     }
     writes.push(sql);
     if (sql.startsWith("RENAME")) {
@@ -175,7 +191,7 @@ function dependencyFixture(options: { drift?: boolean; failSecond?: boolean } = 
       sources.delete("OLD");
       valid.clear();
       valid.add("NEW");
-      if (options.drift) sources.set("DEP", sources.get("DEP")!.replace("FULL(OLD)", "INDEX(OLD)"));
+      if (options.drift) sources.set("DEP", sources.get("DEP")!.replace("FULL(X)", "INDEX(X)"));
       return result([]);
     }
     if (sql.startsWith("CREATE VIEW")) {
@@ -191,6 +207,168 @@ function dependencyFixture(options: { drift?: boolean; failSecond?: boolean } = 
 }
 
 describe("view dependency execution", () => {
+  it("keeps safe dependent SQL visible when one hint needs a manual repair, then executes the revalidated draft", async () => {
+    const fixture = dependencyFixture();
+    const review = api.reviewOracleViewRenameSource.getMockImplementation()!;
+    api.reviewOracleViewRenameSource.mockImplementation(async (input) => {
+      if (input.viewName === "DEP" && String(input.source).includes("FULL(X)")) {
+        return { source: null, references: [{ owner: "OWNER", name: "OLD" }], issues: [{ code: "unsupported_hint", message: "Needs a manual hint edit", viewName: "DEP", hintText: "FULL(X)", location: { line: 1, column: 31 }, repairable: true }] };
+      }
+      return review(input);
+    });
+    const blocked = await prepareOracleViewRename({ ...target, connectionId: "manual-hint" });
+    expect(blocked.executable).toBe(false);
+    expect(blocked.views.find((view) => view.name === "DEP")?.source).toContain("FULL(X)");
+    expect(blocked.views.find((view) => view.name === "DEP2")?.rewrittenSource).toContain("FROM DEP");
+    expect(blocked.issues[0]).toMatchObject({ viewName: "DEP", hintText: "FULL(X)", location: { line: 1, column: 31 } });
+
+    const repaired = await prepareOracleViewRename({ ...target, connectionId: "manual-hint" }, { DEP: "CREATE VIEW DEP AS SELECT * FROM OLD" });
+    expect(repaired.executable).toBe(true);
+    expect(repaired.steps.map((step) => step.kind)).toEqual(["rename", "replace", "replace"]);
+    await expect(executeOracleViewRename(repaired)).resolves.toBeUndefined();
+    expect(fixture.writes.map((sql) => (sql.startsWith("RENAME") ? "RENAME" : /^CREATE VIEW (\w+)/.exec(sql)?.[1]))).toEqual(["RENAME", "DEP", "DEP2"]);
+  });
+
+  it("replaces a manually corrected root before renaming it", async () => {
+    const fixture = dependencyFixture();
+    const plan = await prepareOracleViewRename({ ...target, connectionId: "manual-root" }, { OLD: "CREATE VIEW OLD AS SELECT 43 X FROM DUAL" });
+    expect(plan.executable).toBe(true);
+    expect(plan.steps.map((step) => step.kind)).toEqual(["replace", "rename", "replace", "replace"]);
+    await executeOracleViewRename(plan);
+    expect(fixture.writes[0]).toContain("43 X");
+    expect(fixture.writes[1]).toMatch(/^RENAME/);
+  });
+
+  it("allows a parser failure to be corrected when the database dependency edge stays unchanged", async () => {
+    dependencyFixture();
+    const review = api.reviewOracleViewRenameSource.getMockImplementation()!;
+    api.reviewOracleViewRenameSource.mockImplementation(async (input) => {
+      if (input.viewName === "DEP" && input.source.includes("FULL(X)")) {
+        return { source: null, references: [], issues: [{ code: "invalid_definition", message: "Unsupported query form", viewName: "DEP", repairable: true }] };
+      }
+      return review(input);
+    });
+    const blocked = await prepareOracleViewRename({ ...target, connectionId: "manual-parser" });
+    expect(blocked.executable).toBe(false);
+    const repaired = await prepareOracleViewRename({ ...target, connectionId: "manual-parser" }, { DEP: "CREATE VIEW DEP AS SELECT * FROM OLD" });
+    expect(repaired.executable).toBe(true);
+    expect(repaired.issues).toEqual([]);
+  });
+
+  it("keeps a definition draft visible but blocks changed dependency relationships", async () => {
+    const fixture = dependencyFixture();
+    const plan = await prepareOracleViewRename({ ...target, connectionId: "manual-graph" }, { DEP: "CREATE VIEW DEP AS SELECT * FROM DEP2" });
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some((item) => item.code === "manual_graph" && item.viewName === "DEP")).toBe(true);
+    expect(plan.views.find((view) => view.name === "DEP")?.draft).toBe("CREATE VIEW DEP AS SELECT * FROM DEP2");
+    expect(plan.views.find((view) => view.name === "DEP2")?.rewrittenSource).toContain("CREATE VIEW DEP2");
+    expect(fixture.writes).toEqual([]);
+  });
+
+  it("reports a completed root repair when the following rename fails", async () => {
+    const fixture = dependencyFixture();
+    const plan = await prepareOracleViewRename({ ...target, connectionId: "manual-root-partial" }, { OLD: "CREATE VIEW OLD AS SELECT 43 X FROM DUAL" });
+    const execute = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args) => {
+      if (String(args[2]).startsWith("RENAME")) throw new Error("rename rejected");
+      return execute(...args);
+    });
+    await expect(executeOracleViewRename(plan)).rejects.toMatchObject({ completed: ["OLD (definition replaced)"], uncertain: "NEW" });
+    expect(fixture.sources.get("OLD")).toContain("43 X");
+    expect(fixture.sources.has("NEW")).toBe(false);
+  });
+
+  it("accepts unchanged sibling dependencies returned in a different order", async () => {
+    const fixture = dependencyFixture();
+    fixture.sources.set("DEP2", "CREATE VIEW DEP2 AS SELECT * FROM OLD");
+    const implementation = api.executeQuery.getMockImplementation()!;
+    let reverse = false;
+    api.executeQuery.mockImplementation(async (...args) => {
+      const sql = String(args[2]);
+      if (sql.includes("DEPENDENCIES") && sql.includes("REFERENCED_NAME='OLD'")) {
+        const rows = [
+          ["OWNER", "DEP", "VIEW", null],
+          ["OWNER", "DEP2", "VIEW", null],
+        ];
+        return result(reverse ? rows.reverse() : rows);
+      }
+      if (sql.includes("DEPENDENCIES")) return result([]);
+      return implementation(...args);
+    });
+    const plan = await prepareOracleViewRename({ ...target, connectionId: "sibling-order" });
+    reverse = true;
+    await expect(executeOracleViewRename(plan)).resolves.toBeUndefined();
+  });
+
+  it("allows a view and its legal new name to share the separate index namespace", async () => {
+    dependencyFixture();
+    const implementation = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args) => {
+      const response = await implementation(...args);
+      if (String(args[2]).includes("USER_OBJECTS") && !String(args[2]).includes("OBJECT_TYPE IN")) return result([...response.rows, ["INDEX", "VALID"]]);
+      return response;
+    });
+    const plan = await prepareOracleViewRename({ ...target, connectionId: "index-namespace" });
+    await expect(executeOracleViewRename(plan)).resolves.toBeUndefined();
+  });
+
+  it("blocks a target name that already belongs to an operator", async () => {
+    const implementation = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args) => {
+      const response = await implementation(...args);
+      if (String(args[2]).includes("OBJECT_NAME='NEW'") && String(args[2]).includes("OBJECT_TYPE IN")) return result([["OPERATOR", "VALID"]]);
+      return response;
+    });
+    const plan = await prepareOracleViewRename({ ...target, connectionId: "operator-namespace" });
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some((item) => item.code === "target_conflict")).toBe(true);
+    expect(renamed).toBe(false);
+    expect(statements.some((sql) => sql.startsWith("RENAME"))).toBe(false);
+  });
+
+  it("reads a large definition in bounded batches and reconstructs out-of-order chunks", async () => {
+    const source = `CREATE VIEW OLD AS SELECT /*${"文".repeat(65_000)}*/ 42 FROM DUAL`;
+    const codepoints = Array.from(source);
+    const implementation = api.executeQuery.getMockImplementation()!;
+    let chunkQueries = 0;
+    api.executeQuery.mockImplementation(async (...args) => {
+      const sql = String(args[2]);
+      if (sql.includes("DBMS_LOB.GETLENGTH")) return result([[codepoints.length]]);
+      if (sql.includes("DBMS_LOB.SUBSTR")) {
+        chunkQueries++;
+        const offsets = [...sql.matchAll(/,1000,(\d+)\)/g)].map((match) => Number(match[1]));
+        return result(offsets.reverse().map((offset) => (sql.includes("CHUNK_OFFSET") ? [offset, codepoints.slice(offset - 1, offset - 1 + 1000).join("")] : [codepoints.slice(offset - 1, offset - 1 + 1000).join("")])));
+      }
+      return implementation(...args);
+    });
+    const plan = await prepareOracleViewRename(target);
+    expect(plan.views[0].source).toBe(source);
+    expect(chunkQueries).toBeLessThanOrEqual(3);
+  });
+
+  it.each(["missing", "duplicate", "unexpected"])("rejects %s chunks before dispatch", async (problem) => {
+    const implementation = api.executeQuery.getMockImplementation()!;
+    api.executeQuery.mockImplementation(async (...args) => {
+      const sql = String(args[2]);
+      if (sql.includes("DBMS_LOB.GETLENGTH")) return result([[1500]]);
+      if (sql.includes("DBMS_LOB.SUBSTR")) {
+        const rows: unknown[][] = [
+          [1, "x".repeat(1000)],
+          [1001, "x".repeat(500)],
+        ];
+        if (problem === "missing") rows.pop();
+        if (problem === "duplicate") rows[1][0] = 1;
+        if (problem === "unexpected") rows[1][0] = 1000;
+        return result(rows);
+      }
+      return implementation(...args);
+    });
+    const plan = await prepareOracleViewRename(target);
+    expect(plan.metadataComplete).toBe(false);
+    expect(plan.issues.some((item) => item.code === "source_read_failed")).toBe(true);
+    expect(renamed).toBe(false);
+  });
+
   it("rebuilds two levels in order and verifies their final state", async () => {
     const fixture = dependencyFixture();
     const plan = await prepareOracleViewRename({ ...target, connectionId: "two-level-success" });
@@ -213,6 +391,6 @@ describe("view dependency execution", () => {
     const plan = await prepareOracleViewRename({ ...target, connectionId: "hint-drift" });
     await expect(executeOracleViewRename(plan)).rejects.toMatchObject({ completed: ["NEW"], uncertain: "DEP" });
     expect(fixture.writes).toHaveLength(1);
-    expect(fixture.sources.get("DEP")).toContain("INDEX(OLD)");
+    expect(fixture.sources.get("DEP")).toContain("INDEX(X)");
   });
 });
