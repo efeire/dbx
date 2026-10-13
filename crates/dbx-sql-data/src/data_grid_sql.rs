@@ -3740,6 +3740,9 @@ pub fn format_oracle_lob_export_literal(
     if !blob && oracle_character_lob_constructor(data_type).is_none() {
         return Ok(None);
     }
+    if !blob && value.as_str() == Some("") {
+        return Ok(Some("EMPTY_CLOB()".to_string()));
+    }
     if blob && !value.is_null() && oceanbase_blob_hex(value).is_none() {
         return Err(
             "OceanBase BLOB export requires NULL or 0x followed by complete hexadecimal byte pairs.".to_string()

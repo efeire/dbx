@@ -7027,6 +7027,27 @@ mod tests {
     }
 
     #[test]
+    fn oracle_character_lob_exports_distinguish_empty_from_null() {
+        for database_type in ["oracle", "oceanbase-oracle"] {
+            let options: BuildExportSqlInsertOptions = serde_json::from_value(json!({
+                "databaseType": database_type, "tableName": "LOB_VALUES",
+                "columns": ["C", "N", "TXT"], "columnTypes": ["CLOB", "NCLOB", "VARCHAR2"],
+                "rows": [["", "", ""], [null, null, null], [" ", " ", " "]]
+            }))
+            .unwrap();
+            let sql = build_export_sql_insert(options.clone()).unwrap();
+            assert!(sql.contains("VALUES (EMPTY_CLOB(), EMPTY_CLOB(), '')"), "{database_type}: {sql}");
+            assert!(sql.contains("VALUES (NULL, NULL, NULL)"), "{database_type}: {sql}");
+            assert!(sql.contains("VALUES (' ', ' ', ' ')"), "{database_type}: {sql}");
+            let mut standard = options;
+            standard.insert_dialect = SqlInsertDialect::Standard;
+            let sql = build_export_sql_insert(standard).unwrap();
+            assert!(sql.contains("('', '', '')"), "{database_type}: {sql}");
+            assert!(!sql.contains("EMPTY_CLOB"), "{database_type}: {sql}");
+        }
+    }
+
+    #[test]
     fn oceanbase_result_export_preserves_lobs_and_driver_timezone() {
         let statements = build_export_insert_statements(BuildExportInsertStatementsOptions {
             database_type: Some(DatabaseType::OceanbaseOracle),
