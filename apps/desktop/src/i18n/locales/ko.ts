@@ -66,6 +66,9 @@ const consul = {
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    noIndexImpact: "DROP과 ADD는 각각 커밋되며 ADD 실패 후 기본 키가 없을 수 있습니다. SQL과 기존 제약 조건 상태를 확인하고 필요하면 수동 복구하세요.",
+    noIndex: "연결된 지원 인덱스가 없습니다",
+    preserveState: "교체 시 기존 활성화, 검증 및 지연 상태를 유지하며 키를 자동으로 활성화하거나 검증하지 않습니다.",
     indexPolicy: "지원 인덱스",
     keepIndex: "기존 인덱스 유지",
     dropIndex: "기존 인덱스 삭제",

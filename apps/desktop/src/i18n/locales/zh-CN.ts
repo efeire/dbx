@@ -12,6 +12,9 @@ import { damengDumpZhCN as damengDump } from "./damengDump";
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    noIndexImpact: "替换的 DROP 与 ADD 分别提交，ADD 失败后可能没有主键。请核对 SQL 和原约束状态，必要时人工恢复。",
+    noIndex: "没有关联的支撑索引",
+    preserveState: "替换保留原主键的启用、验证和延迟状态，不会自动启用或验证。",
     indexPolicy: "支撑索引",
     keepIndex: "保留原索引",
     dropIndex: "删除原索引",

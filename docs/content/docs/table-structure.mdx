@@ -60,7 +60,9 @@ When the original key was dropped and a subsequent read confirms that the table 
 
 ### Edit an Existing Native Oracle Primary Key
 
-Native Oracle uses the same constraint card, ordered column selection, preview, and save entry points. The supported ordinary key states are described above. Index columns may have a different order from the constraint, but must contain the same set of columns.
+Native Oracle uses the same constraint card, ordered column selection, preview, and save entry points. Replacement on ordinary tables preserves the original enabled, validated, deferrable, and initially deferred state, including meaningful RELY settings for unvalidated constraints. It does not automatically enable or validate the key. Target columns must still pass null and duplicate checks. External, index-organized, and temporary tables are excluded from this entry point.
+
+Index columns may have a different order from the constraint, but must contain the same set of columns. Valid, visible, non-partitioned normal nonunique indexes are also supported; deferrable keys use nonunique indexes. A disabled key without an associated index is shown explicitly: DBX does not infer or delete a same-named independent index, or create an index for the replacement. Manual recovery candidates retain the original constraint state without automatically enabling a disabled key.
 
 Choose **Keep the original index** or **Drop the original index** before saving. Keeping it is the default and preserves the old uniqueness rules. For example, changing a single-column key to a composite key does not remove the original column's uniqueness when its unique index is retained. Dropping the index loses its physical settings; preview identifies the affected index. A changed column set uses a new index name to avoid colliding with the retained index.
 

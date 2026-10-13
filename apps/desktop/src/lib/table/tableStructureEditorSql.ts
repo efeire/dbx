@@ -126,7 +126,8 @@ export interface BuildTableStructureChangeSqlOptions {
     name: string;
     originalColumns: string[];
     columns: string[];
-    oracleIndex?: { policy: "keep" | "drop"; owner: string; name: string; newName?: string };
+    oracleIndex?: { policy: "keep" | "drop" | "none"; owner: string; name: string; newName?: string };
+    oracleState?: { enabled: boolean; validated: boolean; deferrable: boolean; initiallyDeferred: boolean; rely: boolean };
   };
 }
 

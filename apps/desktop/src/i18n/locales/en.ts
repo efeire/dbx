@@ -66,6 +66,9 @@ const consul = {
 export default {
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    noIndexImpact: "Replacement commits DROP and ADD separately; ADD may fail and leave no primary key. Review the SQL and original constraint state, and restore manually if needed.",
+    noIndex: "No associated supporting index",
+    preserveState: "Replacement preserves the original enabled, validated, and deferred state; it does not automatically enable or validate the key.",
     indexPolicy: "Supporting index",
     keepIndex: "Keep the original index",
     dropIndex: "Drop the original index",

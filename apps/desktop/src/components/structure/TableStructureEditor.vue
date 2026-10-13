@@ -6875,7 +6875,12 @@ watch(
               {{ t("structureEditor.emptyReadonly") }}
             </div>
             <div v-else class="space-y-1.5">
-              <div v-for="constraint in constraintsForTab" :key="constraint.name" class="rounded-md border px-[var(--structure-cell-px)] py-[var(--structure-header-py)] text-[length:var(--structure-font-size)]" :class="constraint.enabled === false ? 'opacity-60' : ''">
+              <div
+                v-for="constraint in constraintsForTab"
+                :key="constraint.name"
+                class="rounded-md border px-[var(--structure-cell-px)] py-[var(--structure-header-py)] text-[length:var(--structure-font-size)]"
+                :class="constraint.enabled === false && existingPrimaryKeyDraft?.name !== constraint.name ? 'opacity-60' : ''"
+              >
                 <div class="flex flex-wrap items-center gap-1.5">
                   <span class="font-mono font-medium">{{ constraint.name }}</span>
                   <Badge variant="outline" class="shrink-0">{{ constraint.constraint_type }}</Badge>
@@ -6906,16 +6911,20 @@ watch(
                   </div>
                   <div v-if="existingPrimaryKeyDraft.oracleIndex" class="space-y-1">
                     <span>{{ t("oceanbasePrimaryKey.indexPolicy") }}</span>
-                    <p v-if="currentPrimaryKeyIndex" data-primary-key-index-identity class="break-all font-mono text-xs">{{ currentPrimaryKeyIndex.owner }}.{{ currentPrimaryKeyIndex.name }}</p>
-                    <Select v-model="existingPrimaryKeyDraft.oracleIndex.policy" :disabled="primaryKeyBusy">
+                    <p v-if="currentPrimaryKeyIndex?.policy === 'none'" data-primary-key-index-identity class="text-xs">{{ t("oceanbasePrimaryKey.noIndex") }}</p>
+                    <p v-else-if="currentPrimaryKeyIndex" data-primary-key-index-identity class="break-all font-mono text-xs">{{ currentPrimaryKeyIndex.owner }}.{{ currentPrimaryKeyIndex.name }}</p>
+                    <Select v-if="currentPrimaryKeyIndex?.policy !== 'none'" v-model="existingPrimaryKeyDraft.oracleIndex.policy" :disabled="primaryKeyBusy">
                       <SelectTrigger :aria-label="t('oceanbasePrimaryKey.indexPolicy')"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="keep">{{ t("oceanbasePrimaryKey.keepIndex") }}</SelectItem>
                         <SelectItem value="drop">{{ t("oceanbasePrimaryKey.dropIndex") }}</SelectItem>
                       </SelectContent>
                     </Select>
+                    <p class="text-xs text-muted-foreground">{{ t("oceanbasePrimaryKey.preserveState") }}</p>
                   </div>
-                  <p v-if="existingPrimaryKeyChanged" class="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs">{{ t(existingPrimaryKeyDraft.oracleIndex ? "oceanbasePrimaryKey.oracleImpact" : "oceanbasePrimaryKey.impact") }}</p>
+                  <p v-if="existingPrimaryKeyChanged" class="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+                    {{ t(currentPrimaryKeyIndex?.policy === "none" ? "oceanbasePrimaryKey.noIndexImpact" : existingPrimaryKeyDraft.oracleIndex ? "oceanbasePrimaryKey.oracleImpact" : "oceanbasePrimaryKey.impact") }}
+                  </p>
                 </div>
                 <div v-if="constraint.columns.length" class="mt-1 truncate font-mono text-muted-foreground">{{ constraint.columns.join(", ") }}</div>
                 <div v-if="constraint.ref_table" class="mt-1 truncate font-mono text-muted-foreground">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>

@@ -67,6 +67,9 @@ const consul = {
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    noIndexImpact: "DROP e ADD são confirmados separadamente; se ADD falhar, a chave primária poderá ficar ausente. Confira o SQL e o estado original da restrição e restaure manualmente se necessário.",
+    noIndex: "Nenhum índice de suporte associado",
+    preserveState: "A substituição preserva os estados originais de ativação, validação e adiamento; não ativa nem valida a chave automaticamente.",
     indexPolicy: "Índice de suporte",
     keepIndex: "Manter o índice original",
     dropIndex: "Excluir o índice original",

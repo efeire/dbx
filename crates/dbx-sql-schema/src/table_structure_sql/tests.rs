@@ -177,6 +177,50 @@ fn oracle_existing_primary_key_rejects_unverified_index_plan() {
 }
 
 #[test]
+fn oracle_existing_primary_key_preserves_disabled_state_without_index() {
+    let options = structure_change_options(
+        DatabaseType::Oracle,
+        Some("APP"),
+        "SOURCE",
+        vec![existing_pk_column("ID", "NUMBER", true, true), existing_pk_column("V", "NUMBER", true, true)],
+    );
+    let mut payload = serde_json::to_value(options).unwrap();
+    payload["primaryKeyChange"] = serde_json::json!({
+        "name":"PK_SOURCE", "originalColumns":["ID","V"], "columns":["V","ID"],
+        "oracleIndex":{"policy":"none","owner":"APP","name":""},
+        "oracleState":{"enabled":false,"validated":false,"deferrable":false,"initiallyDeferred":false,"rely":true}
+    });
+    let result = build_table_structure_change_sql(serde_json::from_value(payload).unwrap());
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.statements, vec![
+        "ALTER TABLE \"APP\".\"SOURCE\" DROP CONSTRAINT \"PK_SOURCE\";",
+        "ALTER TABLE \"APP\".\"SOURCE\" ADD CONSTRAINT \"PK_SOURCE\" PRIMARY KEY (\"V\", \"ID\") NOT DEFERRABLE INITIALLY IMMEDIATE RELY DISABLE NOVALIDATE;",
+    ]);
+}
+
+#[test]
+fn oracle_existing_primary_key_preserves_deferred_state_with_nonunique_index() {
+    let options = structure_change_options(
+        DatabaseType::Oracle,
+        Some("APP"),
+        "SOURCE",
+        vec![existing_pk_column("ID", "NUMBER", true, true), existing_pk_column("V", "NUMBER", true, true)],
+    );
+    let mut payload = serde_json::to_value(options).unwrap();
+    payload["primaryKeyChange"] = serde_json::json!({
+        "name":"PK_SOURCE", "originalColumns":["ID","V"], "columns":["V","ID"],
+        "oracleIndex":{"policy":"drop","owner":"APP","name":"OLD_INDEX","newName":"NEW_INDEX"},
+        "oracleState":{"enabled":true,"validated":true,"deferrable":true,"initiallyDeferred":true,"rely":false}
+    });
+    let result = build_table_structure_change_sql(serde_json::from_value(payload).unwrap());
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.statements, vec![
+        "ALTER TABLE \"APP\".\"SOURCE\" DROP CONSTRAINT \"PK_SOURCE\" DROP INDEX;",
+        "ALTER TABLE \"APP\".\"SOURCE\" ADD CONSTRAINT \"PK_SOURCE\" PRIMARY KEY (\"V\", \"ID\") DEFERRABLE INITIALLY DEFERRED NORELY USING INDEX (CREATE INDEX \"APP\".\"NEW_INDEX\" ON \"APP\".\"SOURCE\" (\"V\", \"ID\")) ENABLE VALIDATE;",
+    ]);
+}
+
+#[test]
 fn oceanbase_existing_primary_key_rejects_invalid_or_combined_drafts() {
     let options = structure_change_options(
         DatabaseType::OceanbaseOracle,
@@ -219,6 +263,7 @@ fn oceanbase_existing_primary_key_unchanged_order_is_a_noop() {
         original_columns: vec!["ID".to_string()],
         columns: vec!["ID".to_string()],
         oracle_index: None,
+        oracle_state: None,
     });
     let result = build_table_structure_change_sql(options);
     assert!(result.statements.is_empty());

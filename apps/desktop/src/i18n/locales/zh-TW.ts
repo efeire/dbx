@@ -68,6 +68,9 @@ const consul = {
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    noIndexImpact: "替換的 DROP 與 ADD 分別提交，ADD 失敗後可能沒有主鍵。請核對 SQL 和原約束狀態，必要時手動還原。",
+    noIndex: "沒有關聯的支撐索引",
+    preserveState: "替換保留原主鍵的啟用、驗證和延遲狀態，不會自動啟用或驗證。",
     indexPolicy: "支撐索引",
     keepIndex: "保留原索引",
     dropIndex: "刪除原索引",

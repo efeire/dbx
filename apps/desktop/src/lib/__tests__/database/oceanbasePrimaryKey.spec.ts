@@ -33,6 +33,8 @@ beforeEach(() => {
   vi.mocked(api.listIndexes).mockResolvedValue([{ name: "PK_SOURCE", columns: ["ID"], is_unique: true, is_primary: true, index_type: "NORMAL" }]);
   vi.mocked(api.executeQuery).mockImplementation(async (_id, _database, sql) => {
     expect(sql).toMatch(/^SELECT /);
+    if (sql.startsWith("SELECT RELY ")) return { columns: [], rows: [[null]], affected_rows: 0, execution_time_ms: 0 };
+    if (sql.includes("SYS.ALL_EXTERNAL_TABLES")) return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 };
     const selected = sql.includes("R_CONSTRAINT_NAME")
       ? fixture.references
       : sql.includes("SYS.ALL_IND_COLUMNS")
@@ -122,6 +124,135 @@ describe("OceanBase existing primary key preflight", () => {
 
 describe("Native Oracle primary key index policy", () => {
   const oracleTarget = { ...target, databaseType: "oracle" as const };
+
+  it.each(["external", "unreadable"])("blocks %s table metadata before any DDL", async (mode) => {
+    const originalQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => {
+      if (args[2].includes("SYS.ALL_EXTERNAL_TABLES")) {
+        if (mode === "unreadable") return Promise.reject(new Error("external metadata denied"));
+        return Promise.resolve({ columns: [], rows: [["SOURCE"]], affected_rows: 0, execution_time_ms: 0 });
+      }
+      return originalQuery(...args);
+    });
+    await expect(executeOceanbasePrimaryKeyPlan({ target: oracleTarget, change: { ...change, columns: [] }, snapshot: "", statements: ['ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE";'] }, 60, () => true)).rejects.toThrow(
+      mode === "external" ? "unsupportedTable" : "external metadata denied",
+    );
+    expect(api.executeQuery.mock.calls.every((call) => call[2].startsWith("SELECT "))).toBe(true);
+  });
+
+  it("ignores meaningless RELY changes on a validated key but invalidates a NOVALIDATE plan", async () => {
+    let rely: unknown = null;
+    const originalQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => (args[2].startsWith("SELECT RELY ") ? Promise.resolve({ columns: [], rows: [[rely]], affected_rows: 0, execution_time_ms: 0 }) : originalQuery(...args)));
+    const deletion = { ...change, columns: [] };
+    const validated = await prepareOraclePrimaryKeyChange(oracleTarget, deletion);
+    rely = "RELY";
+    await expect(readOceanbasePrimaryKeySnapshot(oracleTarget, validated.change)).resolves.toBe(validated.snapshot);
+    fixture.key[0]![2] = "NOT VALIDATED";
+    vi.mocked(api.listConstraints).mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["ID"], definition: "", ref_columns: [], enabled: true, valid: false, deferrable: false, initially_deferred: false }]);
+    const unvalidated = await prepareOraclePrimaryKeyChange(oracleTarget, deletion);
+    rely = null;
+    await expect(executeOceanbasePrimaryKeyPlan({ target: oracleTarget, ...unvalidated, statements: ['ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE";'] }, 60, () => true)).rejects.toMatchObject({ key: "definitionChanged" });
+    expect(api.executeQuery.mock.calls.every((call) => call[2].startsWith("SELECT "))).toBe(true);
+  });
+
+  it.each(["disabled-none", "disabled-keep", "deferred-keep"])("preserves %s state in deletion readback and manual recovery", async (mode) => {
+    const enabled = mode === "deferred-keep";
+    const indexed = mode !== "disabled-none";
+    fixture.key = [["PK_SOURCE", enabled ? "ENABLED" : "DISABLED", "NOT VALIDATED", enabled ? "DEFERRABLE" : "NOT DEFERRABLE", enabled ? "DEFERRED" : "IMMEDIATE", indexed ? "APP" : null, indexed ? "PK_SOURCE" : null]];
+    fixture.index[0]![3] = "NONUNIQUE";
+    const constraint = { name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["ID"], definition: "", ref_columns: [], enabled, valid: false, deferrable: enabled, initially_deferred: enabled };
+    vi.mocked(api.listConstraints).mockResolvedValue([constraint]);
+    // Same-named independent index must remain untouched for a key with no index association.
+    vi.mocked(api.listIndexes).mockResolvedValue([{ name: "PK_SOURCE", columns: ["ID"], is_primary: indexed, is_unique: false, index_type: "NORMAL" }]);
+    const originalQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => {
+      const sql = args[2];
+      const result = (rows: unknown[][] = []) => Promise.resolve({ columns: [], rows, affected_rows: 0, execution_time_ms: 0 });
+      if (sql.startsWith("SELECT RELY ")) return result([["RELY"]]);
+      if (sql.startsWith("ALTER ")) {
+        vi.mocked(api.listConstraints).mockResolvedValue([]);
+        return result();
+      }
+      if (sql.includes("PARTITIONED, TABLE_OWNER")) return result(fixture.index.map((row) => [...row, "APP", "SOURCE"]));
+      return originalQuery(...args);
+    });
+    const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, { ...change, columns: [] });
+    const statements = [`ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE"${indexed ? " KEEP INDEX" : ""};`];
+    const result = await executeOceanbasePrimaryKeyPlan({ target: oracleTarget, ...prepared, statements }, 60, () => true);
+    expect(result?.readbackError).toBeUndefined();
+    expect(result?.steps.map((step) => step.state)).toEqual(["committed"]);
+    expect(result?.recoverySql).toBe(`ALTER TABLE "APP"."SOURCE" ADD CONSTRAINT "PK_SOURCE" PRIMARY KEY ("ID") ${enabled ? "DEFERRABLE INITIALLY DEFERRED" : "NOT DEFERRABLE INITIALLY IMMEDIATE"} RELY${enabled ? ' USING INDEX "APP"."PK_SOURCE"' : ""} ${enabled ? "ENABLE" : "DISABLE"} NOVALIDATE;`);
+    expect(result?.indexStates).toEqual(indexed ? [{ name: "APP.PK_SOURCE", state: "indexPresent" }] : []);
+    if (!indexed) expect(api.executeQuery.mock.calls.some((call) => call[2].includes("SYS.ALL_INDEXES") || call[2].includes("SYS.ALL_IND_COLUMNS"))).toBe(false);
+  });
+
+  it("captures a disabled unvalidated Oracle key without inventing a supporting index", async () => {
+    fixture.key = [["PK_SOURCE", "DISABLED", "NOT VALIDATED", "NOT DEFERRABLE", "IMMEDIATE", null, null]];
+    fixture.index = [];
+    fixture.indexColumns = [];
+    fixture.indexUsers = [];
+    vi.mocked(api.listIndexes).mockResolvedValue([]);
+    vi.mocked(api.listConstraints).mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["ID"], definition: "", ref_columns: [], enabled: false, valid: false, deferrable: false, initially_deferred: false }]);
+    const originalQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => (args[2].startsWith("SELECT RELY ") ? Promise.resolve({ columns: [], rows: [["RELY"]], affected_rows: 0, execution_time_ms: 0 }) : originalQuery(...args)));
+    const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, { ...change, columns: [] });
+    expect(prepared.change).toMatchObject({ oracleState: { enabled: false, validated: false, deferrable: false, initiallyDeferred: false, rely: true }, oracleIndex: { policy: "none", owner: "APP", name: "" } });
+    expect(api.executeQuery.mock.calls.some((call) => !call[2].startsWith("SELECT "))).toBe(false);
+  });
+
+  it("captures a deferred Oracle primary key backed by a nonunique index", async () => {
+    fixture.key[0]![3] = "DEFERRABLE";
+    fixture.key[0]![4] = "DEFERRED";
+    fixture.index[0]![3] = "NONUNIQUE";
+    vi.mocked(api.listIndexes).mockResolvedValue([{ name: "PK_SOURCE", columns: ["ID"], is_unique: false, is_primary: true, index_type: "NORMAL" }]);
+    vi.mocked(api.listConstraints).mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["ID"], definition: "", ref_columns: [], enabled: true, valid: true, deferrable: true, initially_deferred: true }]);
+    const originalQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => (args[2].startsWith("SELECT RELY ") ? Promise.resolve({ columns: [], rows: [[null]], affected_rows: 0, execution_time_ms: 0 }) : originalQuery(...args)));
+    const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, { ...change, columns: [] });
+    expect(prepared.change).toMatchObject({ oracleState: { enabled: true, validated: true, deferrable: true, initiallyDeferred: true, rely: false }, oracleIndex: { policy: "keep", owner: "APP", name: "PK_SOURCE" } });
+  });
+
+  it("does not report success when replacement loses the captured validation state", async () => {
+    fixture.key[0]![2] = "NOT VALIDATED";
+    const sourceConstraint = { name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["ID"], definition: "", ref_columns: [], enabled: true, valid: false, deferrable: false, initially_deferred: false };
+    vi.mocked(api.listConstraints).mockResolvedValue([sourceConstraint]);
+    let applied = false;
+    let newIndex = "";
+    const originalQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => {
+      const sql = args[2];
+      const result = (rows: unknown[][] = []) => Promise.resolve({ columns: [], rows, affected_rows: 0, execution_time_ms: 0 });
+      if (sql.startsWith("SELECT INDEX_NAME FROM SYS.ALL_INDEXES")) return result();
+      if (sql.includes(" DROP CONSTRAINT ")) {
+        vi.mocked(api.listConstraints).mockResolvedValue([]);
+        return result();
+      }
+      if (sql.includes(" ADD CONSTRAINT ")) {
+        applied = true;
+        vi.mocked(api.listConstraints).mockResolvedValue([{ ...sourceConstraint, columns: ["V"], valid: true }]);
+        return result();
+      }
+      if (applied && sql.startsWith("SELECT CONSTRAINT_NAME, STATUS")) return result([["PK_SOURCE", "ENABLED", "VALIDATED", "NOT DEFERRABLE", "IMMEDIATE", "APP", newIndex]]);
+      if (applied && sql.includes("PARTITIONED, TABLE_OWNER")) return result(sql.includes(`INDEX_NAME = '${newIndex}'`) ? [["APP", newIndex, "NORMAL", "NONUNIQUE", "VALID", "VISIBLE", "NO", "APP", "SOURCE"]] : fixture.index.map((row) => [...row, "APP", "SOURCE"]));
+      if (applied && sql.includes("SYS.ALL_IND_COLUMNS") && sql.includes(`INDEX_NAME = '${newIndex}'`)) return result([["V", 1, "ASC"]]);
+      return originalQuery(...args);
+    });
+    const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, change);
+    newIndex = prepared.change.oracleIndex!.newName!;
+    const result = await executeOceanbasePrimaryKeyPlan(
+      {
+        target: oracleTarget,
+        ...prepared,
+        statements: ['ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE" KEEP INDEX;', `ALTER TABLE "APP"."SOURCE" ADD CONSTRAINT "PK_SOURCE" PRIMARY KEY ("V") NOT DEFERRABLE INITIALLY IMMEDIATE NORELY USING INDEX (CREATE INDEX "APP"."${newIndex}" ON "APP"."SOURCE" ("V")) ENABLE NOVALIDATE;`],
+      },
+      60,
+      () => true,
+    );
+    expect(result?.steps.map((step) => step.state)).toEqual(["committed", "committed"]);
+    expect(result?.indexStates?.map((index) => index.state)).toEqual(["indexPresent", "indexPresent"]);
+    expect(result?.readbackError).toBe("definitionChanged");
+  });
 
   it("rejects a new index name taken after preview before executing DDL", async () => {
     const read = vi.mocked(api.executeQuery).getMockImplementation()!;

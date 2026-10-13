@@ -67,6 +67,9 @@ const consul = {
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    noIndexImpact: "DROP と ADD は個別にコミットされ、ADD の失敗後は主キーがない場合があります。SQL と元の制約状態を確認し、必要に応じて手動で復元してください。",
+    noIndex: "関連付けられた索引はありません",
+    preserveState: "置換では元の有効化・検証・遅延状態を保持します。主キーを自動で有効化または検証しません。",
     indexPolicy: "制約を支えるインデックス",
     keepIndex: "元のインデックスを保持",
     dropIndex: "元のインデックスを削除",

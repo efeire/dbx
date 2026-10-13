@@ -306,6 +306,18 @@ pub struct ExistingPrimaryKeyChange {
     pub columns: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oracle_index: Option<OraclePrimaryKeyIndex>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_state: Option<OraclePrimaryKeyState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OraclePrimaryKeyState {
+    pub enabled: bool,
+    pub validated: bool,
+    pub deferrable: bool,
+    pub initially_deferred: bool,
+    pub rely: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

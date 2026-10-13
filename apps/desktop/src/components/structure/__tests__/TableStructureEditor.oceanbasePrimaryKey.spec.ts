@@ -54,14 +54,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountExistingKey(columns: string[], databaseType = "oceanbase-oracle") {
+async function mountExistingKey(columns: string[], databaseType = "oceanbase-oracle", disabled = false) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useConnectionStore();
   store.connections = [{ ...connection, db_type: databaseType, driver_profile: databaseType } as ConnectionConfig];
   store.connectedIds.add(connection.id);
   vi.mocked(api.getColumns).mockResolvedValue(["ID", "V"].map((name) => ({ name, data_type: "NUMBER", is_nullable: false, is_primary_key: columns.includes(name), column_default: null })));
-  vi.mocked(api.listConstraints).mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns, definition: "", ref_columns: [], enabled: true, valid: true, deferrable: false, initially_deferred: false } as ConstraintInfo]);
+  vi.mocked(api.listConstraints).mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns, definition: "", ref_columns: [], enabled: !disabled, valid: !disabled, deferrable: false, initially_deferred: false } as ConstraintInfo]);
   const container = document.createElement("div");
   document.body.append(container);
   await invalidateObjectMetadataCache({ connectionId: connection.id });
@@ -79,22 +79,27 @@ async function mountExistingKey(columns: string[], databaseType = "oceanbase-ora
   return { container, editor, context, drafts };
 }
 
-async function prepareReorderedKey(rejectAdd = false, remove = false, databaseType = "oceanbase-oracle") {
-  const mounted = await mountExistingKey(["ID", "V"], databaseType);
+async function prepareReorderedKey(rejectAdd = false, remove = false, databaseType = "oceanbase-oracle", disabled = false) {
+  const mounted = await mountExistingKey(["ID", "V"], databaseType, disabled);
   const oracle = databaseType === "oracle";
   const tableName = "SOURCE_ID_V";
   let keyColumns = ["ID", "V"];
   vi.mocked(api.getColumns).mockImplementation(async () => ["ID", "V"].map((name) => ({ name, data_type: "NUMBER", is_nullable: false, is_primary_key: keyColumns.includes(name), column_default: null })));
-  vi.mocked(api.listConstraints).mockImplementation(async () => (keyColumns.length ? [{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: [...keyColumns], definition: "", ref_columns: [], enabled: true, valid: true, deferrable: false, initially_deferred: false }] : []));
-  vi.mocked(api.listIndexes).mockImplementation(async () => (keyColumns.length || oracle ? [{ name: "PK_SOURCE", columns: oracle ? ["ID", "V"] : [...keyColumns], is_primary: !!keyColumns.length, is_unique: true, index_type: "NORMAL" }] : []));
+  vi.mocked(api.listConstraints).mockImplementation(async () => (keyColumns.length ? [{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: [...keyColumns], definition: "", ref_columns: [], enabled: !disabled, valid: !disabled, deferrable: false, initially_deferred: false }] : []));
+  vi.mocked(api.listIndexes).mockImplementation(async () => (!disabled && (keyColumns.length || oracle) ? [{ name: "PK_SOURCE", columns: oracle ? ["ID", "V"] : [...keyColumns], is_primary: !!keyColumns.length, is_unique: true, index_type: "NORMAL" }] : []));
   vi.mocked(api.buildTableStructureChangeSql).mockImplementation(async (options) => ({
     statements: options.primaryKeyChange
-      ? [`ALTER TABLE "APP"."${tableName}" DROP CONSTRAINT "PK_SOURCE"${oracle ? " KEEP INDEX" : ""};`, ...(options.primaryKeyChange.columns.length ? [`ALTER TABLE "APP"."${tableName}" ADD CONSTRAINT "PK_SOURCE" PRIMARY KEY ("V", "ID")${oracle ? ' USING INDEX "APP"."PK_SOURCE"' : ""};`] : [])]
+      ? [
+          `ALTER TABLE "APP"."${tableName}" DROP CONSTRAINT "PK_SOURCE"${oracle && !disabled ? " KEEP INDEX" : ""};`,
+          ...(options.primaryKeyChange.columns.length ? [`ALTER TABLE "APP"."${tableName}" ADD CONSTRAINT "PK_SOURCE" PRIMARY KEY ("V", "ID")${disabled ? " NOT DEFERRABLE INITIALLY IMMEDIATE NORELY DISABLE NOVALIDATE" : oracle ? ' USING INDEX "APP"."PK_SOURCE"' : ""};`] : []),
+        ]
       : [],
     warnings: [],
   }));
   vi.mocked(api.executeQuery).mockImplementation(async (_id, _database, sql) => {
     const result = (rows: unknown[][] = []) => ({ columns: [], rows, affected_rows: 0, execution_time_ms: 0 });
+    if (sql.startsWith("SELECT RELY ")) return result([[null]]);
+    if (sql.includes("SYS.ALL_EXTERNAL_TABLES")) return result();
     if (sql.includes(" DROP CONSTRAINT ")) {
       keyColumns = [];
       return result();
@@ -123,7 +128,7 @@ async function prepareReorderedKey(rejectAdd = false, remove = false, databaseTy
       ]);
     if (sql.includes("SYS.ALL_TABLES")) return result([[null, "N"]]);
     if (sql.startsWith("SELECT OWNER, TABLE_NAME")) return result([["APP", tableName, "PK_SOURCE", "P"]]);
-    if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([["PK_SOURCE", "ENABLED", "VALIDATED", "NOT DEFERRABLE", "IMMEDIATE", "APP", "PK_SOURCE"]]);
+    if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([["PK_SOURCE", disabled ? "DISABLED" : "ENABLED", disabled ? "NOT VALIDATED" : "VALIDATED", "NOT DEFERRABLE", "IMMEDIATE", disabled ? null : "APP", disabled ? null : "PK_SOURCE"]]);
     if (sql.startsWith("SELECT COUNT(*)")) return result([[0]]);
     throw new Error(`Unexpected query: ${sql}`);
   });
@@ -140,6 +145,23 @@ async function prepareReorderedKey(rejectAdd = false, remove = false, databaseTy
 }
 
 describe("OceanBase existing primary key in the structure editor", () => {
+  it("previews and saves a disabled Oracle key without offering a nonexistent index policy", async () => {
+    const { editor, drafts, container } = await prepareReorderedKey(false, false, "oracle", true);
+    expect(container.querySelector("[data-primary-key-index-identity]")?.textContent).toBe(i18n.global.t("oceanbasePrimaryKey.noIndex"));
+    expect(container.querySelector("[data-existing-primary-key-editor]")?.parentElement?.classList.contains("opacity-60")).toBe(false);
+    expect(container.textContent).not.toContain(i18n.global.t("oceanbasePrimaryKey.oracleImpact"));
+    expect(container.querySelector(`[aria-label="${i18n.global.t("oceanbasePrimaryKey.indexPolicy")}"]`)).toBeNull();
+    expect(container.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.preserveState"));
+    expect(vi.mocked(api.buildTableStructureChangeSql).mock.calls.at(-1)?.[0].primaryKeyChange).toMatchObject({ oracleIndex: { policy: "none", name: "" }, oracleState: { enabled: false, validated: false, deferrable: false, initiallyDeferred: false, rely: false } });
+    await expect(editor.value!.applyChanges()).resolves.toBe(true);
+    expect(drafts.at(-1)).toMatchObject({ dirty: false, existingPrimaryKey: undefined });
+    expect(
+      vi
+        .mocked(api.executeQuery)
+        .mock.calls.filter((call) => call[2].startsWith("ALTER "))
+        .map((call) => call[2]),
+    ).toEqual(['ALTER TABLE "APP"."SOURCE_ID_V" DROP CONSTRAINT "PK_SOURCE"', 'ALTER TABLE "APP"."SOURCE_ID_V" ADD CONSTRAINT "PK_SOURCE" PRIMARY KEY ("V", "ID") NOT DEFERRABLE INITIALLY IMMEDIATE NORELY DISABLE NOVALIDATE']);
+  });
   it("offers the existing primary key editor for native Oracle", async () => {
     const { container } = await mountExistingKey(["ID", "V"], "oracle");
     const name = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "PK_SOURCE")!;
@@ -207,7 +229,13 @@ describe("OceanBase existing primary key in the structure editor", () => {
     expect(container.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.oracleImpact"));
     expect(container.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.keepIndex"));
     expect(container.querySelector("[data-primary-key-index-identity]")?.textContent).toBe("APP.PK_SOURCE");
-    expect(vi.mocked(api.buildTableStructureChangeSql).mock.calls.at(-1)?.[0].primaryKeyChange).toEqual({ name: "PK_SOURCE", originalColumns: ["ID", "V"], columns: ["V", "ID"], oracleIndex: { policy: "keep", owner: "APP", name: "PK_SOURCE" } });
+    expect(vi.mocked(api.buildTableStructureChangeSql).mock.calls.at(-1)?.[0].primaryKeyChange).toEqual({
+      name: "PK_SOURCE",
+      originalColumns: ["ID", "V"],
+      columns: ["V", "ID"],
+      oracleIndex: { policy: "keep", owner: "APP", name: "PK_SOURCE" },
+      oracleState: { enabled: true, validated: true, deferrable: false, initiallyDeferred: false, rely: false },
+    });
     await expect(editor.value!.applyChanges()).resolves.toBe(true);
     expect(
       vi

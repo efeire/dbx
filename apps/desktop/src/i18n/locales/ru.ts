@@ -9,6 +9,9 @@ import { meilisearchManagementRu } from "./meilisearchManagement";
 export default withEnglishFallback({
   oceanbaseCloneDialog,
   oceanbasePrimaryKey: {
+    noIndexImpact: "DROP и ADD фиксируются отдельно; после сбоя ADD первичный ключ может отсутствовать. Проверьте SQL и исходное состояние ограничения и при необходимости восстановите вручную.",
+    noIndex: "Связанный опорный индекс отсутствует",
+    preserveState: "Замена сохраняет исходные состояния включения, проверки и отсрочки; ключ не включается и не проверяется автоматически.",
     indexPolicy: "Опорный индекс",
     keepIndex: "Сохранить исходный индекс",
     dropIndex: "Удалить исходный индекс",
