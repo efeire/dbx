@@ -60,7 +60,17 @@ function modelDialog(): Component {
   return defineComponent({
     inheritAttrs: false,
     setup(_, { attrs, slots }) {
-      return () => (attrs.open ? h("div", { ...attrs, "data-test-dialog": "true" }, slots.default?.()) : null);
+      return () =>
+        attrs.open
+          ? h("div", { ...attrs, "data-test-dialog": "true" }, [
+              ...(slots.default?.() ?? []),
+              h("button", {
+                type: "button",
+                "data-test-request-close": "true",
+                onClick: () => (attrs["onUpdate:open"] as ((open: boolean) => void) | undefined)?.(false),
+              }),
+            ])
+          : null;
     },
   });
 }
@@ -520,6 +530,50 @@ describe("DatabaseUserAdmin connection identity", () => {
     expect(findButton("userAdmin.applySql")).toBeUndefined();
     expect(findButton("userAdmin.closeResult")).toBeDefined();
     expect(root!.textContent).toContain("OceanBase · oracle · TARGET_USER");
+  });
+
+  it("keeps a single Oracle statement pending and records its late acknowledgement after a close request", async () => {
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.executeQuery.mockImplementation(async (_id, _database, sql: string) => {
+      if (sql.includes("SELECT USER AS USERNAME")) return { columns: ["USERNAME"], rows: [["DBA"]] };
+      if (sql.includes("DBA_USERS")) return { columns: ["USERNAME", "ACCOUNT_STATUS"], rows: [["TARGET_USER", "OPEN"]] };
+      if (sql.includes("DBA_ROLES") || sql.includes("DBA_ROLE_PRIVS") || sql.includes("DBA_SYS_PRIVS") || sql.includes("DBA_TAB_PRIVS") || sql.includes("DBA_COL_PRIVS")) return { columns: ["GRANTEE", "PRIVILEGE"], rows: [] };
+      return { columns: [], rows: [] };
+    });
+    mountWithReactiveConnection(oracleConnection);
+    await vi.waitFor(() => expect(root!.textContent).toContain("TARGET_USER"));
+    Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("TARGET_USER"))!
+      .click();
+    await nextTick();
+    findButton("userAdmin.lock")!.click();
+    await nextTick();
+    expect(findButton("userAdmin.applySql")).toBeDefined();
+
+    let acknowledge!: (results: unknown[]) => void;
+    mocks.executeMulti.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    findButton("userAdmin.applySql")!.click();
+    await vi.waitFor(() => expect(mocks.executeMulti).toHaveBeenCalledTimes(1));
+
+    const waiting = Array.from(root!.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "common.pending");
+    expect(waiting).toBeDefined();
+    expect(waiting!.disabled).toBe(true);
+    root!.querySelector<HTMLButtonElement>('[data-test-request-close="true"]')!.click();
+    await nextTick();
+    expect(root!.querySelector('[data-test-dialog="true"]')).not.toBeNull();
+
+    acknowledge([{ columns: [], rows: [] }]);
+    await vi.waitFor(() => expect(root!.textContent).toContain("userAdmin.resultSuccess"));
+    expect(mocks.executeMulti).toHaveBeenCalledTimes(1);
+    expect(root!.textContent).toContain("OceanBase · oracle · TARGET_USER");
+    findButton("userAdmin.closeResult")!.click();
+    await nextTick();
+    expect(root!.querySelector('[data-test-dialog="true"]')).toBeNull();
   });
 });
 

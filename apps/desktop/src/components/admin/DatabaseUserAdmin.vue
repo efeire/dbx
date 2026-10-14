@@ -196,7 +196,6 @@ const selectedDetail = computed(() => {
 });
 const grantsSqlText = computed(() => grants.value.join("\n") || t("userAdmin.noGrants"));
 const highlightedGrantsSql = computed(() => highlight(grantsSqlText.value));
-const highlightedPendingSql = computed(() => highlight(pendingDisplaySql.value || pendingSql.value));
 const createDatabaseAuthorizationsValid = computed(() => authorizationSelectionsValid(createDatabaseAuthorizations.value));
 const usePrivilegeScopeEditor = computed(() => canEditPrivileges.value && (isOracle.value ? privilegeScope.value === "table" : supportsCreateTableGrants.value && privilegeScope.value !== "role" && (provider.value?.authorizationModel !== "postgres" || privilegeScope.value === "table")));
 const oracleObjectScope = computed(() => {
@@ -214,7 +213,6 @@ const oracleObjectScope = computed(() => {
 });
 const privilegeAuthorizationsValid = computed(() => authorizationSelectionsValid(privilegeAuthorizations.value));
 const tableGrantDiffReady = computed(() => isOracle.value || provider.value?.authorizationModel === "mysql" || currentTableGrantsLoaded.value);
-const pendingStatus = computed(() => (pendingResults.value.length > 0 ? authorizationPlanStatus(pendingResults.value) : undefined));
 const canPreviewHostChange = computed(() => {
   const host = newHost.value.trim();
   return !!host && host !== selectedUser.value?.host;
@@ -565,8 +563,8 @@ async function applyPendingSql() {
   const generation = previewGeneration;
   const oracleAction = isOracle.value;
   let activeRetirementId: number | undefined;
-  const execution = oracleAction
-    ? reactive({
+  const execution: OracleExecution | undefined = oracleAction
+    ? reactive<OracleExecution>({
         id: ++oracleExecutionId,
         identity,
         subjectKey,
@@ -575,6 +573,8 @@ async function applyPendingSql() {
         displaySql: pendingDisplaySql.value || sql,
         stopRequested: false,
         settled: false,
+        retiring: false,
+        retiringIdentity: undefined,
         dispatchedStepIds: new Set<string>(),
         results: [] as AuthorizationStepResult[],
       })
@@ -631,6 +631,7 @@ async function applyPendingSql() {
         }
         let queryResults: Awaited<ReturnType<typeof api.executeMulti>>;
         try {
+          if (oracleAction && execution) execution.dispatchedStepIds.add(execution.plan.steps[0].id);
           queryResults = await api.executeMulti(connection.id, "", sql, undefined, undefined, { maxRows: 1000, continueOnError: true });
         } catch (error) {
           if (!oracleAction || !execution) throw error;
@@ -1075,7 +1076,6 @@ watch(
 watch(
   () => connectionIdentity.value,
   (identity, previousIdentity) => {
-    const execution = oracleExecution.value;
     const retirement = passwordRetirement.value;
     const ownPasswordRetirement = !!retirement?.retiring && retirement.identity === previousIdentity && retirement.retiredIdentity === identity;
     usersRequestId++;
