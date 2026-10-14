@@ -152,6 +152,7 @@ export interface EditableStructureTrigger {
   timing: string;
   event: string;
   statement: string;
+  enabled?: boolean;
   original?: TriggerInfo;
   markedForDrop: boolean;
 }

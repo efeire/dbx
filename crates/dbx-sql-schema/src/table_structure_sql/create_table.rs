@@ -369,6 +369,7 @@ fn build_create_table_sql_impl(
                     | StructureDialect::Dameng
                     | StructureDialect::Oscar
                     | StructureDialect::H2
+                    | StructureDialect::SapHana
             ) {
                 statements.push(format!("COMMENT ON TABLE {table} IS {};", quote_string(&table_comment)));
             } else if dialect == StructureDialect::ClickHouse {
@@ -393,6 +394,7 @@ fn build_create_table_sql_impl(
                 | StructureDialect::Dameng
                 | StructureDialect::Oscar
                 | StructureDialect::H2
+                | StructureDialect::SapHana
         )
     {
         for column in &active_columns {
