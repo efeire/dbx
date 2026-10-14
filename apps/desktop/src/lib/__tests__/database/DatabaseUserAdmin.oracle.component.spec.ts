@@ -374,6 +374,36 @@ describe("Oracle management through the shared page", () => {
     await click(en.userAdmin.applySql);
     expect(mocks.executeMulti.mock.calls[1][2]).toBe('ALTER USER "Reader" ACCOUNT UNLOCK;');
   });
+  it("keeps the SQL preview layout usable before and after execution", async () => {
+    setup();
+    mount();
+    await settle();
+    await click(en.userAdmin.lock);
+
+    const dialog = document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!;
+    expect(dialog.classList.contains("max-h-[calc(var(--dbx-viewport-height)-2rem)]")).toBe(true);
+    expect(dialog.classList.contains("grid-rows-[auto_minmax(0,1fr)_auto]")).toBe(true);
+    const sql = dialog.querySelector("pre")!;
+    const middle = sql.parentElement!;
+    expect(middle.classList.contains("grid-rows-[minmax(0,1fr)]")).toBe(true);
+    expect(middle.classList.contains("h-[50vh]")).toBe(true);
+    expect(middle.classList.contains("max-h-full")).toBe(true);
+
+    await click(en.userAdmin.applySql);
+    expect(middle.classList.contains("h-[70vh]")).toBe(true);
+    expect(middle.classList.contains("grid-rows-[minmax(0,1fr)_minmax(0,1fr)]")).toBe(true);
+    const resultPane = middle.children[1] as HTMLElement;
+    for (const pane of [sql, resultPane]) {
+      expect(pane.classList.contains("min-h-0")).toBe(true);
+      expect(pane.classList.contains("min-w-0")).toBe(true);
+      expect(pane.classList.contains("overscroll-contain")).toBe(true);
+    }
+    expect(sql.classList.contains("overflow-auto")).toBe(true);
+    expect(resultPane.classList.contains("overflow-y-auto")).toBe(true);
+    expect(resultPane.textContent).toContain(en.userAdmin.resultSuccess);
+    await click(en.userAdmin.closeResult);
+    expect(document.querySelector('[data-slot="dialog-content"]')).toBeNull();
+  });
   it("supports the old password for inferred Oracle JDBC through preview and dispatch", async () => {
     setup();
     const connection = ref({ id: "oracle-jdbc", name: "Oracle JDBC", db_type: "jdbc", driver_profile: "oracle", username: "Reader", password: "saved-secret", save_password: true } as ConnectionConfig);
