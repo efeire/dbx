@@ -855,6 +855,13 @@ pub fn validate_oracle_executable_object_source(
 }
 
 #[tauri::command]
+pub fn fingerprint_oracle_routine_object_source(
+    input: dbx_core::object_source_sql::EditableObjectSourceSqlInput,
+) -> Result<String, String> {
+    dbx_core::object_source_sql::fingerprint_oracle_routine_object_source(input)
+}
+
+#[tauri::command]
 pub fn build_executable_object_source_sql(
     input: dbx_core::object_source_sql::EditableObjectSourceSqlInput,
 ) -> Result<String, String> {

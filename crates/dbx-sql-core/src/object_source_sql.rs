@@ -573,6 +573,56 @@ pub fn validate_oracle_executable_object_source(input: OracleObjectSourceValidat
     )
 }
 
+pub fn fingerprint_oracle_routine_object_source(input: EditableObjectSourceSqlInput) -> Result<String, String> {
+    if !matches!(input.database_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle)
+        || !matches!(input.object_type, ObjectSourceKind::Procedure | ObjectSourceKind::Function)
+    {
+        return Err("Routine source fingerprinting is supported only for Oracle procedures and functions.".into());
+    }
+    validate_oracle_object_source(
+        input.database_type,
+        &input.object_type,
+        input.schema.as_deref(),
+        &input.name,
+        &input.source,
+    )?;
+
+    let tokens = Tokenizer::new(&OracleDialect {}, &input.source)
+        .tokenize_with_location()
+        .map_err(|error| format!("Cannot tokenize Oracle routine source: {error}"))?;
+    let mut tokens = tokens
+        .iter()
+        .filter_map(|token| match &token.token {
+            Token::Whitespace(Whitespace::Space | Whitespace::Tab | Whitespace::Newline) | Token::EOF => None,
+            _ => Some(token),
+        })
+        .collect::<Vec<_>>();
+    let last_statement_token = tokens.iter().rposition(|token| {
+        !matches!(
+            token.token,
+            Token::Whitespace(Whitespace::SingleLineComment { .. } | Whitespace::MultiLineComment(_))
+        )
+    });
+    if last_statement_token.is_some_and(|index| tokens[index].token == Token::SemiColon) {
+        tokens.remove(last_statement_token.unwrap());
+    }
+    let token_fingerprints = tokens
+        .iter()
+        .map(|token| {
+            let start = routine_location_to_byte_offset(&input.source, token.span.start)
+                .ok_or_else(|| "Cannot map Oracle routine token positions to the source text.".to_string())?;
+            let end = routine_location_to_byte_offset(&input.source, token.span.end)
+                .ok_or_else(|| "Cannot map Oracle routine token positions to the source text.".to_string())?;
+            if start >= end || end > input.source.len() {
+                return Err("Oracle routine token positions overlap or exceed the source text.".to_string());
+            }
+            Ok(input.source[start..end].to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    serde_json::to_string(&token_fingerprints)
+        .map_err(|error| format!("Cannot encode Oracle routine fingerprint: {error}"))
+}
+
 pub fn build_executable_object_source_sql(input: EditableObjectSourceSqlInput) -> Result<String, String> {
     Ok(build_executable_object_source_statements(input)?.join("\n"))
 }
@@ -1819,6 +1869,64 @@ fn parse_object_source_kind(value: &str) -> Option<ObjectSourceKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn oracle_routine_fingerprint(source: &str) -> Result<String, String> {
+        fingerprint_oracle_routine_object_source(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::OceanbaseOracle,
+            object_type: ObjectSourceKind::Procedure,
+            schema: Some("APP".into()),
+            name: "CALLER_1".into(),
+            source: source.into(),
+        })
+    }
+
+    #[test]
+    fn oracle_routine_source_fingerprint_ignores_only_whitespace_and_one_final_semicolon() {
+        let submitted = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN APP.P_NEW; APP.P_NEW; END;";
+        let readback = "CREATE OR REPLACE PROCEDURE APP.CALLER_1\n IS\nBEGIN APP.P_NEW; APP.P_NEW; END";
+
+        assert_eq!(oracle_routine_fingerprint(submitted).unwrap(), oracle_routine_fingerprint(readback).unwrap());
+    }
+
+    #[test]
+    fn oracle_routine_source_fingerprint_preserves_literals_comments_hints_and_identifiers() {
+        let base = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE('a b'); APP.P_NEW; END;";
+        for changed in [
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE('a  b'); APP.P_NEW; END;",
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN /* changed */ DBMS_OUTPUT.PUT_LINE('a b'); APP.P_NEW; END;",
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN /*+ changed */ DBMS_OUTPUT.PUT_LINE('a b'); APP.P_NEW; END;",
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE(q'{a  b}'); APP.P_NEW; END;",
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE(q'{a b}'); \"APP\".P_NEW; END;",
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE('a b'); APP.P_OTHER; END;",
+        ] {
+            assert_ne!(oracle_routine_fingerprint(base).unwrap(), oracle_routine_fingerprint(changed).unwrap());
+        }
+        let q_literal = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE(q'{a b}'); END;";
+        let changed_q_literal =
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE(q'{a  b}'); END;";
+        let nq_literal = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE(nq'{a b}'); END;";
+        let changed_nq_literal =
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE(nq'{a  b}'); END;";
+        assert_ne!(
+            oracle_routine_fingerprint(q_literal).unwrap(),
+            oracle_routine_fingerprint(changed_q_literal).unwrap()
+        );
+        assert_ne!(
+            oracle_routine_fingerprint(nq_literal).unwrap(),
+            oracle_routine_fingerprint(changed_nq_literal).unwrap()
+        );
+    }
+
+    #[test]
+    fn oracle_routine_source_fingerprint_rejects_wrong_identity_and_multiple_statements() {
+        for source in [
+            "CREATE OR REPLACE PROCEDURE OTHER.CALLER_1 IS BEGIN APP.P_NEW; END;",
+            "CREATE OR REPLACE PROCEDURE APP.OTHER IS BEGIN APP.P_NEW; END;",
+            "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN APP.P_NEW; END; SELECT 1",
+        ] {
+            assert!(oracle_routine_fingerprint(source).is_err(), "accepted invalid source: {source}");
+        }
+    }
 
     fn ob_sequence(source: &str, schema: Option<&str>, name: &str) -> EditableObjectSourceSqlInput {
         EditableObjectSourceSqlInput {

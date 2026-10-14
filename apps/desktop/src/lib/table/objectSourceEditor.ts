@@ -17,6 +17,14 @@ export type ValidateOracleExecutableObjectSourceInput = {
   source: string;
 };
 
+export type FingerprintOracleRoutineObjectSourceInput = {
+  databaseType: Extract<DatabaseType, "oracle" | "oceanbase-oracle">;
+  objectType: Extract<ObjectSourceKind, "PROCEDURE" | "FUNCTION">;
+  schema?: string | null;
+  name: string;
+  source: string;
+};
+
 export type BuildRoutineRenameObjectSourceInput = BuildEditableObjectSourceSqlInput & {
   newName: string;
 };
@@ -68,6 +76,10 @@ export function supportsSourceBackedRoutineRename(databaseType: DatabaseType | u
 
 export function buildRoutineRenameObjectSourceStatements(input: BuildRoutineRenameObjectSourceInput): Promise<string[]> {
   return api.buildRoutineRenameObjectSourceStatements(input);
+}
+
+export function fingerprintOracleRoutineObjectSource(input: FingerprintOracleRoutineObjectSourceInput): Promise<string> {
+  return api.fingerprintOracleRoutineObjectSource(input);
 }
 
 export function rewriteOracleRoutineReferences(input: RewriteOracleRoutineReferencesInput): Promise<string> {

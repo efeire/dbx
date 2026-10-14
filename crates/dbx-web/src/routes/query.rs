@@ -1273,6 +1273,12 @@ pub async fn validate_oracle_executable_object_source(
         .map_err(AppError::from)
 }
 
+pub async fn fingerprint_oracle_routine_object_source(
+    Json(req): Json<BuildExecutableObjectSourceRequest>,
+) -> Result<Json<String>, AppError> {
+    dbx_core::object_source_sql::fingerprint_oracle_routine_object_source(req.input).map(Json).map_err(AppError::from)
+}
+
 pub async fn build_executable_object_source_sql(
     Json(req): Json<BuildExecutableObjectSourceRequest>,
 ) -> Result<Json<String>, AppError> {

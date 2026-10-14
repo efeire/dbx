@@ -30,6 +30,7 @@ interface RoutineCallerSnapshot extends RoutineSnapshot {
   draft: string;
   rewrittenSource: string;
   rewrittenFingerprint: string;
+  sourceFingerprint: string;
   rewriteRequired: boolean;
   depth: number;
 }
@@ -218,6 +219,17 @@ function makeCreateOnly(sql: string) {
   return sql.replace(create, "$1");
 }
 
+async function routineSourceFingerprint(target: OracleRoutineRenameTarget, objectType: Extract<ObjectSourceKind, "PROCEDURE" | "FUNCTION">, name: string, source: string) {
+  if (target.databaseType !== "oracle" && target.databaseType !== "oceanbase-oracle") return source;
+  return api.fingerprintOracleRoutineObjectSource({
+    databaseType: target.databaseType,
+    objectType,
+    schema: target.schema,
+    name,
+    source,
+  });
+}
+
 function makeGrantSql(target: OracleRoutineRenameTarget, grantRows: string) {
   const rows = JSON.parse(grantRows) as Array<Array<string | null>>;
   const statements: string[] = [];
@@ -344,6 +356,7 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
     const draft = drafts[`${caller.type}:${caller.name}`] ?? snapshot.source;
     let rewrittenSource = "";
     let replacementSql = "";
+    let sourceFingerprint = "";
     try {
       if (caller.rewriteRequired) {
         rewrittenSource = await api.rewriteOracleRoutineReferences({
@@ -365,6 +378,7 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
         });
         if (statements.length !== 1 || !statements[0]?.trim()) throw new Error(`Cannot build one replacement statement for ${caller.type} ${caller.name}.`);
         replacementSql = statements[0];
+        if (routineTypes.has(caller.type)) sourceFingerprint = await routineSourceFingerprint(target, caller.type as "PROCEDURE" | "FUNCTION", caller.name, replacementSql);
       } else {
         rewrittenSource = draft;
         replacementSql = draft;
@@ -372,7 +386,7 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
     } catch (error) {
       issue(plan.issues, "caller_rewrite_failed", errorMessage(error), caller.name, true);
     }
-    plan.callers.push({ ...snapshot, draft, rewrittenSource, rewrittenFingerprint: replacementSql, rewriteRequired: caller.rewriteRequired, depth: caller.depth });
+    plan.callers.push({ ...snapshot, draft, rewrittenSource, rewrittenFingerprint: replacementSql, sourceFingerprint, rewriteRequired: caller.rewriteRequired, depth: caller.depth });
   }
 
   let dropSql = "";
@@ -529,7 +543,14 @@ export async function executeOracleRoutineRename(plan: OracleRoutineRenamePlan, 
           newName: plan.target.oldName,
           source: plan.rootDraft,
         });
-        if (actualSource.length !== 2 || plannedSource.length !== 2 || makeCreateOnly(actualSource[0]) !== makeCreateOnly(plannedSource[0])) throw new Error("The new routine source does not match the approved definition.");
+        if (actualSource.length !== 2 || plannedSource.length !== 2) throw new Error("The new routine source does not match the approved definition.");
+        const actualDefinition = makeCreateOnly(actualSource[0]);
+        const plannedDefinition = makeCreateOnly(plannedSource[0]);
+        const matchesApprovedDefinition =
+          plan.target.databaseType === "oracle" || plan.target.databaseType === "oceanbase-oracle"
+            ? (await routineSourceFingerprint(plan.target, plan.target.objectType, plan.target.oldName, actualDefinition)) === (await routineSourceFingerprint(plan.target, plan.target.objectType, plan.target.oldName, plannedDefinition))
+            : actualDefinition === plannedDefinition;
+        if (!matchesApprovedDefinition) throw new Error("The new routine source does not match the approved definition.");
         if (created.status !== "VALID") {
           await query(plan.target, `ALTER ${plan.target.objectType} ${qualified(plan.target.schema, plan.canonicalNewName)} COMPILE`);
           const compiled = await readSnapshot(plan.target, plan.canonicalNewName, plan.target.objectType);
@@ -562,7 +583,9 @@ export async function executeOracleRoutineRename(plan: OracleRoutineRenamePlan, 
             name: caller.name,
             source: actual.source,
           });
-          if (actualStatements.length !== 1 || actualStatements[0] !== caller.rewrittenFingerprint) {
+          const actualFingerprint = routineTypes.has(caller.objectType) ? await routineSourceFingerprint(plan.target, caller.objectType as "PROCEDURE" | "FUNCTION", caller.name, actual.source) : actualStatements[0];
+          const expectedFingerprint = routineTypes.has(caller.objectType) ? caller.sourceFingerprint : caller.rewrittenFingerprint;
+          if (actualStatements.length !== 1 || actualFingerprint !== expectedFingerprint) {
             throw new Error(`${caller.objectType} ${caller.name} did not match the planned replacement source.`);
           }
           if (replacedViewMayHaveNewIdentity) caller.objectId = actual.objectId;
@@ -617,7 +640,9 @@ async function verifyBeforeDrop(plan: OracleRoutineRenamePlan, createdRoot: Rout
         name: caller.name,
         source: actual.source,
       });
-      if (actualStatements.length !== 1 || actualStatements[0] !== caller.rewrittenFingerprint) {
+      const actualFingerprint = routineTypes.has(caller.objectType) ? await routineSourceFingerprint(plan.target, caller.objectType as "PROCEDURE" | "FUNCTION", caller.name, actual.source) : actualStatements[0];
+      const expectedFingerprint = routineTypes.has(caller.objectType) ? caller.sourceFingerprint : caller.rewrittenFingerprint;
+      if (actualStatements.length !== 1 || actualFingerprint !== expectedFingerprint) {
         throw new Error(`Dependent ${caller.objectType} ${caller.name} no longer matches the planned rewrite.`);
       }
     } else if (actual.source !== caller.source) {

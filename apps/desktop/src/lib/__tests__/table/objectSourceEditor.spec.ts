@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "@/lib/backend/api";
-import { executeObjectSourceSave, formatObjectSourceSaveError, resolveObjectSourceEditDraft, rewriteOracleRoutineReferences, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
+import { executeObjectSourceSave, fingerprintOracleRoutineObjectSource, formatObjectSourceSaveError, resolveObjectSourceEditDraft, rewriteOracleRoutineReferences, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { supportsObjectRename } from "@/lib/table/objectRenameSql";
 import { formatSqlForDisplay } from "@/lib/sql/sqlFormatter";
 
@@ -9,6 +9,7 @@ vi.mock("@/lib/backend/api", () => ({
   executeQuery: vi.fn().mockResolvedValue({}),
   executeScript: vi.fn().mockResolvedValue({}),
   rewriteOracleRoutineReferences: vi.fn().mockResolvedValue("CREATE VIEW v AS SELECT F_NEW(id) FROM t"),
+  fingerprintOracleRoutineObjectSource: vi.fn().mockResolvedValue("fingerprint"),
 }));
 
 beforeEach(() => {
@@ -66,6 +67,12 @@ describe("Oracle routine dependency source rewrite", () => {
     const input = { databaseType: "oceanbase-oracle" as const, callerType: "VIEW" as const, targetType: "FUNCTION" as const, schema: "APP", oldName: "F_OLD", newName: "F_NEW", source: "CREATE VIEW v AS SELECT F_OLD(id) FROM t" };
     await expect(rewriteOracleRoutineReferences(input)).resolves.toBe("CREATE VIEW v AS SELECT F_NEW(id) FROM t");
     expect(api.rewriteOracleRoutineReferences).toHaveBeenCalledWith(input);
+  });
+
+  it("routes Oracle routine source fingerprint requests through the shared backend implementation", async () => {
+    const input = { databaseType: "oceanbase-oracle" as const, objectType: "PROCEDURE" as const, schema: "APP", name: "CALLER", source: "CREATE PROCEDURE APP.CALLER IS BEGIN NULL; END;" };
+    await expect(fingerprintOracleRoutineObjectSource(input)).resolves.toBe("fingerprint");
+    expect(api.fingerprintOracleRoutineObjectSource).toHaveBeenCalledWith(input);
   });
 });
 

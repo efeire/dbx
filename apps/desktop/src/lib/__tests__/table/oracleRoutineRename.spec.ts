@@ -17,11 +17,12 @@ vi.mock("@/lib/backend/api", () => ({
     };
   }),
   validateOracleExecutableObjectSource: vi.fn(async ({ source, objectType, schema, name }: { source: string; objectType: string; schema?: string | null; name: string }) => {
-    const declaration = source.match(/CREATE(?:\s+OR\s+REPLACE)?\s+(PROCEDURE|FUNCTION)\s+(?:(\w+)\.)?(\w+)\s+AS/i);
+    const declaration = source.match(/CREATE(?:\s+OR\s+REPLACE)?\s+(PROCEDURE|FUNCTION)\s+(?:(\w+)\.)?(\w+)\s+(?:AS|IS)/i);
     if (!declaration || declaration[1] !== objectType || declaration[3].toUpperCase() !== name.toUpperCase() || (declaration[2] && declaration[2].toUpperCase() !== schema?.toUpperCase())) {
       throw new Error("Oracle object source declaration does not match the selected owner and name.");
     }
   }),
+  fingerprintOracleRoutineObjectSource: vi.fn(async ({ source }: { source: string }) => source.replace(/\s+/g, "").replace(/;$/, "")),
   buildRoutineRenameObjectSourceStatements: vi.fn(async ({ name, newName, source }: { name: string; newName: string; source: string }) => {
     const renamed = source.replaceAll(name, newName);
     return [renamed.startsWith("CREATE OR REPLACE") ? renamed : `CREATE OR REPLACE ${renamed}`, `DROP PROCEDURE APP.${name}`];
@@ -47,6 +48,9 @@ let dropErrorAfterDelete = false;
 let invalidateCallerAAfterCallerZ = false;
 let invalidateCreatedRoot = false;
 let tamperCreatedDuringCompile = false;
+let canonicalizeCallerReadback = false;
+let canonicalizeRootReadback = false;
+let mutateCallerBeforeDrop: "comment" | "string" | "call" | null = null;
 
 function result(rows: unknown[][] = []) {
   return { rows, execution_error: false, error: null, truncated: false, has_more: false, large_value_cells: [] };
@@ -79,17 +83,21 @@ beforeEach(() => {
   invalidateCallerAAfterCallerZ = false;
   invalidateCreatedRoot = false;
   tamperCreatedDuringCompile = false;
+  canonicalizeCallerReadback = false;
+  canonicalizeRootReadback = false;
+  mutateCallerBeforeDrop = null;
   vi.mocked(api.executeQuery).mockImplementation(async (_connectionId, _database, sql) => {
     if (sql.startsWith("CREATE PROCEDURE APP.P_NEW")) {
       const source = (objects.get("PROCEDURE:P_OLD")?.source ?? rootSource).replaceAll("P_OLD", "P_NEW");
-      objects.set("PROCEDURE:P_NEW", { id: "201", source: tamperCreatedOnCreate ? source.replace("NULL", "RAISE") : source, status: invalidateCreatedRoot ? "INVALID" : "VALID" });
+      const readback = canonicalizeRootReadback ? source.replace(/CREATE OR REPLACE PROCEDURE APP\.P_NEW\s+(?:AS|IS)\s+BEGIN/, "CREATE OR REPLACE PROCEDURE APP.P_NEW\n IS\nBEGIN") : source;
+      objects.set("PROCEDURE:P_NEW", { id: "201", source: tamperCreatedOnCreate ? readback.replace("NULL", "RAISE") : readback, status: invalidateCreatedRoot ? "INVALID" : "VALID" });
       if (dependencyRows.get("PROCEDURE:P_OLD")?.some(([, name, type]) => name === "P_OLD" && type === "PROCEDURE")) {
         dependencyRows.set("PROCEDURE:P_NEW", [["APP", "P_NEW", "PROCEDURE", null]]);
       }
       return result() as never;
     }
     if (sql.startsWith("CREATE OR REPLACE PROCEDURE APP.CALLER_1")) {
-      const source = sql;
+      const source = canonicalizeCallerReadback ? sql.replace(/CREATE OR REPLACE PROCEDURE APP\.CALLER_1\s+(?:AS|IS)\s+BEGIN/, "CREATE OR REPLACE PROCEDURE APP.CALLER_1\n IS\nBEGIN") : sql;
       objects.set("PROCEDURE:CALLER_1", { id: "102", source });
       dependencyRows.set(
         "PROCEDURE:P_OLD",
@@ -131,6 +139,11 @@ beforeEach(() => {
       if (tamperCreatedDuringCompile) objects.set("PROCEDURE:P_NEW", { id: "202", source: "CREATE OR REPLACE PROCEDURE APP.P_NEW AS BEGIN RAISE; END;", status: "VALID" });
       else objects.set("PROCEDURE:P_NEW", { ...objects.get("PROCEDURE:P_NEW")!, status: "VALID" });
       return result() as never;
+    }
+    if (sql.startsWith('ALTER PROCEDURE "APP"."CALLER_2"') && mutateCallerBeforeDrop) {
+      const caller = objects.get("PROCEDURE:CALLER_1")!;
+      const source = mutateCallerBeforeDrop === "comment" ? caller.source.replace("APP.P_NEW;", "APP.P_NEW /* changed */;") : mutateCallerBeforeDrop === "string" ? caller.source.replace("'keep'", "'changed'") : caller.source.replace("APP.P_NEW", "APP.P_OTHER");
+      objects.set("PROCEDURE:CALLER_1", { ...caller, source });
     }
     if (sql.startsWith("ALTER PROCEDURE")) return result() as never;
     if (sql.startsWith("DROP PROCEDURE APP.P_OLD")) {
@@ -391,6 +404,60 @@ describe("prepareOracleRoutineRename", () => {
 
     expect(objects.get("PROCEDURE:CALLER_1")?.source).toContain('"P_NEW"');
     expect(objects.has("PROCEDURE:P_OLD")).toBe(false);
+  });
+
+  it("executes a manually repaired caller draft after canonical database formatting", async () => {
+    canonicalizeCallerReadback = true;
+    const corrected = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE('keep'); APP.P_OLD; APP.P_OLD; END";
+    const plan = await prepareOracleRoutineRename(target, { "PROCEDURE:CALLER_1": corrected });
+
+    expect(plan.executable).toBe(true);
+    expect(plan.callers.find((caller) => caller.name === "CALLER_1")?.draft).toBe(corrected);
+    expect(plan.steps.some((step) => step.kind === "replace-caller")).toBe(true);
+
+    await expect(executeOracleRoutineRename(plan)).resolves.toBeUndefined();
+
+    expect(objects.get("PROCEDURE:CALLER_1")?.source).toContain("CALLER_1\n IS\nBEGIN");
+    expect(objects.has("PROCEDURE:P_OLD")).toBe(false);
+    expect(vi.mocked(api.executeQuery).mock.calls.some(([, , sql]) => sql.startsWith("DROP PROCEDURE APP.P_OLD"))).toBe(true);
+  });
+
+  it("accepts a one-line root draft when the database reformats its readback", async () => {
+    canonicalizeRootReadback = true;
+    const correctedRoot = "CREATE OR REPLACE PROCEDURE APP.P_OLD IS BEGIN NULL; END";
+    objects.set("PROCEDURE:P_OLD", { id: "101", source: correctedRoot });
+    dependencyRows = new Map([["PROCEDURE:P_OLD", []]]);
+    const plan = await prepareOracleRoutineRename(target, { "PROCEDURE:P_OLD": correctedRoot });
+
+    await expect(executeOracleRoutineRename(plan)).resolves.toBeUndefined();
+
+    expect(objects.has("PROCEDURE:P_OLD")).toBe(false);
+    expect(objects.get("PROCEDURE:P_NEW")?.source).toContain("P_NEW\n IS\nBEGIN");
+  });
+
+  it.each(["comment", "string", "call"] as const)("does not drop the old routine after the rewritten caller's %s changes", async (mutation) => {
+    mutateCallerBeforeDrop = mutation;
+    const corrected = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN DBMS_OUTPUT.PUT_LINE('keep'); APP.P_OLD; APP.P_OLD; END";
+    const plan = await prepareOracleRoutineRename(target, { "PROCEDURE:CALLER_1": corrected });
+
+    await expect(executeOracleRoutineRename(plan)).rejects.toThrow(/CALLER_1 no longer matches the planned rewrite/i);
+
+    expect(objects.has("PROCEDURE:P_OLD")).toBe(true);
+    expect(vi.mocked(api.executeQuery).mock.calls.some(([, , sql]) => sql.startsWith("DROP PROCEDURE APP.P_OLD"))).toBe(false);
+  });
+
+  it("keeps the original caller snapshot exact when only its whitespace changes after validation", async () => {
+    const corrected = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 IS BEGIN APP.P_OLD; APP.P_OLD; END";
+    const plan = await prepareOracleRoutineRename(target, { "PROCEDURE:CALLER_1": corrected });
+    objects.set("PROCEDURE:CALLER_1", { ...objects.get("PROCEDURE:CALLER_1")!, source: firstCallerSource.replace(" AS BEGIN", " AS\n BEGIN") });
+
+    await expect(executeOracleRoutineRename(plan)).rejects.toThrow(/metadata changed/i);
+
+    expect(objects.has("PROCEDURE:P_NEW")).toBe(false);
+    expect(objects.has("PROCEDURE:P_OLD")).toBe(true);
+    expect(vi.mocked(api.executeQuery).mock.calls.some(([, , sql]) => sql.startsWith("CREATE OR REPLACE PROCEDURE APP.CALLER_1"))).toBe(false);
+    expect(vi.mocked(api.executeQuery).mock.calls.some(([, , sql]) => sql.startsWith("DROP PROCEDURE APP.P_OLD"))).toBe(false);
+    expect(vi.mocked(api.executeQuery).mock.calls.some(([, , sql]) => sql.startsWith("CREATE PROCEDURE APP.P_NEW"))).toBe(false);
   });
 
   it("normalizes database source readback before comparing the new routine definition", async () => {
