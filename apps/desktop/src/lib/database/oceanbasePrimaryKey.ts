@@ -21,6 +21,11 @@ export interface OceanbasePrimaryKeyPlan {
   statements: string[];
 }
 
+export type OceanbasePrimaryKeyGuards = {
+  canStart?: () => boolean;
+  connectionCurrent?: () => boolean;
+};
+
 export interface OceanbasePrimaryKeyResult {
   steps: Array<{ sql: string; state: "committed" | "rejected" | "unknown" | "notExecuted"; error?: string }>;
   readbackError?: string;
@@ -213,15 +218,31 @@ export async function readOceanbasePrimaryKeySnapshot(target: PrimaryKeyTarget, 
 }
 
 /** Rechecks the original target and stops at the first failed independent DDL. */
-export async function executeOceanbasePrimaryKeyPlan(plan: OceanbasePrimaryKeyPlan, timeoutSecs: number, stillCurrent: () => boolean): Promise<OceanbasePrimaryKeyResult | undefined> {
+export async function executeOceanbasePrimaryKeyPlan(plan: OceanbasePrimaryKeyPlan, timeoutSecs: number, stillCurrent: (() => boolean) | OceanbasePrimaryKeyGuards): Promise<OceanbasePrimaryKeyResult | undefined> {
+  const canStart = typeof stillCurrent === "function" ? stillCurrent : (stillCurrent?.canStart ?? (() => true));
+  const connectionCurrent = typeof stillCurrent === "function" ? stillCurrent : (stillCurrent?.connectionCurrent ?? (() => true));
+  if (!canStart() || !connectionCurrent()) return undefined;
   const { target, change } = plan;
   const current = await readOceanbasePrimaryKeySnapshot(target, change);
-  if (!stillCurrent()) return undefined;
+  if (!canStart() || !connectionCurrent()) return undefined;
   if (current !== plan.snapshot) fail("definitionChanged");
+  if (!canStart() || !connectionCurrent()) return undefined;
   const steps: OceanbasePrimaryKeyResult["steps"] = plan.statements.map((sql) => ({ sql, state: "notExecuted" }));
-  for (const step of steps) {
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i]!;
+    if (i === 0) {
+      if (!canStart() || !connectionCurrent()) return undefined;
+    } else {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (!connectionCurrent()) break;
+    }
     try {
       const result = await api.executeQuery(target.connectionId, target.database, step.sql.replace(/;\s*$/, ""), target.schema, undefined, { catalog: target.catalog, timeoutSecs });
+      if (!connectionCurrent()) {
+        step.state = "unknown";
+        step.error = "Connection changed during execution";
+        break;
+      }
       if (result.execution_error) {
         step.state = "rejected";
         step.error = result.error?.detail || "Primary key statement rejected";
@@ -234,24 +255,47 @@ export async function executeOceanbasePrimaryKeyPlan(plan: OceanbasePrimaryKeyPl
       break;
     }
   }
+  if (steps.every((step) => step.state === "notExecuted")) {
+    return undefined;
+  }
   const result: OceanbasePrimaryKeyResult = { steps };
+  if (!connectionCurrent()) {
+    result.readbackError = "Connection changed during execution; readback is unverifiable.";
+    return result;
+  }
   try {
+    if (!connectionCurrent()) {
+      result.readbackError = "Connection changed during execution; readback is unverifiable.";
+      return result;
+    }
     const [, constraints] = await Promise.all([
       api.getColumns(target.connectionId, target.database, target.schema, target.tableName, target.catalog),
       api.listConstraints(target.connectionId, target.database, target.schema, target.tableName, target.catalog),
       api.listIndexes(target.connectionId, target.database, target.schema, target.tableName, target.catalog),
     ]);
+    if (!connectionCurrent()) {
+      result.readbackError = "Connection changed during execution; readback is unverifiable.";
+      return result;
+    }
     const keys = constraints.filter((constraint) => constraint.constraint_type === "PRIMARY KEY");
     if (steps.every((step) => step.state === "committed")) {
       if (change.columns.length ? keys.length !== 1 || keys[0]?.name !== change.name || !same(keys[0]?.columns, change.columns) : keys.length !== 0) {
         result.readbackError = "definitionChanged";
       }
       if (target.databaseType === "oracle" && change.columns.length && change.oracleState) {
+        if (!connectionCurrent()) {
+          result.readbackError = "Connection changed during execution; readback is unverifiable.";
+          return result;
+        }
         const where = `OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)} AND CONSTRAINT_TYPE = 'P'`;
         const [currentKeys, relyRows] = await Promise.all([
           queryPrimaryKey(target, `SELECT CONSTRAINT_NAME, STATUS, VALIDATED, DEFERRABLE, DEFERRED, INDEX_OWNER, INDEX_NAME FROM SYS.ALL_CONSTRAINTS WHERE ${where}`),
           queryPrimaryKey(target, `SELECT RELY FROM SYS.ALL_CONSTRAINTS WHERE ${where} AND CONSTRAINT_NAME = ${literal(change.name)}`),
         ]);
+        if (!connectionCurrent()) {
+          result.readbackError = "Connection changed during execution; readback is unverifiable.";
+          return result;
+        }
         if (currentKeys.length !== 1 || currentKeys[0]?.length !== 7 || currentKeys[0][0] !== change.name) fail("incompleteMetadata");
         const state = oraclePrimaryKeyState(currentKeys[0], relyRows);
         if (
@@ -273,7 +317,15 @@ export async function executeOceanbasePrimaryKeyPlan(plan: OceanbasePrimaryKeyPl
       result.indexStates = [];
       for (const name of [index.name, ...(index.newName ? [index.newName] : [])].filter(Boolean)) {
         try {
+          if (!connectionCurrent()) {
+            result.readbackError = "Connection changed during execution; readback is unverifiable.";
+            return result;
+          }
           const currentIndex = await readOracleIndex(target, index.owner, name);
+          if (!connectionCurrent()) {
+            result.readbackError = "Connection changed during execution; readback is unverifiable.";
+            return result;
+          }
           const absent = currentIndex.properties.length === 0 && currentIndex.columns.length === 0;
           const isOriginal = name === index.name;
           const expectedProperties = isOriginal
@@ -303,7 +355,7 @@ export async function executeOceanbasePrimaryKeyPlan(plan: OceanbasePrimaryKeyPl
         }
       }
     }
-    if (steps[0]?.state === "committed" && keys.length === 0) {
+    if (connectionCurrent() && steps[0]?.state === "committed" && keys.length === 0) {
       const state = change.oracleState;
       const sql = `ALTER TABLE ${ident(target.schema)}.${ident(target.tableName)} ADD CONSTRAINT ${ident(change.name)} PRIMARY KEY (${change.originalColumns.map(ident).join(", ")})${state ? oracleStateBeforeIndex(state) : ""}${recoveryIndex}${state ? oracleStateAfterIndex(state) : ""};`;
       result.recoverySql = recoveryVerified

@@ -3034,9 +3034,14 @@ ORDER BY ac.CONSTRAINT_NAME, acc.POSITION`, []any{schema, table})
 				},
 			}
 			if kind == "U" {
-				item.OracleMetadata.Index, item.OracleMetadata.IndexSharing = s.oracleUniqueIndexMetadata(schema, table, indexOwner, indexName)
-				if item.OracleMetadata.Index == nil || !item.OracleMetadata.Index.MetadataComplete || item.OracleMetadata.IndexSharing == nil {
-					item.OracleMetadata.MetadataComplete = false
+				if status.Valid && status.String == "DISABLED" && !indexOwner.Valid && !indexName.Valid {
+					item.OracleMetadata.Index = nil
+					item.OracleMetadata.IndexSharing = nil
+				} else {
+					item.OracleMetadata.Index, item.OracleMetadata.IndexSharing = s.oracleUniqueIndexMetadata(schema, table, indexOwner, indexName)
+					if item.OracleMetadata.Index == nil || !item.OracleMetadata.Index.MetadataComplete || item.OracleMetadata.IndexSharing == nil {
+						item.OracleMetadata.MetadataComplete = false
+					}
 				}
 			}
 			byName[name] = item

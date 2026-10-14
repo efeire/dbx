@@ -385,7 +385,42 @@ export async function readOracleForeignKeyReferenceSnapshot(target: OracleForeig
   return { owner: definition.refSchema, table: definition.refTable, objectId, keys, columns, references: referencesPresent ? "present" : tableReadable && columnsReadable && systemReadable ? "missing" : "unknown" };
 }
 
-export function validateOracleForeignKeyReference(snapshot: OracleForeignKeyReferenceSnapshot, source: OracleForeignKeySourceSnapshot, definition: OracleForeignKeyDefinition, destructiveReplacement: boolean): void {
+export function parseOracleCanonicalType(raw: string, databaseType: "oracle" | "oceanbase-oracle" = "oracle"): string | null {
+  const text = raw.trim().toUpperCase();
+  // 1. NUMBER / FLOAT
+  if (/^NUMBER(?:\s*\(\s*\d+\s*(?:,\s*-?\d+\s*)?\))?$/.test(text)) return "NUMBER";
+  if (/^FLOAT(?:\s*\(\s*\d+\s*\))?$/.test(text)) {
+    return databaseType === "oracle" ? "NUMBER" : "FLOAT";
+  }
+  if (/^BINARY_FLOAT$/.test(text)) return "BINARY_FLOAT";
+  if (/^BINARY_DOUBLE$/.test(text)) return "BINARY_DOUBLE";
+  // 2. Character types
+  if (/^VARCHAR2(?:\s*\(\s*\d+\s*(?:BYTE|CHAR)?\s*\))?$/.test(text)) return "VARCHAR2";
+  if (/^VARCHAR(?:\s*\(\s*\d+\s*(?:BYTE|CHAR)?\s*\))?$/.test(text)) {
+    return databaseType === "oracle" ? "VARCHAR2" : null;
+  }
+  if (/^CHAR(?:\s*\(\s*\d+\s*(?:BYTE|CHAR)?\s*\))?$/.test(text)) return "CHAR";
+  if (/^NCHAR(?:\s*\(\s*\d+\s*\))?$/.test(text)) return "NCHAR";
+  if (/^NVARCHAR2(?:\s*\(\s*\d+\s*\))?$/.test(text)) return "NVARCHAR2";
+  // 3. DATE
+  if (/^DATE$/.test(text)) return "DATE";
+  // 4. RAW
+  if (/^RAW(?:\s*\(\s*\d+\s*\))?$/.test(text)) return "RAW";
+  // 5. TIMESTAMP
+  if (/^TIMESTAMP(?:\s*\(\s*\d+\s*\))?$/.test(text)) return "TIMESTAMP";
+  if (/^TIMESTAMP(?:\s*\(\s*\d+\s*\))?\s+WITH\s+LOCAL\s+TIME\s+ZONE$/.test(text)) return "TIMESTAMP_WITH_LOCAL_TIME_ZONE";
+
+  return null;
+}
+
+export function compareOracleForeignKeyColumnTypes(localRaw: string, parentRaw: string, databaseType: "oracle" | "oceanbase-oracle" = "oracle"): "compatible" | "incompatible" | "unknown" {
+  const localCanonical = parseOracleCanonicalType(localRaw, databaseType);
+  const parentCanonical = parseOracleCanonicalType(parentRaw, databaseType);
+  if (!localCanonical || !parentCanonical) return "unknown";
+  return localCanonical === parentCanonical ? "compatible" : "incompatible";
+}
+
+export function validateOracleForeignKeyReference(snapshot: OracleForeignKeyReferenceSnapshot, source: OracleForeignKeySourceSnapshot, definition: OracleForeignKeyDefinition, destructiveReplacement: boolean, databaseType: "oracle" | "oceanbase-oracle" = "oracle"): void {
   if (snapshot.owner !== definition.refSchema || snapshot.table !== definition.refTable) invalid();
   if (destructiveReplacement && (!snapshot.objectId || !snapshot.keys || !snapshot.columns || snapshot.references !== "present")) invalid();
   if (snapshot.columns && definition.refColumns.some((name) => !snapshot.columns!.some((column) => column.name === name))) invalid();
@@ -393,12 +428,14 @@ export function validateOracleForeignKeyReference(snapshot: OracleForeignKeyRefe
     const matching = snapshot.keys.filter((key) => key.columns.length === definition.refColumns.length && key.columns.every((name) => definition.refColumns.includes(name)));
     if (!matching.length || (definition.state.enabled && !matching.some((key) => key.enabled))) invalid();
   }
-  const numeric = new Set(["NUMBER", "FLOAT", "BINARY_FLOAT", "BINARY_DOUBLE"]);
-  const character = new Set(["CHAR", "VARCHAR2", "NCHAR", "NVARCHAR2"]);
   for (let index = 0; index < definition.columns.length; index++) {
     const local = source.columns.find((column) => column.name === definition.columns[index])?.dataType;
     const parent = snapshot.columns?.find((column) => column.name === definition.refColumns[index])?.dataType;
-    if (local && parent && ((numeric.has(local) && character.has(parent)) || (character.has(local) && numeric.has(parent)))) invalid();
+    if (local && parent) {
+      const compatibility = compareOracleForeignKeyColumnTypes(local, parent, databaseType);
+      if (compatibility === "incompatible") invalid();
+      if (destructiveReplacement && compatibility === "unknown") invalid();
+    }
   }
 }
 
@@ -507,12 +544,12 @@ export async function prepareOracleForeignKeyCreatePlan(target: OracleForeignKey
         columns: source.columns.map(({ name, dataType }) => ({ name, dataType })),
         references: "present",
       };
-      validateOracleForeignKeyReference(snapshot, source, definition, false);
+      validateOracleForeignKeyReference(snapshot, source, definition, false, target.databaseType);
       references.push(snapshot);
       continue;
     }
     const snapshot = await readOracleForeignKeyReferenceSnapshot(target, session.user, definition);
-    validateOracleForeignKeyReference(snapshot, source, definition, false);
+    validateOracleForeignKeyReference(snapshot, source, definition, false, target.databaseType);
     references.push(snapshot);
   }
   return { target, options, partitioning, changes, statements: [...generated.statements], references, session, snapshot: JSON.stringify({ session, references }) };
@@ -617,7 +654,7 @@ export async function prepareOracleForeignKeyPlan(target: OracleForeignKeyTarget
     if (!change.target || !generated.statements.length) continue;
     const parent = await reference(change.target);
     const needsQualification = !change.original || replacement || (!change.original.state.enabled && change.target.state.enabled) || (!change.original.state.validated && change.target.state.validated);
-    if (needsQualification) validateOracleForeignKeyReference(parent, source, change.target, replacement);
+    if (needsQualification) validateOracleForeignKeyReference(parent, source, change.target, replacement, target.databaseType);
     if (needsQualification && (!parent.objectId || !parent.keys || !parent.columns)) unverified.add("referenceDefinition");
     if (needsQualification && parent.references !== "present") unverified.add("referencesPermission");
     const data = await checkOracleForeignKeyData(target, change, replacement);
@@ -673,7 +710,7 @@ export async function executeOracleForeignKeyPlan(plan: OracleForeignKeyPlan, ti
       const original = change.original ? current.find((definition) => definition.name === change.original!.name) : undefined;
       const target = change.target ? current.find((definition) => definition.name === change.target!.name) : undefined;
       const matches = (actual: OracleForeignKeyDefinition | undefined, expected: OracleForeignKeyDefinition | null) => !!actual && !!expected && JSON.stringify(actual) === JSON.stringify(expected);
-      const dropped = !!change.original && groupSteps[0]?.state === "committed" && (group.replacement || !change.target);
+      const dropped = !!change.original && (groupSteps[0]?.state === "committed" || groupSteps[0]?.state === "unknown") && (group.replacement || !change.target);
       if (complete) {
         if (change.target ? !matches(target, change.target) || (change.original && change.original.name !== change.target.name && original) : original) outcome.readbackError = "Foreign key definition differs from the completed statements.";
       } else if (change.original && change.target) {
@@ -694,8 +731,26 @@ export async function executeOracleForeignKeyPlan(plan: OracleForeignKeyPlan, ti
           outcome.readbackError = "Connection or target changed during recovery checks; the result remains unknown.";
           return outcome;
         }
-        if (!names.length) recoveryTargets.push(change.original!);
-        else outcome.readbackError = "A foreign key name is occupied; manual recovery must be reviewed.";
+        if (names.length) {
+          outcome.readbackError = "A foreign key name is occupied; manual recovery must be reviewed.";
+          continue;
+        }
+        const currentSource = await readOracleForeignKeySourceSnapshot(plan.target, plan.changes);
+        if (!stillCurrent()) {
+          outcome.readbackError = "Connection or target changed during source verification; the result remains unknown.";
+          return outcome;
+        }
+        const identityMatches = currentSource.user === plan.source.user && currentSource.currentSchema === plan.source.currentSchema && currentSource.objectId === plan.source.objectId;
+        const columnsMatch = change.original!.columns.every((colName) => {
+          const originalCol = plan.source.columns.find((c) => c.name === colName);
+          const currentCol = currentSource.columns.find((c) => c.name === colName);
+          return !!originalCol && !!currentCol && originalCol.dataType === currentCol.dataType && originalCol.length === currentCol.length && originalCol.precision === currentCol.precision && originalCol.scale === currentCol.scale && originalCol.nullable === currentCol.nullable;
+        });
+        if (identityMatches && columnsMatch) {
+          recoveryTargets.push(change.original!);
+        } else {
+          outcome.readbackError = "Table identity or column definitions changed; manual recovery candidate withheld.";
+        }
       }
     }
   } catch (error) {
@@ -703,8 +758,16 @@ export async function executeOracleForeignKeyPlan(plan: OracleForeignKeyPlan, ti
     outcome.readbackError = error instanceof Error ? error.message : String(error);
   }
   if (recoveryTargets.length) {
+    if (!stillCurrent()) {
+      outcome.readbackError = "Connection or target changed before generating recovery statements; the result remains unknown.";
+      return outcome;
+    }
     const recoveryChanges = recoveryTargets.map((original) => ({ original: null, target: original }));
     const recovery = await api.buildTableStructureChangeSql({ ...plan.options, oracleForeignKeyChanges: recoveryChanges });
+    if (!stillCurrent()) {
+      outcome.readbackError = "Connection or target changed during recovery statement generation; the result remains unknown.";
+      return outcome;
+    }
     if (!recovery.warnings.length) outcome.recoverySql = recovery.statements;
   }
   return outcome;

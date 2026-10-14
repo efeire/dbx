@@ -330,8 +330,8 @@ fn validate_unique(
         return Err("Initially deferred UNIQUE constraints must be deferrable.");
     }
     if database_type == DatabaseType::OceanbaseOracle
-        && (unique.state.enabled == false
-            || unique.state.validated == false
+        && (!unique.state.enabled
+            || !unique.state.validated
             || unique.state.deferrable
             || unique.state.initially_deferred
             || unique.state.rely
@@ -453,9 +453,7 @@ fn add_unique(
     let dialect = StructureDialect::Oracle;
     let columns = unique.columns.iter().map(|column| quote_ident(dialect, column)).collect::<Vec<_>>().join(", ");
     let index = &unique.index;
-    let using_index = if !unique.state.enabled {
-        String::new()
-    } else if database_type == DatabaseType::OceanbaseOracle {
+    let using_index = if !unique.state.enabled || database_type == DatabaseType::OceanbaseOracle {
         String::new()
     } else if !index.name.is_empty()
         && index.metadata_complete
@@ -499,28 +497,6 @@ fn drop_unique(
     )
 }
 
-#[cfg(test)]
-mod additional_tests {
-    use super::*;
-
-    #[test]
-    fn check_add_keeps_closing_parenthesis_outside_line_comment() {
-        let check = OracleCheckConstraint {
-            name: "CK_T".into(),
-            expression: "A > 0 -- tail comment".into(),
-            state: super::super::OraclePrimaryKeyState {
-                enabled: true,
-                validated: true,
-                deferrable: false,
-                initially_deferred: false,
-                rely: false,
-            },
-        };
-        let sql = add_check("\"APP\".\"T\"", &check, DatabaseType::Oracle);
-        assert!(sql.contains("CHECK (\nA > 0 -- tail comment\n) ENABLE VALIDATE;"));
-    }
-}
-
 fn constraint_state_parts(state: &super::OraclePrimaryKeyState, database_type: DatabaseType) -> (String, String) {
     let enabled = if state.enabled { "ENABLE" } else { "DISABLE" };
     let validated = if state.validated { "VALIDATE" } else { "NOVALIDATE" };
@@ -550,4 +526,27 @@ fn same_identifier_set(left: &[String], right: &[String]) -> bool {
 
 fn drop_constraint(table: &str, name: &str) -> String {
     format!("ALTER TABLE {table} DROP CONSTRAINT {};", quote_ident(StructureDialect::Oracle, name))
+}
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn check_add_keeps_closing_parenthesis_outside_line_comment() {
+        let check = OracleCheckConstraint {
+            name: "CK_T".into(),
+            expression: "A > 0 -- tail comment".into(),
+            state: super::super::OraclePrimaryKeyState {
+                enabled: true,
+                validated: true,
+                deferrable: false,
+                initially_deferred: false,
+                rely: false,
+            },
+        };
+        let sql = add_check("\"APP\".\"T\"", &check, DatabaseType::Oracle);
+        assert!(sql
+            .contains("CHECK (\nA > 0 -- tail comment\n) NOT DEFERRABLE INITIALLY IMMEDIATE NORELY ENABLE VALIDATE;"));
+    }
 }

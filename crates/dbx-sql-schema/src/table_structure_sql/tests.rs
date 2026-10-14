@@ -1023,6 +1023,13 @@ fn non_dameng_index_rebuilds_do_not_use_or_replace() {
     ] {
         let mut changed = existing_index("IDX_USERS_EMAIL", &["EMAIL"], false);
         changed.is_unique = true;
+        if database_type == DatabaseType::Oracle {
+            let original = changed.original.as_mut().unwrap();
+            original.key_is_expression = vec![false];
+            original.key_directions = vec!["ASC".to_string()];
+            original.visibility = Some("VISIBLE".to_string());
+            original.key_metadata_complete = true;
+        }
         let result = build_table_structure_change_sql(index_change_options(database_type, None, changed));
 
         assert_eq!(result.warnings, Vec::<String>::new(), "database type: {database_type:?}");

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "@/lib/backend/api";
-import { executeOracleConstraintPlan, OracleConstraintMetadataError, prepareOracleConstraintPlan } from "../oracleConstraints";
+import { executeOracleConstraintPlan, oracleConstraintDefinitionFromInfo, OracleConstraintMetadataError, prepareOracleConstraintPlan } from "../oracleConstraints";
 import type { ConstraintInfo } from "@/types/database";
 import type { OracleConstraintChange } from "@/lib/table/tableStructureEditorSql";
 
@@ -507,5 +507,40 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
     const outcome = await executeOracleConstraintPlan(plan, 0, () => true);
     expect(outcome?.steps.map((step) => step.state)).toEqual(["committed"]);
     expect(outcome?.readbackError).toBeUndefined();
+  });
+
+  it("converts disabled UNIQUE constraint with SQL NULL index into no-index definition", () => {
+    const disabledInfo: ConstraintInfo = {
+      name: "UQ_DISABLED_NO_IDX",
+      constraint_type: "UNIQUE",
+      columns: ["EMAIL"],
+      definition: "",
+      ref_columns: [],
+      enabled: false,
+      valid: false,
+      deferrable: false,
+      initially_deferred: false,
+      oracle_metadata: {
+        metadataComplete: true,
+        owner: "APP",
+        constraintType: "U",
+        status: "DISABLED",
+        validated: "NOT VALIDATED",
+        deferrable: "NOT DEFERRABLE",
+        deferred: "IMMEDIATE",
+        rely: null,
+        indexOwner: null,
+        indexName: null,
+        indexSharing: null,
+        index: null,
+      },
+    };
+    const definition = oracleConstraintDefinitionFromInfo(disabledInfo, target);
+    expect(definition.kind).toBe("unique");
+    if (definition.kind === "unique") {
+      expect(definition.definition.name).toBe("UQ_DISABLED_NO_IDX");
+      expect(definition.definition.state.enabled).toBe(false);
+      expect(definition.definition.index.name).toBe("");
+    }
   });
 });

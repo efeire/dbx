@@ -1163,6 +1163,58 @@ func TestListConstraintsReturnsExactUniqueIndexMetadata(t *testing.T) {
 	}
 }
 
+func TestListConstraintsDisabledUniqueWithoutIndexMaintainsCompleteMetadata(t *testing.T) {
+	const schema = "HR"
+	const table = "USERS"
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{
+			queryContains: "FROM ALL_CONSTRAINTS ac",
+			args:          []driver.Value{schema, table},
+			columns:       []string{"CONSTRAINT_NAME", "CONSTRAINT_TYPE", "SEARCH_CONDITION", "GENERATED", "STATUS", "DEFERRABLE", "DEFERRED", "VALIDATED", "RELY", "INDEX_OWNER", "INDEX_NAME", "COLUMN_NAME", "POSITION", "NULLABLE"},
+			rows: [][]driver.Value{
+				{"UQ_DISABLED_NO_IDX", "U", nil, "USER NAME", "DISABLED", "NOT DEFERRABLE", "IMMEDIATE", "NOT VALIDATED", nil, nil, nil, "EMAIL", int64(1), "Y"},
+				{"UQ_ENABLED_NO_IDX", "U", nil, "USER NAME", "ENABLED", "NOT DEFERRABLE", "IMMEDIATE", "VALIDATED", nil, nil, nil, "PHONE", int64(1), "Y"},
+				{"UQ_DISABLED_ONE_NULL", "U", nil, "USER NAME", "DISABLED", "NOT DEFERRABLE", "IMMEDIATE", "NOT VALIDATED", nil, schema, nil, "ADDRESS", int64(1), "Y"},
+				{"UQ_DISABLED_EMPTY_NAME", "U", nil, "USER NAME", "DISABLED", "NOT DEFERRABLE", "IMMEDIATE", "NOT VALIDATED", nil, schema, "", "CITY", int64(1), "Y"},
+				{"UQ_UNKNOWN_STATUS", "U", nil, "USER NAME", "UNKNOWN", "NOT DEFERRABLE", "IMMEDIATE", "NOT VALIDATED", nil, nil, nil, "ZIP", int64(1), "Y"},
+			},
+		},
+	})
+	s := newServer()
+	s.db = db
+
+	got, err := s.listConstraints(schema, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("listConstraints() returned %d items, want 5", len(got))
+	}
+	// Case 1: DISABLED + double SQL NULL -> MetadataComplete == true
+	if meta := got[0].OracleMetadata; meta == nil || !meta.MetadataComplete || meta.Index != nil || meta.IndexSharing != nil {
+		t.Fatalf("UQ_DISABLED_NO_IDX metadata = %#v, want MetadataComplete == true and nil Index/IndexSharing", meta)
+	}
+	// Case 2: ENABLED + double SQL NULL -> MetadataComplete == false (ENABLED UNIQUE must have index)
+	if meta := got[1].OracleMetadata; meta == nil || meta.MetadataComplete {
+		t.Fatalf("UQ_ENABLED_NO_IDX metadata = %#v, want MetadataComplete == false for ENABLED without index", meta)
+	}
+	// Case 3: DISABLED + single null (IndexName is nil, IndexOwner is not) -> MetadataComplete == false
+	if meta := got[2].OracleMetadata; meta == nil || meta.MetadataComplete {
+		t.Fatalf("UQ_DISABLED_ONE_NULL metadata = %#v, want MetadataComplete == false for single null index", meta)
+	}
+	// Case 4: DISABLED + empty string -> MetadataComplete == false
+	if meta := got[3].OracleMetadata; meta == nil || meta.MetadataComplete {
+		t.Fatalf("UQ_DISABLED_EMPTY_NAME metadata = %#v, want MetadataComplete == false for empty string index name", meta)
+	}
+	// Case 5: UNKNOWN status -> MetadataComplete == false
+	if meta := got[4].OracleMetadata; meta == nil || meta.MetadataComplete {
+		t.Fatalf("UQ_UNKNOWN_STATUS metadata = %#v, want MetadataComplete == false for unknown status", meta)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)
+	}
+}
+
 func TestListConstraintsExcludesGeneratedNotNullChecksButKeepsRealChecks(t *testing.T) {
 	const schema = "HR"
 	const table = "ORDERS"

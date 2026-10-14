@@ -29,6 +29,7 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   getTablePartitioning: vi.fn().mockResolvedValue(null),
   buildTableStructureChangeSql: vi.fn().mockResolvedValue({ statements: [], warnings: [] }),
   saveHistory: vi.fn().mockResolvedValue(undefined),
+  disconnectDb: vi.fn().mockResolvedValue(undefined),
   executeQuery: vi.fn().mockResolvedValue({ columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 }),
 }));
 
@@ -54,11 +55,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountExistingKey(columns: string[], databaseType = "oceanbase-oracle", disabled = false) {
+async function mountExistingKey(columns: string[], databaseType = "oceanbase-oracle", disabled = false, isProduction = false) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useConnectionStore();
-  store.connections = [{ ...connection, db_type: databaseType, driver_profile: databaseType } as ConnectionConfig];
+  store.connections = [{ ...connection, db_type: databaseType, driver_profile: databaseType, is_production: isProduction } as ConnectionConfig];
   store.connectedIds.add(connection.id);
   vi.mocked(api.getColumns).mockResolvedValue(["ID", "V"].map((name) => ({ name, data_type: "NUMBER", is_nullable: false, is_primary_key: columns.includes(name), column_default: null })));
   vi.mocked(api.listConstraints).mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns, definition: "", ref_columns: [], enabled: !disabled, valid: !disabled, deferrable: false, initially_deferred: false } as ConstraintInfo]);
@@ -79,8 +80,8 @@ async function mountExistingKey(columns: string[], databaseType = "oceanbase-ora
   return { container, editor, context, drafts };
 }
 
-async function prepareReorderedKey(rejectAdd = false, remove = false, databaseType = "oceanbase-oracle", disabled = false) {
-  const mounted = await mountExistingKey(["ID", "V"], databaseType, disabled);
+async function prepareReorderedKey(rejectAdd = false, remove = false, databaseType = "oceanbase-oracle", disabled = false, isProduction = false, openOnly = false) {
+  const mounted = await mountExistingKey(["ID", "V"], databaseType, disabled, isProduction);
   const oracle = databaseType === "oracle";
   const tableName = "SOURCE_ID_V";
   let keyColumns = ["ID", "V"];
@@ -136,6 +137,7 @@ async function prepareReorderedKey(rejectAdd = false, remove = false, databaseTy
     .find((button) => button.textContent?.trim() === i18n.global.t(remove ? "common.delete" : "common.edit"))!
     .click();
   await vi.waitFor(() => expect(mounted.container.querySelector("[data-existing-primary-key-editor]")).not.toBeNull());
+  if (openOnly) return mounted;
   if (!remove) (mounted.container.querySelector(`[data-existing-primary-key-editor] button[title="${i18n.global.t("oceanbasePrimaryKey.moveDown")}"]`) as HTMLButtonElement).click();
   await vi.waitFor(() => {
     const apply = Array.from(mounted.container.querySelectorAll("button")).find((button) => button.textContent?.trim() === i18n.global.t("structureEditor.apply"));
@@ -170,7 +172,8 @@ describe("OceanBase existing primary key in the structure editor", () => {
     expect(edit, "Native Oracle must expose the existing primary key editor").toBeDefined();
     edit!.click();
     await vi.waitFor(() => expect(container.querySelector("[data-existing-primary-key-editor]")).not.toBeNull());
-    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(api.executeQuery).toHaveBeenCalled();
+    expect(api.executeQuery.mock.calls.filter(([, , sql]) => /^(?:ALTER|CREATE|DROP)\b/i.test(sql.trim()))).toHaveLength(0);
   });
 
   it.each([{ columns: ["ID"] }, { columns: ["V", "ID"] }])("offers editing for the existing ordered key $columns in its constraint card", async ({ columns }) => {
@@ -203,7 +206,7 @@ describe("OceanBase existing primary key in the structure editor", () => {
     down.click();
     await nextTick();
     await vi.waitFor(() => expect(drafts.at(-1)).toMatchObject({ dirty: true, existingPrimaryKey: { name: "PK_SOURCE", originalColumns: ["ID", "V"], columns: ["V", "ID"] } }));
-    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(api.executeQuery.mock.calls.filter(([, , sql]) => /^(?:ALTER|CREATE|DROP)\b/i.test(sql.trim()))).toHaveLength(0);
   });
 
   it("previews and applies the ordered key through the existing save entry", async () => {
@@ -305,8 +308,7 @@ describe("OceanBase existing primary key in the structure editor", () => {
   });
 
   it.each(["cancel", "switch", "unmount"])("does not execute DDL after production confirmation %s", async (action) => {
-    const { editor, context } = await prepareReorderedKey();
-    useConnectionStore().connections[0]!.is_production = true;
+    const { editor, context } = await prepareReorderedKey(false, false, "oceanbase-oracle", false, true);
     const pending = editor.value!.applyChanges();
     const safety = useProductionSafetyStore();
     await vi.waitFor(() => expect(safety.pending).toBeDefined());
@@ -347,5 +349,179 @@ describe("OceanBase existing primary key in the structure editor", () => {
     expect(vi.mocked(api.saveHistory).mock.calls).toHaveLength(2);
     expect(JSON.stringify(vi.mocked(api.saveHistory).mock.calls)).not.toContain('"target":"OTHER"');
     expect(drafts.at(-1)).toMatchObject({ dirty: false, existingPrimaryKey: undefined });
+  });
+
+  it("discards late primary key preview if connection state revision changes while query is pending", async () => {
+    let releaseBuild!: () => void;
+    let buildStarted!: () => void;
+    const buildStartedPromise = new Promise<void>((resolve) => {
+      buildStarted = resolve;
+    });
+    const buildGate = new Promise<void>((resolve) => {
+      releaseBuild = resolve;
+    });
+    const { container, editor } = await prepareReorderedKey(false, false, "oceanbase-oracle", false, false, true);
+    const store = useConnectionStore();
+    const originalBuild = vi.mocked(api.buildTableStructureChangeSql).getMockImplementation()!;
+    vi.mocked(api.buildTableStructureChangeSql).mockImplementation(async (...args) => {
+      buildStarted();
+      await buildGate;
+      return originalBuild(...args);
+    });
+
+    // Trigger preview computation by clicking moveDown
+    (container.querySelector(`[data-existing-primary-key-editor] button[title="${i18n.global.t("oceanbasePrimaryKey.moveDown")}"]`) as HTMLButtonElement).click();
+    await buildStartedPromise;
+
+    // While query is pending, bump connection state revision
+    await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+    store.connectedIds.add(connection.id);
+
+    releaseBuild();
+    await vi.waitFor(() => expect(container.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.refreshRequired")));
+    expect(await editor.value!.applyChanges()).toBe(false);
+  });
+
+  it.each(["after-preview", "during-confirmation", "during-preflight-snapshot"])("issues zero DDL when connection state changes %s", async (phase) => {
+    const { editor } = await prepareReorderedKey(false, false, "oceanbase-oracle", false, phase === "during-confirmation");
+    const store = useConnectionStore();
+
+    if (phase === "after-preview") {
+      await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+      store.connectedIds.add(connection.id);
+      await expect(editor.value!.applyChanges()).resolves.toBe(false);
+    } else if (phase === "during-confirmation") {
+      const pending = editor.value!.applyChanges();
+      const safety = useProductionSafetyStore();
+      await vi.waitFor(() => expect(safety.pending).toBeDefined());
+      await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+      store.connectedIds.add(connection.id);
+      safety.confirm();
+      await expect(pending).resolves.toBe(false);
+    } else if (phase === "during-preflight-snapshot") {
+      let releaseSnapshot!: () => void;
+      const snapshotGate = new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+      });
+      const originalExecute = vi.mocked(api.executeQuery).getMockImplementation()!;
+      let intercepted = false;
+      vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+        if (!intercepted && args[2].includes("FROM SYS.ALL_CONSTRAINTS WHERE OWNER = 'APP' AND TABLE_NAME = 'SOURCE_ID_V' AND CONSTRAINT_TYPE = 'P'")) {
+          intercepted = true;
+          await snapshotGate;
+        }
+        return originalExecute(...args);
+      });
+      const pending = editor.value!.applyChanges();
+      await vi.waitFor(() => expect(intercepted).toBe(true));
+      await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+      store.connectedIds.add(connection.id);
+      releaseSnapshot();
+      await expect(pending).resolves.toBe(false);
+    }
+
+    const statements = vi.mocked(api.executeQuery).mock.calls.filter((call) => call[2].startsWith("ALTER "));
+    expect(statements).toHaveLength(0);
+  });
+
+  it("marks in-flight DROP as unknown, skips ADD, and omits recovery SQL when connection is disconnected/reconfigured while DROP is pending", async () => {
+    const { editor } = await prepareReorderedKey();
+    const store = useConnectionStore();
+    const execute = vi.mocked(api.executeQuery).getMockImplementation()!;
+    let releaseDrop!: () => void;
+    const dropGate = new Promise<void>((resolve) => {
+      releaseDrop = resolve;
+    });
+
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      if (args[2].includes(" DROP CONSTRAINT ")) {
+        await dropGate;
+      }
+      return execute(...args);
+    });
+
+    const pending = editor.value!.applyChanges();
+    await vi.waitFor(() => expect(vi.mocked(api.executeQuery).mock.calls.some((call) => call[2].includes(" DROP CONSTRAINT "))).toBe(true));
+
+    // While DROP is pending in database, connection disconnects / bumps revision
+    await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+    store.connectedIds.add(connection.id);
+
+    releaseDrop();
+    await expect(pending).resolves.toBe(false);
+
+    const statements = vi.mocked(api.executeQuery).mock.calls.filter((call) => call[2].startsWith("ALTER "));
+    expect(statements).toHaveLength(1);
+    expect(statements[0]![2]).toContain("DROP CONSTRAINT");
+
+    await nextTick();
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.unknown"));
+    expect(dialog?.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.notExecuted"));
+    expect(dialog?.textContent).not.toContain(i18n.global.t("oceanbasePrimaryKey.recoveryNotice"));
+    expect(dialog?.textContent).not.toContain(i18n.global.t("structureEditor.saved"));
+  });
+
+  it("keeps DROP committed and skips ADD when connection becomes invalid after DROP returns", async () => {
+    const { editor } = await prepareReorderedKey();
+    const store = useConnectionStore();
+    const execute = vi.mocked(api.executeQuery).getMockImplementation()!;
+
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      const res = await execute(...args);
+      if (args[2].includes(" DROP CONSTRAINT ")) {
+        setTimeout(async () => {
+          await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+          store.connectedIds.add(connection.id);
+        }, 0);
+      }
+      return res;
+    });
+
+    await expect(editor.value!.applyChanges()).resolves.toBe(false);
+
+    const statements = vi.mocked(api.executeQuery).mock.calls.filter((call) => call[2].startsWith("ALTER "));
+    expect(statements).toHaveLength(1);
+    expect(statements[0]![2]).toContain("DROP CONSTRAINT");
+
+    await nextTick();
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.committed"));
+    expect(dialog?.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.notExecuted"));
+    expect(dialog?.textContent).not.toContain(i18n.global.t("oceanbasePrimaryKey.recoveryNotice"));
+  });
+
+  it("fails save and rejects readback if connection changes during post-DDL readback", async () => {
+    const { editor } = await prepareReorderedKey();
+    const store = useConnectionStore();
+    const readConstraints = vi.mocked(api.listConstraints).getMockImplementation()!;
+
+    let ddlComplete = false;
+    vi.mocked(api.listConstraints).mockImplementation(async (...args) => {
+      if (ddlComplete) {
+        await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+        store.connectedIds.add(connection.id);
+      }
+      return readConstraints(...args);
+    });
+
+    const originalExecute = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      const res = await originalExecute(...args);
+      if (args[2].includes(" ADD CONSTRAINT ")) {
+        ddlComplete = true;
+      }
+      return res;
+    });
+
+    await expect(editor.value!.applyChanges()).resolves.toBe(false);
+
+    const statements = vi.mocked(api.executeQuery).mock.calls.filter((call) => call[2].startsWith("ALTER "));
+    expect(statements).toHaveLength(2);
+
+    await nextTick();
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain(i18n.global.t("oceanbasePrimaryKey.readbackFailed"));
+    expect(dialog?.textContent).not.toContain(i18n.global.t("structureEditor.saved"));
   });
 });

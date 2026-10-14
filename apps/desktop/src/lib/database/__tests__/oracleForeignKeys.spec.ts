@@ -8,6 +8,7 @@ import {
   validateOracleForeignKeySourceChanges,
   readOracleForeignKeyReferenceSnapshot,
   validateOracleForeignKeyReference,
+  compareOracleForeignKeyColumnTypes,
   checkOracleForeignKeyData,
   prepareOracleForeignKeyPlan,
   executeOracleForeignKeyPlan,
@@ -246,6 +247,44 @@ describe("Oracle foreign key parent preflight", () => {
     expect(() => validateOracleForeignKeyReference(disabledParent, source, enabled, false)).toThrow();
     expect(() => validateOracleForeignKeyReference(parent, { ...source, columns: source.columns.map((column) => ({ ...column, dataType: "VARCHAR2" })) }, definition, true)).toThrow();
   });
+
+  it("rejects DATE to NUMBER foreign key replacement and enforces type matrix", async () => {
+    parentFixture();
+    const parent = await readOracleForeignKeyReferenceSnapshot(target, source.user, definition);
+    const dateSource: OracleForeignKeySourceSnapshot = {
+      ...source,
+      columns: source.columns.map((column) => ({ ...column, dataType: "DATE" })),
+    };
+    expect(() => validateOracleForeignKeyReference(parent, dateSource, definition, true)).toThrow();
+  });
+
+  it("evaluates canonical Oracle foreign key column type compatibility matrix", () => {
+    // Compatible same-type / normalized parameters
+    expect(compareOracleForeignKeyColumnTypes("NUMBER(10,2)", "NUMBER(5)")).toBe("compatible");
+    expect(compareOracleForeignKeyColumnTypes("VARCHAR2(100 BYTE)", "VARCHAR2(200 CHAR)")).toBe("compatible");
+    expect(compareOracleForeignKeyColumnTypes("TIMESTAMP(3)", "TIMESTAMP(6)")).toBe("compatible");
+    expect(compareOracleForeignKeyColumnTypes("RAW(16)", "RAW(32)")).toBe("compatible");
+
+    // Oracle NUMBER vs FLOAT and VARCHAR vs VARCHAR2
+    expect(compareOracleForeignKeyColumnTypes("FLOAT(126)", "NUMBER(38)", "oracle")).toBe("compatible");
+    expect(compareOracleForeignKeyColumnTypes("FLOAT(126)", "NUMBER(38)", "oceanbase-oracle")).toBe("incompatible");
+    expect(compareOracleForeignKeyColumnTypes("VARCHAR(50)", "VARCHAR2(50)", "oracle")).toBe("compatible");
+    expect(compareOracleForeignKeyColumnTypes("VARCHAR(50)", "VARCHAR2(50)", "oceanbase-oracle")).toBe("unknown");
+
+    // Incompatible types
+    expect(compareOracleForeignKeyColumnTypes("DATE", "NUMBER")).toBe("incompatible");
+    expect(compareOracleForeignKeyColumnTypes("DATE", "TIMESTAMP")).toBe("incompatible");
+    expect(compareOracleForeignKeyColumnTypes("CHAR", "NCHAR")).toBe("incompatible");
+    expect(compareOracleForeignKeyColumnTypes("VARCHAR2", "NVARCHAR2")).toBe("incompatible");
+    expect(compareOracleForeignKeyColumnTypes("BINARY_FLOAT", "BINARY_DOUBLE")).toBe("incompatible");
+    expect(compareOracleForeignKeyColumnTypes("BINARY_FLOAT", "NUMBER")).toBe("incompatible");
+    expect(compareOracleForeignKeyColumnTypes("TIMESTAMP", "TIMESTAMP WITH LOCAL TIME ZONE")).toBe("incompatible");
+
+    // Unknown types
+    expect(compareOracleForeignKeyColumnTypes("CUSTOM_TYPE", "NUMBER")).toBe("unknown");
+    expect(compareOracleForeignKeyColumnTypes("NUMBER", "CLOB")).toBe("unknown");
+    expect(compareOracleForeignKeyColumnTypes("VARCHAR2(100) INVALID_SUFFIX", "VARCHAR2(100)")).toBe("unknown");
+  });
 });
 
 describe("Oracle foreign key data preflight", () => {
@@ -363,6 +402,98 @@ describe("Oracle foreign key plan", () => {
     const execution = await executeOracleForeignKeyPlan(plan, 30, () => true);
     expect(execution?.steps.map((step) => step.state)).toEqual(["committed", "rejected"]);
     expect(execution?.recoverySql).toEqual([restore]);
+  });
+
+  it("generates manual recovery candidate after unconfirmed DROP when authoritative readback confirms missing", async () => {
+    const obTarget: OracleForeignKeyTarget = { ...target, databaseType: "oceanbase-oracle" };
+    const original = { name: "FK_OLD", columns: ["B"], refSchema: "Parent Owner", refTable: "Parent,Table", refColumns: ["V"], onDelete: "NO ACTION" as const, state: { enabled: true, validated: true, deferrable: false, initiallyDeferred: false, rely: false } };
+    const changed = { ...original, name: "FK_NEW" };
+    const drop = 'ALTER TABLE "App Owner"."Child,Table" DROP CONSTRAINT "FK_OLD";';
+    const add = 'ALTER TABLE "App Owner"."Child,Table" ADD CONSTRAINT "FK_NEW" FOREIGN KEY ("B") REFERENCES "Parent Owner"."Parent,Table" ("V") ENABLE VALIDATE;';
+    const restore = 'ALTER TABLE "App Owner"."Child,Table" ADD CONSTRAINT "FK_OLD" FOREIGN KEY ("B") REFERENCES "Parent Owner"."Parent,Table" ("V") ENABLE VALIDATE;';
+    const originalDdl = 'ALTER TABLE "App Owner"."Child,Table" ADD CONSTRAINT "FK_OLD" FOREIGN KEY ("B") REFERENCES "Parent Owner"."Parent,Table" ("V") ENABLE VALIDATE;';
+    let exists = true;
+    vi.mocked(api.buildTableStructureChangeSql).mockImplementation(async (options) => {
+      const change = options.oracleForeignKeyChanges?.[0];
+      return { statements: !change ? [drop, add] : change.original && change.target ? [drop, add] : [restore], warnings: [] } as never;
+    });
+    vi.mocked(api.executeQuery).mockImplementation(async (_id, _db, sql) => {
+      if (sql.startsWith("ALTER TABLE") && sql.includes("DROP CONSTRAINT")) {
+        exists = false;
+        throw new Error("Connection reset by peer");
+      }
+      if (sql === "SELECT USER FROM DUAL") return result([[obTarget.schema]]) as never;
+      if (sql.includes("SELECT USER, SYS_CONTEXT")) return result([[obTarget.schema, obTarget.schema]]) as never;
+      if (sql.includes("SYS.ALL_TABLES")) return result([[obTarget.schema, obTarget.tableName]]) as never;
+      if (sql.includes("SYS.ALL_OBJECTS")) return result(sql.includes("OWNER = 'App Owner'") ? [[obTarget.schema, obTarget.tableName, 7]] : [["Parent Owner", "Parent,Table", 24]]) as never;
+      if (sql.includes("SYS.ALL_TAB_COLS")) return result(sql.includes("OWNER = 'App Owner'") ? [["B", "NUMBER", 22, null, null, "Y"]] : [["V", "NUMBER"]]) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME, TABLE_NAME")) return result(exists ? [["FK_OLD", obTarget.tableName]] : []) as never;
+      if (sql.includes("JOIN SYS.ALL_CONS_COLUMNS")) return result([["PK_PARENT", "P", "ENABLED", "VALIDATED", "NOT DEFERRABLE", "V", 1]]) as never;
+      if (sql.includes("SYS.USER_CONSTRAINTS")) return result(exists ? [["FK_OLD", "ENABLED", "VALIDATED", "NOT DEFERRABLE", "IMMEDIATE", null, "Parent Owner", "PK_PARENT", "NO ACTION"]] : []) as never;
+      if (sql.includes("DBMS_METADATA.GET_DDL")) return result([[originalDdl]]) as never;
+      if (sql.includes("SYS.ALL_TAB_PRIVS")) return result([["REFERENCES"]]) as never;
+      if (sql.includes("SYS.ALL_COL_PRIVS") || sql.includes("SESSION_PRIVS")) return result([]) as never;
+      if (sql.startsWith("SELECT 1 FROM")) return result([]) as never;
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const options = { databaseType: "oceanbase-oracle" as const, schema: obTarget.schema, tableName: obTarget.tableName, columns: [], indexes: [], foreignKeys: [] };
+    const plan = await prepareOracleForeignKeyPlan(obTarget, options, [{ original, target: changed }]);
+    const execution = await executeOracleForeignKeyPlan(plan, 30, () => true);
+    expect(execution?.steps.map((step) => step.state)).toEqual(["unknown", "notExecuted"]);
+    expect(execution?.recoverySql).toEqual([restore]);
+  });
+
+  it.each([
+    ["original still exists", { exists: true, objectId: 7, nameOccupied: false, colType: "NUMBER", stillCurrent: true }],
+    ["objectId changed", { exists: false, objectId: 999, nameOccupied: false, colType: "NUMBER", stillCurrent: true }],
+    ["name occupied", { exists: false, objectId: 7, nameOccupied: true, colType: "NUMBER", stillCurrent: true }],
+    ["column drifted", { exists: false, objectId: 7, nameOccupied: false, colType: "VARCHAR2", stillCurrent: true }],
+    ["stillCurrent false", { exists: false, objectId: 7, nameOccupied: false, colType: "NUMBER", stillCurrent: false }],
+  ])("withholds manual recovery when %s", async (_label, config) => {
+    const obTarget: OracleForeignKeyTarget = { ...target, databaseType: "oceanbase-oracle" };
+    const original = { name: "FK_OLD", columns: ["B"], refSchema: "Parent Owner", refTable: "Parent,Table", refColumns: ["V"], onDelete: "NO ACTION" as const, state: { enabled: true, validated: true, deferrable: false, initiallyDeferred: false, rely: false } };
+    const changed = { ...original, name: "FK_NEW" };
+    const drop = 'ALTER TABLE "App Owner"."Child,Table" DROP CONSTRAINT "FK_OLD";';
+    const add = 'ALTER TABLE "App Owner"."Child,Table" ADD CONSTRAINT "FK_NEW" FOREIGN KEY ("B") REFERENCES "Parent Owner"."Parent,Table" ("V") ENABLE VALIDATE;';
+    const restore = 'ALTER TABLE "App Owner"."Child,Table" ADD CONSTRAINT "FK_OLD" FOREIGN KEY ("B") REFERENCES "Parent Owner"."Parent,Table" ("V") ENABLE VALIDATE;';
+    const originalDdl = 'ALTER TABLE "App Owner"."Child,Table" ADD CONSTRAINT "FK_OLD" FOREIGN KEY ("B") REFERENCES "Parent Owner"."Parent,Table" ("V") ENABLE VALIDATE;';
+    let dropAttempted = false;
+    vi.mocked(api.buildTableStructureChangeSql).mockImplementation(async (options) => {
+      const change = options.oracleForeignKeyChanges?.[0];
+      return { statements: !change ? [drop, add] : change.original && change.target ? [drop, add] : [restore], warnings: [] } as never;
+    });
+    vi.mocked(api.executeQuery).mockImplementation(async (_id, _db, sql) => {
+      if (sql.startsWith("ALTER TABLE") && sql.includes("DROP CONSTRAINT")) {
+        dropAttempted = true;
+        throw new Error("Connection reset by peer");
+      }
+      if (sql === "SELECT USER FROM DUAL") return result([[obTarget.schema]]) as never;
+      if (sql.includes("SELECT USER, SYS_CONTEXT")) return result([[obTarget.schema, obTarget.schema]]) as never;
+      if (sql.includes("SYS.ALL_TABLES")) return result([[obTarget.schema, obTarget.tableName]]) as never;
+      if (sql.includes("SYS.ALL_OBJECTS")) return result(sql.includes("OWNER = 'App Owner'") ? [[obTarget.schema, obTarget.tableName, dropAttempted ? config.objectId : 7]] : [["Parent Owner", "Parent,Table", 24]]) as never;
+      if (sql.includes("SYS.ALL_TAB_COLS")) return result(sql.includes("OWNER = 'App Owner'") ? [["B", dropAttempted ? config.colType : "NUMBER", 22, null, null, "Y"]] : [["V", "NUMBER"]]) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME, TABLE_NAME")) {
+        if (!dropAttempted) return result([["FK_OLD", obTarget.tableName]]) as never;
+        if (config.nameOccupied) return result([["FK_OLD", obTarget.tableName]]) as never;
+        return result(config.exists ? [["FK_OLD", obTarget.tableName]] : []) as never;
+      }
+      if (sql.includes("JOIN SYS.ALL_CONS_COLUMNS")) return result([["PK_PARENT", "P", "ENABLED", "VALIDATED", "NOT DEFERRABLE", "V", 1]]) as never;
+      if (sql.includes("SYS.USER_CONSTRAINTS")) return result(!dropAttempted || config.exists ? [["FK_OLD", "ENABLED", "VALIDATED", "NOT DEFERRABLE", "IMMEDIATE", null, "Parent Owner", "PK_PARENT", "NO ACTION"]] : []) as never;
+      if (sql.includes("DBMS_METADATA.GET_DDL")) return result([[originalDdl]]) as never;
+      if (sql.includes("SYS.ALL_TAB_PRIVS")) return result([["REFERENCES"]]) as never;
+      if (sql.includes("SYS.ALL_COL_PRIVS") || sql.includes("SESSION_PRIVS")) return result([]) as never;
+      if (sql.startsWith("SELECT 1 FROM")) return result([]) as never;
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const options = { databaseType: "oceanbase-oracle" as const, schema: obTarget.schema, tableName: obTarget.tableName, columns: [], indexes: [], foreignKeys: [] };
+    const plan = await prepareOracleForeignKeyPlan(obTarget, options, [{ original, target: changed }]);
+    let callCount = 0;
+    const execution = await executeOracleForeignKeyPlan(plan, 30, () => {
+      callCount++;
+      if (!config.stillCurrent && callCount > 3) return false;
+      return true;
+    });
+    expect(execution?.recoverySql).toBeUndefined();
   });
 });
 

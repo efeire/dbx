@@ -2028,6 +2028,7 @@ const supportsTableOwner = computed(() => !isCreateMode.value && databaseType.va
 const primaryKeyName = ref("");
 const existingPrimaryKeyDraft = ref<ExistingPrimaryKeyChange>();
 const existingPrimaryKeyPlan = shallowRef<OceanbasePrimaryKeyPlan>();
+const existingPrimaryKeySession = ref<{ revision: number; configFingerprint: string }>();
 const existingOracleForeignKeyPlan = shallowRef<OracleForeignKeyPlan>();
 const existingOracleForeignKeySession = ref<{ revision: number; configFingerprint: string }>();
 const newOracleForeignKeyPlan = shallowRef<OracleForeignKeyCreatePlan>();
@@ -2072,6 +2073,7 @@ watch(
     if (saving.value) productionSafetyStore.cancelScope(oracleIndexConfirmationScope);
     existingPrimaryKeyDraft.value = undefined;
     existingPrimaryKeyPlan.value = undefined;
+    existingPrimaryKeySession.value = undefined;
     existingOracleForeignKeyPlan.value = undefined;
     existingOracleForeignKeySession.value = undefined;
     newOracleForeignKeyPlan.value = undefined;
@@ -2882,6 +2884,8 @@ function clearSqlPreviewState() {
   pendingStatements.value = [];
   warnings.value = [];
   sqliteSchemaRevision.value = undefined;
+  existingPrimaryKeyPlan.value = undefined;
+  existingPrimaryKeySession.value = undefined;
   existingOracleForeignKeyPlan.value = undefined;
   existingOracleForeignKeySession.value = undefined;
   newOracleForeignKeyPlan.value = undefined;
@@ -3075,6 +3079,7 @@ function partitionSqlOptions(): TablePartitionSqlOptions {
 async function refreshSqlPreview() {
   const requestId = ++sqlPreviewRequestId;
   existingPrimaryKeyPlan.value = undefined;
+  existingPrimaryKeySession.value = undefined;
   oracleConstraintPlan.value = undefined;
   oracleConstraintSession.value = undefined;
   existingOracleForeignKeyPlan.value = undefined;
@@ -3127,6 +3132,9 @@ async function refreshSqlPreview() {
     try {
       if (!canEditExistingPrimaryKey.value || hasPendingStructureChanges(false)) throw new OceanbasePrimaryKeyValidationError("mixedDraft");
       const target = primaryKeyTarget();
+      const connectionRevision = store.connectionStateRevision(target.connectionId);
+      const currentConfig = store.getConfig(target.connectionId);
+      const configFingerprint = currentConfig ? connectionConfigFingerprint(currentConfig) : "";
       let change = cloneDraftValue(existingPrimaryKeyDraft.value!);
       const draft = cloneDraftValue(change);
       let snapshot: string;
@@ -3140,9 +3148,14 @@ async function refreshSqlPreview() {
       if (requestId !== sqlPreviewRequestId) return;
       const result = await api.buildTableStructureChangeSql({ ...structureChangeOptions(), primaryKeyChange: change });
       if (requestId !== sqlPreviewRequestId) return;
+      const latestConfig = store.getConfig(target.connectionId);
+      if (store.connectionStateRevision(target.connectionId) !== connectionRevision || !store.isCurrentConnectionStateRevision(target.connectionId, connectionRevision) || (latestConfig ? connectionConfigFingerprint(latestConfig) : "") !== configFingerprint) {
+        throw new Error(t("oceanbasePrimaryKey.refreshRequired"));
+      }
       if (result.warnings.length) throw new Error(result.warnings.join("\n"));
       if (result.statements.length !== (change.columns.length ? 2 : 1)) throw new OceanbasePrimaryKeyValidationError("incompletePlan");
       existingPrimaryKeyPlan.value = { target, change, draft, snapshot, statements: [...result.statements] };
+      existingPrimaryKeySession.value = { revision: connectionRevision, configFingerprint };
       pendingStatements.value = [...result.statements];
       warnings.value = [];
     } catch (error) {
@@ -3387,6 +3400,7 @@ function resetState() {
   constraints.value = [];
   existingPrimaryKeyDraft.value = undefined;
   existingPrimaryKeyPlan.value = undefined;
+  existingPrimaryKeySession.value = undefined;
   existingOracleForeignKeyPlan.value = undefined;
   existingOracleForeignKeySession.value = undefined;
   newOracleForeignKeyPlan.value = undefined;
@@ -5783,14 +5797,28 @@ function toggleSqlPreviewCollapsed() {
 async function applyExistingPrimaryKey(): Promise<boolean> {
   if (primaryKeyBusy.value || !existingPrimaryKeyPlan.value) return false;
   const plan = cloneDraftValue(existingPrimaryKeyPlan.value);
+  const plannedSession = existingPrimaryKeySession.value;
+  if (!plannedSession) return false;
   const identity = JSON.stringify(plan.target);
   const draft = JSON.stringify(plan.draft ?? plan.change);
+  const connectionAtStart = store.getConfig(plan.target.connectionId);
   const sameTarget = () => !primaryKeyUnmounted && identity === JSON.stringify(primaryKeyTarget());
-  const stillCurrent = () => sameTarget() && draft === JSON.stringify(existingPrimaryKeyDraft.value) && !hasPendingStructureChanges(false) && !ddlDirty.value;
-  if (!stillCurrent()) return false;
+  const connectionCurrent = () =>
+    store.connectionStateRevision(plan.target.connectionId) === plannedSession.revision &&
+    store.isCurrentConnectionStateRevision(plan.target.connectionId, plannedSession.revision) &&
+    (store.getConfig(plan.target.connectionId) ? connectionConfigFingerprint(store.getConfig(plan.target.connectionId)!) : "") === plannedSession.configFingerprint;
+  const canStart = () => sameTarget() && connectionCurrent() && draft === JSON.stringify(existingPrimaryKeyDraft.value) && !hasPendingStructureChanges(false) && !ddlDirty.value;
+  if (!canStart()) {
+    if (sameTarget() && !connectionCurrent()) {
+      existingPrimaryKeyPlan.value = undefined;
+      existingPrimaryKeySession.value = undefined;
+      pendingStatements.value = [];
+      warnings.value = [t("oceanbasePrimaryKey.refreshRequired")];
+    }
+    return false;
+  }
   primaryKeyBusy.value = true;
   saving.value = true;
-  const connectionAtStart = store.getConfig(plan.target.connectionId);
   const startedAt = Date.now();
   try {
     const protection = productionContextForDatabase(connectionAtStart, plan.target.database);
@@ -5803,11 +5831,27 @@ async function applyExistingPrimaryKey(): Promise<boolean> {
         source: t("production.sourceStructure"),
         scopeId: primaryKeyConfirmationScope,
       });
-      if (!accepted || !stillCurrent()) return false;
+      if (!accepted || !canStart()) {
+        if (sameTarget() && !connectionCurrent()) {
+          existingPrimaryKeyPlan.value = undefined;
+          existingPrimaryKeySession.value = undefined;
+          pendingStatements.value = [];
+          warnings.value = [t("oceanbasePrimaryKey.refreshRequired")];
+        }
+        return false;
+      }
     }
     const timeout = queryTimeoutSecsForConnection(connectionAtStart, settingsStore.editorSettings.globalQueryTimeoutSecs);
-    const result = await executeOceanbasePrimaryKeyPlan(plan, timeout, stillCurrent);
-    if (!result) return false;
+    const result = await executeOceanbasePrimaryKeyPlan(plan, timeout, { canStart, connectionCurrent });
+    if (!result) {
+      if (sameTarget() && !connectionCurrent()) {
+        existingPrimaryKeyPlan.value = undefined;
+        existingPrimaryKeySession.value = undefined;
+        pendingStatements.value = [];
+        warnings.value = [t("oceanbasePrimaryKey.refreshRequired")];
+      }
+      return false;
+    }
     const completed = result.steps.every((step) => step.state === "committed");
     let details = result.steps.map((step, index) => `${index + 1}. ${t(`oceanbasePrimaryKey.${step.state}`)}\n${step.sql}${step.error ? `\n${step.error}` : ""}`).join("\n\n");
     if (result.indexStates?.length) details += `\n\n${result.indexStates.map((index) => `${index.name}: ${t(`oceanbasePrimaryKey.${index.state}`)}`).join("\n")}`;
@@ -5829,17 +5873,20 @@ async function applyExistingPrimaryKey(): Promise<boolean> {
         console.warn("[DBX][structure-history:save-failed]", error);
       }
     }
-    try {
-      invalidateTableMetadataCache(plan.target);
-      await invalidateObjectMetadataCache(plan.target);
-      await invalidateObjectDdl(plan.target);
-    } catch (error) {
-      result.readbackError = [result.readbackError, primaryKeyError(error)].filter(Boolean).join("\n");
+    if (connectionCurrent()) {
+      try {
+        invalidateTableMetadataCache(plan.target);
+        await invalidateObjectMetadataCache(plan.target);
+        await invalidateObjectDdl(plan.target);
+      } catch (error) {
+        result.readbackError = [result.readbackError, primaryKeyError(error)].filter(Boolean).join("\n");
+      }
     }
-    if (stillCurrent()) {
+    if (sameTarget()) {
       existingPrimaryKeyPlan.value = undefined;
+      existingPrimaryKeySession.value = undefined;
       pendingStatements.value = [];
-      if (completed && !result.readbackError) {
+      if (completed && !result.readbackError && connectionCurrent()) {
         existingPrimaryKeyDraft.value = undefined;
         loadedMetadataFacets.clear();
         ddlFetched.value = false;
@@ -5856,7 +5903,7 @@ async function applyExistingPrimaryKey(): Promise<boolean> {
       }
       syncDraftToParent();
     }
-    const succeeded = completed && !result.readbackError;
+    const succeeded = completed && !result.readbackError && connectionCurrent();
     if (succeeded) {
       toast(t("structureEditor.saved"), 2500);
       if (!result.recoverySql) return true;

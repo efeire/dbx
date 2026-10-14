@@ -324,6 +324,7 @@ pub struct OracleConstraintChange {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "definition")]
+#[allow(clippy::large_enum_variant)]
 pub enum OracleConstraintDefinition {
     Check(OracleCheckConstraint),
     Unique(OracleUniqueConstraint),
