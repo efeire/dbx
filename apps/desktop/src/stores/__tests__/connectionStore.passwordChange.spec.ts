@@ -106,7 +106,7 @@ describe("connectionStore password retirement", () => {
     });
     await vi.waitFor(() => expect(retainedTabRefresh).toHaveBeenCalled());
     finishDisconnect();
-    await retirement;
+    await expect(retirement).resolves.toEqual({ status: "retired", fingerprint: connectionConfigFingerprint({ ...config, password: "", save_password: false }) });
     expect(retainedTabError).toBeInstanceOf(Error);
     expect(api.connectDb).not.toHaveBeenCalled();
     expect(api.checkConnectionHealth).not.toHaveBeenCalled();
@@ -277,7 +277,7 @@ describe("connectionStore password retirement", () => {
     const expectedFingerprint = connectionConfigFingerprint(config);
     store.connections[0] = { ...config, host: "edited-host" };
 
-    await expect(store.retirePasswordAfterChange(config.id, expectedFingerprint)).resolves.toBe("skipped");
+    await expect(store.retirePasswordAfterChange(config.id, expectedFingerprint)).resolves.toEqual({ status: "skipped" });
 
     expect(store.getConfig(config.id)).toMatchObject({ host: "edited-host", password: config.password, save_password: true });
     expect(api.disconnectDb).not.toHaveBeenCalled();
@@ -301,7 +301,7 @@ describe("connectionStore password retirement", () => {
     store.connections[0] = { ...store.getConfig(config.id)!, host: "edited-host" };
     credentialStatus.resolve(true);
 
-    await expect(retirement).resolves.toBe("skipped");
+    await expect(retirement).resolves.toEqual({ status: "skipped" });
     expect(api.forgetSessionCredential).not.toHaveBeenCalled();
     expect(store.getConfig(config.id)).toMatchObject({ host: "edited-host", password: "", save_password: false });
     expect(store.connectionErrors[config.id]).toBeUndefined();
@@ -322,7 +322,7 @@ describe("connectionStore password retirement", () => {
     store.connections[0] = { ...store.getConfig(config.id)!, host: "edited-host" };
     metadataRead.resolve(null);
 
-    await expect(retirement).resolves.toBe("skipped");
+    await expect(retirement).resolves.toEqual({ status: "skipped" });
     expect(retainedTabRefresh).not.toHaveBeenCalled();
     expect(store.getConfig(config.id)).toMatchObject({ host: "edited-host", password: "", save_password: false });
   });

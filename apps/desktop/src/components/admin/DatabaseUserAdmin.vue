@@ -89,6 +89,8 @@ const pendingAfterApply = ref<(() => Promise<void>) | undefined>();
 const pendingPasswordChange = ref<{ connectionId: string; selfChange: boolean }>();
 const passwordReconnectRequired = ref(false);
 const passwordCleanupFailed = ref(false);
+const passwordRetirement = ref<{ id: number; identity: string; subjectKey: string; retiredIdentity: string; retiring: boolean }>();
+let passwordRetirementId = 0;
 interface OracleExecution {
   id: number;
   identity: string;
@@ -98,6 +100,8 @@ interface OracleExecution {
   displaySql: string;
   stopRequested: boolean;
   settled: boolean;
+  retiring?: boolean;
+  retiringIdentity?: string;
   dispatchedStepIds: Set<string>;
   results: AuthorizationStepResult[];
 }
@@ -107,16 +111,14 @@ const oracleVisibleSql = computed(() => oracleExecution.value?.displaySql ?? (pe
 const oracleExecutionStatus = computed(() => {
   const execution = oracleExecution.value;
   if (!execution) return "";
-  if (!execution.settled) return t("common.pending");
-  if (execution.stopRequested) return t("common.cancelled");
+  if (!execution.settled) return execution.stopRequested && execution.dispatchedStepIds.size > 0 ? t("oracleSecurity.stoppingAwaitingResult") : t("common.pending");
+  if (execution.stopRequested) return t("oracleSecurity.stoppedFollowing");
   return "";
 });
 const visibleResults = computed(() => oracleExecution.value?.results ?? pendingResults.value);
 const visibleStatus = computed(() => {
   if (!visibleResults.value.length) return undefined;
-  const status = authorizationPlanStatus(visibleResults.value);
-  if (oracleExecution.value && status === "success" && visibleResults.value.some((result) => result.status === "skipped")) return "partial";
-  return status;
+  return authorizationPlanStatus(visibleResults.value);
 });
 
 const createUser = ref("app_user");
@@ -562,6 +564,7 @@ async function applyPendingSql() {
   const subjectKey = selectedUserKey.value;
   const generation = previewGeneration;
   const oracleAction = isOracle.value;
+  let activeRetirementId: number | undefined;
   const execution = oracleAction
     ? reactive({
         id: ++oracleExecutionId,
@@ -590,7 +593,7 @@ async function applyPendingSql() {
         if (!sqlDialogOpen.value || pendingSql.value !== sql || identity !== connectionIdentity.value || selectedUserKey.value !== subjectKey || generation !== previewGeneration || (oracleAction && execution?.stopRequested)) {
           if (oracleAction && execution) {
             execution.stopRequested = true;
-            execution.results = execution.plan.steps.map((step) => ({ step, status: "skipped", message: t("userAdmin.stepSkipped") }));
+            execution.results = execution.plan.steps.map((step) => ({ step, status: "skipped", message: t("oracleSecurity.notSentAfterStop") }));
             return execution.results;
           }
           return undefined;
@@ -611,14 +614,14 @@ async function applyPendingSql() {
               return [{ execution_error: true, rows: [[oracleWriteError(String(error))]] } as any];
             }
             if (oracleAction) {
-              if (!Array.isArray(results) || results.length !== 1) return [{ execution_error: true, rows: [[t("oracleSecurity.writeUnknown")]] } as any];
+              if (!Array.isArray(results) || results.length !== 1 || !Array.isArray(results[0]?.columns) || !Array.isArray(results[0]?.rows)) return [{ execution_error: true, rows: [[t("oracleSecurity.writeUnknown")]] } as any];
               if (results[0].execution_error) return [{ ...results[0], rows: [[oracleWriteError(String(results[0].rows[0]?.[0] ?? ""), true)]] }];
             }
             return results;
           });
           if (execution) {
             execution.results = results.map((item) => {
-              if (!execution.dispatchedStepIds.has(item.step.id)) return { ...item, status: "skipped", outcome: undefined, message: t("userAdmin.stepSkipped") };
+              if (!execution.dispatchedStepIds.has(item.step.id)) return { ...item, status: "skipped", outcome: undefined, message: execution.stopRequested ? t("oracleSecurity.notSentAfterStop") : t("userAdmin.stepSkipped") };
               if (item.status === "failed" && !item.message?.includes(t("oracleSecurity.writeRejected"))) return { ...item, outcome: "unknown", message: t("oracleSecurity.writeUnknown") };
               return item;
             });
@@ -626,8 +629,15 @@ async function applyPendingSql() {
           }
           return results;
         }
-        const queryResults = await api.executeMulti(connection.id, "", sql, undefined, undefined, { maxRows: 1000, continueOnError: true });
-        if (oracleAction && queryResults.length !== 1) {
+        let queryResults: Awaited<ReturnType<typeof api.executeMulti>>;
+        try {
+          queryResults = await api.executeMulti(connection.id, "", sql, undefined, undefined, { maxRows: 1000, continueOnError: true });
+        } catch (error) {
+          if (!oracleAction || !execution) throw error;
+          execution.results = [{ step: execution.plan.steps[0], status: "failed", outcome: "unknown", message: t("oracleSecurity.writeUnknown") }];
+          return execution.results;
+        }
+        if (oracleAction && (!Array.isArray(queryResults) || queryResults.length !== 1 || !Array.isArray(queryResults[0]?.columns) || !Array.isArray(queryResults[0]?.rows))) {
           if (execution) execution.results = [{ step: execution.plan.steps[0], status: "failed", outcome: "unknown", message: t("oracleSecurity.writeUnknown") }];
           return execution?.results ?? [];
         }
@@ -643,17 +653,37 @@ async function applyPendingSql() {
         }
         if (execution) execution.results = [{ step: execution.plan.steps[0], status: "success" }];
         if (passwordChange?.selfChange) {
+          const retiredConfig = { ...connection, password: "", save_password: false };
+          const retiredFingerprint = connectionConfigFingerprint(retiredConfig);
+          const retiredIdentity = `${connection.id}:${retiredFingerprint}`;
           try {
             if (identity === connectionIdentity.value) {
+              const retirementId = ++passwordRetirementId;
+              activeRetirementId = retirementId;
+              passwordRetirement.value = { id: retirementId, identity, subjectKey, retiredIdentity, retiring: true };
+              if (execution) {
+                execution.retiring = true;
+                execution.retiringIdentity = retiredIdentity;
+              }
               const retirement = await connectionStore.retirePasswordAfterChange(passwordChange.connectionId, connectionConfigFingerprint(connection));
-              if (retirement === "ready" && identity === connectionIdentity.value && selectedUserKey.value === subjectKey) {
+              if (execution) execution.retiring = false;
+              if (passwordRetirement.value?.id === retirementId) passwordRetirement.value.retiring = false;
+              if (
+                retirement.status === "retired" &&
+                retirement.fingerprint === retiredFingerprint &&
+                connectionIdentity.value === `${connection.id}:${retirement.fingerprint}` &&
+                selectedUserKey.value === subjectKey &&
+                passwordRetirement.value?.id === retirementId &&
+                (!execution || oracleExecution.value?.id === execution.id)
+              ) {
                 passwordReconnectRequired.value = true;
                 passwordDialogOpen.value = false;
                 toast(t("userAdmin.passwordChangedReconnect"), 8000);
               }
             }
           } catch {
-            if (identity === connectionIdentity.value && selectedUserKey.value === subjectKey) {
+            if (execution) execution.retiring = false;
+            if (passwordRetirement.value?.retiredIdentity === connectionIdentity.value && selectedUserKey.value === subjectKey && passwordRetirement.value.id === activeRetirementId && (!execution || oracleExecution.value?.id === execution.id)) {
               passwordReconnectRequired.value = true;
               passwordCleanupFailed.value = true;
               passwordDialogOpen.value = false;
@@ -671,7 +701,7 @@ async function applyPendingSql() {
       execution.results = result;
     } else if (identity === connectionIdentity.value && selectedUserKey.value === subjectKey) pendingResults.value = result;
     if (identity !== connectionIdentity.value || selectedUserKey.value !== subjectKey) return;
-    const status = result.length > 0 ? (execution && authorizationPlanStatus(result) === "success" && result.some((item) => item.status === "skipped") ? "partial" : authorizationPlanStatus(result)) : "success";
+    const status = result.length > 0 ? authorizationPlanStatus(result) : "success";
     toast(t(status === "success" ? "userAdmin.applySuccess" : status === "partial" ? "userAdmin.applyPartial" : "userAdmin.applyFailedSummary"), status === "success" ? 2500 : 5000);
     const createSucceeded = !plan || result.some((item) => item.step.id === "create-user" && item.status === "success");
     if (createSucceeded && identity === connectionIdentity.value && selectedUserKey.value === subjectKey) await (afterApply?.() ?? Promise.resolve());
@@ -690,6 +720,7 @@ async function applyPendingSql() {
   } finally {
     applying.value = false;
     if (execution) execution.settled = true;
+    if (passwordRetirement.value?.id === activeRetirementId) passwordRetirement.value = undefined;
   }
 }
 
@@ -702,7 +733,7 @@ function oracleWriteError(message: string, executionError = false): string {
 
 function clearPendingSql() {
   if (oracleExecution.value && !oracleExecution.value.settled) {
-    oracleExecution.value.stopRequested = true;
+    requestStopFollowingOracleSteps(oracleExecution.value);
     sqlDialogOpen.value = true;
     return;
   }
@@ -721,7 +752,7 @@ function clearPendingSql() {
 
 function setSqlDialogOpen(open: boolean) {
   if (!open && oracleExecution.value && !oracleExecution.value.settled) {
-    oracleExecution.value.stopRequested = true;
+    requestStopFollowingOracleSteps(oracleExecution.value);
     sqlDialogOpen.value = true;
     return;
   }
@@ -730,10 +761,14 @@ function setSqlDialogOpen(open: boolean) {
 
 function cancelSqlPreview() {
   if (oracleExecution.value && !oracleExecution.value.settled) {
-    oracleExecution.value.stopRequested = true;
+    requestStopFollowingOracleSteps(oracleExecution.value);
     return;
   }
   sqlDialogOpen.value = false;
+}
+
+function requestStopFollowingOracleSteps(execution: OracleExecution) {
+  if (execution.dispatchedStepIds.size === 0 || execution.dispatchedStepIds.size < execution.plan.steps.length) execution.stopRequested = true;
 }
 
 async function reconnectAfterPasswordChange() {
@@ -1039,14 +1074,17 @@ watch(
 
 watch(
   () => connectionIdentity.value,
-  () => {
+  (identity, previousIdentity) => {
+    const execution = oracleExecution.value;
+    const retirement = passwordRetirement.value;
+    const ownPasswordRetirement = !!retirement?.retiring && retirement.identity === previousIdentity && retirement.retiredIdentity === identity;
     usersRequestId++;
     grantsRequestId++;
     databaseRequestId++;
     databaseLoadPromise = undefined;
     createPlanRequestId++;
     previewGeneration++;
-    if (oracleExecution.value && !oracleExecution.value.settled) oracleExecution.value.stopRequested = true;
+    if (oracleExecution.value && !oracleExecution.value.settled) requestStopFollowingOracleSteps(oracleExecution.value);
     oracleSnapshot.value = undefined;
     if (oracleExecution.value && !oracleExecution.value.settled) {
       pendingSql.value = "";
@@ -1056,6 +1094,15 @@ watch(
       pendingAfterApply.value = undefined;
       pendingPasswordChange.value = undefined;
     } else clearPendingSql();
+    if (ownPasswordRetirement) {
+      oracleSnapshot.value = undefined;
+      users.value = [];
+      grants.value = [];
+      grantsLoaded.value = false;
+      loadingGrants.value = false;
+      selectedUserKey.value = retirement.subjectKey;
+      return;
+    }
     passwordDialogOpen.value = false;
     hostDialogOpen.value = false;
     createDialogOpen.value = false;
@@ -1438,14 +1485,16 @@ onBeforeUnmount(() => {
                 <span class="block">{{ authorizationStepLabel(result) }}</span>
                 <span v-if="result.outcome === 'unknown'" class="mt-0.5 block text-destructive">{{ t("oracleSecurity.writeUnknown") }}</span>
                 <span v-else-if="result.message" class="mt-0.5 block break-all text-destructive">{{ result.message }}</span>
-                <span v-else-if="result.status === 'skipped'" class="mt-0.5 block text-muted-foreground">{{ t("userAdmin.stepSkipped") }}</span>
+                <span v-else-if="result.status === 'skipped'" class="mt-0.5 block text-muted-foreground">{{ result.message || t("userAdmin.stepSkipped") }}</span>
               </span>
             </div>
           </div>
         </div>
         <DialogFooter>
           <template v-if="visibleResults.length === 0">
-            <Button variant="outline" @click="cancelSqlPreview">{{ t("dangerDialog.cancel") }}</Button>
+            <Button variant="outline" :disabled="!!oracleExecution && !oracleExecution.settled && oracleExecution.plan.steps.length === 1 && oracleExecution.dispatchedStepIds.size > 0" @click="cancelSqlPreview">{{
+              oracleExecution && !oracleExecution.settled ? (oracleExecution.dispatchedStepIds.size === 0 ? t("oracleSecurity.stopBeforeDispatch") : oracleExecution.plan.steps.length === 1 ? t("common.pending") : t("oracleSecurity.stopFollowing")) : t("dangerDialog.cancel")
+            }}</Button>
             <Button v-if="!oracleExecution || oracleExecution.settled" :variant="pendingDanger ? 'destructive' : 'default'" :disabled="applying" @click="applyPendingSql">
               <Loader2 v-if="applying" class="mr-1.5 h-3.5 w-3.5 animate-spin" />
               {{ t("userAdmin.applySql") }}

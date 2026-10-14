@@ -2,6 +2,7 @@
 
 import { createApp, defineComponent, h, nextTick, ref, type Component } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { connectionConfigFingerprint } from "@/lib/connection/connectionDatabaseInfo";
 import type { ConnectionConfig } from "@/types/database";
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +15,14 @@ const mocks = vi.hoisted(() => ({
   trackUiState: vi.fn(),
   executeQuery: vi.fn(),
   executeMulti: vi.fn(),
+  connectDb: vi.fn(),
+  disconnectDb: vi.fn(),
+  saveConnections: vi.fn(),
+  sessionCredentialStatus: vi.fn(),
+  forgetSessionCredential: vi.fn(),
+  loadSchemaCache: vi.fn(),
+  checkConnectionHealth: vi.fn(),
+  connectionIdentifierQuote: vi.fn(),
   productionGuard: vi.fn(),
   toast: vi.fn(),
   listDatabases: vi.fn(),
@@ -71,7 +80,8 @@ function passwordInput(): Component {
   });
 }
 
-vi.mock("vue-i18n", () => ({
+vi.mock("vue-i18n", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("vue-i18n")>()),
   useI18n: () => ({
     t: (key: string, values?: Record<string, unknown>) => (values?.message ? `${key}: ${values.message}` : key),
   }),
@@ -125,6 +135,14 @@ vi.mock("@/stores/connectionStore", () => ({
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 vi.mock("@/composables/useSqlHighlighter", () => ({ useSqlHighlighter: () => ({ highlight: (sql: string) => sql }) }));
 vi.mock("@/lib/backend/api", () => ({
+  connectDb: mocks.connectDb,
+  disconnectDb: mocks.disconnectDb,
+  saveConnections: mocks.saveConnections,
+  sessionCredentialStatus: mocks.sessionCredentialStatus,
+  forgetSessionCredential: mocks.forgetSessionCredential,
+  loadSchemaCache: mocks.loadSchemaCache,
+  checkConnectionHealth: mocks.checkConnectionHealth,
+  connectionIdentifierQuote: mocks.connectionIdentifierQuote,
   executeQuery: mocks.executeQuery,
   executeMulti: mocks.executeMulti,
   listDatabases: mocks.listDatabases,
@@ -132,6 +150,9 @@ vi.mock("@/lib/backend/api", () => ({
   listDorisCatalogDatabases: mocks.listDorisCatalogDatabases,
   listTables: mocks.listTables,
   listSchemas: mocks.listSchemas,
+}));
+vi.mock("@/stores/queryStore", () => ({
+  useQueryStore: () => ({ rollbackConnectionTransactions: vi.fn(), closeConnectionTabs: vi.fn(), releaseConnectionTabs: vi.fn(), invalidateConnectionMetadata: vi.fn(), tabs: [], flushPendingPersist: vi.fn().mockResolvedValue(undefined) }),
 }));
 vi.mock("@/lib/database/productionExecutionGuard", () => ({
   executeWithProductionSqlGuard: async (options: { execute: () => Promise<unknown> }) => {
@@ -226,6 +247,7 @@ afterEach(() => {
   mocks.guardCancelled = false;
   mocks.guardWait = undefined;
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("DatabaseUserAdmin connection identity", () => {
@@ -259,7 +281,7 @@ describe("DatabaseUserAdmin connection identity", () => {
   it("does not retire a newly edited connection after a late self-password acknowledgement", async () => {
     const config = { ...postgresConnection, id: "same-user-admin-connection", db_type: "vastbase", username: "fixture_self", password: "saved-old" } as ConnectionConfig;
     mocks.ensureConnected.mockResolvedValue(undefined);
-    mocks.retirePasswordAfterChange.mockResolvedValue("ready");
+    mocks.retirePasswordAfterChange.mockResolvedValue({ status: "skipped" });
     mocks.getConfig.mockReturnValue({ ...config, password: "", save_password: false });
     mocks.executeQuery.mockImplementation(async (_id, _database, sql: string) => (!sql.startsWith("WITH target") ? { columns: ["user", "host", "plugin"], rows: [["fixture_self", "LOGIN", ""]] } : { columns: ["grant"], rows: [] }));
     mountWithReactiveConnection(config);
@@ -348,9 +370,11 @@ describe("DatabaseUserAdmin connection identity", () => {
     );
     findButton("userAdmin.applySql")!.click();
     await vi.waitFor(() => expect(mocks.executeMulti).toHaveBeenCalledTimes(1));
-    const cancel = Array.from(root!.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "dangerDialog.cancel");
+    const cancel = Array.from(root!.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "oracleSecurity.stopFollowing");
     expect(cancel).toBeDefined();
     cancel!.click();
+    await nextTick();
+    expect(root!.textContent).toContain("oracleSecurity.stoppingAwaitingResult");
     Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => button.textContent?.includes("OTHER_USER"))!
       .click();
@@ -367,6 +391,7 @@ describe("DatabaseUserAdmin connection identity", () => {
     expect(root!.textContent).toContain("OWNER_A.TABLE_OWNER_A");
     expect(root!.textContent).toContain("OWNER_B.TABLE_OWNER_B");
     expect(root!.textContent).toContain("OceanBase · oracle · TARGET_USER");
+    expect(root!.textContent).toContain("oracleSecurity.notSentAfterStop");
   });
 
   it("discards an Oracle security read and snapshot when the same connection id is edited", async () => {
@@ -461,8 +486,39 @@ describe("DatabaseUserAdmin connection identity", () => {
     await nextTick();
     confirm();
 
-    await vi.waitFor(() => expect(root!.textContent).toContain("userAdmin.stepSkipped"));
+    await vi.waitFor(() => expect(root!.textContent).toContain("oracleSecurity.notSentAfterStop"));
     expect(mocks.executeMulti).not.toHaveBeenCalled();
+    expect(root!.textContent).toContain("OceanBase · oracle · TARGET_USER");
+    expect(root!.textContent).toContain("userAdmin.resultFailed");
+  });
+
+  it.each(["transport rejection", "malformed acknowledgement"] as const)("retains an unknown receipt for a single Oracle statement after %s", async (failure) => {
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.executeQuery.mockImplementation(async (_id, _database, sql: string) => {
+      if (sql.includes("SELECT USER AS USERNAME")) return { columns: ["USERNAME"], rows: [["DBA"]] };
+      if (sql.includes("DBA_USERS")) return { columns: ["USERNAME", "ACCOUNT_STATUS"], rows: [["TARGET_USER", "OPEN"]] };
+      if (sql.includes("DBA_ROLES")) return { columns: ["ROLE"], rows: [] };
+      if (sql.includes("DBA_ROLE_PRIVS") || sql.includes("DBA_SYS_PRIVS") || sql.includes("DBA_TAB_PRIVS") || sql.includes("DBA_COL_PRIVS")) return { columns: ["GRANTEE", "PRIVILEGE"], rows: [] };
+      return { columns: [], rows: [] };
+    });
+    mountWithReactiveConnection(oracleConnection);
+    await vi.waitFor(() => expect(root!.textContent).toContain("TARGET_USER"));
+    Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("TARGET_USER"))!
+      .click();
+    await nextTick();
+    findButton("userAdmin.lock")!.click();
+    await nextTick();
+    expect(findButton("userAdmin.applySql")).toBeDefined();
+
+    if (failure === "transport rejection") mocks.executeMulti.mockRejectedValueOnce(new Error("connection lost after dispatch"));
+    else mocks.executeMulti.mockResolvedValueOnce([{}] as any);
+    findButton("userAdmin.applySql")!.click();
+    await vi.waitFor(() => expect(root!.textContent).toContain("oracleSecurity.writeUnknown"));
+
+    expect(mocks.executeMulti).toHaveBeenCalledTimes(1);
+    expect(findButton("userAdmin.applySql")).toBeUndefined();
+    expect(findButton("userAdmin.closeResult")).toBeDefined();
     expect(root!.textContent).toContain("OceanBase · oracle · TARGET_USER");
   });
 });
@@ -472,14 +528,15 @@ describe("DatabaseUserAdmin Vastbase passwords", () => {
 
   async function mountPassword(user = "fixture_self", dbConfig = config) {
     mocks.ensureConnected.mockResolvedValue(undefined);
-    mocks.retirePasswordAfterChange.mockResolvedValue("ready");
+    mocks.retirePasswordAfterChange.mockImplementation(async () => {
+      const retired = { ...dbConfig, password: "", save_password: false };
+      updateConnection?.(retired);
+      return { status: "retired", fingerprint: connectionConfigFingerprint(retired) };
+    });
     mocks.connect.mockResolvedValue(undefined);
     mocks.getConfig.mockReturnValue({ ...dbConfig, password: "", save_password: false });
     mocks.executeQuery.mockImplementation(async (_id, _db, sql: string) => (!sql.startsWith("WITH target") ? { columns: ["user", "host", "plugin"], rows: [[user, "LOGIN", ""]] } : { columns: ["grant"], rows: [] }));
-    root = document.createElement("div");
-    document.body.append(root);
-    app = createApp(DatabaseUserAdmin, { connection: dbConfig });
-    app.mount(root);
+    mountWithReactiveConnection(dbConfig);
     await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(2));
     findButton("userAdmin.changePassword")!.click();
     await nextTick();
@@ -518,6 +575,108 @@ describe("DatabaseUserAdmin Vastbase passwords", () => {
     const trackedState = mocks.trackUiState.mock.calls[0][0]();
     expect(JSON.stringify(trackedState)).not.toContain("fixture-new");
     expect(JSON.stringify(trackedState)).not.toContain("fixture-old");
+  });
+
+  it("keeps the reconnect notice when the real store retires the changed password", async () => {
+    const { createPinia, setActivePinia } = await import("pinia");
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
+    setActivePinia(createPinia());
+    const { useConnectionStore: useActualConnectionStore } = await vi.importActual<typeof import("@/stores/connectionStore")>("@/stores/connectionStore");
+    const store = useActualConnectionStore();
+    const storeConfig = { ...config, save_password: true };
+    store.connections = [{ ...storeConfig }];
+    store.connectedIds.add(storeConfig.id);
+    mocks.disconnectDb.mockResolvedValue(undefined);
+    mocks.saveConnections.mockResolvedValue(undefined);
+    mocks.sessionCredentialStatus.mockResolvedValue(true);
+    mocks.forgetSessionCredential.mockResolvedValue(undefined);
+    mocks.loadSchemaCache.mockResolvedValue(null);
+    mocks.checkConnectionHealth.mockResolvedValue(true);
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.executeQuery.mockImplementation(async (_id, _db, sql: string) => (!sql.startsWith("WITH target") ? { columns: ["user", "host", "plugin"], rows: [["fixture_self", "LOGIN", ""]] } : { columns: ["grant"], rows: [] }));
+    mocks.retirePasswordAfterChange.mockImplementation((id, fingerprint) => store.retirePasswordAfterChange(id, fingerprint));
+    const Harness = defineComponent({ setup: () => () => h(DatabaseUserAdmin, { connection: store.getConfig(storeConfig.id)! }) });
+    root = document.createElement("div");
+    document.body.append(root);
+    app = createApp(Harness);
+    app.mount(root);
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(2));
+    findButton("userAdmin.changePassword")!.click();
+    await nextTick();
+    for (const [key, value] of [
+      ["newPassword", "fixture-new"],
+      ["oldPassword", "fixture-old"],
+    ]) {
+      const input = root!.querySelector<HTMLInputElement>(`input[placeholder="userAdmin.${key}"]`)!;
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await nextTick();
+    findButton("userAdmin.previewSql")!.click();
+    await nextTick();
+    mocks.executeMulti.mockResolvedValueOnce([]);
+    findButton("userAdmin.applySql")!.click();
+
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("userAdmin.passwordChangedReconnect", 8000));
+
+    expect(store.getConfig(storeConfig.id)).toMatchObject({ password: "", save_password: false });
+    expect(root!.textContent).toContain("userAdmin.passwordChangedReconnect");
+    expect(mocks.executeQuery).toHaveBeenCalledTimes(2);
+    expect(mocks.forgetSessionCredential).toHaveBeenCalledWith(storeConfig.id);
+  });
+
+  it("does not show the reconnect notice when the connection is edited during real store retirement", async () => {
+    const { createPinia, setActivePinia } = await import("pinia");
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
+    setActivePinia(createPinia());
+    const { useConnectionStore: useActualConnectionStore } = await vi.importActual<typeof import("@/stores/connectionStore")>("@/stores/connectionStore");
+    const store = useActualConnectionStore();
+    const storeConfig = { ...config, save_password: true };
+    store.connections = [{ ...storeConfig }];
+    store.connectedIds.add(storeConfig.id);
+    mocks.disconnectDb.mockResolvedValue(undefined);
+    mocks.saveConnections.mockResolvedValue(undefined);
+    mocks.forgetSessionCredential.mockResolvedValue(undefined);
+    mocks.loadSchemaCache.mockResolvedValue(null);
+    mocks.checkConnectionHealth.mockResolvedValue(true);
+    let finishStatus!: (value: boolean) => void;
+    mocks.sessionCredentialStatus.mockImplementationOnce(() => new Promise((resolve) => (finishStatus = resolve)));
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.executeQuery.mockImplementation(async (_id, _db, sql: string) => (!sql.startsWith("WITH target") ? { columns: ["user", "host", "plugin"], rows: [["fixture_self", "LOGIN", ""]] } : { columns: ["grant"], rows: [] }));
+    mocks.retirePasswordAfterChange.mockImplementation((id, fingerprint) => store.retirePasswordAfterChange(id, fingerprint));
+    const Harness = defineComponent({ setup: () => () => h(DatabaseUserAdmin, { connection: store.getConfig(storeConfig.id)! }) });
+    root = document.createElement("div");
+    document.body.append(root);
+    app = createApp(Harness);
+    app.mount(root);
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(2));
+    findButton("userAdmin.changePassword")!.click();
+    await nextTick();
+    for (const [key, value] of [
+      ["newPassword", "fixture-new"],
+      ["oldPassword", "fixture-old"],
+    ]) {
+      const input = root!.querySelector<HTMLInputElement>(`input[placeholder="userAdmin.${key}"]`)!;
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await nextTick();
+    findButton("userAdmin.previewSql")!.click();
+    await nextTick();
+    mocks.executeMulti.mockResolvedValueOnce([]);
+    findButton("userAdmin.applySql")!.click();
+    await vi.waitFor(() => expect(finishStatus).toBeDefined());
+
+    store.connections = [{ ...store.getConfig(storeConfig.id)!, host: "edited-host" }];
+    await nextTick();
+    finishStatus(true);
+
+    await vi.waitFor(() => expect(mocks.retirePasswordAfterChange).toHaveBeenCalled());
+    expect(store.getConfig(storeConfig.id)).toMatchObject({ host: "edited-host", password: "", save_password: false });
+    expect(mocks.toast).not.toHaveBeenCalledWith("userAdmin.passwordChangedReconnect", 8000);
+    expect(root!.textContent).not.toContain("userAdmin.passwordChangedReconnect");
   });
 
   it("refreshes after an authorized other-user reset without retiring current credentials", async () => {
@@ -633,7 +792,10 @@ describe("DatabaseUserAdmin Vastbase passwords", () => {
     await mountPassword();
     await preview();
     mocks.executeMulti.mockResolvedValueOnce([]);
-    mocks.retirePasswordAfterChange.mockRejectedValueOnce(new Error("cleanup failed"));
+    mocks.retirePasswordAfterChange.mockImplementationOnce(async () => {
+      updateConnection!({ ...config, password: "", save_password: false });
+      throw new Error("cleanup failed");
+    });
     findButton("userAdmin.applySql")!.click();
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("userAdmin.passwordChangedCleanupFailed", 10000));
     expect(mocks.executeQuery).toHaveBeenCalledTimes(2);

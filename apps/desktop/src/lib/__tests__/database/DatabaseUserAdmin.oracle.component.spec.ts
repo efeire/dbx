@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { createApp, defineComponent, h, nextTick, ref } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { connectionConfigFingerprint } from "@/lib/connection/connectionDatabaseInfo";
 import type { ConnectionConfig } from "@/types/database";
 import en from "@/i18n/locales/en";
 
@@ -375,7 +376,21 @@ describe("Oracle management through the shared page", () => {
   });
   it("masks a self-password preview and production confirmation, then retires the connection", async () => {
     setup();
-    mount("oracle", { is_production: true, username: "reader" });
+    const connection = ref({ id: "oracle", name: "Oracle test", db_type: "oracle", is_production: true, username: "reader" } as ConnectionConfig);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const app = createApp({ setup: () => () => h(DatabaseUserAdmin, { connection: connection.value }) });
+    app.mount(host);
+    cleanup.push(() => {
+      app.unmount();
+      host.remove();
+    });
+    mocks.retirePasswordAfterChange.mockImplementation(async () => {
+      const retired = { ...connection.value, password: "", save_password: false };
+      connection.value = retired;
+      return { status: "retired", fingerprint: connectionConfigFingerprint(retired) };
+    });
+    await settle();
     await settle();
     await click(en.userAdmin.changePassword);
     await fill(en.userAdmin.newPassword, "test';--pass");
@@ -385,7 +400,7 @@ describe("Oracle management through the shared page", () => {
     await click(en.userAdmin.applySql);
     expect(mocks.requestConfirmation.mock.calls[0][0].sql).toContain('IDENTIFIED BY "***"');
     expect(mocks.executeMulti.mock.calls[0][2]).toBe('ALTER USER "Reader" IDENTIFIED BY "test\';--pass";');
-    expect(mocks.retirePasswordAfterChange).toHaveBeenCalledWith("oracle");
+    expect(mocks.retirePasswordAfterChange).toHaveBeenCalledWith("oracle", expect.any(String));
     expect(document.body.textContent).toContain(en.userAdmin.passwordChangedReconnect);
   });
   it("invalidates a pending production confirmation when the principal changes", async () => {
@@ -396,7 +411,7 @@ describe("Oracle management through the shared page", () => {
     await settle();
     await click(en.userAdmin.lock);
     await click(en.userAdmin.applySql);
-    await click(en.dangerDialog.cancel);
+    await click(en.oracleSecurity.stopBeforeDispatch);
     await click("PUBLIC");
     confirmation.resolve(true);
     await settle();
@@ -477,7 +492,7 @@ describe("Oracle management through the shared page", () => {
     await click("Mixed.Table · TABLE");
     await click(en.userAdmin.grant);
     await click(en.userAdmin.applySql);
-    await click(en.dangerDialog.cancel);
+    await click(en.oracleSecurity.stopBeforeDispatch);
     await click("PUBLIC");
     confirmation.resolve(true);
     await settle();
@@ -504,7 +519,8 @@ describe("Oracle management through the shared page", () => {
     await fill(en.userAdmin.newPassword, "fixture-secret");
     await click(en.userAdmin.previewSql);
     await click(en.userAdmin.applySql);
-    expect(mocks.toast.mock.calls.at(-1)?.[0]).toContain(en.oracleSecurity.writeUnknown);
+    expect(document.body.textContent).toContain(en.oracleSecurity.writeUnknown);
+    expect(document.body.textContent).not.toContain(en.userAdmin.applySql);
     expect(mocks.retirePasswordAfterChange).not.toHaveBeenCalled();
     expect(mocks.executeMulti).toHaveBeenCalledTimes(1);
   });
@@ -517,7 +533,8 @@ describe("Oracle management through the shared page", () => {
     await fill(en.userAdmin.newPassword, "fixture-secret");
     await click(en.userAdmin.previewSql);
     await click(en.userAdmin.applySql);
-    expect(mocks.toast.mock.calls.at(-1)?.[0]).toContain(en.oracleSecurity.writeUnknown);
+    expect(document.body.textContent).toContain(en.oracleSecurity.writeUnknown);
+    expect(document.body.textContent).not.toContain(en.userAdmin.applySql);
     expect(mocks.retirePasswordAfterChange).not.toHaveBeenCalled();
   });
   it("distinguishes a rejected statement without displaying an echoed password", async () => {
@@ -529,8 +546,8 @@ describe("Oracle management through the shared page", () => {
     await fill(en.userAdmin.newPassword, "test-partial-secret");
     await click(en.userAdmin.previewSql);
     await click(en.userAdmin.applySql);
-    expect(mocks.toast.mock.calls.at(-1)?.[0]).toContain(en.oracleSecurity.writeRejected);
-    expect(JSON.stringify(mocks.toast.mock.calls)).not.toContain("test-partial");
+    expect(document.body.textContent).toContain(en.oracleSecurity.writeRejected);
+    expect(document.body.textContent).not.toContain("test-partial");
     expect(mocks.retirePasswordAfterChange).not.toHaveBeenCalled();
   });
 });

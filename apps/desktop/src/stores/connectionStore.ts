@@ -4963,9 +4963,9 @@ export const useConnectionStore = defineStore("connection", () => {
     await api.forgetSessionCredential(connectionId);
   }
 
-  async function retirePasswordAfterChange(connectionId: string, expectedConfigFingerprint?: string): Promise<"ready" | "skipped"> {
+  async function retirePasswordAfterChange(connectionId: string, expectedConfigFingerprint?: string): Promise<{ status: "retired"; fingerprint: string } | { status: "skipped" }> {
     const originalConfig = getConfig(connectionId);
-    if (expectedConfigFingerprint && (!originalConfig || connectionConfigFingerprint(originalConfig) !== expectedConfigFingerprint)) return "skipped";
+    if (expectedConfigFingerprint && (!originalConfig || connectionConfigFingerprint(originalConfig) !== expectedConfigFingerprint)) return { status: "skipped" };
     passwordChangeReconnectRequired.set(connectionId, "retiring");
     connections.value = connections.value.map((config) => (config.id === connectionId ? { ...config, password: "", save_password: false } : config));
     const retiredConfigFingerprint = connectionConfigFingerprint(getConfig(connectionId)!);
@@ -4975,7 +4975,7 @@ export const useConnectionStore = defineStore("connection", () => {
     };
     const stopRetirementForChangedConfig = () => {
       if (passwordChangeReconnectRequired.get(connectionId) === "retiring") passwordChangeReconnectRequired.delete(connectionId);
-      return "skipped" as const;
+      return { status: "skipped" as const };
     };
     // 改密码后的退役是系统侧断开：用户随后会显式重连，写"用户已关闭"标记只会让
     // 页签界面在重连期间多停一档空态。
@@ -4996,7 +4996,7 @@ export const useConnectionStore = defineStore("connection", () => {
       setConnectionError(connectionId, i18n.global.t("userAdmin.passwordChangedCleanupFailed"));
       throw new Error(i18n.global.t("userAdmin.passwordChangedCleanupFailed"));
     }
-    return "ready";
+    return { status: "retired", fingerprint: retiredConfigFingerprint };
   }
 
   async function closeDatabaseConnection(connectionId: string, database: string) {
