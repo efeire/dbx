@@ -592,9 +592,11 @@ pub fn fingerprint_oracle_routine_object_source(input: EditableObjectSourceSqlIn
         .map_err(|error| format!("Cannot tokenize Oracle routine source: {error}"))?;
     let mut tokens = tokens
         .iter()
-        .filter_map(|token| match &token.token {
-            Token::Whitespace(Whitespace::Space | Whitespace::Tab | Whitespace::Newline) | Token::EOF => None,
-            _ => Some(token),
+        .filter(|token| {
+            !matches!(
+                &token.token,
+                Token::Whitespace(Whitespace::Space | Whitespace::Tab | Whitespace::Newline) | Token::EOF
+            )
         })
         .collect::<Vec<_>>();
     let last_statement_token = tokens.iter().rposition(|token| {
