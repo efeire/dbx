@@ -44,4 +44,47 @@
 - PR50 本轮定向前端测试 7 个文件 96 项通过。SidebarTreeRuntimeHost 组件宿主测试 4 项验证 routine/package 草稿与校验入口透传、原生 Oracle routine prepare 路径、同目标取消后重开保留草稿及目标切换清稿；routine/package 人工修正后重新 prepare 并成功 execute 的 2 项定向测试通过。Rust `oracle_` 测试 103 项通过，包含 strict validator 对 owner/name/type、单 PL/SQL 单元、裸声明和 quoted mixed-case identity 的检查。定向 oxlint 退出码为 0，只有 ObjectBrowser.vue:3387 与 SidebarTreeRuntimeHost.vue:5426 的既有 `no-ex-assign` 告警；`git diff --check` 通过。
 - Oracle package 源码写入前通过既有 executable-source builder 校验生成的 spec/body；native Oracle routine caller 草稿在 rename 专用 validator 中校验 owner、name、type 和完整 PL/SQL 边界，并经 Tauri/Web 两条 backend 传输注册。routine rename caller view 在 prepare、替换后读回及删除旧 routine 前复用 Oracle view review API，拒绝声明名不匹配的 `CREATE OR REPLACE VIEW` 草稿；一般 view builder 对裸查询的契约未改。侧栏与 ObjectBrowser 的 routine draft 生命周期及编辑后旧 SQL 隐藏已补修。PR50 两入口 Web GUI 与 OceanBase Oracle 实库验收由主会话继续完成；本轮没有执行 Oracle DDL。原生 Oracle 实库测试继续暂缓，不计为通过。
 
-本批同时补齐基线 HANA `column_data_type` 调用缺失的参数，使当前 Web 构建可执行。docs-export 构建发现基线依赖生成漂移；相关输入没有本次改动，因此保留基线产物，不将无关生成差异带入本批。
+## 2026-10-14 人工草稿流程增量验收
+
+本段运行证据对应源码 `0ee2d78df50727c09a0bdecb083c373d29e5b2d3`，Web 后端 SHA-256 为 `4DF1CB1DA6CAFC8D4424F4FCFC67B97108B216C15B90750AB16B4BF9B902555F`。最终类型检查、Web 前端及 GNU 后端构建通过；复用 OceanBase 4.2.5.7 Oracle 模式、Connector/J 2.4.19 和 Agent 0.1.77。以下操作仅涉及本轮隔离对象，未执行过程或包内例程。
+
+- 侧栏过程改名弹窗正常加载。手动修改调用方源码后，旧 SQL 预览隐藏、确认按钮禁用；重新校验后生成两处指向新名称的静态调用。确认改名后，旧过程不存在，新过程及调用方均为 `VALID`。
+- 对象浏览器的包另存为正确拒绝包体中的动态旧名称引用，同时保留已生成的包规格 SQL 和可编辑包体。将包体改为静态调用后重新校验，创建新包及包体成功，原包及包体保留。
+- 经产品查询入口读回，本轮六个对象均为 `VALID`，旧过程数量为 0，`USER_ERRORS` 编译错误数量为 0。隔离对象尚未清理，待例程守卫补丁复验后统一精确清理。
+- GUI 同时发现例程调用方混合静态旧名调用与 `EXECUTE IMMEDIATE` 时，重写器只改静态调用，仍允许残留动态旧引用。实际执行前已人工删除该动态引用；生产 Rust 入口已复现失败测试，守卫补丁与最终产物复验待完成。本段成功证据不代表该遗漏已修复。
+
+![包人工修正后生成预览](oracle-package-manual-preview.jpg)
+
+原生 Oracle 实库继续获准暂缓；Web GUI 不替代原生桌面验收。本批同时补齐基线 HANA `column_data_type` 调用缺失的参数，使当前 Web 构建可执行。docs-export 构建发现基线依赖生成漂移；相关输入没有本次改动，因此保留基线产物，不将无关生成差异带入本批。
+
+### 动态守卫复验与写后比较缺口
+
+候选 `6399de7d6a5ad18629bc3cfc0f52aa88ec3d95fb` 的 GNU 后端构建通过，运行文件 SHA-256 为 `AF6F7BC7D4C1532A99D1CA107703ED0AB242E5CA0E9B5D1F082A06CC6D979D6A`。107 项 Rust 测试、25 项相关前端测试、Clippy 及窄增量双维审查通过。
+
+- 修复产物在 GUI 中正确阻断混合静态调用与 `EXECUTE IMMEDIATE`，返回行列位置；调用方草稿保留，确认禁用。人工改成两次静态调用后，取消并重开同一目标仍保留单行草稿，重新校验成功。
+- 执行后创建目标过程及替换调用方成功，但 OceanBase 读回定义在声明名、`IS`、`BEGIN` 之间插入换行，当前逐字源码比较误报不一致。通过产品查询入口读回确认调用方已含两处正确目标调用；七个隔离对象均为 `VALID`，旧过程仍保留。该执行为部分成功，不计整条重命名通过，也未自动重试或回滚。
+- 已用真实 prepare/execute 入口和仅模拟外部数据库格式化的回归测试复现红灯；保守源码指纹修复与最终 GUI 复验待完成。
+
+![例程动态 SQL 被阻断并保留人工草稿](oracle-routine-manual-guard.jpg)
+
+### 写后指纹修复候选
+
+`cb9e8ceb7087a193cca70acbab31d89498ec031c` 已补齐根例程写后、调用方写后和 DROP 前的保守 token 指纹比较，原始元数据快照仍精确比较。50 项前端定向测试、110 项 Rust 定向测试及增量双维独立审查通过；前端生产构建和 GNU Web 后端构建退出码均为 0。后端 SHA-256 为 `9DB127A46DCE737A06F1A2CC67A3039285B69798324FFA59EDB9CC347ACED48D`。最终产物 GUI 复验及隔离对象清理已完成，结果见下文。
+
+- 定向用例覆盖数据库仅重排声明空白时完成改名、根对象单行草稿、调用方写入后字符串/注释/调用改变时禁止 DROP，以及原始快照仅空白改变仍在写前阻断。
+- 核心 crate 的 `Clippy -D warnings` 通过。Web 的 `--no-deps` 定向检查通过；Tauri 的定向检查需对现有 `drain_collect`、`result_large_err` 告警明确豁免后通过。完整 Web 依赖检查因未修改驱动的既有告警失败，不能记为完整 CI Clippy 通过。本机 Rust 1.99.0，CI 固定 1.97.1。
+- 完整类型检查已通过（`cb9e8ceb`，退出码 0）：首次预检发现可用 6756 MiB，不足 6144 MiB 堆加 2048 MiB 余量，未执行；随后现场可用内存升至 8226 MiB，按原 6144 MiB 配置运行完整 `vue-tsc --noEmit` 成功，未降低限制。最终 SHA 的 CI 类型检查结果仍单独核对。
+- 架构检查 27/28；唯一失败仍为 DuckDB 锁文件检查按 LF 分块，而本地文件为 CRLF。实际依赖条目存在，未修改无关锁文件或放宽检查。
+
+### 最终产物 GUI 复验与清理
+
+2026-10-14 核对运行文件为上述 `cb9e8ceb` 产物，仅监听回环地址；所载 OceanBase Oracle Agent JAR SHA-256 为 `D6C78A63F14FF0A8FCBD5FA074B4EAB93E5BE7F308D9609F83114807B6494B93`。通过产品 SQL 查询确认登录用户与当前 schema 均为本批既有测试身份。
+
+- 先恢复本批调用方的静态调用加动态 SQL 场景，并精确移除上次部分执行创建的目标过程。侧栏预检正常结束，动态 SQL 仍被阻断，源草稿可编辑。
+- 将调用方人工改为单行定义、两次静态调用，重新校验后执行重命名成功。通过产品查询读回：原名称对象数量为 0，目标过程与调用方两个对象均为 `VALID`，编译错误为 0。
+- `USER_SOURCE` 全文确认两次调用均指向重命名目标；没有再因数据库重排声明空白误报失败，删除旧对象阶段也已完成。
+- 按本批记录精确清理两个过程和两个包（含包体），再查询五个记录名称，`USER_OBJECTS` 与 `USER_ERRORS` 残留均为 0。没有执行测试过程或包内例程，其他对象未清理。
+
+![单行人工草稿重命名后源对象为零、目标有效且无编译错误](oracle-routine-manual-success.jpg)
+
+以上完成 Web GUI 与 OceanBase Oracle 模式验收；原生 Oracle 实库仍获准暂缓，原生桌面 GUI 未执行，最终提交的远端 CI 单独跟踪。
