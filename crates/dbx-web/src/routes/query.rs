@@ -315,7 +315,13 @@ pub struct BuildViewDdlRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildTableStructureSqlRequest {
+    #[serde(default)]
+    pub starrocks: Option<dbx_core::table_structure_sql::StarRocksAlterOptions>,
     pub options: dbx_core::table_structure_sql::TableStructureSqlOptions,
+    #[serde(default)]
+    pub server_version: Option<String>,
+    #[serde(default)]
+    pub dialect_options: Option<dbx_core::table_structure_sql::CreateTableDialectOptions>,
 }
 
 #[derive(Deserialize)]
@@ -1332,7 +1338,7 @@ pub async fn review_oracle_view_rename_source(
 pub async fn build_table_structure_change_sql(
     Json(req): Json<BuildTableStructureSqlRequest>,
 ) -> Json<dbx_core::table_structure_sql::TableStructureSqlResult> {
-    Json(dbx_core::table_structure_sql::build_table_structure_change_sql(req.options))
+    Json(dbx_core::table_structure_sql::build_table_structure_change_sql_with_context(req.options, req.starrocks))
 }
 
 pub async fn build_table_owner_change_sql(
@@ -1387,7 +1393,11 @@ pub async fn apply_sqlite_table_structure_change(
 pub async fn build_create_table_sql(
     Json(req): Json<BuildTableStructureSqlRequest>,
 ) -> Json<dbx_core::table_structure_sql::TableStructureSqlResult> {
-    Json(dbx_core::table_structure_sql::build_create_table_sql(req.options))
+    Json(dbx_core::table_structure_sql::build_create_table_sql_with_dialect_options(
+        req.options,
+        req.server_version.as_deref(),
+        req.dialect_options.unwrap_or_default(),
+    ))
 }
 
 pub async fn build_single_column_alter_sql(
