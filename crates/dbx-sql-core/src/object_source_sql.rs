@@ -978,7 +978,11 @@ pub fn ensure_oracle_ddl_terminated(sql: &str) -> String {
 
 fn ensure_semicolon(sql: &str) -> String {
     let trimmed = sql.trim();
-    if trimmed.ends_with(';') { trimmed.to_string() } else { format!("{trimmed};") }
+    if trimmed.ends_with(';') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed};")
+    }
 }
 
 fn strip_standalone_trailing_slash(sql: &str) -> &str {
@@ -986,7 +990,11 @@ fn strip_standalone_trailing_slash(sql: &str) -> &str {
     let Some(without_slash) = trimmed.strip_suffix('/') else {
         return trimmed;
     };
-    if without_slash.ends_with('\n') || without_slash.ends_with('\r') { without_slash.trim_end() } else { trimmed }
+    if without_slash.ends_with('\n') || without_slash.ends_with('\r') {
+        without_slash.trim_end()
+    } else {
+        trimmed
+    }
 }
 
 fn mysql_delimited_routine_source(source: &str) -> String {
@@ -1186,7 +1194,11 @@ fn postgres_qualified_name(schema: Option<&str>, name: &str) -> String {
 }
 
 fn informix_identifier(name: &str) -> String {
-    if is_simple_informix_identifier(name) { name.to_string() } else { quote_postgres_identifier(name) }
+    if is_simple_informix_identifier(name) {
+        name.to_string()
+    } else {
+        quote_postgres_identifier(name)
+    }
 }
 
 fn create_informix_view(name: &str, create_tail: &str) -> String {
@@ -3164,12 +3176,10 @@ mod tests {
             source: source.into(),
         };
 
-        assert!(
-            build_executable_object_source_statements(input(
-                "CREATE PACKAGE \"MiXeD\".\"Pkg\" AS PROCEDURE RUN; END \"Pkg\";"
-            ))
-            .is_ok()
-        );
+        assert!(build_executable_object_source_statements(input(
+            "CREATE PACKAGE \"MiXeD\".\"Pkg\" AS PROCEDURE RUN; END \"Pkg\";"
+        ))
+        .is_ok());
         for source in [
             "CREATE PACKAGE MIXED.\"Pkg\" AS PROCEDURE RUN; END \"Pkg\";",
             "CREATE PACKAGE \"MiXeD\".PKG AS PROCEDURE RUN; END PKG;",
@@ -3208,12 +3218,10 @@ mod tests {
             "CREATE/*prefix*/OR/*replace*/REPLACE/*kind*/PROCEDURE APP.P_OLD AS BEGIN IF 1 = 1 THEN NULL; END IF; EXECUTE IMMEDIATE 'BEGIN NULL; END;'; END;"
         )
         .is_ok());
-        assert!(
-            validate(
-                "PROCEDURE APP.P_OLD AS BEGIN IF 1 = 1 THEN NULL; END IF; EXECUTE IMMEDIATE 'BEGIN NULL; END;'; END;"
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "PROCEDURE APP.P_OLD AS BEGIN IF 1 = 1 THEN NULL; END IF; EXECUTE IMMEDIATE 'BEGIN NULL; END;'; END;"
+        )
+        .is_ok());
     }
 
     #[test]
