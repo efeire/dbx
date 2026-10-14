@@ -422,37 +422,33 @@ async function constraintRecoveryCandidate(plan: OracleConstraintPlan, snapshot:
   let recovery = JSON.parse(JSON.stringify(original)) as OracleConstraintDefinition;
   let indexPolicy: OracleConstraintChange["indexPolicy"] = "none";
   if (recovery.kind === "unique" && plan.target.databaseType === "oracle") {
-    if (plan.target.databaseType === "oracle") {
-      const oldIndex = recovery.definition.index;
-      const actualIndex = snapshot.indexes.find((index) => index.owner === oldIndex.owner && index.name === oldIndex.name);
-      const completeIndexStillMatches =
-        !!oldIndex.name &&
-        !!actualIndex &&
-        actualIndex.tableOwner === plan.target.schema &&
-        actualIndex.tableName === plan.target.tableName &&
-        actualIndex.indexType === oldIndex.indexType &&
-        actualIndex.uniqueness === oldIndex.uniqueness &&
-        actualIndex.status === oldIndex.status &&
-        actualIndex.partitioned === oldIndex.partitioned &&
-        actualIndex.visibility === oldIndex.visibility &&
-        actualIndex.secondary === oldIndex.secondary &&
-        (recovery.definition.state.deferrable ? actualIndex.uniqueness === "NONUNIQUE" : ["UNIQUE", "NONUNIQUE"].includes(actualIndex.uniqueness)) &&
-        sameIdentifierSet(actualIndex.columns, oldIndex.columns) &&
-        actualIndex.directions.join("\0") === oldIndex.directions.join("\0") &&
-        actualIndex.keyIsExpression.join("\0") === oldIndex.keyIsExpression.join("\0") &&
-        actualIndex.includedColumns.length === oldIndex.includedColumns.length &&
-        actualIndex.constraints.length === 0;
-      if (completeIndexStillMatches) {
-        recovery = { ...recovery, definition: { ...recovery.definition, index: { ...oldIndex } } };
-        indexPolicy = "keep";
-        recovery = { ...recovery, definition: { ...recovery.definition, index: { ...recovery.definition.index, sharing: "exclusive" } } };
-      } else {
-        const candidate = generateUniqueIndexName(plan.target.tableName, recovery.definition.columns, [...snapshot.indexNames, ...snapshot.names.map((item) => item.name)], 30);
-        if (!candidate) return undefined;
-        recovery = { ...recovery, definition: { ...recovery.definition, index: { ...oldIndex, name: "", newName: candidate, newNameAvailable: true } } };
-      }
+    const oldIndex = recovery.definition.index;
+    const actualIndex = snapshot.indexes.find((index) => index.owner === oldIndex.owner && index.name === oldIndex.name);
+    const completeIndexStillMatches =
+      !!oldIndex.name &&
+      !!actualIndex &&
+      actualIndex.tableOwner === plan.target.schema &&
+      actualIndex.tableName === plan.target.tableName &&
+      actualIndex.indexType === oldIndex.indexType &&
+      actualIndex.uniqueness === oldIndex.uniqueness &&
+      actualIndex.status === oldIndex.status &&
+      actualIndex.partitioned === oldIndex.partitioned &&
+      actualIndex.visibility === oldIndex.visibility &&
+      actualIndex.secondary === oldIndex.secondary &&
+      (recovery.definition.state.deferrable ? actualIndex.uniqueness === "NONUNIQUE" : ["UNIQUE", "NONUNIQUE"].includes(actualIndex.uniqueness)) &&
+      sameIdentifierSet(actualIndex.columns, oldIndex.columns) &&
+      actualIndex.directions.join("\0") === oldIndex.directions.join("\0") &&
+      actualIndex.keyIsExpression.join("\0") === oldIndex.keyIsExpression.join("\0") &&
+      actualIndex.includedColumns.length === oldIndex.includedColumns.length &&
+      actualIndex.constraints.length === 0;
+    if (completeIndexStillMatches) {
+      recovery = { ...recovery, definition: { ...recovery.definition, index: { ...oldIndex } } };
+      indexPolicy = "keep";
+      recovery = { ...recovery, definition: { ...recovery.definition, index: { ...recovery.definition.index, sharing: "exclusive" } } };
     } else {
-      recovery = { ...recovery, definition: { ...recovery.definition, index: { ...recovery.definition.index, name: "", metadataComplete: false } } };
+      const candidate = generateUniqueIndexName(plan.target.tableName, recovery.definition.columns, [...snapshot.indexNames, ...snapshot.names.map((item) => item.name)], 30);
+      if (!candidate) return undefined;
+      recovery = { ...recovery, definition: { ...recovery.definition, index: { ...oldIndex, name: "", newName: candidate, newNameAvailable: true } } };
     }
     if (!recovery.definition.state.enabled) recovery = { ...recovery, definition: { ...recovery.definition, index: { ...recovery.definition.index, name: "", newName: undefined, newNameAvailable: false } } };
   } else if (recovery.kind === "unique") {

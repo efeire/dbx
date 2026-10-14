@@ -179,6 +179,12 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "請將 Oracle 系索引修改與其他資料表結構修改分開套用。" },
+  oracleStructureResult: {
+    resultTitle: "操作結果",
+    executionFailed: "操作未完整完成，請核對逐條結果和資料庫狀態。",
+    readbackFailed: "讀回失敗或與預期結果不一致",
+    recoveryNotice: "以下僅為人工復原候選。執行前須重新檢查資料、名稱和索引。",
+  },
   modelGeneration: {
     title: "產生模型",
     editTemplate: "編輯範本",

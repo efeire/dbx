@@ -6043,7 +6043,7 @@ async function applyExistingPrimaryKey(): Promise<boolean> {
     return false;
   } finally {
     primaryKeyBusy.value = false;
-    if (sameTarget()) saving.value = false;
+    saving.value = false;
   }
 }
 
@@ -6240,10 +6240,10 @@ async function applyOracleConstraintPlan(): Promise<boolean> {
       }
     }
     if (!completed || result.readbackError) {
-      primaryKeyResultTitle.value = "oracleForeignKey.resultTitle";
-      primaryKeyResultMessage.value = `${plan.target.schema}.${plan.target.tableName}: ${result.readbackError || "Constraint change failed or has an unknown result."}`;
+      primaryKeyResultTitle.value = "oracleStructureResult.resultTitle";
+      primaryKeyResultMessage.value = `${plan.target.schema}.${plan.target.tableName}: ${result.readbackError || t("oracleStructureResult.executionFailed")}`;
       primaryKeyResultDetails.value = result.steps.map((step, index) => `${index + 1}. ${step.state}\n${step.sql}${step.error ? `\n${step.error}` : ""}`).join("\n\n");
-      if (result.recoverySql) primaryKeyResultDetails.value += `\n\n${t("oracleForeignKey.recoveryNotice")}\n${result.recoverySql}`;
+      if (result.recoverySql) primaryKeyResultDetails.value += `\n\n${t("oracleStructureResult.recoveryNotice")}\n${result.recoverySql}`;
       if (!primaryKeyUnmounted) primaryKeyResultOpen.value = true;
     }
     return completed && !result.readbackError;
@@ -6397,10 +6397,10 @@ async function applyOracleIndexPlan(): Promise<boolean> {
       }
     }
     if ((!complete || result.readbackError) && !primaryKeyUnmounted) {
-      primaryKeyResultTitle.value = "oracleForeignKey.resultTitle";
-      primaryKeyResultMessage.value = `${target.schema}.${target.tableName}: ${t("oracleForeignKey.executionFailed")}`;
+      primaryKeyResultTitle.value = "oracleStructureResult.resultTitle";
+      primaryKeyResultMessage.value = `${target.schema}.${target.tableName}: ${t("oracleStructureResult.executionFailed")}`;
       primaryKeyResultDetails.value = result.steps.map((step, index) => `${index + 1}. ${step.state}\n${step.sql}${step.error ? `\n${step.error}` : ""}`).join("\n\n");
-      if (result.readbackError) primaryKeyResultDetails.value += `\n\n${t("oracleForeignKey.readbackFailed")}: ${result.readbackError}`;
+      if (result.readbackError) primaryKeyResultDetails.value += `\n\n${t("oracleStructureResult.readbackFailed")}: ${result.readbackError}`;
       if (!primaryKeyUnmounted) primaryKeyResultOpen.value = true;
     }
     return complete && !result.readbackError;

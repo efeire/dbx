@@ -121,6 +121,12 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Применяйте изменения индексов Oracle отдельно от других изменений структуры таблицы." },
+  oracleStructureResult: {
+    resultTitle: "Результат операции",
+    executionFailed: "Операция завершилась не полностью. Проверьте каждый оператор и состояние базы данных.",
+    readbackFailed: "Обратное чтение не удалось или не совпало с ожидаемым результатом",
+    recoveryNotice: "Это лишь вариант ручного восстановления. Перед выполнением повторно проверьте данные, имена и индексы.",
+  },
   modelGeneration: {
     title: "Создать модель",
     editTemplate: "Изменить шаблон",

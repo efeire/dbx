@@ -178,6 +178,12 @@ export default {
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Apply Oracle-family index changes separately from other table structure changes." },
+  oracleStructureResult: {
+    resultTitle: "Operation result",
+    executionFailed: "The operation did not complete cleanly. Check each statement and the database state.",
+    readbackFailed: "Readback failed or did not match the intended result",
+    recoveryNotice: "Manual recovery candidate only. Recheck data, names and indexes before running it.",
+  },
   modelGeneration: {
     title: "Generate model",
     editTemplate: "Edit template",

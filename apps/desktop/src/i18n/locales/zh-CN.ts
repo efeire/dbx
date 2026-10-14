@@ -123,6 +123,12 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "请将 Oracle 系索引修改与其他表结构修改分开应用。" },
+  oracleStructureResult: {
+    resultTitle: "操作结果",
+    executionFailed: "操作未完整完成，请核对逐条结果和数据库状态。",
+    readbackFailed: "读回失败或与预期结果不一致",
+    recoveryNotice: "以下仅为人工恢复候选。执行前须重新检查数据、名称和索引。",
+  },
   modelGeneration: {
     title: "生成模型",
     editTemplate: "编辑模板",

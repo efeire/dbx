@@ -179,6 +179,12 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Aplique as alterações de índices Oracle separadamente das demais alterações na estrutura da tabela." },
+  oracleStructureResult: {
+    resultTitle: "Resultado da operação",
+    executionFailed: "A operação não foi concluída por completo. Verifique cada instrução e o estado do banco de dados.",
+    readbackFailed: "A releitura falhou ou não correspondeu ao resultado esperado",
+    recoveryNotice: "É apenas uma sugestão de recuperação manual. Verifique novamente dados, nomes e índices antes de executá-la.",
+  },
   modelGeneration: {
     title: "Gerar modelo",
     editTemplate: "Editar modelo",

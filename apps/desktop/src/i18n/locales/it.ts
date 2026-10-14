@@ -178,6 +178,12 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Applica le modifiche agli indici Oracle separatamente dalle altre modifiche alla struttura della tabella." },
+  oracleStructureResult: {
+    resultTitle: "Risultato dell'operazione",
+    executionFailed: "L'operazione non è stata completata completamente. Controlla ogni istruzione e lo stato del database.",
+    readbackFailed: "La rilettura non è riuscita o non corrisponde al risultato previsto",
+    recoveryNotice: "È solo una proposta di ripristino manuale. Ricontrolla dati, nomi e indici prima di eseguirla.",
+  },
   modelGeneration: {
     title: "Genera modello",
     editTemplate: "Modifica modello",

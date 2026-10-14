@@ -179,6 +179,12 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Oracle 系インデックスの変更は、他のテーブル構造の変更と分けて適用してください。" },
+  oracleStructureResult: {
+    resultTitle: "操作結果",
+    executionFailed: "操作が完全には完了しませんでした。各ステートメントとデータベースの状態を確認してください。",
+    readbackFailed: "読み戻しに失敗したか、想定した結果と一致しません",
+    recoveryNotice: "以下は手動復旧の候補にすぎません。実行前にデータ、名前、インデックスを再確認してください。",
+  },
   modelGeneration: {
     title: "モデルを生成",
     editTemplate: "テンプレートを編集",

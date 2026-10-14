@@ -889,6 +889,6 @@ describe("Oracle independent index execution", () => {
     expect(fixture.ddl).toHaveLength(2);
     expect(container.querySelector<HTMLInputElement>("[data-index-name-input]")?.value).toBe("IX_EMAIL_RENAMED");
     expect(document.body.textContent).toContain("committed");
-    expect(document.body.textContent).toContain("readback failed or did not match the intended result");
+    expect(document.body.textContent).toContain("Readback failed or did not match the intended result");
   });
 });
