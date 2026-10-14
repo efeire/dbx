@@ -153,18 +153,30 @@ async function readErrors(target: OracleRoutineRenameTarget, objectType: string,
   return JSON.stringify(rows.map((row) => row.map((value) => (value === null ? null : String(value)))));
 }
 
-async function validateCallerViewSource(target: OracleRoutineRenameTarget, viewName: string, renamedRoutineName: string, source: string) {
-  const review = await api.reviewOracleViewRenameSource({
-    source,
-    owner: target.schema,
-    viewName,
-    oldName: renamedRoutineName,
-    newName: renamedRoutineName,
-  });
-  if (!review.source || review.issues.length) {
-    throw new Error(review.issues.map(({ message }) => message).join("\n") || `Cannot validate view ${viewName}.`);
+async function validateCallerSource(target: OracleRoutineRenameTarget, callerType: string, callerName: string, renamedRoutineName: string, source: string) {
+  if (callerType === "VIEW") {
+    const review = await api.reviewOracleViewRenameSource({
+      source,
+      owner: target.schema,
+      viewName: callerName,
+      oldName: renamedRoutineName,
+      newName: renamedRoutineName,
+    });
+    if (!review.source || review.issues.length) {
+      throw new Error(review.issues.map(({ message }) => message).join("\n") || `Cannot validate view ${callerName}.`);
+    }
+    return review.source.source;
   }
-  return review.source.source;
+  if (target.databaseType === "oracle" || target.databaseType === "oceanbase-oracle") {
+    await api.validateOracleExecutableObjectSource({
+      databaseType: target.databaseType,
+      objectType: callerType as "PROCEDURE" | "FUNCTION",
+      schema: target.schema,
+      name: callerName,
+      source,
+    });
+  }
+  return source;
 }
 
 async function readSnapshot(target: OracleRoutineRenameTarget, name: string, objectType: string): Promise<RoutineSnapshot> {
@@ -343,7 +355,7 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
           newName: plan.canonicalNewName,
           source: draft,
         });
-        if (caller.type === "VIEW") rewrittenSource = await validateCallerViewSource(target, caller.name, plan.canonicalNewName, rewrittenSource);
+        rewrittenSource = await validateCallerSource(target, caller.type, caller.name, plan.canonicalNewName, rewrittenSource);
         const statements = await api.buildExecutableObjectSourceStatements({
           databaseType: target.databaseType,
           objectType: caller.type as ObjectSourceKind,
@@ -542,7 +554,7 @@ export async function executeOracleRoutineRename(plan: OracleRoutineRenamePlan, 
         )
           throw new Error(`${caller.objectType} ${caller.name} did not preserve its identity, validity, errors, and grants.`);
         if (step.kind === "replace-caller") {
-          if (caller.objectType === "VIEW") await validateCallerViewSource(plan.target, caller.name, plan.canonicalNewName, actual.source);
+          await validateCallerSource(plan.target, caller.objectType, caller.name, plan.canonicalNewName, actual.source);
           const actualStatements = await api.buildExecutableObjectSourceStatements({
             databaseType: plan.target.databaseType,
             objectType: caller.objectType as ObjectSourceKind,
@@ -597,7 +609,7 @@ async function verifyBeforeDrop(plan: OracleRoutineRenamePlan, createdRoot: Rout
     const actual = await readSnapshot(plan.target, caller.name, caller.objectType);
     if (actual.objectId !== caller.objectId || actual.status !== "VALID" || actual.errors !== caller.errors || actual.grants !== caller.grants) throw new Error(`Dependent ${caller.objectType} ${caller.name} changed before DROP.`);
     if (caller.rewriteRequired) {
-      if (caller.objectType === "VIEW") await validateCallerViewSource(plan.target, caller.name, plan.canonicalNewName, actual.source);
+      await validateCallerSource(plan.target, caller.objectType, caller.name, plan.canonicalNewName, actual.source);
       const actualStatements = await api.buildExecutableObjectSourceStatements({
         databaseType: plan.target.databaseType,
         objectType: caller.objectType as ObjectSourceKind,

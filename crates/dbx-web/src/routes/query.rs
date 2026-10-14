@@ -274,6 +274,12 @@ pub struct BuildExecutableObjectSourceRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ValidateOracleExecutableObjectSourceRequest {
+    pub input: dbx_core::object_source_sql::OracleObjectSourceValidationInput,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildRoutineRenameObjectSourceRequest {
     pub input: dbx_core::object_source_sql::RoutineRenameObjectSourceInput,
 }
@@ -1257,6 +1263,14 @@ pub async fn build_executable_object_source_statements(
     Json(req): Json<BuildExecutableObjectSourceRequest>,
 ) -> Result<Json<Vec<String>>, AppError> {
     dbx_core::object_source_sql::build_executable_object_source_statements(req.input).map(Json).map_err(AppError::from)
+}
+
+pub async fn validate_oracle_executable_object_source(
+    Json(req): Json<ValidateOracleExecutableObjectSourceRequest>,
+) -> Result<Json<()>, AppError> {
+    dbx_core::object_source_sql::validate_oracle_executable_object_source(req.input)
+        .map(|()| Json(()))
+        .map_err(AppError::from)
 }
 
 pub async fn build_executable_object_source_sql(

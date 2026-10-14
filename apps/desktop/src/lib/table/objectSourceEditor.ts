@@ -9,6 +9,14 @@ export type BuildEditableObjectSourceSqlInput = {
   source: string;
 };
 
+export type ValidateOracleExecutableObjectSourceInput = {
+  databaseType: Extract<DatabaseType, "oracle" | "oceanbase-oracle">;
+  objectType: Extract<ObjectSourceKind, "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE_BODY">;
+  schema?: string | null;
+  name: string;
+  source: string;
+};
+
 export type BuildRoutineRenameObjectSourceInput = BuildEditableObjectSourceSqlInput & {
   newName: string;
 };

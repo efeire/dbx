@@ -857,6 +857,10 @@ async fn serve() -> Result<(), String> {
             "/query/build-executable-object-source-statements",
             post(routes::query::build_executable_object_source_statements),
         )
+        .route(
+            "/query/validate-oracle-executable-object-source",
+            post(routes::query::validate_oracle_executable_object_source),
+        )
         .route("/query/build-executable-object-source-sql", post(routes::query::build_executable_object_source_sql))
         .route("/query/build-editable-object-source", post(routes::query::build_editable_object_source))
         .route(

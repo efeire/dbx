@@ -16,6 +16,12 @@ vi.mock("@/lib/backend/api", () => ({
       issues: valid ? [] : [{ code: "invalid_declaration", message: "The view declaration does not match the selected owner and name.", repairable: true }],
     };
   }),
+  validateOracleExecutableObjectSource: vi.fn(async ({ source, objectType, schema, name }: { source: string; objectType: string; schema?: string | null; name: string }) => {
+    const declaration = source.match(/CREATE(?:\s+OR\s+REPLACE)?\s+(PROCEDURE|FUNCTION)\s+(?:(\w+)\.)?(\w+)\s+AS/i);
+    if (!declaration || declaration[1] !== objectType || declaration[3].toUpperCase() !== name.toUpperCase() || (declaration[2] && declaration[2].toUpperCase() !== schema?.toUpperCase())) {
+      throw new Error("Oracle object source declaration does not match the selected owner and name.");
+    }
+  }),
   buildRoutineRenameObjectSourceStatements: vi.fn(async ({ name, newName, source }: { name: string; newName: string; source: string }) => {
     const renamed = source.replaceAll(name, newName);
     return [renamed.startsWith("CREATE OR REPLACE") ? renamed : `CREATE OR REPLACE ${renamed}`, `DROP PROCEDURE APP.${name}`];
@@ -364,6 +370,17 @@ describe("prepareOracleRoutineRename", () => {
     expect(plan.issues.some(({ code, message }) => code === "caller_rewrite_failed" && /declaration does not match/i.test(message))).toBe(true);
     expect(api.reviewOracleViewRenameSource).toHaveBeenCalledWith(expect.objectContaining({ owner: "APP", viewName: "V_CALL", oldName: "P_NEW", newName: "P_NEW" }));
     expect(vi.mocked(api.buildExecutableObjectSourceStatements)).not.toHaveBeenCalledWith(expect.objectContaining({ objectType: "VIEW" }));
+  });
+
+  it("rejects a routine caller draft declaring a different object before producing steps", async () => {
+    objects.set("PROCEDURE:CALLER_1", { id: "102", source: "CREATE OR REPLACE PROCEDURE OTHER.CALLER_1 AS BEGIN APP.P_OLD; END;" });
+
+    const plan = await prepareOracleRoutineRename(target);
+
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some(({ code, message }) => code === "caller_rewrite_failed" && /declaration does not match/i.test(message))).toBe(true);
+    expect(api.validateOracleExecutableObjectSource).toHaveBeenCalledWith(expect.objectContaining({ objectType: "PROCEDURE", schema: "APP", name: "CALLER_1" }));
+    expect(plan.steps).toEqual([]);
   });
 
   it("accepts the database's quoted readback of a planned uppercase caller reference", async () => {

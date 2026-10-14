@@ -848,6 +848,13 @@ pub fn build_executable_object_source_statements(
 }
 
 #[tauri::command]
+pub fn validate_oracle_executable_object_source(
+    input: dbx_core::object_source_sql::OracleObjectSourceValidationInput,
+) -> Result<(), String> {
+    dbx_core::object_source_sql::validate_oracle_executable_object_source(input)
+}
+
+#[tauri::command]
 pub fn build_executable_object_source_sql(
     input: dbx_core::object_source_sql::EditableObjectSourceSqlInput,
 ) -> Result<String, String> {

@@ -21,6 +21,17 @@ pub struct EditableObjectSourceSqlInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OracleObjectSourceValidationInput {
+    pub database_type: DatabaseType,
+    pub object_type: ObjectSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    pub name: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoutineRenameObjectSourceInput {
     pub database_type: DatabaseType,
     pub object_type: ObjectSourceKind,
@@ -529,6 +540,27 @@ pub fn build_executable_object_source_statements(input: EditableObjectSourceSqlI
     let create_statement = ensure_semicolon(source);
     let cleanup = build_routine_rename_cleanup(&input, source);
     Ok(if let Some(cleanup) = cleanup { vec![create_statement, cleanup] } else { vec![create_statement] })
+}
+
+pub fn validate_oracle_executable_object_source(input: OracleObjectSourceValidationInput) -> Result<(), String> {
+    if !matches!(input.database_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle)
+        || !matches!(
+            input.object_type,
+            ObjectSourceKind::Procedure
+                | ObjectSourceKind::Function
+                | ObjectSourceKind::Package
+                | ObjectSourceKind::PackageBody
+        )
+    {
+        return Err("Strict object-source validation is supported only for Oracle routines and packages.".to_string());
+    }
+    validate_oracle_object_source(
+        input.database_type,
+        &input.object_type,
+        input.schema.as_deref(),
+        &input.name,
+        &input.source,
+    )
 }
 
 pub fn build_executable_object_source_sql(input: EditableObjectSourceSqlInput) -> Result<String, String> {
@@ -3109,6 +3141,41 @@ mod tests {
                 "accepted identity with incorrect case semantics: {source}"
             );
         }
+    }
+
+    #[test]
+    fn oracle_strict_source_validation_checks_create_and_bare_definitions() {
+        let validate = |source: &str| {
+            validate_oracle_executable_object_source(OracleObjectSourceValidationInput {
+                database_type: DatabaseType::Oracle,
+                object_type: ObjectSourceKind::Procedure,
+                schema: Some("APP".into()),
+                name: "P_OLD".into(),
+                source: source.into(),
+            })
+        };
+
+        for source in [
+            "CREATE OR REPLACE PROCEDURE APP.P_OTHER AS BEGIN APP.P_OLD; END;",
+            "PROCEDURE APP.P_OTHER AS BEGIN APP.P_OLD; END;",
+            "CREATE PROCEDURE OTHER.P_OLD AS BEGIN NULL; END;",
+            "CREATE/*comment*/ OR REPLACE PROCEDURE APP.P_OTHER AS BEGIN NULL; END;",
+            "CREATE OR REPLACE FUNCTION APP.P_OLD RETURN NUMBER AS BEGIN RETURN 1; END;",
+            "CREATE OR REPLACE PROCEDURE APP.P_OLD AS BEGIN NULL; END; DROP TABLE T;",
+        ] {
+            assert!(validate(source).is_err(), "accepted unsafe source: {source}");
+        }
+
+        assert!(validate(
+            "CREATE/*prefix*/OR/*replace*/REPLACE/*kind*/PROCEDURE APP.P_OLD AS BEGIN IF 1 = 1 THEN NULL; END IF; EXECUTE IMMEDIATE 'BEGIN NULL; END;'; END;"
+        )
+        .is_ok());
+        assert!(
+            validate(
+                "PROCEDURE APP.P_OLD AS BEGIN IF 1 = 1 THEN NULL; END IF; EXECUTE IMMEDIATE 'BEGIN NULL; END;'; END;"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
