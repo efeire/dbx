@@ -584,7 +584,13 @@ describe("Oracle management through the shared page", () => {
     const query = mocks.executeQuery.getMockImplementation()!;
     mocks.executeQuery.mockImplementation((id, db, sql) =>
       sql.includes("ALL_OBJECTS")
-        ? Promise.resolve({ columns: ["OBJECT_NAME", "OBJECT_TYPE"], rows: [["Shared", "PACKAGE"], ["Shared", "TABLE"]] })
+        ? Promise.resolve({
+            columns: ["OBJECT_NAME", "OBJECT_TYPE"],
+            rows: [
+              ["Shared", "PACKAGE"],
+              ["Shared", "TABLE"],
+            ],
+          })
         : query(id, db, sql),
     );
     mount();
