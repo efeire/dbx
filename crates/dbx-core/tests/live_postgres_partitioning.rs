@@ -322,6 +322,8 @@ async fn live_postgres_create_partitioned_table_executes() {
         table_collation: None,
         primary_key_name: None,
         primary_key_change: None,
+        oracle_foreign_key_changes: None,
+        oracle_constraint_changes: None,
     };
     let create = build_create_partitioned_table_sql(
         options,

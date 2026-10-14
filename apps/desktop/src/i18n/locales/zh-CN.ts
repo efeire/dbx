@@ -11,6 +11,15 @@ import { damengDumpZhCN as damengDump } from "./damengDump";
 
 export default withEnglishFallback({
   oceanbaseCloneDialog,
+  oracleForeignKey: {
+    resultTitle: "外键操作结果",
+    executionFailed: "外键操作未完整完成，请核对逐条结果和数据库状态。",
+    createdTablePartial: "表已创建，但部分外键步骤未完成。",
+    createRecoveryNotice: "表和已成功执行的外键会保留。刷新并核对当前定义后，再单独处理未完成的外键。",
+    readbackFailed: "外键读回失败或与预期结果不一致",
+    recoveryNotice: "以下仅为人工恢复候选。执行前须重新检查引用键、权限、数据和名称。",
+    refreshRequired: "再次尝试前，请核对外键状态并刷新。",
+  },
   oceanbasePrimaryKey: {
     noIndexImpact: "替换的 DROP 与 ADD 分别提交，ADD 失败后可能没有主键。请核对 SQL 和原约束状态，必要时人工恢复。",
     noIndex: "没有关联的支撑索引",
@@ -52,6 +61,7 @@ export default withEnglishFallback({
     notExecuted: "未执行",
   },
   sidebarMenu,
+  oracleIndex: { mixedDraft: "请将 Oracle 系索引修改与其他表结构修改分开应用。" },
   modelGeneration: {
     title: "生成模型",
     editTemplate: "编辑模板",
@@ -5571,6 +5581,11 @@ export default withEnglishFallback({
     fulltextIndexColumns: "全文索引仅支持 CHAR、VARCHAR 和 TEXT 类字段。",
     spatialIndexColumn: "空间索引只能包含一个几何类型字段。",
     spatialIndexNullable: "MySQL 空间索引字段必须设为不可为空。",
+    addCheckConstraint: "新增 CHECK 约束",
+    addUniqueConstraint: "新增 UNIQUE 约束",
+    constraintName: "约束名称",
+    checkExpression: "CHECK 表达式",
+    pairedIndexImpact: "OceanBase Oracle 将 UNIQUE 约束及其配对索引作为同一对象管理。删除或重建此约束时，配对索引也可能一并删除。",
     addForeignKey: "新增外键",
     addTrigger: "新增触发器",
     columnName: "字段名",

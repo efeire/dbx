@@ -8,6 +8,8 @@ mod existing_primary_key;
 mod foreign_keys;
 mod indexes;
 mod mysql_engine;
+mod oracle_constraints;
+mod oracle_foreign_keys;
 mod owner;
 mod partitions;
 mod transwarp;
@@ -44,6 +46,12 @@ use validation::validate_concurrent_index_scope;
 pub use validation::validate_draft;
 
 pub fn build_table_structure_change_sql(mut options: TableStructureSqlOptions) -> TableStructureSqlResult {
+    if options.oracle_constraint_changes.is_some() {
+        return oracle_constraints::build_changes(options);
+    }
+    if options.oracle_foreign_key_changes.is_some() {
+        return oracle_foreign_keys::build_changes(options);
+    }
     if options.primary_key_change.is_some() {
         return existing_primary_key::build_existing_primary_key_change(options);
     }

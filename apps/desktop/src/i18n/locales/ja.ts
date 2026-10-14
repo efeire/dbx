@@ -66,6 +66,15 @@ const consul = {
 
 export default withEnglishFallback({
   oceanbaseCloneDialog,
+  oracleForeignKey: {
+    resultTitle: "外部キー操作の結果",
+    executionFailed: "外部キー操作が正常に完了しませんでした。各ステートメントとデータベースの状態を確認してください。",
+    createdTablePartial: "テーブルは作成されましたが、一部の外部キー処理が完了していません。",
+    createRecoveryNotice: "テーブルと正常に作成された外部キーは残ります。未完了の外部キーを個別に処理する前に、更新して定義を確認してください。",
+    readbackFailed: "外部キーの再読み込みに失敗したか、結果が期待値と一致しません",
+    recoveryNotice: "手動復旧用の候補です。実行前に参照キー、権限、データ、名前を再確認してください。",
+    refreshRequired: "再試行する前に外部キーの状態を確認し、更新してください。",
+  },
   oceanbasePrimaryKey: {
     noIndexImpact: "DROP と ADD は個別にコミットされ、ADD の失敗後は主キーがない場合があります。SQL と元の制約状態を確認し、必要に応じて手動で復元してください。",
     noIndex: "関連付けられた索引はありません",
@@ -107,6 +116,7 @@ export default withEnglishFallback({
     notExecuted: "未実行",
   },
   sidebarMenu,
+  oracleIndex: { mixedDraft: "Oracle 系インデックスの変更は、他のテーブル構造の変更と分けて適用してください。" },
   modelGeneration: {
     title: "モデルを生成",
     editTemplate: "テンプレートを編集",
@@ -4969,6 +4979,11 @@ export default withEnglishFallback({
     fulltextIndexColumns: "全文インデックスには CHAR、VARCHAR、TEXT 型の列が必要です。",
     spatialIndexColumn: "空間インデックスには幾何型の列を 1 つだけ指定してください。",
     spatialIndexNullable: "MySQL の空間インデックスの列は NOT NULL である必要があります。",
+    addCheckConstraint: "CHECK 制約を追加",
+    addUniqueConstraint: "UNIQUE 制約を追加",
+    constraintName: "制約名",
+    checkExpression: "CHECK 式",
+    pairedIndexImpact: "OceanBase Oracle では UNIQUE 制約と対応する索引は一体として管理されます。この制約を削除または再作成すると、対応する索引も削除される場合があります。",
     addForeignKey: "外部キーを追加",
     addTrigger: "トリガーを追加",
     columnName: "列",

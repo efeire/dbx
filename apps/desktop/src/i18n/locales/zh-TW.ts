@@ -67,6 +67,15 @@ const consul = {
 
 export default withEnglishFallback({
   oceanbaseCloneDialog,
+  oracleForeignKey: {
+    resultTitle: "外鍵操作結果",
+    executionFailed: "外鍵操作未完整完成，請核對逐條結果和資料庫狀態。",
+    createdTablePartial: "資料表已建立，但部分外鍵步驟未完成。",
+    createRecoveryNotice: "資料表與已成功執行的外鍵會保留。重新整理並核對目前定義後，再個別處理未完成的外鍵。",
+    readbackFailed: "外鍵讀回失敗或與預期結果不一致",
+    recoveryNotice: "以下僅為手動還原候選。執行前須重新檢查參照鍵、權限、資料和名稱。",
+    refreshRequired: "再次嘗試前，請核對外鍵狀態並重新整理。",
+  },
   oceanbasePrimaryKey: {
     noIndexImpact: "替換的 DROP 與 ADD 分別提交，ADD 失敗後可能沒有主鍵。請核對 SQL 和原約束狀態，必要時手動還原。",
     noIndex: "沒有關聯的支撐索引",
@@ -108,6 +117,7 @@ export default withEnglishFallback({
     notExecuted: "未執行",
   },
   sidebarMenu,
+  oracleIndex: { mixedDraft: "請將 Oracle 系索引修改與其他資料表結構修改分開套用。" },
   modelGeneration: {
     title: "產生模型",
     editTemplate: "編輯範本",
@@ -4655,6 +4665,11 @@ export default withEnglishFallback({
     fulltextIndexColumns: "全文索引僅支援 CHAR、VARCHAR 和 TEXT 類型的欄位。",
     spatialIndexColumn: "空間索引只能包含一個幾何類型欄位。",
     spatialIndexNullable: "MySQL 空間索引欄位必須設為不可為空。",
+    addCheckConstraint: "新增 CHECK 約束",
+    addUniqueConstraint: "新增 UNIQUE 約束",
+    constraintName: "約束名稱",
+    checkExpression: "CHECK 運算式",
+    pairedIndexImpact: "OceanBase Oracle 將 UNIQUE 約束及其配對索引視為同一物件。刪除或重建此約束時，配對索引也可能一併刪除。",
     addForeignKey: "新增外鍵",
     addTrigger: "新增觸發器",
     columnName: "欄位",

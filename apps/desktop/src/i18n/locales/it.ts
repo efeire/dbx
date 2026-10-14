@@ -65,6 +65,15 @@ const consul = {
 
 export default withEnglishFallback({
   oceanbaseCloneDialog,
+  oracleForeignKey: {
+    resultTitle: "Risultato dell'operazione sulla chiave esterna",
+    executionFailed: "L'operazione sulla chiave esterna non è stata completata correttamente. Controllare ogni istruzione e lo stato del database.",
+    createdTablePartial: "La tabella è stata creata, ma alcuni passaggi delle chiavi esterne non sono stati completati.",
+    createRecoveryNotice: "La tabella e le chiavi esterne create correttamente vengono mantenute. Aggiornare e controllare le definizioni prima di gestire separatamente le chiavi non completate.",
+    readbackFailed: "La rilettura della chiave esterna non è riuscita o non corrisponde al risultato previsto",
+    recoveryNotice: "Solo una proposta di ripristino manuale. Prima di eseguirla, ricontrollare la chiave referenziata, i permessi, i dati e il nome.",
+    refreshRequired: "Controllare lo stato della chiave esterna e aggiornare prima di riprovare.",
+  },
   oceanbasePrimaryKey: {
     noIndexImpact: "DROP e ADD vengono confermati separatamente; se ADD fallisce, la chiave primaria può essere assente. Verificare SQL e stato originale del vincolo e ripristinare manualmente se necessario.",
     noIndex: "Nessun indice di supporto associato",
@@ -106,6 +115,7 @@ export default withEnglishFallback({
     notExecuted: "Non eseguita",
   },
   sidebarMenu,
+  oracleIndex: { mixedDraft: "Applica le modifiche agli indici Oracle separatamente dalle altre modifiche alla struttura della tabella." },
   modelGeneration: {
     title: "Genera modello",
     editTemplate: "Modifica modello",
@@ -4907,6 +4917,11 @@ export default withEnglishFallback({
     fulltextIndexColumns: "Gli indici full-text richiedono colonne CHAR, VARCHAR o TEXT.",
     spatialIndexColumn: "Un indice spaziale richiede una sola colonna di tipo geometrico.",
     spatialIndexNullable: "Le colonne degli indici spaziali MySQL devono essere NOT NULL.",
+    addCheckConstraint: "Aggiungi vincolo CHECK",
+    addUniqueConstraint: "Aggiungi vincolo UNIQUE",
+    constraintName: "Nome del vincolo",
+    checkExpression: "Espressione CHECK",
+    pairedIndexImpact: "OceanBase Oracle gestisce il vincolo UNIQUE e il relativo indice come un unico oggetto. L'eliminazione o la ricostruzione del vincolo può eliminare anche l'indice associato.",
     addForeignKey: "Aggiungi Chiave Esterna",
     addTrigger: "Aggiungi Trigger",
     columnName: "Colonna",

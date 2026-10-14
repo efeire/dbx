@@ -531,6 +531,7 @@ fn index(name: &str, columns: &[&str]) -> EditableStructureIndex {
         comment: String::new(),
         concurrently: false,
         original: None,
+        oracle_original_missing: false,
         marked_for_drop: false,
     }
 }
@@ -609,6 +610,7 @@ fn foreign_key(name: &str, column: &str, ref_table: &str, ref_column: &str) -> E
         on_update: String::new(),
         on_delete: String::new(),
         original: None,
+        oracle_original_missing: false,
         marked_for_drop: false,
     }
 }
@@ -1078,6 +1080,20 @@ fn builds_xugu_type_change_with_native_syntax() {
         postgres_result.statements,
         vec!["ALTER TABLE \"public\".\"info_x\" ALTER COLUMN \"code\" TYPE integer USING \"code\"::integer;"]
     );
+}
+
+#[test]
+fn oracle_dialect_indexes_without_oracle_family_metadata_keep_existing_rebuild_behavior() {
+    for database_type in [DatabaseType::Iris, DatabaseType::Yashandb, DatabaseType::Xugu] {
+        let mut changed = existing_index("IDX_USERS_EMAIL", &["EMAIL"], false);
+        changed.is_unique = true;
+        let result = build_table_structure_change_sql(index_change_options(database_type, None, changed));
+
+        assert_eq!(result.warnings, Vec::<String>::new(), "{database_type:?}: {result:?}");
+        assert_eq!(result.statements.len(), 2, "{database_type:?}: {result:?}");
+        assert!(result.statements[0].starts_with("DROP INDEX "), "{database_type:?}: {result:?}");
+        assert!(result.statements[1].starts_with("CREATE UNIQUE INDEX "), "{database_type:?}: {result:?}");
+    }
 }
 
 #[test]

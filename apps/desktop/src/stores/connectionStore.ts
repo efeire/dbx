@@ -10478,6 +10478,8 @@ export const useConnectionStore = defineStore("connection", () => {
     connectionGroupOptions,
     selectedConnectionGroupId,
     getConfig,
+    connectionStateRevision,
+    isCurrentConnectionStateRevision,
     getEtcdAccessCapabilities,
     ensureEtcdAccessCapabilities,
     canWriteEtcdKey,

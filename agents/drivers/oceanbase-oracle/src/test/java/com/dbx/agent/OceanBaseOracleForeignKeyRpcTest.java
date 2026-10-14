@@ -20,6 +20,33 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OceanBaseOracleForeignKeyRpcTest {
     @Test
+    void readsOwnKeyHiddenFromAllByColumnLevelReferenceGrant() {
+        Fixture jdbc = new Fixture();
+        jdbc.hiddenFromAll = true;
+        assertEquals(2, jdbc.request().getAsJsonArray("result").size());
+        assertTrue(jdbc.queries.stream().anyMatch(sql -> sql.contains("SYS.USER_CONSTRAINTS") && !sql.contains("c.OWNER")));
+    }
+
+    @Test
+    void neverUsesUserConstraintsForAnotherOrDifferentlyCasedOwner() {
+        for (String user : List.of("OTHER", "app")) {
+            Fixture jdbc = new Fixture(); jdbc.currentUser = user; jdbc.hiddenFromAll = true;
+            assertEquals(0, jdbc.request().getAsJsonArray("result").size());
+            assertTrue(jdbc.queries.stream().anyMatch(sql -> sql.contains("SYS.ALL_CONSTRAINTS")));
+            assertFalse(jdbc.queries.stream().anyMatch(sql -> sql.contains("SYS.USER_CONSTRAINTS")));
+        }
+    }
+
+    @Test
+    void rejectsMissingOrAmbiguousUserInsteadOfFallingBackToEmptyAll() {
+        for (int count : List.of(0, 2)) {
+            Fixture jdbc = new Fixture(); jdbc.userCount = count;
+            assertTrue(jdbc.request().has("error"));
+        }
+        Fixture blank = new Fixture(); blank.currentUser = "";
+        assertTrue(blank.request().has("error"));
+    }
+    @Test
     void returnsActualReferencedColumnPairsAndOwnerThroughProductionRpc() {
         Fixture jdbc = new Fixture();
         JsonObject response = jdbc.request();
@@ -108,9 +135,14 @@ class OceanBaseOracleForeignKeyRpcTest {
         boolean visible = true;
         boolean hasForeignKey = true;
         boolean ddlFailure;
+        boolean hiddenFromAll;
+        String currentUser = "APP";
+        int userCount = 1;
         final List<List<String>> parameters = new ArrayList<>();
+        final List<String> queries = new ArrayList<>();
 
         List<Map<String, String>> rows(String sql) throws SQLException {
+            queries.add(sql);
             if (sql.contains("DBMS_METADATA")) {
                 if (ddlFailure) throw new SQLException("ORA-01031: insufficient privileges", "42000", 1031);
                 return List.of(row("DDL", ddl));
@@ -120,7 +152,13 @@ class OceanBaseOracleForeignKeyRpcTest {
                     row("CONSTRAINT_NAME", "FK_SOURCE", "COLUMN_NAME", "B", "TABLE_NAME", "PARENT", "REF_COLUMN", "ID"),
                     row("CONSTRAINT_NAME", "FK_SOURCE", "COLUMN_NAME", "A", "TABLE_NAME", "PARENT", "REF_COLUMN", "V"));
             }
-            if (sql.contains("ALL_CONSTRAINTS")) return !hasForeignKey ? List.of() : List.of(row("CONSTRAINT_NAME", "FK_SOURCE", "R_OWNER", "PARENT_OWNER", "DELETE_RULE", deleteRule));
+            if (sql.contains("SELECT USER")) {
+                List<Map<String, String>> users = new ArrayList<>();
+                for (int i = 0; i < userCount; i++) users.add(row("USER", currentUser));
+                return users;
+            }
+            if (sql.contains("USER_CONSTRAINTS")) return !hasForeignKey ? List.of() : List.of(row("CONSTRAINT_NAME", "FK_SOURCE", "R_OWNER", "PARENT_OWNER", "DELETE_RULE", deleteRule));
+            if (sql.contains("ALL_CONSTRAINTS")) return !hasForeignKey || hiddenFromAll ? List.of() : List.of(row("CONSTRAINT_NAME", "FK_SOURCE", "R_OWNER", "PARENT_OWNER", "DELETE_RULE", deleteRule));
             if (sql.contains("ALL_TABLES")) return visible ? List.of(row("TABLE_NAME", "SOURCE")) : List.of();
             throw new SQLException("Unexpected query: " + sql);
         }

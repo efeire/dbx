@@ -258,6 +258,8 @@ mod tests {
             table_collation: None,
             primary_key_name: None,
             primary_key_change: None,
+            oracle_foreign_key_changes: None,
+            oracle_constraint_changes: None,
             foreign_table,
         }
     }

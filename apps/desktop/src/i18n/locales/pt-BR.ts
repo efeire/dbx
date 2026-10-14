@@ -66,6 +66,15 @@ const consul = {
 
 export default withEnglishFallback({
   oceanbaseCloneDialog,
+  oracleForeignKey: {
+    resultTitle: "Resultado da operação de chave estrangeira",
+    executionFailed: "A operação de chave estrangeira não foi concluída corretamente. Confira cada instrução e o estado do banco de dados.",
+    createdTablePartial: "A tabela foi criada, mas algumas etapas de chave estrangeira não foram concluídas.",
+    createRecoveryNotice: "A tabela e as chaves estrangeiras criadas com sucesso foram mantidas. Atualize e confira as definições antes de tratar separadamente as chaves pendentes.",
+    readbackFailed: "A releitura da chave estrangeira falhou ou não corresponde ao resultado esperado",
+    recoveryNotice: "Apenas uma proposta de recuperação manual. Confira novamente a chave referenciada, as permissões, os dados e o nome antes de executar.",
+    refreshRequired: "Confira o estado da chave estrangeira e atualize antes de tentar novamente.",
+  },
   oceanbasePrimaryKey: {
     noIndexImpact: "DROP e ADD são confirmados separadamente; se ADD falhar, a chave primária poderá ficar ausente. Confira o SQL e o estado original da restrição e restaure manualmente se necessário.",
     noIndex: "Nenhum índice de suporte associado",
@@ -107,6 +116,7 @@ export default withEnglishFallback({
     notExecuted: "Não executada",
   },
   sidebarMenu,
+  oracleIndex: { mixedDraft: "Aplique as alterações de índices Oracle separadamente das demais alterações na estrutura da tabela." },
   modelGeneration: {
     title: "Gerar modelo",
     editTemplate: "Editar modelo",
@@ -4907,6 +4917,11 @@ export default withEnglishFallback({
     fulltextIndexColumns: "Índices de texto completo exigem colunas CHAR, VARCHAR ou TEXT.",
     spatialIndexColumn: "Um índice espacial exige uma única coluna de tipo geométrico.",
     spatialIndexNullable: "As colunas de índices espaciais do MySQL devem ser NOT NULL.",
+    addCheckConstraint: "Adicionar restrição CHECK",
+    addUniqueConstraint: "Adicionar restrição UNIQUE",
+    constraintName: "Nome da restrição",
+    checkExpression: "Expressão CHECK",
+    pairedIndexImpact: "O OceanBase Oracle gerencia a restrição UNIQUE e seu índice associado como um único objeto. Excluir ou recriar a restrição também pode excluir o índice associado.",
     addForeignKey: "Adicionar chave estrangeira",
     addTrigger: "Adicionar trigger",
     columnName: "Coluna",

@@ -65,6 +65,15 @@ const consul = {
 
 export default withEnglishFallback({
   oceanbaseCloneDialog,
+  oracleForeignKey: {
+    resultTitle: "외래 키 작업 결과",
+    executionFailed: "외래 키 작업이 완전히 완료되지 않았습니다. 각 문과 데이터베이스 상태를 확인하세요.",
+    createdTablePartial: "테이블은 생성되었지만 일부 외래 키 단계가 완료되지 않았습니다.",
+    createRecoveryNotice: "테이블과 성공적으로 생성된 외래 키는 유지됩니다. 완료되지 않은 외래 키를 별도로 처리하기 전에 새로 고쳐 정의를 확인하세요.",
+    readbackFailed: "외래 키 재조회에 실패했거나 결과가 예상과 다릅니다",
+    recoveryNotice: "수동 복구용 후보입니다. 실행 전에 참조 키, 권한, 데이터와 이름을 다시 확인하세요.",
+    refreshRequired: "다시 시도하기 전에 외래 키 상태를 확인하고 새로 고치세요.",
+  },
   oceanbasePrimaryKey: {
     noIndexImpact: "DROP과 ADD는 각각 커밋되며 ADD 실패 후 기본 키가 없을 수 있습니다. SQL과 기존 제약 조건 상태를 확인하고 필요하면 수동 복구하세요.",
     noIndex: "연결된 지원 인덱스가 없습니다",
@@ -106,6 +115,7 @@ export default withEnglishFallback({
     notExecuted: "실행되지 않음",
   },
   sidebarMenu,
+  oracleIndex: { mixedDraft: "Oracle 계열 인덱스 변경은 다른 테이블 구조 변경과 분리해 적용하세요." },
   modelGeneration: {
     title: "모델 생성",
     editTemplate: "템플릿 편집",
@@ -4850,6 +4860,11 @@ export default withEnglishFallback({
     fulltextIndexColumns: "전문 인덱스에는 CHAR, VARCHAR 또는 TEXT 컬럼이 필요합니다.",
     spatialIndexColumn: "공간 인덱스에는 기하 형식의 컬럼 하나만 지정해야 합니다.",
     spatialIndexNullable: "MySQL 공간 인덱스 컬럼은 NOT NULL이어야 합니다.",
+    addCheckConstraint: "CHECK 제약 조건 추가",
+    addUniqueConstraint: "UNIQUE 제약 조건 추가",
+    constraintName: "제약 조건 이름",
+    checkExpression: "CHECK 표현식",
+    pairedIndexImpact: "OceanBase Oracle은 UNIQUE 제약 조건과 연결된 인덱스를 하나의 객체로 관리합니다. 이 제약 조건을 삭제하거나 다시 만들면 연결된 인덱스도 삭제될 수 있습니다.",
     addForeignKey: "외래 키 추가",
     addTrigger: "트리거 추가",
     columnName: "컬럼",

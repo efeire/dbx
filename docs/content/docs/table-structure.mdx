@@ -78,7 +78,15 @@ Index capabilities vary by dialect and can include:
 - Index comments where supported
 - Automatic names for new indexes with editable values
 
-Foreign-key editing covers column mappings and update/delete actions. Trigger editing depends on source retrieval and safe DDL generation; unsupported databases can still expose source or copyable DDL.
+Native Oracle and OceanBase Oracle both provide foreign-key create, edit, and drop actions for existing and new tables. DBX reads and verifies an existing definition before enabling its editor. Incomplete or unreadable definitions remain read-only.
+
+Composite foreign keys store each local and referenced column as an ordered pair. Moving a row moves both columns. `ON DELETE` supports `NO ACTION`, `CASCADE`, and `SET NULL`; Oracle does not expose `ON UPDATE`. Both databases expose enabled, validated, and `RELY` states. Deferrability is available only for native Oracle.
+
+Save existing-table foreign-key changes separately from columns, primary keys, indexes, triggers, partitions, table comments, or handwritten DDL. A new-table plan can include columns, a primary key, and foreign keys, including a self-reference. Before saving, DBX rechecks the source definition, parent key, permissions, and applicable data conditions. If required metadata is unreadable or validation data fails, DBX does not drop the original foreign key first. The database makes the final permission decision for a single ADD statement.
+
+Foreign-key DDL statements commit one at a time. If CREATE succeeds and a later foreign-key statement fails, the table and completed steps remain. DBX stops the remaining steps and does not drop the table, retry, or roll back automatically. A failed existing-key rebuild can also leave the original key absent. Refresh and inspect the actual definitions before retrying. Result details may include recovery SQL that requires manual review.
+
+Foreign-key editing on other databases depends on the implementation for that dialect. Trigger editing depends on source retrieval and safe DDL generation; unsupported databases can still expose source or copyable DDL.
 
 ## DDL Preview
 

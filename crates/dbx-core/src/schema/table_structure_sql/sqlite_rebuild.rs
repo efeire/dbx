@@ -1528,6 +1528,8 @@ mod tests {
             table_collation: None,
             primary_key_name: None,
             primary_key_change: None,
+            oracle_foreign_key_changes: None,
+            oracle_constraint_changes: None,
         }
     }
 
@@ -1706,6 +1708,7 @@ mod tests {
             comment: String::new(),
             concurrently: false,
             original: None,
+            oracle_original_missing: false,
             marked_for_drop: false,
         });
         let preview = preview_sqlite_table_structure_change_with_pool(pool.clone(), options.clone()).await.unwrap();
@@ -2026,6 +2029,9 @@ mod tests {
             comment: String::new(),
             concurrently: false,
             original: Some(IndexInfo {
+                key_directions: Vec::new(),
+                visibility: None,
+                key_metadata_complete: false,
                 name: "uq_items_value".to_string(),
                 columns: vec!["value".to_string()],
                 is_unique: true,
@@ -2038,6 +2044,7 @@ mod tests {
                 column_opclasses: vec![],
                 constraint_backed: false,
             }),
+            oracle_original_missing: false,
             marked_for_drop: true,
         });
         let preview = preview_sqlite_table_structure_change_with_pool(pool.clone(), options.clone()).await.unwrap();

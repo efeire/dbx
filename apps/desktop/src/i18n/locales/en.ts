@@ -65,6 +65,15 @@ const consul = {
 
 export default {
   oceanbaseCloneDialog,
+  oracleForeignKey: {
+    resultTitle: "Foreign key operation result",
+    executionFailed: "The foreign key operation did not complete cleanly. Check each statement and the database state.",
+    createdTablePartial: "The table was created, but some foreign-key steps did not complete.",
+    createRecoveryNotice: "The table and successful foreign keys remain. Refresh and inspect the current definitions before handling unfinished foreign keys separately.",
+    readbackFailed: "Foreign key readback failed or did not match the intended result",
+    recoveryNotice: "Manual recovery candidate only. Recheck the referenced key, permissions, data and name before running it.",
+    refreshRequired: "Check the foreign key state and refresh before another attempt.",
+  },
   oceanbasePrimaryKey: {
     noIndexImpact: "Replacement commits DROP and ADD separately; ADD may fail and leave no primary key. Review the SQL and original constraint state, and restore manually if needed.",
     noIndex: "No associated supporting index",
@@ -106,6 +115,7 @@ export default {
     notExecuted: "Not executed",
   },
   sidebarMenu,
+  oracleIndex: { mixedDraft: "Apply Oracle-family index changes separately from other table structure changes." },
   modelGeneration: {
     title: "Generate model",
     editTemplate: "Edit template",
@@ -5581,6 +5591,11 @@ export default {
     fulltextIndexColumns: "Full-text indexes require CHAR, VARCHAR, or TEXT columns.",
     spatialIndexColumn: "A spatial index requires a single geometry column.",
     spatialIndexNullable: "MySQL spatial index columns must be NOT NULL.",
+    addCheckConstraint: "Add CHECK Constraint",
+    addUniqueConstraint: "Add UNIQUE Constraint",
+    constraintName: "Constraint name",
+    checkExpression: "CHECK expression",
+    pairedIndexImpact: "OceanBase Oracle treats a UNIQUE constraint and its paired index as one object. Dropping or rebuilding this constraint may also remove the paired index.",
     addForeignKey: "Add Foreign Key",
     addTrigger: "Add Trigger",
     columnName: "Column",

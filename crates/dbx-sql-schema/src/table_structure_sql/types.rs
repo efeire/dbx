@@ -125,6 +125,9 @@ pub struct EditableStructureIndex {
     pub concurrently: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original: Option<IndexInfo>,
+    /// Oracle-family partial-rebuild recovery: preserve `original` as key metadata but skip its already-committed DROP.
+    #[serde(default)]
+    pub oracle_original_missing: bool,
     #[serde(default)]
     pub marked_for_drop: bool,
 }
@@ -150,6 +153,15 @@ pub struct IndexInfo {
     /// (e.g. sourced from `pg_get_indexdef`), not a plain column name.
     #[serde(default)]
     pub key_is_expression: Vec<bool>,
+    /// Parallel to `columns`: Oracle-family key order (`ASC` or `DESC`).
+    #[serde(default)]
+    pub key_directions: Vec<String>,
+    /// Oracle-family index visibility (`VISIBLE` or `INVISIBLE`).
+    #[serde(default)]
+    pub visibility: Option<String>,
+    /// True only when expression, direction and visibility metadata are aligned and complete.
+    #[serde(default)]
+    pub key_metadata_complete: bool,
     /// Parallel to `columns`: operator class name for each key column, if non-default.
     #[serde(default)]
     pub column_opclasses: Vec<Option<String>>,
@@ -295,6 +307,94 @@ pub struct TableStructureSqlOptions {
     /// An ordered change to an existing Oracle-family primary key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_key_change: Option<ExistingPrimaryKeyChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_foreign_key_changes: Option<Vec<OracleForeignKeyChange>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_constraint_changes: Option<Vec<OracleConstraintChange>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleConstraintChange {
+    pub original: Option<OracleConstraintDefinition>,
+    pub target: Option<OracleConstraintDefinition>,
+    #[serde(default)]
+    pub index_policy: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "definition")]
+pub enum OracleConstraintDefinition {
+    Check(OracleCheckConstraint),
+    Unique(OracleUniqueConstraint),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleCheckConstraint {
+    pub name: String,
+    pub expression: String,
+    pub state: OraclePrimaryKeyState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleUniqueConstraint {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub state: OraclePrimaryKeyState,
+    #[serde(default)]
+    pub rely_raw: String,
+    pub index: OracleConstraintIndex,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleConstraintIndex {
+    pub owner: String,
+    pub name: String,
+    pub table_owner: String,
+    pub table_name: String,
+    pub sharing: String,
+    pub metadata_complete: bool,
+    pub index_type: String,
+    pub uniqueness: String,
+    pub status: String,
+    pub partitioned: bool,
+    pub visibility: String,
+    /// `None` is a catalog NULL only when `metadata_complete` is true.
+    pub secondary: Option<String>,
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub directions: Vec<String>,
+    #[serde(default)]
+    pub key_is_expression: Vec<bool>,
+    #[serde(default)]
+    pub included_columns: Vec<String>,
+    #[serde(default)]
+    pub new_name_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleForeignKeyChange {
+    pub original: Option<OracleForeignKeyDefinition>,
+    pub target: Option<OracleForeignKeyDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OracleForeignKeyDefinition {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_schema: String,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_delete: String,
+    pub state: OraclePrimaryKeyState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

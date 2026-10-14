@@ -29,6 +29,7 @@ fn concurrent_index(columns: Vec<&str>) -> EditableStructureIndex {
         comment: String::new(),
         concurrently: true,
         original: None,
+        oracle_original_missing: false,
         marked_for_drop: false,
     }
 }
@@ -70,6 +71,8 @@ async fn live_postgres_concurrent_index_builds_valid_index() {
         table_collation: None,
         primary_key_name: None,
         primary_key_change: None,
+        oracle_foreign_key_changes: None,
+        oracle_constraint_changes: None,
     });
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
@@ -208,6 +211,8 @@ async fn live_postgres_partitioned_parent_concurrent_request_rejected() {
         table_collation: None,
         primary_key_name: None,
         primary_key_change: None,
+        oracle_foreign_key_changes: None,
+        oracle_constraint_changes: None,
     });
     assert_eq!(
         result.warnings,

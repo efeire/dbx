@@ -8,6 +8,15 @@ import { meilisearchManagementRu } from "./meilisearchManagement";
 // Russian locale. Entries omitted here fall back to English at runtime.
 export default withEnglishFallback({
   oceanbaseCloneDialog,
+  oracleForeignKey: {
+    resultTitle: "Результат операции с внешним ключом",
+    executionFailed: "Операция с внешним ключом завершена не полностью. Проверьте результат каждого оператора и состояние базы данных.",
+    createdTablePartial: "Таблица создана, но часть операций с внешними ключами не завершена.",
+    createRecoveryNotice: "Таблица и успешно созданные внешние ключи сохранены. Обновите данные и проверьте определения, прежде чем отдельно обрабатывать незавершенные ключи.",
+    readbackFailed: "Не удалось повторно прочитать внешний ключ или результат отличается от ожидаемого",
+    recoveryNotice: "Только кандидат для ручного восстановления. Перед выполнением перепроверьте ссылочный ключ, права, данные и имя.",
+    refreshRequired: "Перед повторной попыткой проверьте состояние внешнего ключа и обновите данные.",
+  },
   oceanbasePrimaryKey: {
     noIndexImpact: "DROP и ADD фиксируются отдельно; после сбоя ADD первичный ключ может отсутствовать. Проверьте SQL и исходное состояние ограничения и при необходимости восстановите вручную.",
     noIndex: "Связанный опорный индекс отсутствует",
@@ -49,6 +58,7 @@ export default withEnglishFallback({
     notExecuted: "Не выполнено",
   },
   sidebarMenu,
+  oracleIndex: { mixedDraft: "Применяйте изменения индексов Oracle отдельно от других изменений структуры таблицы." },
   modelGeneration: {
     title: "Создать модель",
     editTemplate: "Изменить шаблон",
@@ -5374,6 +5384,11 @@ export default withEnglishFallback({
     fulltextIndexColumns: "Для полнотекстовых индексов требуются столбцы CHAR, VARCHAR или TEXT.",
     spatialIndexColumn: "Пространственный индекс должен содержать один столбец геометрического типа.",
     spatialIndexNullable: "Столбцы пространственных индексов MySQL должны иметь ограничение NOT NULL.",
+    addCheckConstraint: "Добавить ограничение CHECK",
+    addUniqueConstraint: "Добавить ограничение UNIQUE",
+    constraintName: "Имя ограничения",
+    checkExpression: "Выражение CHECK",
+    pairedIndexImpact: "OceanBase Oracle управляет ограничением UNIQUE и связанным индексом как единым объектом. Удаление или пересоздание ограничения может также удалить индекс.",
     addForeignKey: "Добавить внешний ключ",
     addTrigger: "Добавить триггер",
     columnName: "Столбец",

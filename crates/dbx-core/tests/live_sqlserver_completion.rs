@@ -1032,6 +1032,8 @@ async fn live_sqlserver_table_structure_default_changes_drop_existing_constraint
         table_collation: None,
         primary_key_name: None,
         primary_key_change: None,
+        oracle_foreign_key_changes: None,
+        oracle_constraint_changes: None,
     });
     assert_eq!(result.warnings, Vec::<String>::new());
     assert_eq!(result.statements.len(), 4);
