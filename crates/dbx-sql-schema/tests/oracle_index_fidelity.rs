@@ -1,6 +1,6 @@
 use dbx_sql_schema::models::connection::DatabaseType;
-use dbx_sql_schema::table_structure_sql::{TableStructureSqlOptions, build_table_structure_change_sql};
-use serde_json::{Value, json};
+use dbx_sql_schema::table_structure_sql::{build_table_structure_change_sql, TableStructureSqlOptions};
+use serde_json::{json, Value};
 
 fn options(columns: Value) -> TableStructureSqlOptions {
     serde_json::from_value(json!({
