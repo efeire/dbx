@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import AuthorizationScopeEditor from "@/components/admin/AuthorizationScopeEditor.vue";
 import OracleSecurityDetails from "@/components/admin/OracleSecurityDetails.vue";
 import { buildOracleObjectAuthorizationPlan, createOracleUserAdminActions, oracleGrantObjectsSql, oraclePrivilegesForScope } from "@/lib/database/oracleUserAdmin";
-import { loadOracleSecurity, supportsOracleSecurity, ORACLE_SECURITY_ROW_LIMIT, type OracleSecuritySnapshot } from "@/lib/database/oracleSecurity";
+import { loadOracleSecurity, supportsOracleSecurity, ORACLE_SECURITY_ROW_LIMIT, oracleWriteRejected, parseOracleErrorCode, type OracleSecuritySnapshot } from "@/lib/database/oracleSecurity";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useToast } from "@/composables/useToast";
 import { fetchNamespaceOptionsForConnection } from "@/composables/useDatabaseOptions";
@@ -104,6 +104,7 @@ interface OracleExecution {
   retiring?: boolean;
   retiringIdentity?: string;
   dispatchedStepIds: Set<string>;
+  rejectedStepIds: Set<string>;
   results: AuthorizationStepResult[];
 }
 const oracleExecution = ref<OracleExecution>();
@@ -577,6 +578,7 @@ async function applyPendingSql() {
         retiring: false,
         retiringIdentity: undefined,
         dispatchedStepIds: new Set<string>(),
+        rejectedStepIds: new Set<string>(),
         results: [] as AuthorizationStepResult[],
       })
     : undefined;
@@ -616,14 +618,18 @@ async function applyPendingSql() {
             }
             if (oracleAction) {
               if (!Array.isArray(results) || results.length !== 1 || !Array.isArray(results[0]?.columns) || !Array.isArray(results[0]?.rows)) return [{ execution_error: true, rows: [[t("oracleSecurity.writeUnknown")]] } as any];
-              if (results[0].execution_error) return [{ ...results[0], rows: [[oracleWriteError(String(results[0].rows[0]?.[0] ?? ""), true)]] }];
+              if (results[0].execution_error) {
+                const rawMessage = String(results[0].rows[0]?.[0] ?? "");
+                if (execution && oracleWriteRejected(rawMessage, true)) execution.rejectedStepIds.add(step.id);
+                return [{ ...results[0], rows: [[oracleWriteError(rawMessage, true)]] }];
+              }
             }
             return results;
           });
           if (execution) {
             execution.results = results.map((item) => {
               if (!execution.dispatchedStepIds.has(item.step.id)) return { ...item, status: "skipped", outcome: undefined, message: execution.stopRequested ? t("oracleSecurity.notSentAfterStop") : t("userAdmin.stepSkipped") };
-              if (item.status === "failed" && !item.message?.includes(t("oracleSecurity.writeRejected"))) return { ...item, outcome: "unknown", message: t("oracleSecurity.writeUnknown") };
+              if (item.status === "failed" && !execution.rejectedStepIds.has(item.step.id)) return { ...item, outcome: "unknown", message: t("oracleSecurity.writeUnknown") };
               return item;
             });
             return execution.results;
@@ -646,8 +652,13 @@ async function applyPendingSql() {
         const failed = queryResults.find((item) => item.execution_error === true);
         if (failed) {
           if (oracleAction && execution) {
-            const message = oracleWriteError(String(failed.rows[0]?.[0] ?? ""), true);
-            execution.results = [{ step: execution.plan.steps[0], status: "failed", ...(message.includes(t("oracleSecurity.writeRejected")) ? { message } : { outcome: "unknown" as const, message: t("oracleSecurity.writeUnknown") }) }];
+            const rawMessage = String(failed.rows[0]?.[0] ?? "");
+            if (oracleWriteRejected(rawMessage, true)) {
+              execution.rejectedStepIds.add(execution.plan.steps[0].id);
+              execution.results = [{ step: execution.plan.steps[0], status: "failed", message: oracleWriteError(rawMessage, true) }];
+            } else {
+              execution.results = [{ step: execution.plan.steps[0], status: "failed", outcome: "unknown", message: t("oracleSecurity.writeUnknown") }];
+            }
             return execution.results;
           }
           executionError = true;
@@ -727,10 +738,9 @@ async function applyPendingSql() {
 }
 
 function oracleWriteError(message: string, executionError = false): string {
-  const match = message.match(/^(?:Error:\s*)?((?:ORA|OBE)-(\d{4,5}))\b/);
-  // Transport errors can also arrive as execution_error; only explicit refusal codes establish rejection.
-  const rejected = executionError && ["01031", "00942", "00904", "00990", "01917", "01919", "01926", "01720", "28003", "28007", "28008"].includes(match?.[2] ?? "");
-  return `${match ? match[1] + " · " : ""}${t(rejected ? "oracleSecurity.writeRejected" : "oracleSecurity.writeUnknown")}`;
+  const parsed = parseOracleErrorCode(message);
+  const rejected = oracleWriteRejected(message, executionError);
+  return `${parsed ? `${parsed.prefix}-${parsed.code} · ` : ""}${t(rejected ? "oracleSecurity.writeRejected" : "oracleSecurity.writeUnknown")}`;
 }
 
 function clearPendingSql() {

@@ -261,7 +261,9 @@ function databaseLabel(option: AuthorizationDatabaseOption): string {
 }
 
 function authorizationTableKey(table: AuthorizationTableSelection): string {
-  return JSON.stringify([table.schema ?? "", table.name]);
+  // Oracle allows a PACKAGE/PROCEDURE to share a name with a TABLE in one
+  // schema; dropping objectType here would make the table unselectable.
+  return JSON.stringify([table.schema ?? "", table.name, table.objectType ?? ""]);
 }
 
 function tableLabel(table: AuthorizationTableSelection): string {

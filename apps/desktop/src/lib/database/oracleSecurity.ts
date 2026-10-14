@@ -65,10 +65,30 @@ function dictionaryRows(result: QueryResult): DictionaryRow[] {
   if (result.execution_error) throw new Error(result.error?.detail ?? result.error?.code ?? "Dictionary query failed");
   return result.rows.map((row) => Object.fromEntries(result.columns.map((column, i) => [column.toUpperCase(), String(row[i] ?? "")])));
 }
+export interface OracleErrorCodeMatch {
+  prefix: "ORA" | "OBE";
+  code: string;
+}
+
+/** Single parser for the ORA/OBE error format shared by read and write classification. */
+export function parseOracleErrorCode(message: string): OracleErrorCodeMatch | null {
+  const match = message.match(/\b(ORA|OBE)-(\d{4,5})\b/);
+  return match ? { prefix: match[1] as "ORA" | "OBE", code: match[2] } : null;
+}
+
+// Only explicit refusal codes establish rejection; transport failures stay "unknown".
+const oracleWriteRejectedCodes = new Set(["01031", "00942", "00904", "00990", "01917", "01919", "01926", "01720", "28003", "28007", "28008"]);
+
+export function oracleWriteRejected(message: string, executionError: boolean): boolean {
+  if (!executionError) return false;
+  const parsed = parseOracleErrorCode(message);
+  return parsed !== null && oracleWriteRejectedCodes.has(parsed.code);
+}
+
 function readState(error: unknown): SecurityReadState {
   const message = String(error);
-  if (/(?:ORA|OBE)-\d+/.test(message)) {
-    const code = message.match(/\b(?:ORA|OBE)-(\d{5})\b/)?.[1];
+  const code = parseOracleErrorCode(message)?.code;
+  if (code !== undefined || /(?:ORA|OBE)-\d+/.test(message)) {
     return code === "01031" ? "denied" : code === "00942" ? "unavailable" : "error";
   }
   if (/insufficient privileges/i.test(message)) return "denied";

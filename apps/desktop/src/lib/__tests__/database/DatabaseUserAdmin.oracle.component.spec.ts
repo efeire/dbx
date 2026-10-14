@@ -579,6 +579,21 @@ describe("Oracle management through the shared page", () => {
     expect([...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === en.userAdmin.grant)?.disabled).toBe(true);
     expect(mocks.executeMulti).not.toHaveBeenCalled();
   });
+  it("lists both objects when a PACKAGE shares its name with a TABLE", async () => {
+    setup();
+    const query = mocks.executeQuery.getMockImplementation()!;
+    mocks.executeQuery.mockImplementation((id, db, sql) =>
+      sql.includes("ALL_OBJECTS")
+        ? Promise.resolve({ columns: ["OBJECT_NAME", "OBJECT_TYPE"], rows: [["Shared", "PACKAGE"], ["Shared", "TABLE"]] })
+        : query(id, db, sql),
+    );
+    mount();
+    await settle();
+    await click("APP_OWNER");
+    await click(`${en.oracleSecurity.chooseObjects} (0)`);
+    expect(document.body.textContent).toContain("Shared · PACKAGE");
+    expect(document.body.textContent).toContain("Shared · TABLE");
+  });
   it.each(["connection reset", "statement timed out", "ORA-03113: end-of-file on communication channel"])("keeps a returned execution error outcome unknown: %s", async (message) => {
     setup();
     mocks.executeMulti.mockResolvedValueOnce([{ columns: ["error"], rows: [[message]], execution_error: true }]);

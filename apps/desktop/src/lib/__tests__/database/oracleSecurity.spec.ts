@@ -1,10 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectionConfig, QueryResult } from "@/types/database";
-import { loadOracleSecurity, oracleGrantSources, oracleObjectGrantSources, oracleSecurityObjectMatches, supportsOracleSecurity, ORACLE_SECURITY_ROW_LIMIT } from "@/lib/database/oracleSecurity";
+import { loadOracleSecurity, oracleGrantSources, oracleObjectGrantSources, oracleSecurityObjectMatches, oracleWriteRejected, parseOracleErrorCode, supportsOracleSecurity, ORACLE_SECURITY_ROW_LIMIT } from "@/lib/database/oracleSecurity";
 import { connectionSupportsDatabaseUserAdmin } from "@/lib/database/databaseUserAdmin";
 
 const result = (columns: string[], rows: unknown[][] = []) => ({ columns, rows, affected_rows: 0, execution_time_ms: 0 }) as QueryResult;
 const blankQuery = async (sql: string) => (sql.includes("FROM DUAL") ? result(["USERNAME"], [["Reader"]]) : result([]));
+
+describe("Oracle write rejection classification", () => {
+  it("classifies rejection by error code, independent of any locale text", () => {
+    expect(parseOracleErrorCode("ORA-01031: insufficient privileges")).toEqual({ prefix: "ORA", code: "01031" });
+    expect(parseOracleErrorCode("Error: OBE-00942: table or view does not exist")).toEqual({ prefix: "OBE", code: "00942" });
+    expect(parseOracleErrorCode("connection reset")).toBeNull();
+    expect(oracleWriteRejected("ORA-01031: insufficient privileges", true)).toBe(true);
+    expect(oracleWriteRejected("ORA-03113: end-of-file on communication channel", true)).toBe(false);
+    // Transport errors can also arrive as execution errors; only refusal codes establish rejection.
+    expect(oracleWriteRejected("ORA-01031: insufficient privileges", false)).toBe(false);
+    expect(oracleWriteRejected("connection reset", true)).toBe(false);
+  });
+});
 
 describe("Oracle security dictionary reads", () => {
   it("uses only SELECTs and exposes exact quoted identities and grant options", async () => {
