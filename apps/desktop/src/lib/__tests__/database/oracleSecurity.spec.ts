@@ -51,6 +51,18 @@ describe("Oracle security dictionary reads", () => {
     expect(query.mock.calls.some(([sql]) => sql.includes("FROM ALL_USERS"))).toBe(true);
   });
 
+  it.each(["table or view does not exist", "table or view 'SYS.DBA_USERS' does not exist"])("falls back when a dictionary view is unavailable without an error code: %s", async (message) => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM DBA_USERS")) throw new Error(message);
+      if (sql.includes("FROM ALL_USERS")) return result(["USERNAME"], [["Reader"]]);
+      return blankQuery(sql);
+    });
+    const snapshot = await loadOracleSecurity(query, { db_type: "oceanbase-oracle" } as ConnectionConfig);
+    expect(snapshot.users).toMatchObject({ state: "ok", visibility: "limited", rows: [{ name: "Reader" }] });
+    expect(snapshot.users.message).toContain(message);
+    expect(query.mock.calls.some(([sql]) => sql.includes("FROM ALL_USERS"))).toBe(true);
+  });
+
   it("falls back on OBE-01031 and preserves the insufficient-privilege reason", async () => {
     const snapshot = await loadOracleSecurity(
       async (sql) => {

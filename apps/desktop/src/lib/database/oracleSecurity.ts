@@ -73,7 +73,7 @@ function readState(error: unknown): SecurityReadState {
   }
   if (/insufficient privileges/i.test(message)) return "denied";
   // These errors do not distinguish an absent view from a hidden view.
-  if (/table or view .* does not exist/i.test(message)) return "unavailable";
+  if (/table or view(?:\s+.+?)?\s+does not exist/i.test(message)) return "unavailable";
   return "error";
 }
 const yes = (value: string | undefined) => value === "YES";
