@@ -194,11 +194,20 @@ export function rewriteOraclePackageSource(source: string, options: { owner: str
     edits.push({ start: token.start, end: token.end, value: quotedIdentifier(options.newName) });
   }
 
-  // A dynamic string containing the old package name cannot be safely retargeted.
+  // Dynamic SQL is safe to copy only when its complete statement text is a literal.
   for (let index = 0; index < list.length; index++) {
-    const token = list[index]!;
-    if (token.kind === "string" && matches(list[index - 1], "IMMEDIATE") && matches(list[index - 2], "EXECUTE") && new RegExp(`(^|[^A-Za-z0-9_$#])${options.oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\.`, "i").test(token.value)) {
-      throw new Error("Package source contains a dynamic string reference that cannot be safely retargeted.");
+    if (!matches(list[index], "EXECUTE") || !matches(list[index + 1], "IMMEDIATE")) continue;
+    const token = list[index + 2];
+    if (token?.kind !== "string") throw new Error("Dynamic SQL must use a complete string literal; replace the expression with corrected source before Save As.");
+    const clause = list[index + 3];
+    if (clause && clause.text !== ";" && !(clause.kind === "identifier" && ["INTO", "USING", "RETURNING"].includes(clause.value))) {
+      throw new Error("Dynamic SQL must use a complete string literal; replace the expression with corrected source before Save As.");
+    }
+    const dynamicTokens = tokens(token.value);
+    for (let dynamicIndex = 0; dynamicIndex < dynamicTokens.length; dynamicIndex++) {
+      if (sameName(dynamicTokens[dynamicIndex]) && dynamicTokens[dynamicIndex + 1]?.text === ".") {
+        throw new Error("Package source contains a dynamic string reference that cannot be safely retargeted.");
+      }
     }
   }
 

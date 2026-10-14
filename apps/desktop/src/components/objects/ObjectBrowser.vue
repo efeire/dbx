@@ -113,7 +113,7 @@ import { prepareOracleTableRename, executeOracleTableRename, OracleTableRenameFa
 import OracleTableRenamePreview from "@/components/objects/OracleTableRenamePreview.vue";
 import OracleRoutineRenamePreview from "@/components/objects/OracleRoutineRenamePreview.vue";
 import OraclePackageSaveAsDialog from "@/components/objects/OraclePackageSaveAsDialog.vue";
-import { executeOraclePackageSaveAs, prepareOraclePackageSaveAs, type OraclePackageSaveAsPlan } from "@/lib/table/oraclePackageSaveAs";
+import { executeOraclePackageSaveAs, OraclePackageSaveAsFailure, prepareOraclePackageSaveAs, type OraclePackageSaveAsPlan } from "@/lib/table/oraclePackageSaveAs";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
 import { generateDatabaseExportId } from "@/lib/export/databaseExport";
@@ -1942,6 +1942,20 @@ async function confirmPackageSaveAs() {
   packageSaveAsExecuting.value = true;
   packageSaveAsError.value = "";
   packageSaveAsDiagnostic.value = "";
+  const isCurrentPlan = () => {
+    const currentRow = packageSaveAsTarget.value;
+    return (
+      packageSaveAsOpen.value &&
+      packageSaveAsPlan.value === plan &&
+      !!currentRow &&
+      currentRow.name === plan.target.oldName &&
+      props.connection.id === plan.target.connectionId &&
+      props.database === plan.target.database &&
+      (currentRow.schema || selectedSchema.value || props.database) === plan.target.schema &&
+      effectiveDatabaseType.value === plan.target.databaseType &&
+      packageSaveAsName.value.trim() === plan.target.newName
+    );
+  };
   try {
     const executed = await executeObjectBrowserSqlWithProductionGuard(plan.statements.join("\n\n"), async () => {
       await executeOraclePackageSaveAs(
@@ -1962,9 +1976,15 @@ async function confirmPackageSaveAs() {
     await reload();
     await connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema);
   } catch (error) {
-    packageSaveAsError.value = t("objects.packageSaveAsFailed");
-    packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
-    packageSaveAsPlan.value = { ...plan, executable: false };
+    if (error instanceof OraclePackageSaveAsFailure && error.dispatched) {
+      await connectionStore.refreshObjectListTreeNode(plan.target.connectionId, plan.target.database, plan.target.schema);
+      if (props.connection.id === plan.target.connectionId && props.database === plan.target.database && (packageSaveAsTarget.value?.schema || selectedSchema.value || props.database) === plan.target.schema) await reload();
+    }
+    if (isCurrentPlan()) {
+      packageSaveAsError.value = t("objects.packageSaveAsFailed");
+      packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
+      packageSaveAsPlan.value = { ...plan, executable: false };
+    }
   } finally {
     packageSaveAsExecuting.value = false;
   }

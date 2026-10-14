@@ -47,6 +47,7 @@ export class OraclePackageSaveAsFailure extends Error {
     public readonly completed: string[],
     public readonly uncertain: string,
     cause: unknown,
+    public readonly dispatched: boolean,
   ) {
     const message = cause instanceof Error ? cause.message : String(cause);
     super(`Package Save As stopped. Created and verified: ${completed.join(", ") || "none"}. Check ${uncertain} before retrying. ${message}`);
@@ -258,6 +259,7 @@ export async function executeOraclePackageSaveAs(plan: OraclePackageSaveAsPlan, 
 
   const lock = freezeSourceIdentities(["PACKAGE", "PACKAGE_BODY"].map((objectType) => ({ connectionId: plan.target.connectionId, database: plan.target.database, schema: plan.target.schema, objectType, name: plan.target.oldName })));
   const completed: string[] = [];
+  let dispatched = false;
   let active = `PACKAGE ${plan.canonicalNewName}`;
   try {
     if (!isCurrent()) throw new Error("The Save As dialog changed before execution.");
@@ -268,6 +270,7 @@ export async function executeOraclePackageSaveAs(plan: OraclePackageSaveAsPlan, 
 
     if (!isCurrent()) throw new Error("The Save As dialog changed before package creation.");
     active = `PACKAGE ${plan.canonicalNewName}`;
+    dispatched = true;
     await query(plan.target, plan.specSource);
     const specState = (await objectStates(plan.target, plan.canonicalNewName, ["PACKAGE"])).filter((row) => row[0] === plan.canonicalNewName && row[1] === "PACKAGE");
     const specSource = await readSource(plan.target, plan.canonicalNewName, "PACKAGE");
@@ -306,13 +309,13 @@ export async function executeOraclePackageSaveAs(plan: OraclePackageSaveAsPlan, 
     const oldFinal = await readSnapshot(plan.target, plan.target.oldName);
     if (JSON.stringify(oldFinal) !== JSON.stringify(plan.snapshot)) throw new Error("The original package changed while the copy was being created.");
   } catch (error) {
-    throw new OraclePackageSaveAsFailure(plan, completed, active, error);
+    throw new OraclePackageSaveAsFailure(plan, completed, active, error, dispatched);
   } finally {
     // Save As is a temporary read/write exclusion, never a migration freeze.
     lock.cancel();
+    if (dispatched) {
+      const scope = { connectionId: plan.target.connectionId, database: plan.target.database, schema: plan.target.schema };
+      await Promise.allSettled([Promise.resolve().then(() => invalidateObjectBrowserRowsCache(scope)), ...[plan.target.oldName, plan.canonicalNewName].map((name) => Promise.resolve().then(() => invalidateObjectDdlCache({ ...scope, tableName: name })))]);
+    }
   }
-
-  const scope = { connectionId: plan.target.connectionId, database: plan.target.database, schema: plan.target.schema };
-  invalidateObjectBrowserRowsCache(scope);
-  await Promise.allSettled([plan.target.oldName, plan.canonicalNewName].map((name) => invalidateObjectDdlCache({ ...scope, tableName: name })));
 }

@@ -31,6 +31,7 @@ let reuseOldNameAfterRename: boolean;
 let driftGraphAfterRename: boolean;
 let driftGraphAfterFirstRebuild: boolean;
 let tamperCompletedViewAfterLaterRebuild: boolean;
+let tamperInvalidViewAfterRename: boolean;
 let tableIndexRows: unknown[][];
 let tableConstraintRows: unknown[][];
 let incomingForeignKeyRows: unknown[][];
@@ -64,6 +65,7 @@ function fixture() {
   driftGraphAfterRename = false;
   driftGraphAfterFirstRebuild = false;
   tamperCompletedViewAfterLaterRebuild = false;
+  tamperInvalidViewAfterRename = false;
   tableIndexRows = [];
   tableConstraintRows = [];
   incomingForeignKeyRows = [];
@@ -135,6 +137,10 @@ function fixture() {
       objects.set(key("TABLE", "NEW"), oldTable);
       if (reuseOldNameAfterRename) objects.set(key("VIEW", "OLD"), { type: "VIEW", id: "88", status: "VALID", source: "CREATE VIEW OLD AS SELECT 1 ID FROM DUAL", grant: "[]", error: "[]" });
       for (const object of objects.values()) if (object.type === "VIEW") object.status = "INVALID";
+      if (tamperInvalidViewAfterRename) {
+        objects.get(key("VIEW", "DEP"))!.source = "CREATE VIEW DEP AS SELECT ID FROM OTHER";
+        tamperInvalidViewAfterRename = false;
+      }
       for (const object of objects.values()) {
         if (object.type !== "TRIGGER") continue;
         object.triggerTable = "NEW";
@@ -177,6 +183,15 @@ function fixture() {
       return result([]);
     }
     throw new Error(`Unexpected query: ${sql}`);
+  });
+}
+
+function mockInvalidViewSource() {
+  api.reviewOracleViewRenameSource.mockImplementation(async ({ source, owner, oldName, newName }: { source: string; owner: string; oldName: string; newName: string }) => {
+    if (source.includes("SELECT FROM")) return { source: null, references: [], issues: [{ code: "invalid_definition", message: "invalid view definition", repairable: true }] };
+    const references = [...source.matchAll(/\bFROM\s+"?([A-Z][A-Z0-9_$#]*)"?/gi)].map((match) => ({ owner, name: match[1] }));
+    const rewritten = oldName === newName ? source : source.replaceAll(new RegExp(`\\b${oldName}\\b`, "g"), `"${newName}"`);
+    return { source: { source: rewritten, fingerprint: rewritten, references }, references, issues: [] };
   });
 }
 
@@ -274,6 +289,81 @@ describe("Oracle table rename plan", () => {
     expect(corrected.steps.map((step) => step.objectName)).toEqual(["OLD", "P1"]);
     await expect(executeOracleTableRename(corrected, { P1: corrected.dependents[0].draft })).resolves.toBeUndefined();
     expect(objects.get(key("PROCEDURE", "P1"))?.source).toContain('FROM "NEW"');
+  });
+
+  it("allows a manually corrected dependent view when its original definition cannot be parsed", async () => {
+    edges = [["OWNER", "DEP", "VIEW", null]];
+    objects.delete(key("PROCEDURE", "P1"));
+    objects.get(key("VIEW", "DEP"))!.source = "CREATE VIEW DEP AS SELECT FROM OLD";
+    mockInvalidViewSource();
+
+    const initial = await prepareOracleTableRename(target);
+    expect(initial.executable).toBe(false);
+    expect(initial.issues.some((item) => item.code === "source_rewrite_failed" && item.objectName === "DEP")).toBe(true);
+
+    const corrected = await prepareOracleTableRename(target, { DEP: "CREATE VIEW DEP AS SELECT ID FROM OLD" });
+    expect(corrected.executable, JSON.stringify(corrected.issues)).toBe(true);
+    expect(corrected.issues).toEqual([]);
+    expect(corrected.steps.at(-1)?.sql).toContain('FROM "NEW"');
+    await expect(executeOracleTableRename(corrected, { DEP: "CREATE VIEW DEP AS SELECT ID FROM OLD" })).resolves.toBeUndefined();
+    expect(objects.get(key("VIEW", "DEP"))?.source).toContain('FROM "NEW"');
+  });
+
+  it("rejects a corrected view draft that removes a dependency from the planned graph", async () => {
+    edges = [["OWNER", "DEP", "VIEW", null]];
+    objects.delete(key("PROCEDURE", "P1"));
+    objects.get(key("VIEW", "DEP"))!.source = "CREATE VIEW DEP AS SELECT FROM OLD";
+    mockInvalidViewSource();
+
+    const plan = await prepareOracleTableRename(target, { DEP: "CREATE VIEW DEP AS SELECT ID FROM DUAL" });
+    expect(plan.executable).toBe(false);
+    expect(
+      plan.issues.some((item) => item.code === "manual_graph" && item.objectName === "DEP"),
+      JSON.stringify({ issues: plan.issues, calls: api.reviewOracleViewRenameSource.mock.calls }),
+    ).toBe(true);
+    expect(plan.steps).toEqual([]);
+  });
+
+  it("keeps an incomplete external dependency graph blocking a corrected view draft", async () => {
+    edges = [["OWNER", "DEP", "VIEW", null]];
+    objects.delete(key("PROCEDURE", "P1"));
+    objects.get(key("VIEW", "DEP"))!.source = "CREATE VIEW DEP AS SELECT FROM OLD";
+    referenceEdges.set(key("VIEW", "DEP"), [["REMOTE_OWNER", "REMOTE_VIEW", "VIEW", null]]);
+    mockInvalidViewSource();
+
+    const plan = await prepareOracleTableRename(target, { DEP: "CREATE VIEW DEP AS SELECT ID FROM OLD" });
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some((item) => item.code === "unsupported_dependency")).toBe(true);
+    expect(plan.steps).toEqual([]);
+  });
+
+  it("requires exact original-source equality when the invalid view has no fingerprint", async () => {
+    edges = [["OWNER", "DEP", "VIEW", null]];
+    objects.delete(key("PROCEDURE", "P1"));
+    objects.get(key("VIEW", "DEP"))!.source = "CREATE VIEW DEP AS SELECT FROM OLD";
+    mockInvalidViewSource();
+    const plan = await prepareOracleTableRename(target, { DEP: "CREATE VIEW DEP AS SELECT ID FROM OLD" });
+    expect(plan.executable).toBe(true);
+    tamperInvalidViewAfterRename = true;
+
+    await expect(executeOracleTableRename(plan, { DEP: "CREATE VIEW DEP AS SELECT ID FROM OLD" })).rejects.toBeInstanceOf(OracleTableRenameFailure);
+    expect(statements.filter((sql) => sql.startsWith("RENAME"))).toHaveLength(1);
+    expect(statements.filter((sql) => sql.startsWith("CREATE VIEW"))).toHaveLength(0);
+  });
+
+  it("does not treat a corrected indirect view draft as applied by COMPILE", async () => {
+    edges = [["OWNER", "DEP", "VIEW", null]];
+    objects.delete(key("PROCEDURE", "P1"));
+    objects.get(key("VIEW", "DEP"))!.source = "CREATE VIEW DEP AS SELECT FROM OLD";
+    objects.set(key("VIEW", "DEP2"), { type: "VIEW", id: "4", status: "VALID", source: "CREATE VIEW DEP2 AS SELECT FROM", grant: "[]", error: "[]" });
+    referenceEdges.set(key("VIEW", "DEP"), [["OWNER", "DEP2", "VIEW", null]]);
+    mockInvalidViewSource();
+
+    const plan = await prepareOracleTableRename(target, { DEP: "CREATE VIEW DEP AS SELECT ID FROM OLD", DEP2: "CREATE VIEW DEP2 AS SELECT ID FROM DEP" });
+
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some((item) => item.code === "source_rewrite_failed" && item.objectName === "DEP2")).toBe(true);
+    expect(plan.steps).toEqual([]);
   });
 
   it.each([

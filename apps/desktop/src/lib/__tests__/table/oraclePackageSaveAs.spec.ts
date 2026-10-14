@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginSourceSave, captureSourceIdentity } from "@/lib/table/objectSourceIdentity";
 import { executeOraclePackageSaveAs, prepareOraclePackageSaveAs } from "@/lib/table/oraclePackageSaveAs";
+import { invalidateObjectDdlCache } from "@/lib/metadata/objectDdlCache";
+import { invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
 
 const api = vi.hoisted(() => ({ executeQuery: vi.fn(), parseOracleObjectName: vi.fn(), buildExecutableObjectSourceStatements: vi.fn() }));
 vi.mock("@/lib/backend/api", () => api);
@@ -14,6 +16,9 @@ const result = (rows: unknown[][]) => ({ columns: [], rows, affected_rows: 0, ex
 let sources: Map<string, string>;
 let states: Map<string, { id: number; status: string }>;
 let failBody: boolean;
+let failSpec: boolean;
+let failGrant: boolean;
+let failFinalReadback: boolean;
 let bodyNotCreated: boolean;
 let tamperSpecId: boolean;
 let operatorTargetConflict: boolean;
@@ -39,6 +44,9 @@ beforeEach(() => {
     [key("P_OLD", "PACKAGE BODY"), { id: 12, status: "VALID" }],
   ]);
   failBody = false;
+  failSpec = false;
+  failGrant = false;
+  failFinalReadback = false;
   bodyNotCreated = false;
   tamperSpecId = false;
   operatorTargetConflict = false;
@@ -75,7 +83,8 @@ beforeEach(() => {
       const name = /TABLE_NAME='((?:''|[^'])*)'/.exec(sql)?.[1]?.replaceAll("''", "'") || "";
       return result(grants.get(name) || []);
     }
-    if (sql.includes("FROM USER_ERRORS")) return result([]);
+    if (sql.includes("FROM USER_ERRORS")) return failFinalReadback && sql.includes("NAME='P_NEW'") ? result([["ERROR", "1", "1", "forced final readback failure"]]) : result([]);
+    if (sql.startsWith('CREATE PACKAGE "P_NEW"') && failSpec) throw new Error("spec create failed");
     if (sql.startsWith("CREATE PACKAGE BODY") && failBody) throw new Error("body create failed");
     const create = /^CREATE PACKAGE( BODY)?\s+("(?:[^"]|"")*"|[A-Za-z_$#][\w$#]*)/i.exec(sql);
     if (create) {
@@ -87,6 +96,7 @@ beforeEach(() => {
       return result([]);
     }
     if (sql.startsWith("GRANT EXECUTE")) {
+      if (failGrant) throw new Error("grant create failed");
       const objectName = /ON "APP"\."((?:[^"]|"")*)"/i.exec(sql)?.[1]?.replaceAll('""', '"') || "";
       const grantee = / TO ("(?:[^"]|"")*"|PUBLIC)/i.exec(sql)?.[1];
       const rows = grants.get(objectName) || [];
@@ -137,6 +147,21 @@ describe("Oracle package Save As plan and execution", () => {
     expect(plan.issues.some((issue) => issue.code === "source_rewrite_failed")).toBe(true);
     expect(plan.snapshot?.bodySource).toBe(original);
     expect(plan.statements).toEqual([]);
+  });
+
+  it("keeps a variable dynamic SQL body editable and allows a corrected complete literal", async () => {
+    const original = "PACKAGE BODY P_OLD AS PROCEDURE RUN IS s VARCHAR2(100) := 'BEGIN P_OLD.RUN; END;'; BEGIN EXECUTE IMMEDIATE s; END RUN; END P_OLD;";
+    const corrected = "PACKAGE BODY P_OLD AS PROCEDURE RUN IS BEGIN EXECUTE IMMEDIATE 'BEGIN P_NEW.RUN; END;'; END RUN; END P_OLD;";
+    sources.set(key("P_OLD", "PACKAGE BODY"), original);
+
+    const initial = await prepareOraclePackageSaveAs(target);
+    expect(initial.executable).toBe(false);
+    expect(initial.issues.some((issue) => issue.code === "source_rewrite_failed" && issue.repairable)).toBe(true);
+    expect(initial.snapshot?.bodySource).toBe(original);
+
+    const repaired = await prepareOraclePackageSaveAs(target, { body: corrected });
+    expect(repaired.executable).toBe(true);
+    expect(repaired.bodySource).toContain("EXECUTE IMMEDIATE 'BEGIN P_NEW.RUN; END;'");
   });
 
   it("preserves a package body rewrite failure and revalidates a manual correction", async () => {
@@ -270,12 +295,45 @@ describe("Oracle package Save As plan and execution", () => {
     }
     expect(captureSourceIdentity(oldSpecIdentity).revision).toBe(oldSpecIdentity.revision);
     expect(captureSourceIdentity(oldBodyIdentity).revision).toBe(oldBodyIdentity.revision);
+    expect(invalidateObjectBrowserRowsCache).toHaveBeenCalledWith({ connectionId: target.connectionId, database: target.database, schema: target.schema });
+    expect(invalidateObjectDdlCache).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidates both caches when the first specification DDL has an unknown outcome", async () => {
+    const plan = await prepareOraclePackageSaveAs(target);
+    failSpec = true;
+    await expect(executeOraclePackageSaveAs(plan)).rejects.toMatchObject({ completed: [], uncertain: "PACKAGE P_NEW", dispatched: true });
+    expect(invalidateObjectBrowserRowsCache).toHaveBeenCalledOnce();
+    expect(invalidateObjectDdlCache).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidates both caches after grant or final readback failure", async () => {
+    grants.set("P_OLD", [["APP", "PUBLIC", "EXECUTE", "NO"]]);
+    const grantPlan = await prepareOraclePackageSaveAs(target);
+    failGrant = true;
+    await expect(executeOraclePackageSaveAs(grantPlan)).rejects.toMatchObject({ completed: ["PACKAGE P_NEW", "PACKAGE BODY P_NEW"], dispatched: true });
+    expect(invalidateObjectBrowserRowsCache).toHaveBeenCalledOnce();
+    expect(invalidateObjectDdlCache).toHaveBeenCalledTimes(2);
+
+    failGrant = false;
+    states.delete(key("P_NEW", "PACKAGE"));
+    states.delete(key("P_NEW", "PACKAGE BODY"));
+    sources.delete(key("P_NEW", "PACKAGE"));
+    sources.delete(key("P_NEW", "PACKAGE BODY"));
+    vi.clearAllMocks();
+    const finalPlan = await prepareOraclePackageSaveAs(target);
+    failFinalReadback = true;
+    await expect(executeOraclePackageSaveAs(finalPlan)).rejects.toMatchObject({ dispatched: true });
+    expect(invalidateObjectBrowserRowsCache).toHaveBeenCalledOnce();
+    expect(invalidateObjectDdlCache).toHaveBeenCalledTimes(2);
   });
 
   it("requires preview identity to remain current before dispatch", async () => {
     const plan = await prepareOraclePackageSaveAs(target);
     await expect(executeOraclePackageSaveAs(plan, () => false)).rejects.toThrow(/target changed/i);
     expect(states.has(key("P_NEW", "PACKAGE"))).toBe(false);
+    expect(invalidateObjectBrowserRowsCache).not.toHaveBeenCalled();
+    expect(invalidateObjectDdlCache).not.toHaveBeenCalled();
   });
 
   it("does not create the body if the new specification identity changes after its creation", async () => {

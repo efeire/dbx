@@ -202,7 +202,7 @@ import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePrefli
 import { prepareOracleViewRename, executeOracleViewRename, OracleViewRenameFailure, type OracleViewRenamePlan } from "@/lib/table/oracleViewRename";
 import { prepareOracleRoutineRename, executeOracleRoutineRename, OracleRoutineRenameFailure, type OracleRoutineRenamePlan } from "@/lib/table/oracleRoutineRename";
 import { prepareOracleTableRename, executeOracleTableRename, OracleTableRenameFailure, type OracleTableRenamePlan } from "@/lib/table/oracleTableRename";
-import { executeOraclePackageSaveAs, prepareOraclePackageSaveAs, type OraclePackageSaveAsPlan } from "@/lib/table/oraclePackageSaveAs";
+import { executeOraclePackageSaveAs, OraclePackageSaveAsFailure, prepareOraclePackageSaveAs, type OraclePackageSaveAsPlan } from "@/lib/table/oraclePackageSaveAs";
 import { buildRoutineRenameObjectSourceStatements, executeObjectSourceSave, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { freezeSourceIdentities } from "@/lib/table/objectSourceIdentity";
 import { buildViewDdl } from "@/lib/table/viewDdl";
@@ -3818,6 +3818,20 @@ async function confirmPackageSaveAs() {
   packageSaveAsExecuting.value = true;
   packageSaveAsError.value = "";
   packageSaveAsDiagnostic.value = "";
+  const isCurrentPlan = () => {
+    const current = packageSaveAsTarget.value;
+    return (
+      packageSaveAsOpen.value &&
+      packageSaveAsPlan.value === plan &&
+      !!current &&
+      current.connectionId === plan.target.connectionId &&
+      current.database === plan.target.database &&
+      (current.schema || current.database) === plan.target.schema &&
+      (current.objectName || current.label) === plan.target.oldName &&
+      databaseTypeForNode(current) === plan.target.databaseType &&
+      packageSaveAsName.value.trim() === plan.target.newName
+    );
+  };
   try {
     await connectionStore.ensureConnected(target.connectionId);
     const executed = await executeTreeNodeSqlWithProductionGuard(target, plan.statements.join("\n\n"), {
@@ -3844,9 +3858,14 @@ async function confirmPackageSaveAs() {
     packageSaveAsOpen.value = false;
     await connectionStore.refreshObjectListTreeNode(target.connectionId, target.database, target.schema || target.database);
   } catch (error) {
-    packageSaveAsError.value = t("objects.packageSaveAsFailed");
-    packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
-    packageSaveAsPlan.value = { ...plan, executable: false };
+    if (error instanceof OraclePackageSaveAsFailure && error.dispatched) {
+      await connectionStore.refreshObjectListTreeNode(plan.target.connectionId, plan.target.database, plan.target.schema);
+    }
+    if (isCurrentPlan()) {
+      packageSaveAsError.value = t("objects.packageSaveAsFailed");
+      packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
+      packageSaveAsPlan.value = { ...plan, executable: false };
+    }
   } finally {
     packageSaveAsExecuting.value = false;
   }

@@ -631,11 +631,36 @@ export async function prepareOracleTableRename(target: OracleTableRenameTarget, 
       if (object.type === "VIEW") {
         const originalReview = await api.reviewOracleViewRenameSource({ source: snapshot.source, owner: target.schema, viewName: object.name, oldName: target.oldName, newName: target.oldName });
         const review = await api.reviewOracleViewRenameSource({ source: draft, owner: target.schema, viewName: object.name, oldName: target.oldName, newName: directDependency ? plan.canonicalNewName : target.oldName });
-        plan.issues.push(...originalReview.issues.map((entry: OracleViewRenameIssue) => ({ code: entry.code, message: entry.message, objectName: object.name, repairable: entry.repairable })));
         plan.issues.push(...review.issues.map((entry: OracleViewRenameIssue) => ({ code: entry.code, message: entry.message, objectName: object.name, repairable: entry.repairable })));
-        if (!review.source || !originalReview.source) throw new Error([...originalReview.issues, ...review.issues].map((entry: OracleViewRenameIssue) => entry.message).join("; ") || `Cannot validate ${object.name}.`);
         const normalizeReferences = (references: typeof review.references) => references.map((reference) => JSON.stringify([reference.owner, reference.name === plan.canonicalNewName ? target.oldName : reference.name])).sort();
-        if (JSON.stringify(normalizeReferences(originalReview.references)) !== JSON.stringify(normalizeReferences(review.references))) throw new Error(`The definition of ${object.name} changes its planned dependencies.`);
+        const originalParseFailed = !originalReview.source && originalReview.issues.some((entry: OracleViewRenameIssue) => entry.code === "invalid_definition" || entry.code === "invalid_declaration");
+        if (!review.source) throw new Error(review.issues.map((entry: OracleViewRenameIssue) => entry.message).join("; ") || `Cannot validate ${object.name}.`);
+        if (originalReview.source) {
+          plan.issues.push(...originalReview.issues.map((entry: OracleViewRenameIssue) => ({ code: entry.code, message: entry.message, objectName: object.name, repairable: entry.repairable })));
+          if (JSON.stringify(normalizeReferences(originalReview.references)) !== JSON.stringify(normalizeReferences(review.references))) throw new Error(`The definition of ${object.name} changes its planned dependencies.`);
+        } else if (originalParseFailed) {
+          if (!directDependency && draft !== snapshot.executionSource) throw new Error(`A manual draft for indirect dependent ${object.name} cannot be applied by the planned compile step.`);
+          const plannedNames = new Set([target.oldName, ...order.map((plannedKey) => objects.get(plannedKey)!.name)]);
+          const expected = [
+            ...new Set(
+              edges
+                .map((edge) => JSON.parse(edge) as [string, ObjectType, string, string, DependentType, string | null])
+                .filter(([, , owner, name]) => owner === target.schema && name === object.name)
+                .map(([name, , owner]) => JSON.stringify([owner, name])),
+            ),
+          ].sort();
+          const actual = [
+            ...new Set(
+              review.references
+                .filter((reference) => reference.owner === target.schema && plannedNames.has(reference.name === plan.canonicalNewName ? target.oldName : reference.name))
+                .map((reference) => JSON.stringify([reference.owner, reference.name === plan.canonicalNewName ? target.oldName : reference.name])),
+            ),
+          ].sort();
+          if (JSON.stringify(expected) !== JSON.stringify(actual)) issue(plan.issues, "manual_graph", `The proposed definition changes planned dependencies of ${object.name}.`, object.name, true);
+        } else {
+          plan.issues.push(...originalReview.issues.map((entry: OracleViewRenameIssue) => ({ code: entry.code, message: entry.message, objectName: object.name, repairable: entry.repairable })));
+          throw new Error([...originalReview.issues, ...review.issues].map((entry: OracleViewRenameIssue) => entry.message).join("; ") || `Cannot validate ${object.name}.`);
+        }
         const bindsOldTable = review.references.some((reference) => reference.owner === target.schema && reference.name === target.oldName);
         if (directDependency !== bindsOldTable) throw new Error(`The definition of ${object.name} does not match its direct table dependency.`);
         rewrittenSource = review.source.source;
@@ -644,7 +669,7 @@ export async function prepareOracleTableRename(target: OracleTableRenameTarget, 
           throw new Error(`The rewritten definition of ${object.name} does not preserve its planned references.`);
         }
         fingerprint = review.source.fingerprint;
-        originalFingerprint = originalReview.source.fingerprint;
+        originalFingerprint = originalReview.source?.fingerprint ?? "";
       } else {
         if (directDependency) {
           validateDependentDeclaration(draft, target.schema, object.name, object.type);
@@ -831,6 +856,7 @@ export async function executeOracleTableRename(plan: OracleTableRenamePlan, draf
           if (latest.triggerTable !== plan.canonicalNewName || latest.triggerStatus !== dependent.triggerStatus) throw new Error(`Trigger ${dependent.name} binding or enabled state changed after table rename.`);
         }
         const expectedFingerprint = dependent.objectType === "VIEW" ? dependent.originalFingerprint : dependent.fingerprint;
+        if (step.kind === "replace" && dependent.objectType === "VIEW" && !expectedFingerprint && latest.source !== dependent.source) throw new Error(`${dependent.objectType} ${dependent.name} source changed after validation.`);
         if (step.kind === "compile") {
           if (latest.source !== dependent.source) throw new Error(`${dependent.objectType} ${dependent.name} source changed after validation.`);
         } else if (dependent.objectType !== "TRIGGER" && latest.source === dependent.source) {

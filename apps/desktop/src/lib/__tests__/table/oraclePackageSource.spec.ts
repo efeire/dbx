@@ -26,6 +26,30 @@ describe("Oracle package Save As source rewrite", () => {
     expect(rewriteOraclePackageSource(source, { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: true })).toContain("'P_OLD'");
   });
 
+  it("rejects a variable dynamic SQL reference that cannot be retargeted", () => {
+    const source = `PACKAGE BODY P_OLD AS
+      PROCEDURE RUN IS
+        s VARCHAR2(100) := 'BEGIN P_OLD.RUN; END;';
+      BEGIN
+        EXECUTE IMMEDIATE s;
+      END RUN;
+    END P_OLD;`;
+    expect(() => rewriteOraclePackageSource(source, { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: true })).toThrow();
+  });
+
+  it.each([
+    ["concatenated expression", "EXECUTE IMMEDIATE 'BEGIN P_OLD.RUN; END;' || suffix;"],
+    ["quoted q-literal reference", "EXECUTE IMMEDIATE q'!BEGIN \"P_OLD\".RUN; END;!';"],
+  ])("rejects %s dynamic SQL that needs manual correction", (_label, statement) => {
+    const source = `PACKAGE BODY P_OLD AS PROCEDURE RUN IS suffix VARCHAR2(10); BEGIN ${statement} END RUN; END P_OLD;`;
+    expect(() => rewriteOraclePackageSource(source, { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: true })).toThrow();
+  });
+
+  it("accepts a complete q-literal with no old package reference", () => {
+    const source = "PACKAGE BODY P_OLD AS PROCEDURE RUN IS BEGIN EXECUTE IMMEDIATE q'!BEGIN NULL; END;!'; END RUN; END P_OLD;";
+    expect(rewriteOraclePackageSource(source, { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: true })).toContain("q'!BEGIN NULL; END;!'");
+  });
+
   it("preserves an unnamed outer END", () => {
     expect(rewriteOraclePackageSource("PACKAGE P_OLD AS PROCEDURE RUN; END;", { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: false })).toBe('CREATE PACKAGE "P_NEW" AS PROCEDURE RUN; END;');
   });
