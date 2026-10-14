@@ -39,6 +39,42 @@ describe("Oracle security dictionary reads", () => {
     expect(snapshot.users.rows[0].accountStatus).toBeUndefined();
   });
 
+  it("falls back when OceanBase names an inaccessible dictionary view in OBE-00942", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM DBA_USERS")) throw new Error("OBE-00942: table or view 'SYS.DBA_USERS' does not exist");
+      if (sql.includes("FROM ALL_USERS")) return result(["USERNAME"], [["Reader"]]);
+      return blankQuery(sql);
+    });
+    const snapshot = await loadOracleSecurity(query, { db_type: "oceanbase-oracle" } as ConnectionConfig);
+    expect(snapshot.users).toMatchObject({ state: "ok", visibility: "limited", rows: [{ name: "Reader" }] });
+    expect(snapshot.users.message).toContain("OBE-00942");
+    expect(query.mock.calls.some(([sql]) => sql.includes("FROM ALL_USERS"))).toBe(true);
+  });
+
+  it("falls back on OBE-01031 and preserves the insufficient-privilege reason", async () => {
+    const snapshot = await loadOracleSecurity(
+      async (sql) => {
+        if (sql.includes("FROM DBA_USERS")) throw new Error("OBE-01031: insufficient privileges");
+        if (sql.includes("FROM ALL_USERS")) return result(["USERNAME"], [["Reader"]]);
+        return blankQuery(sql);
+      },
+      { db_type: "oceanbase-oracle" } as ConnectionConfig,
+    );
+    expect(snapshot.users).toMatchObject({ state: "ok", visibility: "limited", rows: [{ name: "Reader" }] });
+    expect(snapshot.users.message).toContain("OBE-01031");
+  });
+
+  it.each(["OBE-00944: table or view 'SYS.DBA_USERS' does not exist", "OBE-009420: table or view 'SYS.DBA_USERS' does not exist", "XOBE-00942: table or view 'SYS.DBA_USERS' does not exist"])("does not use the dictionary fallback for unknown or approximate OBE codes: %s", async (message) => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM DBA_USERS")) throw new Error(message);
+      if (sql.includes("FROM ALL_USERS")) return result(["USERNAME"], [["Reader"]]);
+      return blankQuery(sql);
+    });
+    const snapshot = await loadOracleSecurity(query, { db_type: "oceanbase-oracle" } as ConnectionConfig);
+    expect(snapshot.users.state).toBe("error");
+    expect(query.mock.calls.some(([sql]) => sql.includes("FROM ALL_USERS"))).toBe(false);
+  });
+
   it("distinguishes empty, denied, inaccessible and unexpected errors", async () => {
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("FROM DBA_USERS") || sql.includes("FROM ALL_USERS")) throw new Error("ORA-01031");

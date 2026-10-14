@@ -67,9 +67,13 @@ function dictionaryRows(result: QueryResult): DictionaryRow[] {
 }
 function readState(error: unknown): SecurityReadState {
   const message = String(error);
-  if (/ORA-01031|insufficient privileges/i.test(message)) return "denied";
-  // ORA-00942 does not distinguish an absent view from a hidden view.
-  if (/ORA-00942|table or view does not exist/i.test(message)) return "unavailable";
+  if (/(?:ORA|OBE)-\d+/.test(message)) {
+    const code = message.match(/\b(?:ORA|OBE)-(\d{5})\b/)?.[1];
+    return code === "01031" ? "denied" : code === "00942" ? "unavailable" : "error";
+  }
+  if (/insufficient privileges/i.test(message)) return "denied";
+  // These errors do not distinguish an absent view from a hidden view.
+  if (/table or view .* does not exist/i.test(message)) return "unavailable";
   return "error";
 }
 const yes = (value: string | undefined) => value === "YES";
