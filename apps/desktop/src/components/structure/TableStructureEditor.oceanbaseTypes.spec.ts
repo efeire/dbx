@@ -42,12 +42,7 @@ vi.mock("@/lib/metadata/objectMetadataCache", () => ({
   invalidateObjectMetadataCache: vi.fn().mockResolvedValue(undefined),
   invalidateTableMetadataCache: vi.fn().mockResolvedValue(undefined),
   loadObjectMetadataFacet: vi.fn().mockImplementation(async (_req, facet) => ({
-    value:
-      facet === "columns"
-        ? [{ name: "C", data_type: "NCLOB", is_nullable: true, column_default: null, comment: "original comment", is_primary_key: false, extra: null }]
-        : facet === "comment"
-          ? "original comment"
-          : [],
+    value: facet === "columns" ? [{ name: "C", data_type: "NCLOB", is_nullable: true, column_default: null, comment: "original comment", is_primary_key: false, extra: null }] : facet === "comment" ? "original comment" : [],
     cacheStatus: "remote",
   })),
 }));
@@ -120,11 +115,5 @@ it("filters rejected JDBC recommendations without replacing an existing nonrecom
   expect(comment).toBeDefined();
   comment!.value = "changed comment";
   comment!.dispatchEvent(new Event("input", { bubbles: true }));
-  await vi.waitFor(
-    () =>
-      expect(backend.buildTableStructureChangeSql).toHaveBeenLastCalledWith(
-        expect.objectContaining({ columns: [expect.objectContaining({ dataType: "NCLOB", comment: "changed comment", original: expect.objectContaining({ data_type: "NCLOB" }) })] }),
-      ),
-    { timeout: 3000 },
-  );
+  await vi.waitFor(() => expect(backend.buildTableStructureChangeSql).toHaveBeenLastCalledWith(expect.objectContaining({ columns: [expect.objectContaining({ dataType: "NCLOB", comment: "changed comment", original: expect.objectContaining({ data_type: "NCLOB" }) })] })), { timeout: 3000 });
 });
