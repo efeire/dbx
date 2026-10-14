@@ -18,15 +18,29 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/backend/api")>()),
   ...backend,
   checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
+  getColumns: vi.fn().mockResolvedValue([]),
   listIndexes: vi.fn().mockResolvedValue([]),
   listConstraints: vi.fn().mockResolvedValue([]),
   listForeignKeys: vi.fn().mockResolvedValue([]),
   listTriggers: vi.fn().mockResolvedValue([]),
+  getTableComment: vi.fn().mockResolvedValue(""),
+  getTablePartitioning: vi.fn().mockResolvedValue(null),
   getTableOwner: vi.fn().mockResolvedValue("APP"),
   getTablePartitionStatus: vi.fn().mockResolvedValue(null),
   listPlugins: vi.fn().mockResolvedValue([]),
   loadSchemaCache: vi.fn().mockResolvedValue(null),
   saveSchemaCache: vi.fn().mockResolvedValue(undefined),
+  deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
+  loadObjectDdl: vi.fn().mockResolvedValue(""),
+  invalidateObjectDdl: vi.fn().mockResolvedValue(undefined),
+  invalidateObjectMetadataCache: vi.fn().mockResolvedValue(undefined),
+  invalidateTableMetadataCache: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/metadata/objectMetadataCache", () => ({
+  invalidateObjectMetadataCache: vi.fn(),
+  invalidateTableMetadataCache: vi.fn(),
+  loadObjectMetadataFacet: vi.fn().mockResolvedValue(null),
 }));
 
 let app: App | undefined;
@@ -86,5 +100,5 @@ it("filters rejected JDBC recommendations without replacing an existing nonrecom
   expect(comment).toBeDefined();
   comment!.value = "changed comment";
   comment!.dispatchEvent(new Event("input", { bubbles: true }));
-  await vi.waitFor(() => expect(backend.buildTableStructureChangeSql).toHaveBeenLastCalledWith(expect.objectContaining({ columns: [expect.objectContaining({ dataType: "NCLOB", comment: "changed comment", original: expect.objectContaining({ data_type: "NCLOB" }) })] })));
+  await vi.waitFor(() => expect(backend.buildTableStructureChangeSql).toHaveBeenLastCalledWith(expect.objectContaining({ columns: [expect.objectContaining({ dataType: "NCLOB", comment: "changed comment", original: expect.objectContaining({ data_type: "NCLOB" }) })] })), { timeout: 3000 });
 });
