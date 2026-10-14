@@ -406,8 +406,8 @@ function validateDraftRelations(original: string, draft: string, schema: string,
         .join(".");
     const found = new Set([...syntax.matchAll(new RegExp(`${identifier}(?:\\s*\\.\\s*${identifier})*\\s*\\(`, "g"))].map((match) => canonical(match[0]!.replace(/\s*\($/, ""))));
     const noArgStatement = new Set(
-      [...syntax.matchAll(new RegExp(`(?:\\bBEGIN\\b|\\bTHEN\\b|\\bELSE\\b|\\bLOOP\\b|(?<=;))\\s*(${identifier}(?:\\s*\\.\\s*${identifier})*)\\s*(?=;)`, "gi"))]
-        .map((match) => canonical(match[1]!))
+      [...syntax.matchAll(new RegExp(`(?:\\bBEGIN\\b|\\bTHEN\\b|\\bELSE\\b|\\bLOOP\\b|(;))\\s*(${identifier}(?:\\s*\\.\\s*${identifier})*)\\s*(?=;)`, "gi"))]
+        .map((match) => canonical(match[2]!))
         .filter((name) => !new Set(["U:END", "U:NULL", "U:RETURN", "U:THEN", "U:ELSE", "U:COMMIT", "U:ROLLBACK"]).has(name)),
     );
     for (const name of noArgStatement) found.add(name);
