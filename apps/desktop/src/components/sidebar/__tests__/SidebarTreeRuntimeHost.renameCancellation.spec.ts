@@ -20,6 +20,8 @@ vi.mock("@/lib/table/oracleRoutineRename", () => ({
     target,
     canonicalNewName: target.newName,
     root: { name: target.oldName, objectType: target.objectType, objectId: "1", source: "source", signature: "[]", grants: "[]", status: "VALID", errors: "[]" },
+    rootDraft: "CREATE OR REPLACE PROCEDURE OWNER.OLD AS BEGIN NULL; END;",
+    rootCreateSource: "CREATE PROCEDURE OWNER.NEW AS BEGIN NULL; END;",
     callers: [],
     dependencyEdges: [],
     statements: ["CREATE PROCEDURE NEW AS BEGIN NULL; END;"],
@@ -32,6 +34,7 @@ vi.mock("@/lib/table/oracleRoutineRename", () => ({
   OracleRoutineRenameFailure: class extends Error {},
 }));
 import SidebarTreeRuntimeHost from "@/components/sidebar/SidebarTreeRuntimeHost.vue";
+import { prepareOracleRoutineRename } from "@/lib/table/oracleRoutineRename";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { assertSourceIdentity, captureSourceIdentity } from "@/lib/table/objectSourceIdentity";
 import { renameObjectName, showRenameObjectDialog } from "../sidebarTreeDialogState";
@@ -75,6 +78,73 @@ describe("sidebar rename production cancellation", () => {
       openRename(procedure);
       expect(controller.isOracleTableRename).toBe(false);
       expect(controller.isOracleRoutineRename).toBe(true);
+      expect(controller.routineRenameDrafts).toBeDefined();
+      expect(typeof controller.editSidebarRoutineRenameDraft).toBe("function");
+      expect(typeof controller.validateSidebarRoutineRenameDrafts).toBe("function");
+      expect(controller.packageSaveAsDrafts).toBeDefined();
+      expect(controller.packageSaveAsValidating).toBeDefined();
+      expect(typeof controller.editPackageSaveAsDraft).toBe("function");
+      expect(typeof controller.validatePackageSaveAsDrafts).toBe("function");
+      controller.editPackageSaveAsDraft("spec", "PACKAGE P AS END;");
+      expect(controller.packageSaveAsDrafts.spec).toBe("PACKAGE P AS END;");
+      controller.editSidebarRoutineRenameDraft("PROCEDURE:PROC_OLD", "CREATE OR REPLACE PROCEDURE OWNER.PROC_OLD AS BEGIN NULL; END;");
+      expect(controller.routineRenameDrafts["PROCEDURE:PROC_OLD"]).toContain("PROC_OLD");
+    } finally {
+      app.unmount();
+      container.remove();
+      showRenameObjectDialog.value = false;
+    }
+  });
+
+  it("prepares a native Oracle routine through the sidebar dialog host", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useConnectionStore();
+    store.connections = [{ id: "native-routine", name: "Owner", db_type: "oracle", host: "localhost", port: 1521, username: "OWNER" } as any];
+    const host = ref<any>();
+    let controller: any;
+    const procedure: TreeNode = { id: "native-procedure", type: "procedure", label: "PROC_OLD", objectName: "PROC_OLD", connectionId: "native-routine", database: "OWNER", schema: "OWNER" };
+    const alternateProcedure: TreeNode = { ...procedure, id: "native-procedure-other", schema: "OTHER" };
+    const currentNode = ref<TreeNode>(procedure);
+    const root = defineComponent({
+      setup: () => () =>
+        h(SidebarTreeRuntimeHost, {
+          ref: host,
+          node: currentNode.value,
+          depth: 0,
+          onOpenDialogController: (value: unknown) => {
+            controller = value;
+          },
+        }),
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp(root).use(pinia).use(i18n);
+    try {
+      app.mount(container);
+      await nextTick();
+      const items: ContextMenuItem[] = host.value.buildContextMenu(procedure);
+      items.find((item) => item.label === i18n.global.t("contextMenu.renameObject"))!.action!();
+      expect(controller.isOracleRoutineRename).toBe(true);
+      renameObjectName.value = "PROC_NEW";
+      await nextTick();
+      await controller.refreshRenameObjectPreviewSql();
+      expect(prepareOracleRoutineRename).toHaveBeenCalled();
+      expect(prepareOracleRoutineRename).toHaveBeenCalledWith(expect.objectContaining({ databaseType: "oracle" }), expect.anything());
+      expect(controller.routineRenamePlan?.executable).toBe(true);
+      controller.editSidebarRoutineRenameDraft("PROCEDURE:PROC_OLD", "CREATE OR REPLACE PROCEDURE OWNER.PROC_OLD AS BEGIN NULL; END;");
+      controller.showRenameObjectDialog = false;
+      await nextTick();
+      const reopenSame = host.value.buildContextMenu(procedure).find((item: ContextMenuItem) => item.label === i18n.global.t("contextMenu.renameObject"));
+      reopenSame!.action!();
+      await nextTick();
+      expect(controller.routineRenameDrafts["PROCEDURE:PROC_OLD"]).toContain("PROC_OLD");
+      currentNode.value = alternateProcedure;
+      await nextTick();
+      const openOther = host.value.buildContextMenu(alternateProcedure).find((item: ContextMenuItem) => item.label === i18n.global.t("contextMenu.renameObject"));
+      openOther!.action!();
+      await nextTick();
+      expect(controller.routineRenameDrafts).toEqual({});
     } finally {
       app.unmount();
       container.remove();
@@ -115,6 +185,7 @@ describe("sidebar rename production cancellation", () => {
       rename!.action!();
       renameObjectName.value = "NEW";
       await nextTick();
+      await controller.refreshRenameObjectPreviewSql();
       await controller.confirmRenameObject();
       expect(guard).toHaveBeenCalledTimes(1);
       expect(replacePin).not.toHaveBeenCalled();

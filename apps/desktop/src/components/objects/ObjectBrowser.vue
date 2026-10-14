@@ -385,13 +385,16 @@ const renamePreviewSqlText = ref("");
 const viewRenamePlan = ref<OracleViewRenamePlan>();
 const viewRenameDrafts = ref<Record<string, string>>({});
 const routineRenamePlan = ref<OracleRoutineRenamePlan>();
+const routineRenameDrafts = ref<Record<string, string>>({});
 const tableRenamePlan = ref<OracleTableRenamePlan>();
 const tableRenameDrafts = ref<Record<string, string>>({});
 const packageSaveAsOpen = ref(false);
 const packageSaveAsTarget = ref<ObjectBrowserRow | null>(null);
 const packageSaveAsName = ref("");
 const packageSaveAsPlan = ref<OraclePackageSaveAsPlan>();
+const packageSaveAsDrafts = ref<{ spec?: string; body?: string }>({});
 const packageSaveAsLoading = ref(false);
+const packageSaveAsValidating = ref(false);
 const packageSaveAsExecuting = ref(false);
 const packageSaveAsError = ref("");
 const packageSaveAsDiagnostic = ref("");
@@ -1855,32 +1858,49 @@ function requestDrop(row: ObjectBrowserRow) {
 }
 
 function requestRename(row: ObjectBrowserRow) {
+  const nextTargetKey = JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.type, row.name]);
+  const sameTarget = nextTargetKey === currentViewRenameTargetKey;
   renameTarget.value = row;
-  renameInput.value = row.name;
+  if (!sameTarget) renameInput.value = row.name;
   renameError.value = "";
   renamePreviewSqlText.value = "";
   viewRenamePlan.value = undefined;
-  viewRenameDrafts.value = {};
   routineRenamePlan.value = undefined;
   tableRenamePlan.value = undefined;
-  tableRenameDrafts.value = {};
+  if (!sameTarget) {
+    viewRenameDrafts.value = {};
+    routineRenameDrafts.value = {};
+    tableRenameDrafts.value = {};
+  }
   showRenameDialog.value = true;
 }
 
 function requestPackageSaveAs(row: ObjectBrowserRow) {
   if ((effectiveDatabaseType.value !== "oracle" && effectiveDatabaseType.value !== "oceanbase-oracle") || (row.type !== "PACKAGE" && row.type !== "PACKAGE_BODY")) return;
+  const sourceKey = JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.name]);
+  const sameTarget = sourceKey === currentPackageSaveAsSourceKey;
+  currentPackageSaveAsSourceKey = sourceKey;
   packageSaveAsTarget.value = row;
-  packageSaveAsName.value = `${row.name}_COPY`;
+  if (!sameTarget) {
+    packageSaveAsName.value = `${row.name}_COPY`;
+    packageSaveAsDrafts.value = {};
+  }
   packageSaveAsPlan.value = undefined;
   packageSaveAsError.value = "";
   packageSaveAsDiagnostic.value = "";
   packageSaveAsOpen.value = true;
 }
 
+let currentPackageSaveAsSourceKey = "";
 let packageSaveAsRequestId = 0;
 watch([packageSaveAsOpen, packageSaveAsTarget, packageSaveAsName, () => props.connection.id, () => props.database, selectedSchema, effectiveDatabaseType], (_value, _oldValue, onCleanup) => {
   const requestId = ++packageSaveAsRequestId;
   const row = packageSaveAsTarget.value;
+  const sourceKey = row ? JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.name]) : "";
+  if (sourceKey && sourceKey !== currentPackageSaveAsSourceKey) {
+    currentPackageSaveAsSourceKey = sourceKey;
+    packageSaveAsDrafts.value = {};
+  }
   const newName = packageSaveAsName.value.trim();
   packageSaveAsPlan.value = undefined;
   packageSaveAsError.value = "";
@@ -1889,14 +1909,17 @@ watch([packageSaveAsOpen, packageSaveAsTarget, packageSaveAsName, () => props.co
   const timer = setTimeout(async () => {
     packageSaveAsLoading.value = true;
     try {
-      const plan = await prepareOraclePackageSaveAs({
-        connectionId: props.connection.id,
-        database: props.database,
-        databaseType: effectiveDatabaseType.value as "oracle" | "oceanbase-oracle",
-        schema: row.schema || selectedSchema.value || props.database,
-        oldName: row.name,
-        newName,
-      });
+      const plan = await prepareOraclePackageSaveAs(
+        {
+          connectionId: props.connection.id,
+          database: props.database,
+          databaseType: effectiveDatabaseType.value as "oracle" | "oceanbase-oracle",
+          schema: row.schema || selectedSchema.value || props.database,
+          oldName: row.name,
+          newName,
+        },
+        { ...packageSaveAsDrafts.value },
+      );
       if (requestId === packageSaveAsRequestId) packageSaveAsPlan.value = plan;
     } catch (error) {
       if (requestId === packageSaveAsRequestId) packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
@@ -1947,6 +1970,51 @@ async function confirmPackageSaveAs() {
   }
 }
 
+function editPackageSaveAsDraft(part: "spec" | "body", source: string) {
+  packageSaveAsDrafts.value = { ...packageSaveAsDrafts.value, [part]: source };
+  ++packageSaveAsRequestId;
+  if (packageSaveAsPlan.value) packageSaveAsPlan.value = { ...packageSaveAsPlan.value, executable: false };
+}
+
+async function validatePackageSaveAsDrafts() {
+  if (packageSaveAsPlan.value) packageSaveAsPlan.value = { ...packageSaveAsPlan.value, executable: false };
+  packageSaveAsError.value = "";
+  packageSaveAsDiagnostic.value = "";
+  packageSaveAsValidating.value = true;
+  try {
+    const row = packageSaveAsTarget.value;
+    const newName = packageSaveAsName.value.trim();
+    if (!row || !newName) return;
+    const requestId = ++packageSaveAsRequestId;
+    const drafts = { ...packageSaveAsDrafts.value };
+    const targetKey = JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.name, newName]);
+    const plan = await prepareOraclePackageSaveAs(
+      {
+        connectionId: props.connection.id,
+        database: props.database,
+        databaseType: effectiveDatabaseType.value as "oracle" | "oceanbase-oracle",
+        schema: row.schema || selectedSchema.value || props.database,
+        oldName: row.name,
+        newName,
+      },
+      drafts,
+    );
+    if (
+      requestId === packageSaveAsRequestId &&
+      packageSaveAsOpen.value &&
+      packageSaveAsTarget.value === row &&
+      packageSaveAsName.value.trim() === newName &&
+      targetKey === JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.name, packageSaveAsName.value.trim()]) &&
+      JSON.stringify(packageSaveAsDrafts.value) === JSON.stringify(drafts)
+    )
+      packageSaveAsPlan.value = plan;
+  } catch (error) {
+    packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    packageSaveAsValidating.value = false;
+  }
+}
+
 let renamePreviewRequestId = 0;
 let currentViewRenameTargetKey = "";
 
@@ -1962,18 +2030,29 @@ async function refreshRenamePreviewSql() {
     return;
   }
   if ((effectiveDatabaseType.value === "oracle" || effectiveDatabaseType.value === "oceanbase-oracle") && (row.type === "PROCEDURE" || row.type === "FUNCTION")) {
+    const targetKey = JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.type, row.name, newName]);
+    const drafts = { ...routineRenameDrafts.value };
     viewRenameLoading.value = true;
     try {
-      const plan = await prepareOracleRoutineRename({
-        connectionId: props.connection.id,
-        database: props.database,
-        databaseType: effectiveDatabaseType.value as "oracle" | "oceanbase-oracle",
-        schema: row.schema || selectedSchema.value || props.database,
-        objectType: row.type,
-        oldName: row.name,
-        newName,
-      });
-      if (requestId === renamePreviewRequestId) {
+      const plan = await prepareOracleRoutineRename(
+        {
+          connectionId: props.connection.id,
+          database: props.database,
+          databaseType: effectiveDatabaseType.value as "oracle" | "oceanbase-oracle",
+          schema: row.schema || selectedSchema.value || props.database,
+          objectType: row.type,
+          oldName: row.name,
+          newName,
+        },
+        drafts,
+      );
+      if (
+        requestId === renamePreviewRequestId &&
+        showRenameDialog.value &&
+        renameTarget.value === row &&
+        targetKey === JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.type, row.name, renameInput.value.trim()]) &&
+        JSON.stringify(drafts) === JSON.stringify(routineRenameDrafts.value)
+      ) {
         routineRenamePlan.value = plan;
         renameError.value = "";
         renamePreviewSqlText.value = plan.statements.join("\n\n");
@@ -2044,6 +2123,22 @@ function editTableRenameDraft(name: string, source: string) {
   if (tableRenamePlan.value) tableRenamePlan.value = { ...tableRenamePlan.value, executable: false };
 }
 
+function editRoutineRenameDraft(name: string, source: string) {
+  routineRenameDrafts.value = { ...routineRenameDrafts.value, [name]: source };
+  ++renamePreviewRequestId;
+  if (routineRenamePlan.value) routineRenamePlan.value = { ...routineRenamePlan.value, executable: false };
+}
+
+async function validateRoutineRenameDrafts() {
+  if (routineRenamePlan.value) routineRenamePlan.value = { ...routineRenamePlan.value, executable: false };
+  viewRenameValidating.value = true;
+  try {
+    await refreshRenamePreviewSql();
+  } finally {
+    viewRenameValidating.value = false;
+  }
+}
+
 async function validateTableRenameDrafts(clearDrafts = false) {
   if (clearDrafts) tableRenameDrafts.value = {};
   viewRenameValidating.value = true;
@@ -2069,16 +2164,14 @@ async function validateViewRenameDrafts(clearDrafts = false) {
 watch([showRenameDialog, renameTarget, renameInput, selectedSchema, () => props.connection.id, () => props.database], (_value, _oldValue, onCleanup) => {
   ++renamePreviewRequestId;
   const row = renameTarget.value;
-  const targetKey =
-    showRenameDialog.value && (row?.type === "VIEW" || row?.type === "PROCEDURE" || row?.type === "FUNCTION" || row?.type === "TABLE")
-      ? JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.type, row.name, renameInput.value.trim()])
-      : "";
+  const targetKey = row && (row.type === "VIEW" || row.type === "PROCEDURE" || row.type === "FUNCTION" || row.type === "TABLE") ? JSON.stringify([props.connection.id, props.database, effectiveDatabaseType.value, row.schema || selectedSchema.value || props.database, row.type, row.name]) : "";
   if (targetKey !== currentViewRenameTargetKey) {
     currentViewRenameTargetKey = targetKey;
     viewRenameDrafts.value = {};
     viewRenamePlan.value = undefined;
     routineRenamePlan.value = undefined;
     tableRenamePlan.value = undefined;
+    routineRenameDrafts.value = {};
     tableRenameDrafts.value = {};
   } else if (viewRenamePlan.value) viewRenamePlan.value = { ...viewRenamePlan.value, executable: false };
   if (routineRenamePlan.value) routineRenamePlan.value = { ...routineRenamePlan.value, executable: false };
@@ -5172,12 +5265,17 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
     :old-name="packageSaveAsTarget?.name || ''"
     :new-name="packageSaveAsName"
     :plan="packageSaveAsPlan || null"
+    :drafts="packageSaveAsDrafts"
     :error="packageSaveAsError"
     :diagnostic="packageSaveAsDiagnostic"
     :loading="packageSaveAsLoading"
+    :validating="packageSaveAsValidating"
     :executing="packageSaveAsExecuting"
     @update:open="packageSaveAsOpen = $event"
     @update:new-name="packageSaveAsName = $event"
+    @edit="editPackageSaveAsDraft"
+    @validate="validatePackageSaveAsDrafts"
+    @reload="validatePackageSaveAsDrafts"
     @confirm="confirmPackageSaveAs"
   />
   <Dialog v-model:open="showRenameDialog">
@@ -5203,8 +5301,12 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
         <OracleRoutineRenamePreview
           v-else-if="(effectiveDatabaseType === 'oracle' || effectiveDatabaseType === 'oceanbase-oracle') && (renameTarget?.type === 'PROCEDURE' || renameTarget?.type === 'FUNCTION')"
           :plan="routineRenamePlan || null"
+          :drafts="routineRenameDrafts"
           :loading="viewRenameLoading"
+          :validating="viewRenameValidating"
           :executing="viewRenameExecuting"
+          @edit="editRoutineRenameDraft"
+          @validate="validateRoutineRenameDrafts"
           @reload="refreshRenamePreviewSql()"
         />
         <OracleTableRenamePreview

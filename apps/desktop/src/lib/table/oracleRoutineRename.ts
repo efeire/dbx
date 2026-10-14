@@ -27,6 +27,7 @@ interface RoutineSnapshot {
 }
 
 interface RoutineCallerSnapshot extends RoutineSnapshot {
+  draft: string;
   rewrittenSource: string;
   rewrittenFingerprint: string;
   rewriteRequired: boolean;
@@ -44,11 +45,13 @@ export interface OracleRoutineRenamePlan {
   target: OracleRoutineRenameTarget;
   canonicalNewName: string;
   root: RoutineSnapshot | null;
+  rootDraft: string;
+  rootCreateSource: string;
   callers: RoutineCallerSnapshot[];
   dependencyEdges: string[];
   statements: string[];
   steps: OracleRoutineRenameStep[];
-  issues: Array<{ code: string; message: string; objectName?: string }>;
+  issues: Array<{ code: string; message: string; objectName?: string; repairable: boolean }>;
   metadataComplete: boolean;
   executable: boolean;
 }
@@ -150,6 +153,20 @@ async function readErrors(target: OracleRoutineRenameTarget, objectType: string,
   return JSON.stringify(rows.map((row) => row.map((value) => (value === null ? null : String(value)))));
 }
 
+async function validateCallerViewSource(target: OracleRoutineRenameTarget, viewName: string, renamedRoutineName: string, source: string) {
+  const review = await api.reviewOracleViewRenameSource({
+    source,
+    owner: target.schema,
+    viewName,
+    oldName: renamedRoutineName,
+    newName: renamedRoutineName,
+  });
+  if (!review.source || review.issues.length) {
+    throw new Error(review.issues.map(({ message }) => message).join("\n") || `Cannot validate view ${viewName}.`);
+  }
+  return review.source.source;
+}
+
 async function readSnapshot(target: OracleRoutineRenameTarget, name: string, objectType: string): Promise<RoutineSnapshot> {
   const rows = await objectStates(target, [name], [objectType]);
   const match = rows.filter((row) => row[0] === name && row[1] === objectType);
@@ -179,8 +196,8 @@ async function readDependents(target: OracleRoutineRenameTarget, name: string, o
   }
 }
 
-function issue(issues: OracleRoutineRenamePlan["issues"], code: string, message: string, objectName?: string) {
-  issues.push({ code, message, objectName });
+function issue(issues: OracleRoutineRenamePlan["issues"], code: string, message: string, objectName?: string, repairable = false) {
+  issues.push({ code, message, objectName, repairable });
 }
 
 function makeCreateOnly(sql: string) {
@@ -202,15 +219,21 @@ function makeGrantSql(target: OracleRoutineRenameTarget, grantRows: string) {
 }
 
 function planIdentity(plan: OracleRoutineRenamePlan) {
-  return JSON.stringify([plan.target, plan.canonicalNewName, plan.dependencyEdges, plan.root, plan.callers, plan.statements, plan.issues, plan.metadataComplete]);
+  return JSON.stringify([plan.target, plan.canonicalNewName, plan.dependencyEdges, plan.root, plan.rootDraft, plan.rootCreateSource, plan.callers, plan.statements, plan.issues, plan.metadataComplete]);
 }
 
-export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarget): Promise<OracleRoutineRenamePlan> {
+function routineDrafts(plan: OracleRoutineRenamePlan) {
+  return Object.fromEntries([[`${plan.target.objectType}:${plan.target.oldName}`, plan.rootDraft], ...plan.callers.map((caller) => [`${caller.objectType}:${caller.name}`, caller.draft])]);
+}
+
+export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarget, drafts: Record<string, string> = {}): Promise<OracleRoutineRenamePlan> {
   target = { ...target };
   const plan: OracleRoutineRenamePlan = {
     target,
     canonicalNewName: target.newName,
     root: null,
+    rootDraft: "",
+    rootCreateSource: "",
     callers: [],
     dependencyEdges: [],
     statements: [],
@@ -232,6 +255,7 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
 
   try {
     plan.root = await readSnapshot(target, target.oldName, target.objectType);
+    plan.rootDraft = drafts[`${target.objectType}:${target.oldName}`] ?? plan.root.source;
     if (plan.root.status !== "VALID") issue(plan.issues, "invalid_source", `The existing ${target.objectType} is ${plan.root.status}; resolve its compile errors before rename.`, target.oldName);
   } catch (error) {
     plan.metadataComplete = false;
@@ -296,11 +320,19 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
   const orderedCallers = topologicalCallers(callers, plan.dependencyEdges);
   if (orderedCallers.length !== callers.size) issue(plan.issues, "dependency_cycle", "The visible caller graph cannot be ordered safely.", target.oldName);
   for (const caller of orderedCallers) {
+    let snapshot: RoutineSnapshot;
     try {
-      const snapshot = await readSnapshot(target, caller.name, caller.type);
+      snapshot = await readSnapshot(target, caller.name, caller.type);
       if (snapshot.status !== "VALID") throw new Error(`${caller.type} ${caller.name} is ${snapshot.status}.`);
-      let rewrittenSource = snapshot.source;
-      let replacementSql = snapshot.source;
+    } catch (error) {
+      plan.metadataComplete = false;
+      issue(plan.issues, "source_read_failed", errorMessage(error), caller.name);
+      continue;
+    }
+    const draft = drafts[`${caller.type}:${caller.name}`] ?? snapshot.source;
+    let rewrittenSource = "";
+    let replacementSql = "";
+    try {
       if (caller.rewriteRequired) {
         rewrittenSource = await api.rewriteOracleRoutineReferences({
           databaseType: target.databaseType,
@@ -309,8 +341,9 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
           schema: target.schema,
           oldName: target.oldName,
           newName: plan.canonicalNewName,
-          source: snapshot.source,
+          source: draft,
         });
+        if (caller.type === "VIEW") rewrittenSource = await validateCallerViewSource(target, caller.name, plan.canonicalNewName, rewrittenSource);
         const statements = await api.buildExecutableObjectSourceStatements({
           databaseType: target.databaseType,
           objectType: caller.type as ObjectSourceKind,
@@ -320,14 +353,18 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
         });
         if (statements.length !== 1 || !statements[0]?.trim()) throw new Error(`Cannot build one replacement statement for ${caller.type} ${caller.name}.`);
         replacementSql = statements[0];
+      } else {
+        rewrittenSource = draft;
+        replacementSql = draft;
       }
-      plan.callers.push({ ...snapshot, rewrittenSource, rewrittenFingerprint: replacementSql, rewriteRequired: caller.rewriteRequired, depth: caller.depth });
     } catch (error) {
-      issue(plan.issues, "caller_rewrite_failed", errorMessage(error), caller.name);
+      issue(plan.issues, "caller_rewrite_failed", errorMessage(error), caller.name, true);
     }
+    plan.callers.push({ ...snapshot, draft, rewrittenSource, rewrittenFingerprint: replacementSql, rewriteRequired: caller.rewriteRequired, depth: caller.depth });
   }
 
-  if (plan.metadataComplete && plan.root && plan.issues.length === 0) {
+  let dropSql = "";
+  if (plan.metadataComplete && plan.root) {
     try {
       const statements = await api.buildRoutineRenameObjectSourceStatements({
         databaseType: target.databaseType,
@@ -335,24 +372,31 @@ export async function prepareOracleRoutineRename(target: OracleRoutineRenameTarg
         schema: target.schema,
         name: target.oldName,
         newName: plan.canonicalNewName,
-        source: plan.root.source,
+        source: plan.rootDraft,
       });
       if (statements.length !== 2) throw new Error("The routine rename builder returned an unexpected statement sequence.");
-      const create = makeCreateOnly(statements[0]);
+      plan.rootCreateSource = makeCreateOnly(statements[0]);
+      dropSql = statements[1];
+    } catch (error) {
+      issue(plan.issues, "source_rewrite_failed", errorMessage(error), target.oldName, true);
+    }
+    try {
       const grants = makeGrantSql({ ...target, newName: plan.canonicalNewName }, plan.root.grants);
-      plan.steps = [
-        { kind: "create", objectName: plan.canonicalNewName, objectType: target.objectType, sql: create },
-        ...grants.map((sql) => ({ kind: "grant" as const, objectName: plan.canonicalNewName, objectType: target.objectType, sql })),
-        ...plan.callers.map((caller) => ({
-          kind: caller.rewriteRequired ? ("replace-caller" as const) : ("compile-caller" as const),
-          objectName: caller.name,
-          objectType: caller.objectType,
-          sql: caller.rewriteRequired ? caller.rewrittenFingerprint : `ALTER ${caller.objectType} ${qualified(target.schema, caller.name)} COMPILE`,
-        })),
-        { kind: "drop", objectName: target.oldName, objectType: target.objectType, sql: statements[1] },
-      ];
-      plan.statements = plan.steps.map((step) => step.sql);
-      plan.executable = true;
+      if (plan.issues.length === 0 && plan.callers.every((caller) => !!caller.rewrittenSource && !!caller.rewrittenFingerprint)) {
+        plan.steps = [
+          { kind: "create", objectName: plan.canonicalNewName, objectType: target.objectType, sql: plan.rootCreateSource },
+          ...grants.map((sql) => ({ kind: "grant" as const, objectName: plan.canonicalNewName, objectType: target.objectType, sql })),
+          ...plan.callers.map((caller) => ({
+            kind: caller.rewriteRequired ? ("replace-caller" as const) : ("compile-caller" as const),
+            objectName: caller.name,
+            objectType: caller.objectType,
+            sql: caller.rewriteRequired ? caller.rewrittenFingerprint : `ALTER ${caller.objectType} ${qualified(target.schema, caller.name)} COMPILE`,
+          })),
+          { kind: "drop", objectName: target.oldName, objectType: target.objectType, sql: dropSql },
+        ];
+        plan.statements = plan.steps.map((step) => step.sql);
+        plan.executable = true;
+      }
     } catch (error) {
       issue(plan.issues, "plan_build_failed", errorMessage(error), target.oldName);
     }
@@ -400,7 +444,7 @@ function topologicalCallers(callers: Map<string, { name: string; type: string; d
 export async function executeOracleRoutineRename(plan: OracleRoutineRenamePlan, isCurrent: () => boolean = () => true): Promise<void> {
   if (!isCurrent()) throw new Error("The rename target changed. Refresh the preview.");
   if (!plan.executable || !plan.root) throw new Error("Resolve every routine dependency issue before execution.");
-  const current = await prepareOracleRoutineRename(plan.target);
+  const current = await prepareOracleRoutineRename(plan.target, routineDrafts(plan));
   if (!current.executable || planIdentity(current) !== planIdentity(plan) || !isCurrent()) throw new Error("Routine metadata changed. Refresh the rename preview.");
   const affected = [plan.root, ...plan.callers];
   const frozen = freezeSourceIdentities(
@@ -471,7 +515,7 @@ export async function executeOracleRoutineRename(plan: OracleRoutineRenamePlan, 
           schema: plan.target.schema,
           name: plan.target.oldName,
           newName: plan.target.oldName,
-          source: plan.root.source,
+          source: plan.rootDraft,
         });
         if (actualSource.length !== 2 || plannedSource.length !== 2 || makeCreateOnly(actualSource[0]) !== makeCreateOnly(plannedSource[0])) throw new Error("The new routine source does not match the approved definition.");
         if (created.status !== "VALID") {
@@ -498,6 +542,7 @@ export async function executeOracleRoutineRename(plan: OracleRoutineRenamePlan, 
         )
           throw new Error(`${caller.objectType} ${caller.name} did not preserve its identity, validity, errors, and grants.`);
         if (step.kind === "replace-caller") {
+          if (caller.objectType === "VIEW") await validateCallerViewSource(plan.target, caller.name, plan.canonicalNewName, actual.source);
           const actualStatements = await api.buildExecutableObjectSourceStatements({
             databaseType: plan.target.databaseType,
             objectType: caller.objectType as ObjectSourceKind,
@@ -552,6 +597,7 @@ async function verifyBeforeDrop(plan: OracleRoutineRenamePlan, createdRoot: Rout
     const actual = await readSnapshot(plan.target, caller.name, caller.objectType);
     if (actual.objectId !== caller.objectId || actual.status !== "VALID" || actual.errors !== caller.errors || actual.grants !== caller.grants) throw new Error(`Dependent ${caller.objectType} ${caller.name} changed before DROP.`);
     if (caller.rewriteRequired) {
+      if (caller.objectType === "VIEW") await validateCallerViewSource(plan.target, caller.name, plan.canonicalNewName, actual.source);
       const actualStatements = await api.buildExecutableObjectSourceStatements({
         databaseType: plan.target.databaseType,
         objectType: caller.objectType as ObjectSourceKind,

@@ -11,6 +11,11 @@ describe("Oracle package Save As source rewrite", () => {
     expect(rewriteOraclePackageSource(source, { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: false })).toBe('CREATE PACKAGE APP."P_NEW" AS\r\n  PROCEDURE RUN;\r\nEND "P_NEW";');
   });
 
+  it("rejects SQL before the package declaration and CREATE OR REPLACE drafts", () => {
+    expect(() => rewriteOraclePackageSource("DROP TABLE OTHER; PACKAGE OLD AS PROCEDURE P; END OLD;", { owner: "APP", oldName: "OLD", newName: "NEW", body: false })).toThrow();
+    expect(() => rewriteOraclePackageSource("CREATE OR REPLACE PACKAGE OLD AS PROCEDURE P; END OLD;", { owner: "APP", oldName: "OLD", newName: "NEW", body: false })).toThrow();
+  });
+
   it("rewrites a body self-reference but preserves comments, literals, nested END names and other owners", () => {
     const source = ["PACKAGE BODY P_OLD AS", "  PROCEDURE RUN IS", "    v VARCHAR2(20) := 'P_OLD.RUN'; -- P_OLD.RUN", "  BEGIN", "    P_OLD.RUN; OTHER.P_OLD.RUN;", "  END RUN;", "END P_OLD;"].join("\n");
     expect(rewriteOraclePackageSource(source, { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: true })).toBe('CREATE PACKAGE BODY "P_NEW" AS\n  PROCEDURE RUN IS\n    v VARCHAR2(20) := \'P_OLD.RUN\'; -- P_OLD.RUN\n  BEGIN\n    "P_NEW".RUN; OTHER.P_OLD.RUN;\n  END RUN;\nEND "P_NEW";');

@@ -106,6 +106,7 @@ export function rewriteOraclePackageSource(source: string, options: { owner: str
   const list = tokens(sourceWithTerminator);
   const packageIndex = list.findIndex((token) => matches(token, "PACKAGE"));
   if (packageIndex < 0) throw new Error("Package source has no PACKAGE declaration.");
+  if (packageIndex !== 0) throw new Error("Package source must contain exactly one package declaration and no preceding SQL.");
   const body = matches(list[packageIndex + 1], "BODY");
   if (body !== options.body) throw new Error("Package source type does not match the selected specification or body.");
   const sameName = (token: Token | undefined) => token?.kind === "identifier" && token.value === options.oldName;

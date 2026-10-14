@@ -5,6 +5,7 @@ use sqlparser::keywords::Keyword;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
 use crate::models::connection::DatabaseType;
+use crate::sql::split_sql_statements_for_database;
 use crate::types::ObjectSourceKind;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -114,6 +115,15 @@ pub fn build_routine_rename_object_source_statements(
     }
 
     let source = input.source.trim();
+    if input.database_type == DatabaseType::Oracle || input.database_type == DatabaseType::OceanbaseOracle {
+        validate_oracle_object_source(
+            input.database_type,
+            &input.object_type,
+            input.schema.as_deref(),
+            &input.name,
+            source,
+        )?;
+    }
     let declaration = if is_mysql_like(input.database_type) {
         mysql_routine_declaration(source)
     } else {
@@ -449,6 +459,24 @@ pub fn build_executable_object_source_statements(input: EditableObjectSourceSqlI
     } else {
         source
     };
+    if (input.database_type == DatabaseType::Oracle || input.database_type == DatabaseType::OceanbaseOracle)
+        && matches!(
+            input.object_type,
+            ObjectSourceKind::Procedure
+                | ObjectSourceKind::Function
+                | ObjectSourceKind::Package
+                | ObjectSourceKind::PackageBody
+        )
+        && source_starts_with_create(source)
+    {
+        validate_oracle_object_source(
+            input.database_type,
+            &input.object_type,
+            input.schema.as_deref(),
+            &input.name,
+            source,
+        )?;
+    }
     if input.database_type == DatabaseType::SqlServer {
         if input.object_type == ObjectSourceKind::View {
             return Ok(vec![build_sqlserver_alter_view_sql(input.schema.as_deref(), &input.name, source)]);
@@ -505,6 +533,102 @@ pub fn build_executable_object_source_statements(input: EditableObjectSourceSqlI
 
 pub fn build_executable_object_source_sql(input: EditableObjectSourceSqlInput) -> Result<String, String> {
     Ok(build_executable_object_source_statements(input)?.join("\n"))
+}
+
+fn validate_oracle_object_source(
+    database_type: DatabaseType,
+    object_type: &ObjectSourceKind,
+    schema: Option<&str>,
+    name: &str,
+    source: &str,
+) -> Result<(), String> {
+    let initial_tokens =
+        Tokenizer::new(&OracleDialect {}, source).tokenize_with_location().map_err(|error| error.to_string())?;
+    let first_significant = initial_tokens.iter().find(|token| !matches!(token.token, Token::Whitespace(_)));
+    let source = if first_significant.is_some_and(|token| token_word_is(&token.token, "CREATE")) {
+        source.to_string()
+    } else if matches!(object_type, ObjectSourceKind::Procedure | ObjectSourceKind::Function) {
+        format!("CREATE OR REPLACE {}", source.trim())
+    } else {
+        format!("CREATE {}", source.trim())
+    };
+    let statements = split_sql_statements_for_database(&source, database_type);
+    if statements.len() != 1 {
+        return Err("Oracle object source must contain exactly one complete object definition.".to_string());
+    }
+
+    let tokens =
+        Tokenizer::new(&OracleDialect {}, &source).tokenize_with_location().map_err(|error| error.to_string())?;
+    let significant = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| (!matches!(token.token, Token::Whitespace(_))).then_some(index))
+        .collect::<Vec<_>>();
+    let token_at = |position: usize| significant.get(position).map(|index| &tokens[*index].token);
+    let mut position = 0;
+    if !token_at(position).is_some_and(|token| token_word_is(token, "CREATE")) {
+        return Err("Oracle object source must begin with CREATE.".to_string());
+    }
+    position += 1;
+    if token_at(position).is_some_and(|token| token_word_is(token, "OR")) {
+        if !token_at(position + 1).is_some_and(|token| token_word_is(token, "REPLACE")) {
+            return Err("Oracle object source has an invalid CREATE prefix.".to_string());
+        }
+        position += 2;
+    }
+    if token_at(position)
+        .is_some_and(|token| token_word_is(token, "EDITIONABLE") || token_word_is(token, "NONEDITIONABLE"))
+    {
+        position += 1;
+    }
+
+    let kind_matches = match object_type {
+        ObjectSourceKind::Procedure => token_at(position).is_some_and(|token| token_word_is(token, "PROCEDURE")),
+        ObjectSourceKind::Function => token_at(position).is_some_and(|token| token_word_is(token, "FUNCTION")),
+        ObjectSourceKind::Package => {
+            token_at(position).is_some_and(|token| token_word_is(token, "PACKAGE"))
+                && !token_at(position + 1).is_some_and(|token| token_word_is(token, "BODY"))
+        }
+        ObjectSourceKind::PackageBody => {
+            token_at(position).is_some_and(|token| token_word_is(token, "PACKAGE"))
+                && token_at(position + 1).is_some_and(|token| token_word_is(token, "BODY"))
+        }
+        _ => false,
+    };
+    if !kind_matches {
+        return Err(format!("Oracle object source declaration does not match {object_type:?}."));
+    }
+    position += 1;
+    if *object_type == ObjectSourceKind::PackageBody {
+        position += 1;
+    }
+
+    let first_name = token_at(position).ok_or_else(|| "Oracle object source has no declaration name.".to_string())?;
+    let (owner, declared_name, consumed) = if token_at(position + 1) == Some(&Token::Period) {
+        let declared_name = token_at(position + 2)
+            .ok_or_else(|| "Oracle object source has an incomplete qualified name.".to_string())?;
+        (Some(first_name), declared_name, 3)
+    } else {
+        (None, first_name, 1)
+    };
+    if !oracle_identifier_matches(declared_name, name) {
+        return Err(format!("Oracle source declares a different object than {name}."));
+    }
+    if let Some(Token::Word(owner)) = owner {
+        if schema.is_some_and(|schema| !oracle_identifier_matches(&Token::Word(owner.clone()), schema)) {
+            return Err("Oracle object source owner does not match the selected schema.".to_string());
+        }
+    } else if owner.is_some() {
+        return Err("Oracle object source has an invalid owner identifier.".to_string());
+    }
+    if token_at(position + consumed).is_some_and(|token| token == &Token::Period) {
+        return Err("Three-part Oracle object names are not supported.".to_string());
+    }
+    Ok(())
+}
+
+fn oracle_identifier_matches(token: &Token, expected: &str) -> bool {
+    matches!(token, Token::Word(word) if identifier_matches(word, expected))
 }
 
 /// Convert a raw database object source into a form suitable for the source editor.
@@ -812,11 +936,7 @@ pub fn ensure_oracle_ddl_terminated(sql: &str) -> String {
 
 fn ensure_semicolon(sql: &str) -> String {
     let trimmed = sql.trim();
-    if trimmed.ends_with(';') {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed};")
-    }
+    if trimmed.ends_with(';') { trimmed.to_string() } else { format!("{trimmed};") }
 }
 
 fn strip_standalone_trailing_slash(sql: &str) -> &str {
@@ -824,11 +944,7 @@ fn strip_standalone_trailing_slash(sql: &str) -> &str {
     let Some(without_slash) = trimmed.strip_suffix('/') else {
         return trimmed;
     };
-    if without_slash.ends_with('\n') || without_slash.ends_with('\r') {
-        without_slash.trim_end()
-    } else {
-        trimmed
-    }
+    if without_slash.ends_with('\n') || without_slash.ends_with('\r') { without_slash.trim_end() } else { trimmed }
 }
 
 fn mysql_delimited_routine_source(source: &str) -> String {
@@ -851,6 +967,11 @@ fn mysql_routine_script_delimiter(source: &str) -> &'static str {
 fn source_starts_with_create_or_alter(source: &str) -> bool {
     let executable = &source[leading_sql_statement_start(source)..];
     Regex::new(r"(?i)^(?:CREATE|ALTER)\s+").unwrap().is_match(executable)
+}
+
+fn source_starts_with_create(source: &str) -> bool {
+    let executable = &source[leading_sql_statement_start(source)..];
+    Regex::new(r"(?i)^CREATE\s+").unwrap().is_match(executable)
 }
 
 fn source_starts_with_alter(source: &str) -> bool {
@@ -1023,11 +1144,7 @@ fn postgres_qualified_name(schema: Option<&str>, name: &str) -> String {
 }
 
 fn informix_identifier(name: &str) -> String {
-    if is_simple_informix_identifier(name) {
-        name.to_string()
-    } else {
-        quote_postgres_identifier(name)
-    }
+    if is_simple_informix_identifier(name) { name.to_string() } else { quote_postgres_identifier(name) }
 }
 
 fn create_informix_view(name: &str, create_tail: &str) -> String {
@@ -2527,11 +2644,13 @@ mod tests {
             "CREATE PROCEDURE refresh_cache AS BEGIN NULL; END;",
             "CREATE OR REPLACE PROCEDURE refresh_cache AS BEGIN NULL; END;",
         ] {
-            let statements = build_executable_object_source_statements(input(
-                DatabaseType::Oracle,
-                ObjectSourceKind::Procedure,
-                source,
-            ))
+            let statements = build_executable_object_source_statements(EditableObjectSourceSqlInput {
+                database_type: DatabaseType::Oracle,
+                object_type: ObjectSourceKind::Procedure,
+                schema: Some("public".to_string()),
+                name: "REFRESH_CACHE".to_string(),
+                source: source.to_string(),
+            })
             .unwrap();
 
             assert_eq!(statements, vec![source]);
@@ -2898,6 +3017,98 @@ mod tests {
 
         assert_eq!(statements[0], "CREATE OR REPLACE PROCEDURE \"APP\".\"P_NEW\" AS BEGIN \"P_NEW\"; END \"P_NEW\";");
         assert_eq!(statements[1], "DROP PROCEDURE \"APP\".\"P_OLD\";");
+    }
+
+    #[test]
+    fn oracle_routine_rename_rejects_mismatched_owner_name_and_extra_sql() {
+        for source in [
+            "CREATE OR REPLACE PROCEDURE APP.P_OTHER AS BEGIN APP.P_OLD; END;",
+            "CREATE OR REPLACE PROCEDURE OTHER.P_OLD AS BEGIN NULL; END;",
+            "CREATE OR REPLACE PROCEDURE APP.P_OLD AS BEGIN NULL; END; DROP TABLE T;",
+        ] {
+            let result = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+                database_type: DatabaseType::Oracle,
+                object_type: ObjectSourceKind::Procedure,
+                schema: Some("APP".into()),
+                name: "P_OLD".into(),
+                new_name: "P_NEW".into(),
+                source: source.into(),
+            });
+            assert!(result.is_err(), "accepted unsafe source: {source}");
+        }
+    }
+
+    #[test]
+    fn oracle_executable_routine_rejects_wrong_identity_and_create_or_replace() {
+        for source in [
+            "CREATE OR REPLACE PROCEDURE APP.P_OTHER AS BEGIN NULL; END;",
+            "CREATE PROCEDURE OTHER.P_OLD AS BEGIN NULL; END;",
+            "CREATE OR REPLACE PROCEDURE APP.P_OLD AS BEGIN NULL; END; DROP TABLE T;",
+        ] {
+            let result = build_executable_object_source_statements(EditableObjectSourceSqlInput {
+                database_type: DatabaseType::Oracle,
+                object_type: ObjectSourceKind::Procedure,
+                schema: Some("APP".into()),
+                name: "P_OLD".into(),
+                source: source.into(),
+            });
+            assert!(result.is_err(), "accepted unsafe source: {source}");
+        }
+    }
+
+    #[test]
+    fn oracle_executable_package_source_requires_exact_identity_and_one_unit() {
+        let valid = build_executable_object_source_statements(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Oracle,
+            object_type: ObjectSourceKind::Package,
+            schema: Some("APP".into()),
+            name: "P_NEW".into(),
+            source: "CREATE PACKAGE APP.P_NEW AS PROCEDURE RUN; END P_NEW;".into(),
+        })
+        .unwrap();
+        assert_eq!(valid.len(), 1);
+
+        for source in [
+            "CREATE PACKAGE APP.P_OTHER AS PROCEDURE RUN; END P_OTHER;",
+            "CREATE PACKAGE OTHER.P_NEW AS PROCEDURE RUN; END P_NEW;",
+            "CREATE PACKAGE APP.P_NEW AS PROCEDURE RUN; END P_NEW; BEGIN DROP TABLE T; END;",
+        ] {
+            let result = build_executable_object_source_statements(EditableObjectSourceSqlInput {
+                database_type: DatabaseType::Oracle,
+                object_type: ObjectSourceKind::Package,
+                schema: Some("APP".into()),
+                name: "P_NEW".into(),
+                source: source.into(),
+            });
+            assert!(result.is_err(), "accepted unsafe package source: {source}");
+        }
+    }
+
+    #[test]
+    fn oracle_executable_source_respects_quoted_mixed_case_identity() {
+        let input = |source: &str| EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Oracle,
+            object_type: ObjectSourceKind::Package,
+            schema: Some("MiXeD".into()),
+            name: "Pkg".into(),
+            source: source.into(),
+        };
+
+        assert!(
+            build_executable_object_source_statements(input(
+                "CREATE PACKAGE \"MiXeD\".\"Pkg\" AS PROCEDURE RUN; END \"Pkg\";"
+            ))
+            .is_ok()
+        );
+        for source in [
+            "CREATE PACKAGE MIXED.\"Pkg\" AS PROCEDURE RUN; END \"Pkg\";",
+            "CREATE PACKAGE \"MiXeD\".PKG AS PROCEDURE RUN; END PKG;",
+        ] {
+            assert!(
+                build_executable_object_source_statements(input(source)).is_err(),
+                "accepted identity with incorrect case semantics: {source}"
+            );
+        }
     }
 
     #[test]

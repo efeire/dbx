@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginSourceSave, captureSourceIdentity } from "@/lib/table/objectSourceIdentity";
 import { executeOraclePackageSaveAs, prepareOraclePackageSaveAs } from "@/lib/table/oraclePackageSaveAs";
 
-const api = vi.hoisted(() => ({ executeQuery: vi.fn(), parseOracleObjectName: vi.fn() }));
+const api = vi.hoisted(() => ({ executeQuery: vi.fn(), parseOracleObjectName: vi.fn(), buildExecutableObjectSourceStatements: vi.fn() }));
 vi.mock("@/lib/backend/api", () => api);
 vi.mock("@/lib/metadata/objectDdlCache", () => ({ invalidateObjectDdlCache: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/table/objectBrowserRowsCache", () => ({ invalidateObjectBrowserRowsCache: vi.fn() }));
@@ -45,6 +45,7 @@ beforeEach(() => {
   newSpecReads = 0;
   grants = new Map([["P_OLD", []]]);
   api.parseOracleObjectName.mockImplementation(async (name) => name.toUpperCase());
+  api.buildExecutableObjectSourceStatements.mockImplementation(async ({ source }: { source: string }) => [source]);
   api.executeQuery.mockImplementation(async (_connection: string, _database: string, sql: string) => {
     if (sql.includes("SYS_CONTEXT")) return result([["APP", "APP"]]);
     if (sql.includes("FROM USER_OBJECTS")) {
@@ -100,6 +101,62 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe("Oracle package Save As plan and execution", () => {
+  it("validates generated spec and body against the executable Oracle source parser", async () => {
+    const plan = await prepareOraclePackageSaveAs(target);
+
+    expect(plan.executable).toBe(true);
+    expect(api.buildExecutableObjectSourceStatements).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        databaseType: "oracle",
+        objectType: "PACKAGE",
+        schema: "APP",
+        name: "P_NEW",
+        source: expect.stringContaining('CREATE PACKAGE "P_NEW"'),
+      }),
+    );
+    expect(api.buildExecutableObjectSourceStatements).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        databaseType: "oracle",
+        objectType: "PACKAGE_BODY",
+        schema: "APP",
+        name: "P_NEW",
+        source: expect.stringContaining('CREATE PACKAGE BODY "P_NEW"'),
+      }),
+    );
+  });
+
+  it("reproduces a legal dynamic self-reference that blocks package Save As", async () => {
+    const original = "PACKAGE BODY P_OLD AS\n  PROCEDURE RUN IS BEGIN EXECUTE IMMEDIATE 'BEGIN P_OLD.RUN; END;'; END RUN;\nEND P_OLD;";
+    sources.set(key("P_OLD", "PACKAGE BODY"), original);
+
+    const plan = await prepareOraclePackageSaveAs(target);
+
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some((issue) => issue.code === "source_rewrite_failed")).toBe(true);
+    expect(plan.snapshot?.bodySource).toBe(original);
+    expect(plan.statements).toEqual([]);
+  });
+
+  it("preserves a package body rewrite failure and revalidates a manual correction", async () => {
+    const original = "PACKAGE BODY P_OLD AS\n  PROCEDURE RUN IS BEGIN EXECUTE IMMEDIATE 'BEGIN P_OLD.RUN; END;'; END RUN;\nEND P_OLD;";
+    const corrected = "PACKAGE BODY P_OLD AS\n  PROCEDURE RUN IS BEGIN EXECUTE IMMEDIATE 'BEGIN P_NEW.RUN; END;'; END RUN;\nEND P_OLD;";
+    sources.set(key("P_OLD", "PACKAGE BODY"), original);
+
+    const initial = await prepareOraclePackageSaveAs(target);
+    expect(initial.executable).toBe(false);
+    expect(initial.issues.some((issue) => issue.code === "source_rewrite_failed")).toBe(true);
+    expect(initial.snapshot?.bodySource).toBe(original);
+    expect(initial.specSource).toContain('CREATE PACKAGE "P_NEW"');
+
+    const repaired = await prepareOraclePackageSaveAs(target, { spec: spec, body: corrected });
+    expect(repaired.issues).toEqual([]);
+    expect(repaired.executable).toBe(true);
+    expect(repaired.bodySource).toContain("P_NEW.RUN");
+    expect(repaired.bodySource).toContain('CREATE PACKAGE BODY "P_NEW"');
+  });
+
   it("reads and rewrites package specification and body separately", async () => {
     const plan = await prepareOraclePackageSaveAs(target);
     expect(plan.executable).toBe(true);
@@ -151,6 +208,24 @@ describe("Oracle package Save As plan and execution", () => {
     const plan = await prepareOraclePackageSaveAs(target);
     expect(plan.executable).toBe(false);
     expect(plan.issues.some((issue) => issue.code === "target_conflict")).toBe(true);
+  });
+
+  it("rechecks namespace and executes a manually corrected body with the same draft", async () => {
+    const original = "PACKAGE BODY P_OLD AS\n  PROCEDURE RUN IS BEGIN EXECUTE IMMEDIATE 'BEGIN P_OLD.RUN; END;'; END RUN;\nEND P_OLD;";
+    const corrected = "PACKAGE BODY P_OLD AS\n  PROCEDURE RUN IS BEGIN EXECUTE IMMEDIATE 'BEGIN P_NEW.RUN; END;'; END RUN;\nEND P_OLD;";
+    sources.set(key("P_OLD", "PACKAGE BODY"), original);
+    const plan = await prepareOraclePackageSaveAs(target, { body: corrected });
+    expect(plan.executable).toBe(true);
+    operatorTargetConflict = true;
+
+    await expect(executeOraclePackageSaveAs(plan)).rejects.toThrow(/changed/i);
+
+    expect(states.has(key("P_NEW", "PACKAGE"))).toBe(false);
+    expect(states.has(key("P_NEW", "PACKAGE BODY"))).toBe(false);
+
+    operatorTargetConflict = false;
+    await expect(executeOraclePackageSaveAs(plan)).resolves.toBeUndefined();
+    expect(sources.get(key("P_NEW", "PACKAGE BODY"))).toContain("P_NEW.RUN");
   });
 
   it("copies direct EXECUTE grants and verifies the new package", async () => {

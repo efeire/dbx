@@ -145,7 +145,8 @@ async function readSource(target: OracleTableRenameTarget, objectType: ObjectTyp
 
 async function readGrants(target: OracleTableRenameTarget, name: string) {
   const tables = await query(target, `SELECT GRANTOR, GRANTEE, PRIVILEGE, GRANTABLE FROM ALL_TAB_PRIVS WHERE TABLE_SCHEMA=${literal(target.schema)} AND TABLE_NAME=${literal(name)}`);
-  const columns = await query(target, `SELECT GRANTOR, GRANTEE, COLUMN_NAME, PRIVILEGE, GRANTABLE FROM ALL_COL_PRIVS WHERE OWNER=${literal(target.schema)} AND TABLE_NAME=${literal(name)}`);
+  const schemaColumn = target.databaseType === "oracle" ? "TABLE_SCHEMA" : "OWNER";
+  const columns = await query(target, `SELECT GRANTOR, GRANTEE, COLUMN_NAME, PRIVILEGE, GRANTABLE FROM ALL_COL_PRIVS WHERE ${schemaColumn}=${literal(target.schema)} AND TABLE_NAME=${literal(name)}`);
   return JSON.stringify([tables.rows.map((row) => JSON.stringify(row)).sort(), columns.rows.map((row) => JSON.stringify(row)).sort()]);
 }
 

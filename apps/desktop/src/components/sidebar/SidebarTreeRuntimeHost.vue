@@ -3447,23 +3447,31 @@ const canRenameObject = computed(() => {
 function openRenameObjectDialog() {
   claimTreeItemDialogOwnership();
   routeTreeItemDialogController();
-  renameObjectName.value = activeNode.value.label;
+  const node = sidebarFormTarget.value ?? activeNode.value;
+  const targetKey = JSON.stringify([node.connectionId, node.database, node.schema || node.database, node.type, node.objectName || node.label, databaseTypeForNode(node)]);
+  if (targetKey !== currentSidebarViewRenameTargetKey) renameObjectName.value = node.label;
   renameObjectError.value = "";
   renameObjectPreviewSql.value = "";
   viewRenamePlan.value = undefined;
-  viewRenameDrafts.value = {};
   routineRenamePlan.value = undefined;
   tableRenamePlan.value = undefined;
-  tableRenameDrafts.value = {};
   showRenameObjectDialog.value = true;
 }
 
+let currentPackageSaveAsSourceKey = "";
 function openPackageSaveAsDialog(node = activeNode.value) {
   if ((databaseTypeForNode(node) !== "oracle" && databaseTypeForNode(node) !== "oceanbase-oracle") || (node.type !== "package" && node.type !== "package-body")) return;
+  const oldName = node.objectName || node.label;
+  const sourceKey = JSON.stringify([node.connectionId, node.database, node.schema || node.database, oldName, databaseTypeForNode(node)]);
+  const sameTarget = sourceKey === currentPackageSaveAsSourceKey;
+  currentPackageSaveAsSourceKey = sourceKey;
   claimTreeItemDialogOwnership();
   routeTreeItemDialogController();
   packageSaveAsTarget.value = node;
-  packageSaveAsName.value = `${node.objectName || node.label}_COPY`;
+  if (!sameTarget) {
+    packageSaveAsName.value = `${oldName}_COPY`;
+    packageSaveAsDrafts.value = {};
+  }
   packageSaveAsPlan.value = undefined;
   packageSaveAsError.value = "";
   packageSaveAsDiagnostic.value = "";
@@ -3531,18 +3539,21 @@ let currentSidebarViewRenameTargetKey = "";
 const viewRenamePlan = ref<OracleViewRenamePlan>();
 const viewRenameDrafts = ref<Record<string, string>>({});
 const routineRenamePlan = ref<OracleRoutineRenamePlan>();
+const routineRenameDrafts = ref<Record<string, string>>({});
 const tableRenamePlan = ref<OracleTableRenamePlan>();
 const tableRenameDrafts = ref<Record<string, string>>({});
 const packageSaveAsOpen = ref(false);
 const packageSaveAsTarget = ref<TreeNode | null>(null);
 const packageSaveAsName = ref("");
 const packageSaveAsPlan = ref<OraclePackageSaveAsPlan>();
+const packageSaveAsDrafts = ref<{ spec?: string; body?: string }>({});
 const packageSaveAsLoading = ref(false);
 const packageSaveAsExecuting = ref(false);
 const packageSaveAsError = ref("");
 const packageSaveAsDiagnostic = ref("");
 const viewRenameLoading = ref(false);
 const viewRenameValidating = ref(false);
+const packageSaveAsValidating = ref(false);
 const viewRenameExecuting = ref(false);
 
 async function refreshRenameObjectPreviewSql() {
@@ -3576,10 +3587,14 @@ async function refreshRenameObjectPreviewSql() {
     return;
   }
   if ((databaseTypeForNode(node) === "oracle" || databaseTypeForNode(node) === "oceanbase-oracle") && (objectType === "PROCEDURE" || objectType === "FUNCTION") && node.connectionId && node.database) {
+    const targetKey = JSON.stringify([node.connectionId, node.database, node.schema || node.database, objectType, node.objectName || node.label, newName]);
+    const drafts = { ...routineRenameDrafts.value };
     viewRenameLoading.value = true;
     try {
-      const plan = await prepareOracleRoutineRename({ connectionId: node.connectionId, database: node.database, databaseType: databaseTypeForNode(node) as "oracle" | "oceanbase-oracle", schema: node.schema || node.database, objectType, oldName: node.objectName || node.label, newName });
-      if (requestId === renameObjectPreviewRequestId) {
+      const plan = await prepareOracleRoutineRename({ connectionId: node.connectionId, database: node.database, databaseType: databaseTypeForNode(node) as "oracle" | "oceanbase-oracle", schema: node.schema || node.database, objectType, oldName: node.objectName || node.label, newName }, drafts);
+      const currentNode = sidebarFormTarget.value ?? activeNode.value;
+      const currentTargetKey = JSON.stringify([currentNode.connectionId, currentNode.database, currentNode.schema || currentNode.database, nodeRenameObjectType(currentNode), currentNode.objectName || currentNode.label, renameObjectName.value.trim()]);
+      if (requestId === renameObjectPreviewRequestId && showRenameObjectDialog.value && targetKey === currentTargetKey && JSON.stringify(drafts) === JSON.stringify(routineRenameDrafts.value)) {
         routineRenamePlan.value = plan;
         renameObjectError.value = "";
         renameObjectPreviewSql.value = plan.statements.join("\n\n");
@@ -3651,6 +3666,22 @@ function editSidebarTableRenameDraft(name: string, source: string) {
   if (tableRenamePlan.value) tableRenamePlan.value = { ...tableRenamePlan.value, executable: false };
 }
 
+function editSidebarRoutineRenameDraft(name: string, source: string) {
+  routineRenameDrafts.value = { ...routineRenameDrafts.value, [name]: source };
+  ++renameObjectPreviewRequestId;
+  if (routineRenamePlan.value) routineRenamePlan.value = { ...routineRenamePlan.value, executable: false };
+}
+
+async function validateSidebarRoutineRenameDrafts() {
+  if (routineRenamePlan.value) routineRenamePlan.value = { ...routineRenamePlan.value, executable: false };
+  viewRenameValidating.value = true;
+  try {
+    await refreshRenameObjectPreviewSql();
+  } finally {
+    viewRenameValidating.value = false;
+  }
+}
+
 async function validateSidebarTableRenameDrafts(clearDrafts = false) {
   if (clearDrafts) tableRenameDrafts.value = {};
   viewRenameValidating.value = true;
@@ -3680,8 +3711,8 @@ watch(
     ++renameObjectPreviewRequestId;
     const target = sidebarFormTarget.value ?? activeNode.value;
     const targetKey =
-      showRenameObjectDialog.value && ((databaseTypeForNode(target) === "oceanbase-oracle" && ["view", "procedure", "function"].includes(target.type)) || ((databaseTypeForNode(target) === "oracle" || databaseTypeForNode(target) === "oceanbase-oracle") && target.type === "table"))
-        ? JSON.stringify([target.connectionId, target.database, target.schema || target.database, target.type, target.objectName || target.label, renameObjectName.value.trim()])
+      ((databaseTypeForNode(target) === "oracle" || databaseTypeForNode(target) === "oceanbase-oracle") && ["procedure", "function", "table"].includes(target.type)) || (databaseTypeForNode(target) === "oceanbase-oracle" && target.type === "view")
+        ? JSON.stringify([target.connectionId, target.database, target.schema || target.database, target.type, target.objectName || target.label, databaseTypeForNode(target)])
         : "";
     if (targetKey !== currentSidebarViewRenameTargetKey) {
       currentSidebarViewRenameTargetKey = targetKey;
@@ -3689,11 +3720,14 @@ watch(
       viewRenamePlan.value = undefined;
       routineRenamePlan.value = undefined;
       tableRenamePlan.value = undefined;
+      routineRenameDrafts.value = {};
       tableRenameDrafts.value = {};
     } else if (viewRenamePlan.value) viewRenamePlan.value = { ...viewRenamePlan.value, executable: false };
     if (routineRenamePlan.value) routineRenamePlan.value = { ...routineRenamePlan.value, executable: false };
     if (tableRenamePlan.value) tableRenamePlan.value = { ...tableRenamePlan.value, executable: false };
-    if ((databaseTypeForNode(target) !== "oracle" && databaseTypeForNode(target) !== "oceanbase-oracle") || (target.type !== "table" && !(databaseTypeForNode(target) === "oceanbase-oracle" && (target.type === "view" || target.type === "procedure" || target.type === "function")))) {
+    const databaseType = databaseTypeForNode(target);
+    const supportedTarget = ((databaseType === "oracle" || databaseType === "oceanbase-oracle") && (target.type === "table" || target.type === "procedure" || target.type === "function")) || (databaseType === "oceanbase-oracle" && target.type === "view");
+    if (!supportedTarget) {
       viewRenamePlan.value = undefined;
       routineRenamePlan.value = undefined;
       tableRenamePlan.value = undefined;
@@ -3715,18 +3749,24 @@ watch(
     const requestId = ++packageSaveAsPreviewRequestId;
     const target = packageSaveAsTarget.value;
     const newName = packageSaveAsName.value.trim();
+    const oldName = target?.objectName || target?.label || "";
+    const sourceKey = target ? JSON.stringify([target.connectionId, target.database, target.schema || target.database, oldName, databaseTypeForNode(target)]) : "";
+    if (sourceKey && sourceKey !== currentPackageSaveAsSourceKey) {
+      currentPackageSaveAsSourceKey = sourceKey;
+      packageSaveAsDrafts.value = {};
+    }
     packageSaveAsPlan.value = undefined;
     packageSaveAsError.value = "";
     packageSaveAsDiagnostic.value = "";
     if (!packageSaveAsOpen.value || !target || !target.connectionId || !target.database || !newName) return;
     const databaseType = databaseTypeForNode(target);
-    const oldName = target.objectName || target.label;
     if ((databaseType !== "oracle" && databaseType !== "oceanbase-oracle") || (target.type !== "package" && target.type !== "package-body") || newName === oldName) return;
     const timer = setTimeout(async () => {
       packageSaveAsLoading.value = true;
+      const drafts = { ...packageSaveAsDrafts.value };
       try {
-        const plan = await prepareOraclePackageSaveAs({ connectionId: target.connectionId!, database: target.database!, databaseType, schema: target.schema || target.database!, oldName, newName });
-        if (requestId === packageSaveAsPreviewRequestId) packageSaveAsPlan.value = plan;
+        const plan = await prepareOraclePackageSaveAs({ connectionId: target.connectionId!, database: target.database!, databaseType, schema: target.schema || target.database!, oldName, newName }, drafts);
+        if (requestId === packageSaveAsPreviewRequestId && packageSaveAsTarget.value === target && packageSaveAsName.value.trim() === newName && JSON.stringify(packageSaveAsDrafts.value) === JSON.stringify(drafts)) packageSaveAsPlan.value = plan;
       } catch (error) {
         if (requestId === packageSaveAsPreviewRequestId) packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
       } finally {
@@ -3736,6 +3776,36 @@ watch(
     onCleanup(() => clearTimeout(timer));
   },
 );
+
+function editPackageSaveAsDraft(part: "spec" | "body", source: string) {
+  packageSaveAsDrafts.value = { ...packageSaveAsDrafts.value, [part]: source };
+  ++packageSaveAsPreviewRequestId;
+  if (packageSaveAsPlan.value) packageSaveAsPlan.value = { ...packageSaveAsPlan.value, executable: false };
+}
+
+async function validatePackageSaveAsDrafts() {
+  const target = packageSaveAsTarget.value;
+  const newName = packageSaveAsName.value.trim();
+  if (!target?.connectionId || !target.database || !newName) return;
+  const databaseType = databaseTypeForNode(target);
+  if (databaseType !== "oracle" && databaseType !== "oceanbase-oracle") return;
+  const oldName = target.objectName || target.label;
+  if (newName === oldName) return;
+  const requestId = ++packageSaveAsPreviewRequestId;
+  const drafts = { ...packageSaveAsDrafts.value };
+  const targetKey = JSON.stringify([target.connectionId, target.database, target.schema || target.database, oldName, databaseType]);
+  packageSaveAsValidating.value = true;
+  try {
+    const plan = await prepareOraclePackageSaveAs({ connectionId: target.connectionId, database: target.database, databaseType, schema: target.schema || target.database, oldName, newName }, drafts);
+    const current = packageSaveAsTarget.value;
+    const currentKey = current ? JSON.stringify([current.connectionId, current.database, current.schema || current.database, current.objectName || current.label, databaseTypeForNode(current)]) : "";
+    if (requestId === packageSaveAsPreviewRequestId && packageSaveAsTarget.value === target && packageSaveAsOpen.value && packageSaveAsName.value.trim() === newName && targetKey === currentKey && JSON.stringify(packageSaveAsDrafts.value) === JSON.stringify(drafts)) packageSaveAsPlan.value = plan;
+  } catch (error) {
+    packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    packageSaveAsValidating.value = false;
+  }
+}
 
 async function confirmPackageSaveAs() {
   const target = packageSaveAsTarget.value;
@@ -6077,14 +6147,17 @@ function objectDialogCapabilities() {
     viewRenamePlan,
     viewRenameDrafts,
     routineRenamePlan,
+    routineRenameDrafts,
     tableRenamePlan,
     tableRenameDrafts,
     packageSaveAsOpen,
     packageSaveAsTarget,
     packageSaveAsName,
     packageSaveAsPlan,
+    packageSaveAsDrafts,
     packageSaveAsLoading,
     packageSaveAsExecuting,
+    packageSaveAsValidating,
     packageSaveAsError,
     packageSaveAsDiagnostic,
     confirmPackageSaveAs,
@@ -6102,8 +6175,12 @@ function objectDialogCapabilities() {
     }),
     editSidebarViewRenameDraft,
     editSidebarTableRenameDraft,
+    editSidebarRoutineRenameDraft,
+    editPackageSaveAsDraft,
     validateSidebarViewRenameDrafts,
     validateSidebarTableRenameDrafts,
+    validateSidebarRoutineRenameDrafts,
+    validatePackageSaveAsDrafts,
     refreshRenameObjectPreviewSql,
     confirmRenameObject,
     showStructurePreviewDialog,

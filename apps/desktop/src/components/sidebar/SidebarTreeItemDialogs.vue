@@ -43,17 +43,22 @@ const {
   viewRenamePlan,
   viewRenameDrafts,
   routineRenamePlan,
+  routineRenameDrafts,
   tableRenamePlan,
   tableRenameDrafts,
   packageSaveAsOpen,
   packageSaveAsTarget,
   packageSaveAsName,
   packageSaveAsPlan,
+  packageSaveAsDrafts,
   packageSaveAsLoading,
+  packageSaveAsValidating,
   packageSaveAsExecuting,
   packageSaveAsError,
   packageSaveAsDiagnostic,
   confirmPackageSaveAs,
+  editPackageSaveAsDraft,
+  validatePackageSaveAsDrafts,
   viewRenameLoading,
   viewRenameValidating,
   viewRenameExecuting,
@@ -61,8 +66,10 @@ const {
   isOracleRoutineRename,
   isOracleTableRename,
   editSidebarViewRenameDraft,
+  editSidebarRoutineRenameDraft,
   editSidebarTableRenameDraft,
   validateSidebarViewRenameDrafts,
+  validateSidebarRoutineRenameDrafts,
   validateSidebarTableRenameDrafts,
   refreshRenameObjectPreviewSql,
   showStructurePreviewDialog,
@@ -319,12 +326,17 @@ watch(
     :old-name="packageSaveAsTarget?.objectName || packageSaveAsTarget?.label || ''"
     :new-name="packageSaveAsName"
     :plan="packageSaveAsPlan || null"
+    :drafts="packageSaveAsDrafts"
     :error="packageSaveAsError"
     :diagnostic="packageSaveAsDiagnostic"
     :loading="packageSaveAsLoading"
+    :validating="packageSaveAsValidating"
     :executing="packageSaveAsExecuting"
     @update:open="packageSaveAsOpen = $event"
     @update:new-name="packageSaveAsName = $event"
+    @edit="editPackageSaveAsDraft"
+    @validate="validatePackageSaveAsDrafts"
+    @reload="validatePackageSaveAsDrafts"
     @confirm="confirmPackageSaveAs"
   />
   <Dialog v-model:open="showRenameObjectDialog">
@@ -345,7 +357,17 @@ watch(
           @validate="validateSidebarViewRenameDrafts()"
           @reload="validateSidebarViewRenameDrafts()"
         />
-        <OracleRoutineRenamePreview v-else-if="isOracleRoutineRename" :plan="routineRenamePlan || null" :loading="viewRenameLoading" :executing="viewRenameExecuting" @reload="refreshRenameObjectPreviewSql()" />
+        <OracleRoutineRenamePreview
+          v-else-if="isOracleRoutineRename"
+          :plan="routineRenamePlan || null"
+          :drafts="routineRenameDrafts"
+          :loading="viewRenameLoading"
+          :validating="viewRenameValidating"
+          :executing="viewRenameExecuting"
+          @edit="editSidebarRoutineRenameDraft"
+          @validate="validateSidebarRoutineRenameDrafts"
+          @reload="refreshRenameObjectPreviewSql()"
+        />
         <OracleTableRenamePreview
           v-else-if="isOracleTableRename"
           :plan="tableRenamePlan || null"

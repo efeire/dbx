@@ -12,6 +12,8 @@ function fixture(): OracleRoutineRenamePlan {
     target,
     canonicalNewName: "P_NEW",
     root,
+    rootDraft: root.source,
+    rootCreateSource: "CREATE PROCEDURE APP.P_NEW AS BEGIN NULL; END;",
     callers: [],
     dependencyEdges: [],
     statements: ["CREATE PROCEDURE APP.P_NEW AS BEGIN NULL; END;", "DROP PROCEDURE APP.P_OLD"],
@@ -19,25 +21,27 @@ function fixture(): OracleRoutineRenamePlan {
       { kind: "create", objectName: "P_NEW", objectType: "PROCEDURE", sql: "CREATE PROCEDURE APP.P_NEW AS BEGIN NULL; END;" },
       { kind: "drop", objectName: "P_OLD", objectType: "PROCEDURE", sql: "DROP PROCEDURE APP.P_OLD" },
     ],
-    issues: [{ code: "unsupported_dependency", message: "Cannot update dependent OTHER.P_CALLER (PACKAGE).", objectName: "P_CALLER" }],
+    issues: [{ code: "unsupported_dependency", message: "Cannot update dependent OTHER.P_CALLER (PACKAGE).", objectName: "P_CALLER", repairable: false }],
     metadataComplete: true,
     executable: false,
   };
 }
 
 const cleanups: Array<() => void> = [];
-function mount(options: Partial<{ plan: OracleRoutineRenamePlan | null; loading: boolean; executing: boolean }> = {}) {
-  const state = reactive({ plan: fixture() as OracleRoutineRenamePlan | null, loading: false, executing: false, ...options });
+function mount(options: Partial<{ plan: OracleRoutineRenamePlan | null; drafts: Record<string, string>; loading: boolean; validating: boolean; executing: boolean }> = {}) {
+  const state = reactive({ plan: fixture() as OracleRoutineRenamePlan | null, drafts: {} as Record<string, string>, loading: false, validating: false, executing: false, ...options });
   const reload = vi.fn();
+  const edit = vi.fn();
+  const validate = vi.fn();
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const app = createApp({ render: () => h(OracleRoutineRenamePreview, { ...state, onReload: reload }) }).use(i18n);
+  const app = createApp({ render: () => h(OracleRoutineRenamePreview, { ...state, onEdit: edit, onValidate: validate, onReload: reload }) }).use(i18n);
   app.mount(container);
   cleanups.push(() => {
     app.unmount();
     container.remove();
   });
-  return { container, state, reload };
+  return { container, state, reload, edit, validate };
 }
 
 describe("Oracle routine rename preview", () => {
@@ -56,6 +60,13 @@ describe("Oracle routine rename preview", () => {
     expect(container.querySelector('[role="status"]')!.textContent).toBe(i18n.global.t("objects.viewRenameValidationPending"));
   });
 
+  it("hides plan SQL after an unvalidated source edit", async () => {
+    const { container, state } = mount();
+    state.drafts["PROCEDURE:P_OLD"] = "CREATE OR REPLACE PROCEDURE APP.P_OLD AS BEGIN NULL; END; -- edited";
+    await nextTick();
+    expect(container.textContent).not.toContain("DROP PROCEDURE APP.P_OLD");
+  });
+
   it("offers a localized refresh control and disables it while execution is active", async () => {
     const { container, state, reload } = mount();
     const button = container.querySelector<HTMLButtonElement>("[data-reload]")!;
@@ -64,5 +75,23 @@ describe("Oracle routine rename preview", () => {
     state.executing = true;
     await nextTick();
     expect(button.disabled).toBe(true);
+  });
+
+  it("keeps a failed caller editable and emits edits for revalidation", async () => {
+    const original = "CREATE PROCEDURE APP.CALLER_1 AS BEGIN EXECUTE IMMEDIATE 'BEGIN APP.P_OLD; END;'; END;";
+    const plan = {
+      ...fixture(),
+      callers: [{ name: "CALLER_1", objectType: "PROCEDURE", objectId: "102", status: "VALID", source: original, signature: "[]", grants: "[]", errors: "[]", rewrittenSource: "", rewrittenFingerprint: "", rewriteRequired: true, depth: 1, draft: original }],
+      issues: [{ code: "caller_rewrite_failed", message: "Dynamic routine references cannot be rewritten automatically.", objectName: "CALLER_1", repairable: true }],
+    } as unknown as OracleRoutineRenamePlan;
+    const { container, edit, validate } = mount({ plan, drafts: {} });
+
+    const editor = container.querySelector<HTMLTextAreaElement>('[data-source-draft="PROCEDURE:CALLER_1"]');
+    expect(editor?.value).toBe(original);
+    editor!.value = original.replace("P_OLD", "P_NEW");
+    editor!.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(edit).toHaveBeenCalledWith("PROCEDURE:CALLER_1", expect.stringContaining("P_NEW"));
+    container.querySelector<HTMLButtonElement>("[data-validate]")!.click();
+    expect(validate).toHaveBeenCalledOnce();
   });
 });

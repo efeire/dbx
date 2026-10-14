@@ -31,10 +31,12 @@ export interface OraclePackageSaveAsPlan {
   target: OraclePackageSaveAsTarget;
   canonicalNewName: string;
   snapshot: PackageSnapshot | null;
+  specDraft: string;
+  bodyDraft: string | null;
   specSource: string;
   bodySource: string | null;
   statements: string[];
-  issues: Array<{ code: string; message: string }>;
+  issues: Array<{ code: string; message: string; objectName?: string; repairable: boolean }>;
   metadataComplete: boolean;
   executable: boolean;
 }
@@ -150,15 +152,21 @@ function grantStatements(target: OraclePackageSaveAsTarget, grants: string) {
 }
 
 function planIdentity(plan: OraclePackageSaveAsPlan) {
-  return JSON.stringify([plan.target, plan.canonicalNewName, plan.snapshot, plan.specSource, plan.bodySource, plan.statements, plan.issues, plan.metadataComplete]);
+  return JSON.stringify([plan.target, plan.canonicalNewName, plan.snapshot, plan.specDraft, plan.bodyDraft, plan.specSource, plan.bodySource, plan.statements, plan.issues, plan.metadataComplete]);
 }
 
-export async function prepareOraclePackageSaveAs(target: OraclePackageSaveAsTarget): Promise<OraclePackageSaveAsPlan> {
+function packageDrafts(plan: OraclePackageSaveAsPlan) {
+  return { spec: plan.specDraft, ...(plan.bodyDraft === null ? {} : { body: plan.bodyDraft }) };
+}
+
+export async function prepareOraclePackageSaveAs(target: OraclePackageSaveAsTarget, drafts: { spec?: string; body?: string } = {}): Promise<OraclePackageSaveAsPlan> {
   target = { ...target };
   const plan: OraclePackageSaveAsPlan = {
     target,
     canonicalNewName: target.newName,
     snapshot: null,
+    specDraft: "",
+    bodyDraft: null,
     specSource: "",
     bodySource: null,
     statements: [],
@@ -168,32 +176,65 @@ export async function prepareOraclePackageSaveAs(target: OraclePackageSaveAsTarg
   };
   try {
     plan.canonicalNewName = await api.parseOracleObjectName(target.newName);
-    if (plan.canonicalNewName === target.oldName) plan.issues.push({ code: "invalid_name", message: "The new package name matches the existing name." });
+    if (plan.canonicalNewName === target.oldName) plan.issues.push({ code: "invalid_name", message: "The new package name matches the existing name.", repairable: false });
     await checkOwner(target);
     const conflicts = await objectStates(target, plan.canonicalNewName);
-    if (conflicts.length) plan.issues.push({ code: "target_conflict", message: `An object named ${plan.canonicalNewName} already exists.` });
+    if (conflicts.length) plan.issues.push({ code: "target_conflict", message: `An object named ${plan.canonicalNewName} already exists.`, repairable: false });
   } catch (error) {
     plan.metadataComplete = false;
-    plan.issues.push({ code: "metadata_incomplete", message: error instanceof Error ? error.message : String(error) });
+    plan.issues.push({ code: "metadata_incomplete", message: error instanceof Error ? error.message : String(error), repairable: false });
   }
 
   try {
     plan.snapshot = await readSnapshot(target, target.oldName);
-    if (plan.snapshot.specStatus !== "VALID" || (plan.snapshot.bodyStatus && plan.snapshot.bodyStatus !== "VALID")) plan.issues.push({ code: "invalid_source", message: `The existing package is ${plan.snapshot.specStatus}/${plan.snapshot.bodyStatus || "no body"}.` });
+    plan.specDraft = drafts.spec ?? plan.snapshot.specSource;
+    plan.bodyDraft = plan.snapshot.bodySource === null ? null : (drafts.body ?? plan.snapshot.bodySource);
+    if (plan.snapshot.specStatus !== "VALID" || (plan.snapshot.bodyStatus && plan.snapshot.bodyStatus !== "VALID")) plan.issues.push({ code: "invalid_source", message: `The existing package is ${plan.snapshot.specStatus}/${plan.snapshot.bodyStatus || "no body"}.`, repairable: false });
   } catch (error) {
     plan.metadataComplete = false;
-    plan.issues.push({ code: "source_read_failed", message: error instanceof Error ? error.message : String(error) });
+    plan.issues.push({ code: "source_read_failed", message: error instanceof Error ? error.message : String(error), repairable: false });
   }
 
-  if (plan.snapshot && plan.issues.length === 0) {
+  if (plan.snapshot) {
+    if (plan.snapshot.bodySource === null && drafts.body !== undefined) {
+      plan.issues.push({ code: "invalid_draft", message: "A package without a body cannot be given a body draft.", objectName: "PACKAGE BODY", repairable: false });
+    }
     try {
-      plan.specSource = rewriteOraclePackageSource(plan.snapshot.specSource, { owner: target.schema, oldName: target.oldName, newName: plan.canonicalNewName, body: false });
-      plan.bodySource = plan.snapshot.bodySource === null ? null : rewriteOraclePackageSource(plan.snapshot.bodySource, { owner: target.schema, oldName: target.oldName, newName: plan.canonicalNewName, body: true });
-      const nextTarget = { ...target, newName: plan.canonicalNewName };
-      plan.statements = [plan.specSource, ...(plan.bodySource ? [plan.bodySource] : []), ...grantStatements(nextTarget, plan.snapshot.grants)];
-      plan.executable = plan.metadataComplete && plan.issues.length === 0;
+      plan.specSource = rewriteOraclePackageSource(plan.specDraft, { owner: target.schema, oldName: target.oldName, newName: plan.canonicalNewName, body: false });
+      const statements = await api.buildExecutableObjectSourceStatements({
+        databaseType: target.databaseType,
+        objectType: "PACKAGE",
+        schema: target.schema,
+        name: plan.canonicalNewName,
+        source: plan.specSource,
+      });
+      if (statements.length !== 1) throw new Error("Package source must produce exactly one object definition.");
     } catch (error) {
-      plan.issues.push({ code: "source_rewrite_failed", message: error instanceof Error ? error.message : String(error) });
+      plan.issues.push({ code: "source_rewrite_failed", message: error instanceof Error ? error.message : String(error), objectName: "PACKAGE", repairable: true });
+    }
+    if (plan.bodyDraft !== null) {
+      try {
+        plan.bodySource = rewriteOraclePackageSource(plan.bodyDraft, { owner: target.schema, oldName: target.oldName, newName: plan.canonicalNewName, body: true });
+        const statements = await api.buildExecutableObjectSourceStatements({
+          databaseType: target.databaseType,
+          objectType: "PACKAGE_BODY",
+          schema: target.schema,
+          name: plan.canonicalNewName,
+          source: plan.bodySource,
+        });
+        if (statements.length !== 1) throw new Error("Package body source must produce exactly one object definition.");
+      } catch (error) {
+        plan.issues.push({ code: "source_rewrite_failed", message: error instanceof Error ? error.message : String(error), objectName: "PACKAGE BODY", repairable: true });
+      }
+    }
+    if (plan.metadataComplete && plan.issues.length === 0 && plan.specSource && (plan.bodyDraft === null || plan.bodySource)) {
+      try {
+        const nextTarget = { ...target, newName: plan.canonicalNewName };
+        plan.statements = [plan.specSource, ...(plan.bodySource ? [plan.bodySource] : []), ...grantStatements(nextTarget, plan.snapshot.grants)];
+        plan.executable = true;
+      } catch (error) {
+        plan.issues.push({ code: "grant_build_failed", message: error instanceof Error ? error.message : String(error), objectName: "PACKAGE", repairable: false });
+      }
     }
   }
   return plan;
@@ -212,7 +253,7 @@ async function verifyCreatedPackage(target: OraclePackageSaveAsTarget, expected:
 export async function executeOraclePackageSaveAs(plan: OraclePackageSaveAsPlan, isCurrent: () => boolean = () => true): Promise<void> {
   if (!isCurrent()) throw new Error("The package Save As target changed. Refresh the preview.");
   if (!plan.executable || !plan.snapshot) throw new Error("Resolve the package Save As preview issues before execution.");
-  const current = await prepareOraclePackageSaveAs(plan.target);
+  const current = await prepareOraclePackageSaveAs(plan.target, packageDrafts(plan));
   if (!current.executable || planIdentity(current) !== planIdentity(plan)) throw new Error("The package or its members changed. Refresh the Save As preview.");
 
   const lock = freezeSourceIdentities(["PACKAGE", "PACKAGE_BODY"].map((objectType) => ({ connectionId: plan.target.connectionId, database: plan.target.database, schema: plan.target.schema, objectType, name: plan.target.oldName })));

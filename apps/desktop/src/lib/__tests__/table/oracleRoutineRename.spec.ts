@@ -7,6 +7,15 @@ vi.mock("@/lib/backend/api", () => ({
   executeQuery: vi.fn(),
   rewriteOracleRoutineReferences: vi.fn(async ({ oldName, newName, source }: { oldName: string; newName: string; source: string }) => source.replaceAll(oldName, newName)),
   buildExecutableObjectSourceStatements: vi.fn(async ({ source }: { source: string }) => [source]),
+  reviewOracleViewRenameSource: vi.fn(async ({ source, owner, viewName }: { source: string; owner: string; viewName: string }) => {
+    const declaration = source.match(/CREATE(?:\s+OR\s+REPLACE)?\s+VIEW\s+(?:(\w+)\.)?(\w+)\s+AS/i);
+    const valid = declaration && declaration[2].toUpperCase() === viewName.toUpperCase() && (!declaration[1] || declaration[1].toUpperCase() === owner.toUpperCase());
+    return {
+      source: valid ? { source: source.replace(/^\s*CREATE\s+VIEW/i, "CREATE OR REPLACE VIEW"), fingerprint: source, references: [] } : null,
+      references: [],
+      issues: valid ? [] : [{ code: "invalid_declaration", message: "The view declaration does not match the selected owner and name.", repairable: true }],
+    };
+  }),
   buildRoutineRenameObjectSourceStatements: vi.fn(async ({ name, newName, source }: { name: string; newName: string; source: string }) => {
     const renamed = source.replaceAll(name, newName);
     return [renamed.startsWith("CREATE OR REPLACE") ? renamed : `CREATE OR REPLACE ${renamed}`, `DROP PROCEDURE APP.${name}`];
@@ -45,6 +54,7 @@ function sourceFromSql(sql: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.rewriteOracleRoutineReferences).mockImplementation(async ({ oldName, newName, source }) => source.replaceAll(oldName, newName));
   objects.clear();
   objects.set("PROCEDURE:P_OLD", { id: "101", source: rootSource });
   objects.set("PROCEDURE:CALLER_1", { id: "102", source: firstCallerSource });
@@ -156,6 +166,42 @@ beforeEach(() => {
 });
 
 describe("prepareOracleRoutineRename", () => {
+  it("reproduces a legal dynamic caller reference that blocks the routine rename plan", async () => {
+    const original = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 AS BEGIN EXECUTE IMMEDIATE 'BEGIN APP.P_OLD; END;'; END;";
+    objects.set("PROCEDURE:CALLER_1", { id: "102", source: original });
+    vi.mocked(api.rewriteOracleRoutineReferences).mockImplementation(async ({ source }) => {
+      if (/APP\.P_OLD/i.test(source)) throw new Error("Dynamic routine references cannot be rewritten automatically.");
+      return source;
+    });
+
+    const plan = await prepareOracleRoutineRename(target);
+
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some(({ code, objectName }) => code === "caller_rewrite_failed" && objectName === "CALLER_1")).toBe(true);
+    expect(plan.steps).toEqual([]);
+    expect(objects.get("PROCEDURE:CALLER_1")?.source).toBe(original);
+  });
+
+  it("retains a failed caller source and revalidates a manual correction", async () => {
+    const original = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 AS BEGIN EXECUTE IMMEDIATE 'BEGIN APP.P_OLD; END;'; END;";
+    const corrected = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 AS BEGIN EXECUTE IMMEDIATE 'BEGIN APP.P_NEW; END;'; END;";
+    objects.set("PROCEDURE:CALLER_1", { id: "102", source: original });
+    vi.mocked(api.rewriteOracleRoutineReferences).mockImplementation(async ({ oldName, newName, source }) => {
+      if (/APP\.P_OLD/i.test(source)) throw new Error("Dynamic routine references cannot be rewritten automatically.");
+      return source.replaceAll(oldName, newName);
+    });
+
+    const initial = await prepareOracleRoutineRename(target);
+    expect(initial.executable).toBe(false);
+    expect(initial.callers.find((caller) => caller.name === "CALLER_1")).toMatchObject({ draft: original });
+    expect(initial.issues.some(({ code, objectName }) => code === "caller_rewrite_failed" && objectName === "CALLER_1")).toBe(true);
+
+    const repaired = await prepareOracleRoutineRename(target, { "PROCEDURE:CALLER_1": corrected });
+    expect(repaired.issues).toEqual([]);
+    expect(repaired.executable).toBe(true);
+    expect(repaired.callers.find((caller) => caller.name === "CALLER_1")).toMatchObject({ draft: corrected, rewrittenSource: corrected });
+  });
+
   it("collects a two-level dependency closure but rewrites only the direct caller", async () => {
     const plan = await prepareOracleRoutineRename(target);
 
@@ -250,6 +296,30 @@ describe("prepareOracleRoutineRename", () => {
     expect(api.executeQuery).toHaveBeenCalledWith("conn-1", "APP", expect.stringContaining("'OPERATOR'"), "APP", undefined, { maxRows: 5001 });
   });
 
+  it("rechecks namespace and executes a manually corrected caller with the same draft", async () => {
+    const original = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 AS BEGIN EXECUTE IMMEDIATE 'BEGIN APP.P_OLD; END;'; END;";
+    const corrected = "CREATE OR REPLACE PROCEDURE APP.CALLER_1 AS BEGIN EXECUTE IMMEDIATE 'BEGIN APP.P_NEW; END;'; END;";
+    objects.set("PROCEDURE:CALLER_1", { id: "102", source: original });
+    vi.mocked(api.rewriteOracleRoutineReferences).mockImplementation(async ({ oldName, newName, source }) => {
+      if (/APP\.P_OLD/i.test(source)) throw new Error("Dynamic routine references cannot be rewritten automatically.");
+      return source.replaceAll(oldName, newName);
+    });
+    const plan = await prepareOracleRoutineRename(target, { "PROCEDURE:CALLER_1": corrected });
+    expect(plan.executable).toBe(true);
+    namespaceConflict = true;
+
+    await expect(executeOracleRoutineRename(plan)).rejects.toThrow(/metadata changed/i);
+
+    expect(objects.has("PROCEDURE:P_NEW")).toBe(false);
+    expect(vi.mocked(api.executeQuery).mock.calls.some(([, , sql]) => sql.startsWith("CREATE"))).toBe(false);
+    expect(vi.mocked(api.executeQuery).mock.calls.some(([, , sql]) => sql.startsWith("DROP"))).toBe(false);
+
+    namespaceConflict = false;
+    await expect(executeOracleRoutineRename(plan)).resolves.toBeUndefined();
+    expect(objects.get("PROCEDURE:CALLER_1")?.source).toBe(corrected);
+    expect(objects.has("PROCEDURE:P_OLD")).toBe(false);
+  });
+
   it("migrates the direct caller, verifies the two-level graph, then drops the old routine", async () => {
     const plan = await prepareOracleRoutineRename(target);
 
@@ -277,6 +347,23 @@ describe("prepareOracleRoutineRename", () => {
     expect(objects.get("VIEW:V_CALL")?.id).toBe("202");
     expect(objects.get("VIEW:V_CALL")?.source).toContain("P_NEW");
     expect(objects.has("PROCEDURE:P_OLD")).toBe(false);
+  });
+
+  it("rejects a rewritten caller view whose CREATE OR REPLACE targets another view", async () => {
+    objects.clear();
+    objects.set("PROCEDURE:P_OLD", { id: "101", source: rootSource });
+    objects.set("VIEW:V_CALL", { id: "150", source: "CREATE OR REPLACE VIEW APP.V_OTHER AS SELECT APP.P_OLD() AS RESULT FROM DUAL" });
+    dependencyRows = new Map([
+      ["PROCEDURE:P_OLD", [["APP", "V_CALL", "VIEW", null]]],
+      ["VIEW:V_CALL", []],
+    ]);
+
+    const plan = await prepareOracleRoutineRename(target);
+
+    expect(plan.executable).toBe(false);
+    expect(plan.issues.some(({ code, message }) => code === "caller_rewrite_failed" && /declaration does not match/i.test(message))).toBe(true);
+    expect(api.reviewOracleViewRenameSource).toHaveBeenCalledWith(expect.objectContaining({ owner: "APP", viewName: "V_CALL", oldName: "P_NEW", newName: "P_NEW" }));
+    expect(vi.mocked(api.buildExecutableObjectSourceStatements)).not.toHaveBeenCalledWith(expect.objectContaining({ objectType: "VIEW" }));
   });
 
   it("accepts the database's quoted readback of a planned uppercase caller reference", async () => {

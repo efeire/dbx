@@ -37,6 +37,8 @@ let incomingForeignKeyRows: unknown[][];
 let boundTriggerRows: unknown[][];
 let driftTableMetadataAfterRename: boolean;
 let referenceEdges: Map<string, unknown[][]>;
+let enforceOracleColumnGrantOwnerColumn: boolean;
+let columnGrantRows: unknown[][];
 
 function key(type: string, name: string) {
   return `${type}:${name}`;
@@ -68,6 +70,8 @@ function fixture() {
   boundTriggerRows = [];
   driftTableMetadataAfterRename = false;
   referenceEdges = new Map();
+  enforceOracleColumnGrantOwnerColumn = false;
+  columnGrantRows = [];
   api.parseOracleObjectName.mockImplementation(async (name: string) => name.toUpperCase());
   api.reviewOracleViewRenameSource.mockImplementation(async ({ source, owner, viewName, oldName, newName, targetViewName }: { source: string; owner: string; viewName: string; oldName: string; newName: string; targetViewName?: string }) => {
     const output = (oldName === newName ? source : source.replaceAll(new RegExp(`\\b${oldName}\\b`, "g"), `"${newName}"`)).replace(`VIEW ${viewName}`, `VIEW ${targetViewName || viewName}`);
@@ -90,7 +94,11 @@ function fixture() {
       if (reference === "NEW" && type === "TABLE") return result(objects.has(key("TABLE", "NEW")) ? edges : []);
       return result(referenceEdges.get(key(type || "", reference || "")) || []);
     }
-    if (sql.includes("ALL_TAB_PRIVS") || sql.includes("ALL_COL_PRIVS")) return result([]);
+    if (sql.includes("ALL_COL_PRIVS")) {
+      if (enforceOracleColumnGrantOwnerColumn && /\bOWNER\s*=/i.test(sql)) return { ...result([]), execution_error: true, error: 'ORA-00904: "OWNER": invalid identifier' };
+      return result(/\b(?:OWNER|TABLE_SCHEMA)\s*=/i.test(sql) ? columnGrantRows : []);
+    }
+    if (sql.includes("ALL_TAB_PRIVS")) return result([]);
     if (sql.includes("USER_ERRORS")) return result([]);
     if (sql.includes("USER_TRIGGERS")) {
       if (sql.includes("TABLE_NAME=")) {
@@ -177,7 +185,29 @@ beforeEach(() => {
   fixture();
 });
 
-describe("OceanBase Oracle table rename plan", () => {
+describe("Oracle table rename plan", () => {
+  it("reads native Oracle column grants through TABLE_SCHEMA", async () => {
+    enforceOracleColumnGrantOwnerColumn = true;
+    columnGrantRows = [["OWNER", "ALICE", "ID", "SELECT", "NO"]];
+
+    const plan = await prepareOracleTableRename({ ...target, databaseType: "oracle" });
+
+    expect(plan.executable).toBe(true);
+    const grants = JSON.parse(plan.tableSnapshot!.grants) as unknown[][];
+    expect(JSON.parse(String(grants[1]![0]))).toEqual(columnGrantRows[0]);
+  });
+
+  it("retains the OceanBase Oracle OWNER dictionary column", async () => {
+    columnGrantRows = [["OWNER", "ALICE", "ID", "SELECT", "NO"]];
+
+    const plan = await prepareOracleTableRename(target);
+
+    expect(plan.executable).toBe(true);
+    const grants = JSON.parse(plan.tableSnapshot!.grants) as unknown[][];
+    expect(JSON.parse(String(grants[1]![0]))).toEqual(columnGrantRows[0]);
+    expect(api.executeQuery).toHaveBeenCalledWith("c", "OWNER", expect.stringContaining("ALL_COL_PRIVS WHERE OWNER='OWNER'"), "OWNER", undefined, { maxRows: 5001 });
+  });
+
   it("rejects a target namespace conflict before producing executable DDL", async () => {
     targetConflict = "VIEW";
     const plan = await prepareOracleTableRename(target);
