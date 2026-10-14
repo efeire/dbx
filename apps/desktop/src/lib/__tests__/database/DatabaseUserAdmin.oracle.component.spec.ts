@@ -374,6 +374,45 @@ describe("Oracle management through the shared page", () => {
     await click(en.userAdmin.applySql);
     expect(mocks.executeMulti.mock.calls[1][2]).toBe('ALTER USER "Reader" ACCOUNT UNLOCK;');
   });
+  it("supports the old password for inferred Oracle JDBC through preview and dispatch", async () => {
+    setup();
+    const connection = ref({ id: "oracle-jdbc", name: "Oracle JDBC", db_type: "jdbc", driver_profile: "oracle", username: "Reader", password: "saved-secret", save_password: true } as ConnectionConfig);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const app = createApp({ setup: () => () => h(DatabaseUserAdmin, { connection: connection.value }) });
+    app.mount(host);
+    cleanup.push(() => {
+      app.unmount();
+      host.remove();
+    });
+    mocks.retirePasswordAfterChange.mockImplementation(async () => {
+      const retired = { ...connection.value, password: "", save_password: false };
+      connection.value = retired;
+      return { status: "retired", fingerprint: connectionConfigFingerprint(retired) };
+    });
+    await settle();
+    await click(en.userAdmin.changePassword);
+    await fill(en.userAdmin.oldPassword, "old-secret");
+    await fill(en.userAdmin.newPassword, "new-secret");
+    await click(en.userAdmin.previewSql);
+    expect(document.body.textContent).toContain('IDENTIFIED BY "***" REPLACE "***"');
+    expect(document.body.textContent).not.toContain("old-secret");
+    expect(document.body.textContent).not.toContain("new-secret");
+    await click(en.userAdmin.applySql);
+    expect(mocks.executeMulti.mock.calls[0][2]).toBe('ALTER USER "Reader" IDENTIFIED BY "new-secret" REPLACE "old-secret";');
+    expect(mocks.retirePasswordAfterChange).toHaveBeenCalledWith("oracle-jdbc", expect.any(String));
+    expect(document.body.textContent).toContain(en.userAdmin.passwordChangedReconnect);
+  });
+  it.each([
+    { db_type: "oracle" as const, supported: true },
+    { db_type: "oceanbase-oracle" as const, supported: false },
+  ])("keeps native and OceanBase old-password behavior for $db_type", async ({ db_type, supported }) => {
+    setup();
+    mount(db_type);
+    await settle();
+    await click(en.userAdmin.changePassword);
+    expect(document.querySelector(`input[placeholder="${en.userAdmin.oldPassword}"]`) !== null).toBe(supported);
+  });
   it("masks a self-password preview and production confirmation, then retires the connection", async () => {
     setup();
     const connection = ref({ id: "oracle", name: "Oracle test", db_type: "oracle", is_production: true, username: "reader" } as ConnectionConfig);

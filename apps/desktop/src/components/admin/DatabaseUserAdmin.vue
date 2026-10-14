@@ -37,6 +37,7 @@ import {
 } from "@/lib/database/databaseAuthorizationPlan";
 import { useTabUiState } from "@/lib/tabs/tabUiState";
 import { connectionConfigFingerprint } from "@/lib/connection/connectionDatabaseInfo";
+import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 
 const props = defineProps<{
   connection: ConnectionConfig;
@@ -167,7 +168,7 @@ const connectionIdentity = computed(() => `${props.connection.id}:${connectionCo
 const isOracle = computed(() => supportsOracleSecurity(props.connection));
 const supported = computed(() => provider.value !== null || isOracle.value);
 const isPostgres = computed(() => provider.value?.dialect === "postgres");
-const actions = computed(() => (isOracle.value ? createOracleUserAdminActions(oracleSnapshot.value, selectedUser.value?.user, props.connection.db_type === "oracle") : provider.value));
+const actions = computed(() => (isOracle.value ? createOracleUserAdminActions(oracleSnapshot.value, selectedUser.value?.user, effectiveDatabaseTypeForConnection(props.connection) === "oracle") : provider.value));
 const canCreateUser = computed(() => !!provider.value?.createUserSql);
 const canRenameUser = computed(() => !!provider.value?.renameUserSql);
 const canAlterPassword = computed(() => !!actions.value?.alterPasswordSql);
