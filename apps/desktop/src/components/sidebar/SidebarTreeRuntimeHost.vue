@@ -3858,13 +3858,17 @@ async function confirmPackageSaveAs() {
     packageSaveAsOpen.value = false;
     await connectionStore.refreshObjectListTreeNode(target.connectionId, target.database, target.schema || target.database);
   } catch (error) {
-    if (error instanceof OraclePackageSaveAsFailure && error.dispatched) {
-      await connectionStore.refreshObjectListTreeNode(plan.target.connectionId, plan.target.database, plan.target.schema);
-    }
     if (isCurrentPlan()) {
       packageSaveAsError.value = t("objects.packageSaveAsFailed");
       packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
       packageSaveAsPlan.value = { ...plan, executable: false };
+    }
+    if (error instanceof OraclePackageSaveAsFailure && error.dispatched) {
+      try {
+        await connectionStore.refreshObjectListTreeNode(plan.target.connectionId, plan.target.database, plan.target.schema);
+      } catch {
+        // Keep the package DDL failure visible when metadata refresh also fails.
+      }
     }
   } finally {
     packageSaveAsExecuting.value = false;

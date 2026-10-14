@@ -205,6 +205,9 @@ export function rewriteOraclePackageSource(source: string, options: { owner: str
     }
     const dynamicTokens = tokens(token.value);
     for (let dynamicIndex = 0; dynamicIndex < dynamicTokens.length; dynamicIndex++) {
+      if (matches(dynamicTokens[dynamicIndex], "EXECUTE") && matches(dynamicTokens[dynamicIndex + 1], "IMMEDIATE")) {
+        throw new Error("Nested dynamic SQL cannot be safely retargeted; replace the expression with a corrected static or single-level statement before Save As.");
+      }
       if (sameName(dynamicTokens[dynamicIndex]) && dynamicTokens[dynamicIndex + 1]?.text === ".") {
         throw new Error("Package source contains a dynamic string reference that cannot be safely retargeted.");
       }

@@ -544,6 +544,20 @@ describe.each(["sidebar", "objects"] as const)("%s Oracle package Save As failur
     expect(controller.packageSaveAsPlan).toMatchObject({ executable: false });
   });
 
+  it("keeps the DDL failure and disabled plan when the metadata refresh also fails", async () => {
+    const { controller, refresh, plan } = await beginPackageSaveAs(surface);
+    const drafts = { ...controller.packageSaveAsDrafts };
+    refresh.mockRejectedValue(new Error("refresh unavailable"));
+    packageSaveAs.execute.mockRejectedValue(new OraclePackageSaveAsFailure(plan, ["PACKAGE P_NEW"], "PACKAGE BODY P_NEW", new Error("body failed"), true));
+
+    await controller.confirmPackageSaveAs();
+
+    expect(refresh).toHaveBeenCalledWith(connection.id, "APP", "APP");
+    expect(controller.packageSaveAsDiagnostic).toContain("body failed");
+    expect(controller.packageSaveAsPlan).toMatchObject({ executable: false });
+    expect(controller.packageSaveAsDrafts).toEqual(drafts);
+  });
+
   it("does not apply a late failure to a different target or draft", async () => {
     const { controller, refresh, context, plan } = await beginPackageSaveAs(surface);
     let rejectExecution!: (error: unknown) => void;

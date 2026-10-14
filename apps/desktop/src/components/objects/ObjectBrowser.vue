@@ -1976,14 +1976,18 @@ async function confirmPackageSaveAs() {
     await reload();
     await connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema);
   } catch (error) {
-    if (error instanceof OraclePackageSaveAsFailure && error.dispatched) {
-      await connectionStore.refreshObjectListTreeNode(plan.target.connectionId, plan.target.database, plan.target.schema);
-      if (props.connection.id === plan.target.connectionId && props.database === plan.target.database && (packageSaveAsTarget.value?.schema || selectedSchema.value || props.database) === plan.target.schema) await reload();
-    }
     if (isCurrentPlan()) {
       packageSaveAsError.value = t("objects.packageSaveAsFailed");
       packageSaveAsDiagnostic.value = error instanceof Error ? error.message : String(error);
       packageSaveAsPlan.value = { ...plan, executable: false };
+    }
+    if (error instanceof OraclePackageSaveAsFailure && error.dispatched) {
+      try {
+        await connectionStore.refreshObjectListTreeNode(plan.target.connectionId, plan.target.database, plan.target.schema);
+        if (props.connection.id === plan.target.connectionId && props.database === plan.target.database && (packageSaveAsTarget.value?.schema || selectedSchema.value || props.database) === plan.target.schema) await reload();
+      } catch {
+        // Keep the package DDL failure visible when metadata refresh also fails.
+      }
     }
   } finally {
     packageSaveAsExecuting.value = false;

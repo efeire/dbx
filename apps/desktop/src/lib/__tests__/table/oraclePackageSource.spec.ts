@@ -50,6 +50,11 @@ describe("Oracle package Save As source rewrite", () => {
     expect(rewriteOraclePackageSource(source, { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: true })).toContain("q'!BEGIN NULL; END;!'");
   });
 
+  it("rejects nested dynamic SQL hidden inside a complete string literal", () => {
+    const source = "PACKAGE BODY P_OLD AS PROCEDURE RUN IS BEGIN EXECUTE IMMEDIATE 'BEGIN EXECUTE IMMEDIATE ''BEGIN P_OLD.RUN; END;''; END;'; END RUN; END P_OLD;";
+    expect(() => rewriteOraclePackageSource(source, { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: true })).toThrow(/dynamic/i);
+  });
+
   it("preserves an unnamed outer END", () => {
     expect(rewriteOraclePackageSource("PACKAGE P_OLD AS PROCEDURE RUN; END;", { owner: "APP", oldName: "P_OLD", newName: "P_NEW", body: false })).toBe('CREATE PACKAGE "P_NEW" AS PROCEDURE RUN; END;');
   });
