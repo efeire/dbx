@@ -1,4 +1,7 @@
-use dbx_sql_schema::table_structure_sql::{build_table_structure_change_sql, TableStructureSqlOptions};
+use dbx_sql_schema::table_structure_sql::{
+    build_table_structure_change_sql, build_table_structure_change_sql_with_context, StarRocksAlterOptions,
+    TableStructureSqlOptions,
+};
 use serde_json::{json, Value};
 
 fn options(engine: &str, expression: &str) -> TableStructureSqlOptions {
@@ -61,6 +64,45 @@ fn unique_state_options() -> TableStructureSqlOptions {
             } }
         }]
     })).unwrap()
+}
+
+#[test]
+fn starrocks_alter_rejects_oracle_only_changes_before_generating_ddl() {
+    for (field, value) in [
+        ("oracleConstraintChanges", json!([])),
+        ("oracleForeignKeyChanges", json!([])),
+        ("primaryKeyChange", json!({ "name": "PK_EVENTS", "originalColumns": ["id"], "columns": ["id"] })),
+    ] {
+        let mut payload = json!({
+            "databaseType": "starrocks",
+            "tableName": "events",
+            "columns": [],
+            "indexes": [],
+            "tableComment": "must not be emitted"
+        });
+        payload[field] = value;
+        let options: TableStructureSqlOptions = serde_json::from_value(payload).unwrap();
+        let context: StarRocksAlterOptions = serde_json::from_value(json!({ "serverVersion": "3.5.0" })).unwrap();
+        let result = build_table_structure_change_sql_with_context(options, Some(context));
+        assert!(result.statements.is_empty(), "{field}: {:?}", result.statements);
+        assert!(!result.warnings.is_empty(), "{field} should be rejected for StarRocks");
+    }
+}
+
+#[test]
+fn starrocks_alter_still_generates_native_table_comment_without_oracle_changes() {
+    let options: TableStructureSqlOptions = serde_json::from_value(json!({
+        "databaseType": "starrocks",
+        "tableName": "events",
+        "columns": [],
+        "indexes": [],
+        "tableComment": "native comment"
+    }))
+    .unwrap();
+    let context: StarRocksAlterOptions = serde_json::from_value(json!({ "serverVersion": "3.5.0" })).unwrap();
+    let result = build_table_structure_change_sql_with_context(options, Some(context));
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(!result.statements.is_empty());
 }
 
 #[test]
