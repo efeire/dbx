@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { createApp, defineComponent, h, nextTick, type Component } from "vue";
+import { createApp, defineComponent, h, nextTick, ref, type Component } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionConfig } from "@/types/database";
 
@@ -158,6 +158,16 @@ const connection: ConnectionConfig = {
   password: "",
 };
 
+const oracleConnection: ConnectionConfig = {
+  ...connection,
+  id: "same-oracle-connection",
+  db_type: "oracle",
+  driver_profile: "oracle",
+  host: "old-host",
+  port: 1521,
+  database: "OLD_SERVICE",
+};
+
 const nativeMysqlConnection: ConnectionConfig = {
   ...connection,
   id: "native-mysql",
@@ -189,16 +199,272 @@ const starrocksConnection: ConnectionConfig = {
 
 let app: ReturnType<typeof createApp> | undefined;
 let root: HTMLDivElement | undefined;
+let updateConnection: ((connection: ConnectionConfig) => void) | undefined;
+
+function mountWithReactiveConnection(initialConnection: ConnectionConfig) {
+  const Harness = defineComponent({
+    setup(_, { expose }) {
+      const current = ref(initialConnection);
+      expose({ update: (connection: ConnectionConfig) => (current.value = connection) });
+      return () => h(DatabaseUserAdmin, { connection: current.value });
+    },
+  });
+  root = document.createElement("div");
+  document.body.append(root);
+  app = createApp(Harness);
+  app.mount(root);
+  updateConnection = (app._instance?.exposed as { update: (connection: ConnectionConfig) => void }).update;
+}
 
 afterEach(() => {
   app?.unmount();
   root?.remove();
   app = undefined;
   root = undefined;
+  updateConnection = undefined;
   mocks.tabUiState = {};
   mocks.guardCancelled = false;
   mocks.guardWait = undefined;
   vi.clearAllMocks();
+});
+
+describe("DatabaseUserAdmin connection identity", () => {
+  it("does not execute a password preview after the same connection id is edited", async () => {
+    const config = { ...postgresConnection, id: "same-user-admin-connection", db_type: "vastbase", username: "fixture_self", password: "saved-old" } as ConnectionConfig;
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.getConfig.mockReturnValue({ ...config, password: "", save_password: false });
+    mocks.executeQuery.mockImplementation(async (_id, _database, sql: string) => (!sql.startsWith("WITH target") ? { columns: ["user", "host", "plugin"], rows: [["fixture_self", "LOGIN", ""]] } : { columns: ["grant"], rows: [] }));
+    mountWithReactiveConnection(config);
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(2));
+    findButton("userAdmin.changePassword")!.click();
+    await nextTick();
+    for (const [key, value] of [
+      ["newPassword", "fixture-new"],
+      ["oldPassword", "fixture-old"],
+    ]) {
+      const input = root!.querySelector<HTMLInputElement>(`input[placeholder="userAdmin.${key}"]`)!;
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await nextTick();
+    findButton("userAdmin.previewSql")!.click();
+    await nextTick();
+
+    updateConnection!({ ...config, host: "new-host" });
+    await nextTick();
+    expect(findButton("userAdmin.applySql")).toBeUndefined();
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+
+  it("does not retire a newly edited connection after a late self-password acknowledgement", async () => {
+    const config = { ...postgresConnection, id: "same-user-admin-connection", db_type: "vastbase", username: "fixture_self", password: "saved-old" } as ConnectionConfig;
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.retirePasswordAfterChange.mockResolvedValue("ready");
+    mocks.getConfig.mockReturnValue({ ...config, password: "", save_password: false });
+    mocks.executeQuery.mockImplementation(async (_id, _database, sql: string) => (!sql.startsWith("WITH target") ? { columns: ["user", "host", "plugin"], rows: [["fixture_self", "LOGIN", ""]] } : { columns: ["grant"], rows: [] }));
+    mountWithReactiveConnection(config);
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(2));
+    findButton("userAdmin.changePassword")!.click();
+    await nextTick();
+    for (const [key, value] of [
+      ["newPassword", "fixture-new"],
+      ["oldPassword", "fixture-old"],
+    ]) {
+      const input = root!.querySelector<HTMLInputElement>(`input[placeholder="userAdmin.${key}"]`)!;
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await nextTick();
+    findButton("userAdmin.previewSql")!.click();
+    await nextTick();
+    let finish!: (results: unknown[]) => void;
+    mocks.executeMulti.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    findButton("userAdmin.applySql")!.click();
+    await vi.waitFor(() => expect(mocks.executeMulti).toHaveBeenCalledTimes(1));
+
+    updateConnection!({ ...config, host: "new-host" });
+    await nextTick();
+    finish([{ columns: [], rows: [] }]);
+    await vi.waitFor(() => expect(mocks.executeMulti).toHaveBeenCalledTimes(1));
+
+    expect(mocks.retirePasswordAfterChange).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "unknown", "refused"] as const)("retains a late %s acknowledgement after cancel and stops the next Oracle grant", async (acknowledgement) => {
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.listSchemas.mockResolvedValue(["OWNER_A", "OWNER_B"]);
+    mocks.executeQuery.mockImplementation(async (_id, _database, sql: string) => {
+      if (sql.includes("SELECT USER AS USERNAME")) return { columns: ["USERNAME"], rows: [["DBA"]] };
+      if (sql.includes("DBA_USERS"))
+        return {
+          columns: ["USERNAME", "ACCOUNT_STATUS"],
+          rows: [
+            ["TARGET_USER", "OPEN"],
+            ["OTHER_USER", "OPEN"],
+          ],
+        };
+      if (sql.includes("DBA_ROLES")) return { columns: ["ROLE"], rows: [] };
+      if (sql.includes("DBA_ROLE_PRIVS")) return { columns: ["GRANTEE", "GRANTED_ROLE", "ADMIN_OPTION", "DEFAULT_ROLE"], rows: [] };
+      if (sql.includes("DBA_SYS_PRIVS")) return { columns: ["GRANTEE", "PRIVILEGE", "ADMIN_OPTION"], rows: [] };
+      if (sql.includes("DBA_TAB_PRIVS")) return { columns: ["GRANTEE", "OWNER", "TABLE_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"], rows: [] };
+      if (sql.includes("DBA_COL_PRIVS")) return { columns: ["GRANTEE", "OWNER", "TABLE_NAME", "COLUMN_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"], rows: [] };
+      if (sql.includes("FROM ALL_OBJECTS")) {
+        const owner = sql.match(/OWNER = '([^']+)'/)?.[1];
+        return { columns: ["OBJECT_NAME", "OBJECT_TYPE"], rows: [[`TABLE_${owner}`, "TABLE"]] };
+      }
+      return { columns: [], rows: [] };
+    });
+    mountWithReactiveConnection(oracleConnection);
+    await vi.waitFor(() => expect(root!.textContent).toContain("TARGET_USER"));
+    Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("TARGET_USER"))!
+      .click();
+    await nextTick();
+
+    for (const owner of ["OWNER_A", "OWNER_B"]) {
+      findButton(owner)!.click();
+      await nextTick();
+      const chooseObjects = Array.from(root!.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("oracleSecurity.chooseObjects"));
+      expect(chooseObjects).toBeDefined();
+      chooseObjects!.click();
+      await vi.waitFor(() => expect(root!.textContent).toContain(`TABLE_${owner}`));
+      Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.includes(`TABLE_${owner}`))!
+        .click();
+      await nextTick();
+    }
+    findButton("userAdmin.grant")!.click();
+    await nextTick();
+    expect(findButton("userAdmin.applySql")).toBeDefined();
+
+    let finishFirst!: (results: unknown[]) => void;
+    let failFirst!: (error: Error) => void;
+    mocks.executeMulti.mockImplementationOnce(
+      () =>
+        new Promise((resolve, reject) => {
+          finishFirst = resolve;
+          failFirst = reject;
+        }),
+    );
+    findButton("userAdmin.applySql")!.click();
+    await vi.waitFor(() => expect(mocks.executeMulti).toHaveBeenCalledTimes(1));
+    const cancel = Array.from(root!.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "dangerDialog.cancel");
+    expect(cancel).toBeDefined();
+    cancel!.click();
+    Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("OTHER_USER"))!
+      .click();
+    await nextTick();
+
+    if (acknowledgement === "success") finishFirst([{ columns: [], rows: [] }]);
+    else if (acknowledgement === "refused") finishFirst([{ columns: [], rows: [["ORA-01031: insufficient privileges"]], execution_error: true }]);
+    else failFirst(new Error("connection lost after dispatch"));
+    const expectedReceipt = acknowledgement === "success" ? "userAdmin.resultPartial" : acknowledgement === "refused" ? "oracleSecurity.writeRejected" : "oracleSecurity.writeUnknown";
+    await vi.waitFor(() => expect(root!.textContent).toContain(expectedReceipt));
+
+    expect(mocks.executeMulti).toHaveBeenCalledTimes(1);
+    expect(root!.textContent).toContain(expectedReceipt);
+    expect(root!.textContent).toContain("OWNER_A.TABLE_OWNER_A");
+    expect(root!.textContent).toContain("OWNER_B.TABLE_OWNER_B");
+    expect(root!.textContent).toContain("OceanBase · oracle · TARGET_USER");
+  });
+
+  it("discards an Oracle security read and snapshot when the same connection id is edited", async () => {
+    let currentUser = "OLD_ADMIN";
+    let releaseOldRead!: (result: { columns: string[]; rows: unknown[][] }) => void;
+    let firstCurrentUserRead = true;
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.listSchemas.mockResolvedValue([]);
+    mocks.executeQuery.mockImplementation(async (_id, _database, sql: string) => {
+      if (sql.includes("SELECT USER AS USERNAME")) {
+        if (firstCurrentUserRead) {
+          firstCurrentUserRead = false;
+          return new Promise((resolve) => (releaseOldRead = resolve));
+        }
+        return { columns: ["USERNAME"], rows: [[currentUser]] };
+      }
+      if (sql.includes("DBA_USERS")) return { columns: ["USERNAME", "ACCOUNT_STATUS"], rows: [[currentUser, "OPEN"]] };
+      if (sql.includes("DBA_ROLES")) return { columns: ["ROLE"], rows: [] };
+      if (sql.includes("DBA_ROLE_PRIVS") || sql.includes("DBA_SYS_PRIVS") || sql.includes("DBA_TAB_PRIVS") || sql.includes("DBA_COL_PRIVS")) {
+        const columns = sql.includes("ROLE_PRIVS")
+          ? ["GRANTEE", "GRANTED_ROLE", "ADMIN_OPTION", "DEFAULT_ROLE"]
+          : sql.includes("SYS_PRIVS")
+            ? ["GRANTEE", "PRIVILEGE", "ADMIN_OPTION"]
+            : sql.includes("COL_PRIVS")
+              ? ["GRANTEE", "OWNER", "TABLE_NAME", "COLUMN_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"]
+              : ["GRANTEE", "OWNER", "TABLE_NAME", "GRANTOR", "PRIVILEGE", "GRANTABLE"];
+        return { columns, rows: [] };
+      }
+      return { columns: [], rows: [] };
+    });
+    mountWithReactiveConnection(oracleConnection);
+    await vi.waitFor(() => expect(releaseOldRead).toBeDefined());
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(7));
+    currentUser = "NEW_ADMIN";
+    updateConnection!({ ...oracleConnection, host: "new-host", database: "NEW_SERVICE" });
+    await nextTick();
+    expect(mocks.executeQuery).toHaveBeenCalledTimes(14);
+
+    await vi.waitFor(() => expect(root!.textContent).toContain("NEW_ADMIN"));
+    releaseOldRead({ columns: ["USERNAME"], rows: [["OLD_ADMIN"]] });
+    await nextTick();
+    await nextTick();
+    expect(root!.textContent).not.toContain("OLD_ADMIN");
+  });
+
+  it("skips a confirmed Oracle plan when the selected subject changes before dispatch", async () => {
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.listSchemas.mockResolvedValue(["OWNER_A"]);
+    mocks.executeQuery.mockImplementation(async (_id, _database, sql: string) => {
+      if (sql.includes("SELECT USER AS USERNAME")) return { columns: ["USERNAME"], rows: [["DBA"]] };
+      if (sql.includes("DBA_USERS"))
+        return {
+          columns: ["USERNAME", "ACCOUNT_STATUS"],
+          rows: [
+            ["TARGET_USER", "OPEN"],
+            ["OTHER_USER", "OPEN"],
+          ],
+        };
+      if (sql.includes("DBA_ROLES")) return { columns: ["ROLE"], rows: [] };
+      if (sql.includes("DBA_ROLE_PRIVS") || sql.includes("DBA_SYS_PRIVS") || sql.includes("DBA_TAB_PRIVS") || sql.includes("DBA_COL_PRIVS")) return { columns: ["GRANTEE", "PRIVILEGE"], rows: [] };
+      if (sql.includes("FROM ALL_OBJECTS")) return { columns: ["OBJECT_NAME", "OBJECT_TYPE"], rows: [["TABLE_OWNER_A", "TABLE"]] };
+      return { columns: [], rows: [] };
+    });
+    mountWithReactiveConnection(oracleConnection);
+    await vi.waitFor(() => expect(root!.textContent).toContain("OTHER_USER"));
+    Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("TARGET_USER"))!
+      .click();
+    await nextTick();
+    findButton("OWNER_A")!.click();
+    await nextTick();
+    Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("oracleSecurity.chooseObjects"))!
+      .click();
+    await vi.waitFor(() => expect(root!.textContent).toContain("TABLE_OWNER_A"));
+    Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("TABLE_OWNER_A"))!
+      .click();
+    await nextTick();
+    findButton("userAdmin.grant")!.click();
+    await nextTick();
+
+    let confirm!: () => void;
+    mocks.guardWait = new Promise<void>((resolve) => {
+      confirm = resolve;
+    });
+    findButton("userAdmin.applySql")!.click();
+    await nextTick();
+    Array.from(root!.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("OTHER_USER"))!
+      .click();
+    await nextTick();
+    confirm();
+
+    await vi.waitFor(() => expect(root!.textContent).toContain("userAdmin.stepSkipped"));
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+    expect(root!.textContent).toContain("OceanBase · oracle · TARGET_USER");
+  });
 });
 
 describe("DatabaseUserAdmin Vastbase passwords", () => {
@@ -206,7 +472,7 @@ describe("DatabaseUserAdmin Vastbase passwords", () => {
 
   async function mountPassword(user = "fixture_self", dbConfig = config) {
     mocks.ensureConnected.mockResolvedValue(undefined);
-    mocks.retirePasswordAfterChange.mockResolvedValue(undefined);
+    mocks.retirePasswordAfterChange.mockResolvedValue("ready");
     mocks.connect.mockResolvedValue(undefined);
     mocks.getConfig.mockReturnValue({ ...dbConfig, password: "", save_password: false });
     mocks.executeQuery.mockImplementation(async (_id, _db, sql: string) => (!sql.startsWith("WITH target") ? { columns: ["user", "host", "plugin"], rows: [[user, "LOGIN", ""]] } : { columns: ["grant"], rows: [] }));
@@ -240,7 +506,7 @@ describe("DatabaseUserAdmin Vastbase passwords", () => {
     expect(root!.textContent).toContain(`ALTER ROLE "fixture_self" IDENTIFIED BY 'fixture-new' REPLACE 'fixture-old';`);
     mocks.executeMulti.mockResolvedValueOnce([]);
     findButton("userAdmin.applySql")!.click();
-    await vi.waitFor(() => expect(mocks.retirePasswordAfterChange).toHaveBeenCalledWith("vastbase"));
+    await vi.waitFor(() => expect(mocks.retirePasswordAfterChange).toHaveBeenCalledWith("vastbase", expect.any(String)));
     await nextTick();
     expect(mocks.executeMulti.mock.invocationCallOrder[0]).toBeLessThan(mocks.retirePasswordAfterChange.mock.invocationCallOrder[0]);
     expect(mocks.executeQuery).toHaveBeenCalledTimes(2);
@@ -320,6 +586,29 @@ describe("DatabaseUserAdmin Vastbase passwords", () => {
     expect(mocks.retirePasswordAfterChange).not.toHaveBeenCalled();
   });
 
+  it("does not dispatch a preview when same-id connection settings change during confirmation", async () => {
+    mocks.ensureConnected.mockResolvedValue(undefined);
+    mocks.getConfig.mockReturnValue({ ...config, password: "", save_password: false });
+    mocks.executeQuery.mockImplementation(async (_id, _db, sql: string) => (!sql.startsWith("WITH target") ? { columns: ["user", "host", "plugin"], rows: [["fixture_self", "LOGIN", ""]] } : { columns: ["grant"], rows: [] }));
+    mountWithReactiveConnection(config);
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(2));
+    findButton("userAdmin.changePassword")!.click();
+    await nextTick();
+    await preview();
+    let confirm!: () => void;
+    mocks.guardWait = new Promise<void>((resolve) => {
+      confirm = resolve;
+    });
+    findButton("userAdmin.applySql")!.click();
+    await nextTick();
+    updateConnection!({ ...config, host: "changed-during-confirmation" });
+    await nextTick();
+    confirm();
+    await nextTick();
+    await nextTick();
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+
   it("retains the mutation identity when its dialog closes during execution", async () => {
     await mountPassword();
     await preview();
@@ -336,7 +625,7 @@ describe("DatabaseUserAdmin Vastbase passwords", () => {
     cancels.at(-1)!.click();
     await nextTick();
     finish([]);
-    await vi.waitFor(() => expect(mocks.retirePasswordAfterChange).toHaveBeenCalledWith(config.id));
+    await vi.waitFor(() => expect(mocks.retirePasswordAfterChange).toHaveBeenCalledWith(config.id, expect.any(String)));
     expect(mocks.executeQuery).toHaveBeenCalledTimes(2);
   });
 

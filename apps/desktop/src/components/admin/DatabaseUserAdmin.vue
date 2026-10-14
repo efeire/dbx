@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AlertTriangle, Check, Globe2, KeyRound, Lock, Loader2, Plus, RefreshCcw, Search, ShieldCheck, Trash2, Unlock, UserRound } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,7 @@ import {
   type DatabaseAuthorizationSelection,
 } from "@/lib/database/databaseAuthorizationPlan";
 import { useTabUiState } from "@/lib/tabs/tabUiState";
+import { connectionConfigFingerprint } from "@/lib/connection/connectionDatabaseInfo";
 
 const props = defineProps<{
   connection: ConnectionConfig;
@@ -88,6 +89,35 @@ const pendingAfterApply = ref<(() => Promise<void>) | undefined>();
 const pendingPasswordChange = ref<{ connectionId: string; selfChange: boolean }>();
 const passwordReconnectRequired = ref(false);
 const passwordCleanupFailed = ref(false);
+interface OracleExecution {
+  id: number;
+  identity: string;
+  subjectKey: string;
+  targetLabel: string;
+  plan: AuthorizationPlan;
+  displaySql: string;
+  stopRequested: boolean;
+  settled: boolean;
+  dispatchedStepIds: Set<string>;
+  results: AuthorizationStepResult[];
+}
+const oracleExecution = ref<OracleExecution>();
+let oracleExecutionId = 0;
+const oracleVisibleSql = computed(() => oracleExecution.value?.displaySql ?? (pendingDisplaySql.value || pendingSql.value));
+const oracleExecutionStatus = computed(() => {
+  const execution = oracleExecution.value;
+  if (!execution) return "";
+  if (!execution.settled) return t("common.pending");
+  if (execution.stopRequested) return t("common.cancelled");
+  return "";
+});
+const visibleResults = computed(() => oracleExecution.value?.results ?? pendingResults.value);
+const visibleStatus = computed(() => {
+  if (!visibleResults.value.length) return undefined;
+  const status = authorizationPlanStatus(visibleResults.value);
+  if (oracleExecution.value && status === "success" && visibleResults.value.some((result) => result.status === "skipped")) return "partial";
+  return status;
+});
 
 const createUser = ref("app_user");
 const createHost = ref("%");
@@ -131,6 +161,7 @@ trackUiState(() => ({
 }));
 
 const provider = computed(() => resolveDatabaseUserAdminProviderForConnection(props.connection));
+const connectionIdentity = computed(() => `${props.connection.id}:${connectionConfigFingerprint(props.connection)}`);
 const isOracle = computed(() => supportsOracleSecurity(props.connection));
 const supported = computed(() => provider.value !== null || isOracle.value);
 const isPostgres = computed(() => provider.value?.dialect === "postgres");
@@ -228,8 +259,9 @@ async function loadUsers() {
   const oracle = isOracle.value;
   if (!userProvider && !oracle) return;
   const connection = { ...props.connection };
+  const identity = connectionIdentity.value;
   const request = ++usersRequestId;
-  const current = () => request === usersRequestId && connection.id === props.connection.id;
+  const current = () => request === usersRequestId && identity === connectionIdentity.value;
   loadingUsers.value = true;
   loadError.value = "";
   oracleSnapshot.value = undefined;
@@ -281,8 +313,9 @@ async function loadGrants() {
   const user = selectedUser.value;
   const userProvider = provider.value;
   const connectionId = props.connection.id;
+  const identity = connectionIdentity.value;
   const request = ++grantsRequestId;
-  const current = () => request === grantsRequestId && connectionId === props.connection.id && !!user && userKey(user) === selectedUserKey.value;
+  const current = () => request === grantsRequestId && identity === connectionIdentity.value && !!user && userKey(user) === selectedUserKey.value;
   grantError.value = "";
   if (!user || !userProvider) {
     grants.value = [];
@@ -333,6 +366,8 @@ async function loadCurrentTableGrants() {
   const userProvider = provider.value;
   if (!user || !userProvider?.tableGrantsSql || !userProvider.parseTableGrants || currentTableGrantsLoading.value) return;
   const requestId = ++tableGrantRequestId;
+  const identity = connectionIdentity.value;
+  const connectionId = props.connection.id;
   const selectedKey = userKey(user);
   currentTableGrantsLoading.value = true;
   currentTableGrantsLoaded.value = false;
@@ -342,21 +377,21 @@ async function loadCurrentTableGrants() {
     if (createDatabasesLoadError.value) throw new Error(createDatabasesLoadError.value);
     const grantsByDatabase = await Promise.all(
       createDatabases.value.map(async ({ database }) => {
-        const result = await api.executeQuery(props.connection.id, database, userProvider.tableGrantsSql!(user), undefined, undefined, { maxRows: 10000 });
+        const result = await api.executeQuery(connectionId, database, userProvider.tableGrantsSql!(user), undefined, undefined, { maxRows: 10000 });
         return userProvider.parseTableGrants!(result, { database });
       }),
     );
-    if (requestId !== tableGrantRequestId || selectedUserKey.value !== selectedKey) return;
+    if (requestId !== tableGrantRequestId || identity !== connectionIdentity.value || selectedUserKey.value !== selectedKey) return;
     currentTableGrants.value = grantsByDatabase.flat();
     currentTableGrantsLoaded.value = true;
     syncAuthorizationSelectionsFromTableGrants();
   } catch (error: any) {
-    if (requestId !== tableGrantRequestId || selectedUserKey.value !== selectedKey) return;
+    if (requestId !== tableGrantRequestId || identity !== connectionIdentity.value || selectedUserKey.value !== selectedKey) return;
     currentTableGrants.value = [];
     currentTableGrantsLoaded.value = false;
     tableGrantLoadError.value = error?.message || String(error);
   } finally {
-    if (requestId === tableGrantRequestId) currentTableGrantsLoading.value = false;
+    if (requestId === tableGrantRequestId && identity === connectionIdentity.value) currentTableGrantsLoading.value = false;
   }
 }
 
@@ -408,8 +443,9 @@ function loadDatabases(): Promise<void> {
   if (databaseLoadPromise) return databaseLoadPromise;
   let request!: Promise<void>;
   const config = { ...props.connection };
+  const identity = connectionIdentity.value;
   const generation = ++databaseRequestId;
-  const current = () => config.id === props.connection.id && generation === databaseRequestId;
+  const current = () => identity === connectionIdentity.value && generation === databaseRequestId;
   request = (async () => {
     createDatabases.value = [];
     createDatabasesLoading.value = true;
@@ -492,6 +528,7 @@ async function prepareAuthorizationSelections(selections: DatabaseAuthorizationS
 }
 
 function previewSql(sql: string, options: { danger?: boolean; afterApply?: () => Promise<void> } = {}) {
+  if (oracleExecution.value?.settled) oracleExecution.value = undefined;
   previewGeneration++;
   pendingDisplaySql.value = "";
   pendingPasswordChange.value = undefined;
@@ -515,13 +552,31 @@ function previewGeneratedSql(build: () => string, options: { danger?: boolean; a
 
 async function applyPendingSql() {
   if (!pendingSql.value.trim() || applying.value || passwordReconnectRequired.value) return;
+  if (oracleExecution.value && !oracleExecution.value.settled) return;
   const sql = pendingSql.value;
   const plan = pendingPlan.value;
   const afterApply = pendingAfterApply.value;
   const passwordChange = pendingPasswordChange.value;
   const connection = props.connection;
+  const identity = connectionIdentity.value;
+  const subjectKey = selectedUserKey.value;
   const generation = previewGeneration;
   const oracleAction = isOracle.value;
+  const execution = oracleAction
+    ? reactive({
+        id: ++oracleExecutionId,
+        identity,
+        subjectKey,
+        targetLabel: `${connection.name} · ${connection.db_type} · ${selectedUser.value?.user ?? ""}`,
+        plan: plan ? { steps: plan.steps.map((step) => ({ ...step })) } : { steps: [{ id: "oracle-statement", label: t("userAdmin.sqlPreview"), database: "", sql: "", operation: "grantDatabase" as const, subject: selectedUser.value?.user }] },
+        displaySql: pendingDisplaySql.value || sql,
+        stopRequested: false,
+        settled: false,
+        dispatchedStepIds: new Set<string>(),
+        results: [] as AuthorizationStepResult[],
+      })
+    : undefined;
+  if (execution) oracleExecution.value = execution;
   let executionError = false;
   const passwordSecrets = passwordChange ? [newPassword.value, oldPassword.value].filter(Boolean) : [];
   applying.value = true;
@@ -532,55 +587,95 @@ async function applyPendingSql() {
       sql: pendingDisplaySql.value || sql,
       source: t("production.sourceAdmin"),
       execute: async () => {
-        if (!sqlDialogOpen.value || pendingSql.value !== sql || props.connection.id !== connection.id || generation !== previewGeneration) return undefined;
+        if (!sqlDialogOpen.value || pendingSql.value !== sql || identity !== connectionIdentity.value || selectedUserKey.value !== subjectKey || generation !== previewGeneration || (oracleAction && execution?.stopRequested)) {
+          if (oracleAction && execution) {
+            execution.stopRequested = true;
+            execution.results = execution.plan.steps.map((step) => ({ step, status: "skipped", message: t("userAdmin.stepSkipped") }));
+            return execution.results;
+          }
+          return undefined;
+        }
         if (plan) {
-          return executeAuthorizationPlan(plan, async (step) => {
-            if (oracleAction && (!sqlDialogOpen.value || props.connection.id !== connection.id || generation !== previewGeneration)) throw new Error(t("oracleSecurity.writeUnknown"));
-            const results = await api.executeMulti(connection.id, step.database, step.sql, undefined, undefined, { maxRows: 1000, catalog: step.targetCatalog, continueOnError: oracleAction || step.targetCatalog ? false : true }).catch((error) => {
-              if (oracleAction) throw new Error(oracleWriteError(String(error)));
-              throw error;
-            });
+          const capturedPlan = execution?.plan ?? plan;
+          const results = await executeAuthorizationPlan(capturedPlan, async (step) => {
+            if (oracleAction && execution && (execution.stopRequested || identity !== connectionIdentity.value || selectedUserKey.value !== subjectKey || generation !== previewGeneration)) {
+              execution.stopRequested = true;
+              throw new Error("ORACLE_EXECUTION_STOPPED_BEFORE_DISPATCH");
+            }
+            if (oracleAction && execution) execution.dispatchedStepIds.add(step.id);
+            let results: Awaited<ReturnType<typeof api.executeMulti>>;
+            try {
+              results = await api.executeMulti(connection.id, step.database, step.sql, undefined, undefined, { maxRows: 1000, catalog: step.targetCatalog, continueOnError: oracleAction || step.targetCatalog ? false : true });
+            } catch (error) {
+              if (!oracleAction) throw error;
+              return [{ execution_error: true, rows: [[oracleWriteError(String(error))]] } as any];
+            }
             if (oracleAction) {
-              if (!Array.isArray(results) || results.length !== 1) throw new Error(t("oracleSecurity.writeUnknown"));
-              if (results[0].execution_error) throw new Error(oracleWriteError(String(results[0].rows[0]?.[0] ?? ""), true));
+              if (!Array.isArray(results) || results.length !== 1) return [{ execution_error: true, rows: [[t("oracleSecurity.writeUnknown")]] } as any];
+              if (results[0].execution_error) return [{ ...results[0], rows: [[oracleWriteError(String(results[0].rows[0]?.[0] ?? ""), true)]] }];
             }
             return results;
           });
+          if (execution) {
+            execution.results = results.map((item) => {
+              if (!execution.dispatchedStepIds.has(item.step.id)) return { ...item, status: "skipped", outcome: undefined, message: t("userAdmin.stepSkipped") };
+              if (item.status === "failed" && !item.message?.includes(t("oracleSecurity.writeRejected"))) return { ...item, outcome: "unknown", message: t("oracleSecurity.writeUnknown") };
+              return item;
+            });
+            return execution.results;
+          }
+          return results;
         }
         const queryResults = await api.executeMulti(connection.id, "", sql, undefined, undefined, { maxRows: 1000, continueOnError: true });
-        if (oracleAction && queryResults.length !== 1) throw new Error("Missing statement acknowledgement");
+        if (oracleAction && queryResults.length !== 1) {
+          if (execution) execution.results = [{ step: execution.plan.steps[0], status: "failed", outcome: "unknown", message: t("oracleSecurity.writeUnknown") }];
+          return execution?.results ?? [];
+        }
         const failed = queryResults.find((item) => item.execution_error === true);
         if (failed) {
+          if (oracleAction && execution) {
+            const message = oracleWriteError(String(failed.rows[0]?.[0] ?? ""), true);
+            execution.results = [{ step: execution.plan.steps[0], status: "failed", ...(message.includes(t("oracleSecurity.writeRejected")) ? { message } : { outcome: "unknown" as const, message: t("oracleSecurity.writeUnknown") }) }];
+            return execution.results;
+          }
           executionError = true;
           throw new Error(String(failed.rows[0]?.[0] ?? t("userAdmin.applyFailedUnknown")));
         }
+        if (execution) execution.results = [{ step: execution.plan.steps[0], status: "success" }];
         if (passwordChange?.selfChange) {
-          if (props.connection.id === connection.id) {
-            passwordReconnectRequired.value = true;
-            clearPendingSql();
-            passwordDialogOpen.value = false;
-          }
           try {
-            await connectionStore.retirePasswordAfterChange(passwordChange.connectionId);
-            toast(t("userAdmin.passwordChangedReconnect"), 8000);
+            if (identity === connectionIdentity.value) {
+              const retirement = await connectionStore.retirePasswordAfterChange(passwordChange.connectionId, connectionConfigFingerprint(connection));
+              if (retirement === "ready" && identity === connectionIdentity.value && selectedUserKey.value === subjectKey) {
+                passwordReconnectRequired.value = true;
+                passwordDialogOpen.value = false;
+                toast(t("userAdmin.passwordChangedReconnect"), 8000);
+              }
+            }
           } catch {
-            if (props.connection.id === connection.id) passwordCleanupFailed.value = true;
-            toast(t("userAdmin.passwordChangedCleanupFailed"), 10000);
+            if (identity === connectionIdentity.value && selectedUserKey.value === subjectKey) {
+              passwordReconnectRequired.value = true;
+              passwordCleanupFailed.value = true;
+              passwordDialogOpen.value = false;
+              toast(t("userAdmin.passwordChangedCleanupFailed"), 10000);
+            }
           }
         }
-        return [] as AuthorizationStepResult[];
+        return execution?.results ?? ([] as AuthorizationStepResult[]);
       },
     });
     if (!result) return;
     if (passwordChange?.selfChange) return;
-    if (props.connection.id !== connection.id) return;
-    if (oracleAction && generation !== previewGeneration) return;
-    pendingResults.value = result;
-    const status = result.length > 0 ? authorizationPlanStatus(result) : "success";
+    if (oracleAction && execution) {
+      execution.settled = true;
+      execution.results = result;
+    } else if (identity === connectionIdentity.value && selectedUserKey.value === subjectKey) pendingResults.value = result;
+    if (identity !== connectionIdentity.value || selectedUserKey.value !== subjectKey) return;
+    const status = result.length > 0 ? (execution && authorizationPlanStatus(result) === "success" && result.some((item) => item.status === "skipped") ? "partial" : authorizationPlanStatus(result)) : "success";
     toast(t(status === "success" ? "userAdmin.applySuccess" : status === "partial" ? "userAdmin.applyPartial" : "userAdmin.applyFailedSummary"), status === "success" ? 2500 : 5000);
     const createSucceeded = !plan || result.some((item) => item.step.id === "create-user" && item.status === "success");
-    if (createSucceeded) await (afterApply?.() ?? Promise.resolve());
-    if (!plan) sqlDialogOpen.value = false;
+    if (createSucceeded && identity === connectionIdentity.value && selectedUserKey.value === subjectKey) await (afterApply?.() ?? Promise.resolve());
+    if (!plan && !oracleAction) sqlDialogOpen.value = false;
     await loadUsers();
     await loadGrants();
   } catch (error: any) {
@@ -594,6 +689,7 @@ async function applyPendingSql() {
     toast(t("userAdmin.applyFailed", { message }), 5000);
   } finally {
     applying.value = false;
+    if (execution) execution.settled = true;
   }
 }
 
@@ -605,6 +701,11 @@ function oracleWriteError(message: string, executionError = false): string {
 }
 
 function clearPendingSql() {
+  if (oracleExecution.value && !oracleExecution.value.settled) {
+    oracleExecution.value.stopRequested = true;
+    sqlDialogOpen.value = true;
+    return;
+  }
   previewGeneration++;
   pendingSql.value = "";
   pendingDisplaySql.value = "";
@@ -613,8 +714,26 @@ function clearPendingSql() {
   pendingAfterApply.value = undefined;
   pendingPasswordChange.value = undefined;
   sqlDialogOpen.value = false;
+  if (oracleExecution.value?.settled) oracleExecution.value = undefined;
   newPassword.value = "";
   oldPassword.value = "";
+}
+
+function setSqlDialogOpen(open: boolean) {
+  if (!open && oracleExecution.value && !oracleExecution.value.settled) {
+    oracleExecution.value.stopRequested = true;
+    sqlDialogOpen.value = true;
+    return;
+  }
+  sqlDialogOpen.value = open;
+}
+
+function cancelSqlPreview() {
+  if (oracleExecution.value && !oracleExecution.value.settled) {
+    oracleExecution.value.stopRequested = true;
+    return;
+  }
+  sqlDialogOpen.value = false;
 }
 
 async function reconnectAfterPasswordChange() {
@@ -637,6 +756,7 @@ async function previewCreateUser() {
   if (!userProvider?.createUserSql || preparingCreatePlan.value) return;
   if (!createUser.value.trim() || !createPassword.value || !createDatabaseAuthorizationsValid.value) return;
   const requestId = ++createPlanRequestId;
+  const identity = connectionIdentity.value;
   preparingCreatePlan.value = true;
   try {
     const principal = {
@@ -656,7 +776,7 @@ async function previewCreateUser() {
         : createAccountType.value === "standard"
           ? createDatabaseAuthorizations.value
           : [];
-    if (requestId !== createPlanRequestId || !createDialogOpen.value) return;
+    if (requestId !== createPlanRequestId || identity !== connectionIdentity.value || !createDialogOpen.value) return;
     const plan = buildCreateUserAuthorizationPlan({
       provider: userProvider,
       principal,
@@ -674,9 +794,9 @@ async function previewCreateUser() {
     };
     sqlDialogOpen.value = true;
   } catch (error: any) {
-    if (requestId === createPlanRequestId) toast(t("userAdmin.prepareAuthorizationFailed", { message: error?.message || String(error) }), 5000);
+    if (requestId === createPlanRequestId && identity === connectionIdentity.value) toast(t("userAdmin.prepareAuthorizationFailed", { message: error?.message || String(error) }), 5000);
   } finally {
-    if (requestId === createPlanRequestId) preparingCreatePlan.value = false;
+    if (requestId === createPlanRequestId && identity === connectionIdentity.value) preparingCreatePlan.value = false;
   }
 }
 
@@ -776,6 +896,7 @@ function previewLoginChange(enabled: boolean) {
  */
 function previewPlan(plan: AuthorizationPlan, options: { danger?: boolean } = {}) {
   if (plan.steps.length === 0) return;
+  if (oracleExecution.value?.settled) oracleExecution.value = undefined;
   previewGeneration++;
   pendingDisplaySql.value = "";
   pendingPasswordChange.value = undefined;
@@ -789,6 +910,8 @@ function previewPlan(plan: AuthorizationPlan, options: { danger?: boolean } = {}
 
 async function previewGrant() {
   const user = selectedUser.value;
+  const identity = connectionIdentity.value;
+  const selectedKey = selectedUserKey.value;
   const userProvider = provider.value;
   const grantPrivilegesSql = actions.value?.grantPrivilegesSql;
   if (!user || !grantPrivilegesSql || (privilegeScope.value === "role" && !privilegeRole.value.trim())) return;
@@ -799,6 +922,7 @@ async function previewGrant() {
   if (usePrivilegeScopeEditor.value && userProvider) {
     if (!privilegeAuthorizationsValid.value || !tableGrantDiffReady.value) return;
     const databases = await prepareAuthorizationSelections(privilegeAuthorizations.value);
+    if (identity !== connectionIdentity.value || selectedKey !== selectedUserKey.value) return;
     previewPlan(
       buildGrantAuthorizationPlan({
         provider: userProvider,
@@ -825,6 +949,8 @@ async function previewGrant() {
 
 async function previewRevoke() {
   const user = selectedUser.value;
+  const identity = connectionIdentity.value;
+  const selectedKey = selectedUserKey.value;
   const userProvider = provider.value;
   const revokePrivilegesSql = actions.value?.revokePrivilegesSql;
   if (!user || !revokePrivilegesSql || (privilegeScope.value === "role" && !privilegeRole.value.trim())) return;
@@ -835,6 +961,7 @@ async function previewRevoke() {
   if (usePrivilegeScopeEditor.value && userProvider) {
     if (!privilegeAuthorizationsValid.value || !tableGrantDiffReady.value) return;
     const databases = await prepareAuthorizationSelections(privilegeAuthorizations.value);
+    if (identity !== connectionIdentity.value || selectedKey !== selectedUserKey.value) return;
     previewPlan(buildGrantAuthorizationPlan({ provider: userProvider, user, databases, revoke: true, currentGrants: userProvider.authorizationModel === "mysql" ? undefined : currentTableGrants.value }), { danger: true });
     return;
   }
@@ -911,14 +1038,24 @@ watch(
 );
 
 watch(
-  () => props.connection.id,
+  () => connectionIdentity.value,
   () => {
     usersRequestId++;
     grantsRequestId++;
     databaseRequestId++;
     databaseLoadPromise = undefined;
+    createPlanRequestId++;
+    previewGeneration++;
+    if (oracleExecution.value && !oracleExecution.value.settled) oracleExecution.value.stopRequested = true;
     oracleSnapshot.value = undefined;
-    clearPendingSql();
+    if (oracleExecution.value && !oracleExecution.value.settled) {
+      pendingSql.value = "";
+      pendingDisplaySql.value = "";
+      pendingPlan.value = undefined;
+      pendingResults.value = [];
+      pendingAfterApply.value = undefined;
+      pendingPasswordChange.value = undefined;
+    } else clearPendingSql();
     passwordDialogOpen.value = false;
     hostDialogOpen.value = false;
     createDialogOpen.value = false;
@@ -1142,7 +1279,7 @@ onBeforeUnmount(() => {
                 <p v-if="isOracle" class="text-[11px] text-muted-foreground">{{ t("oracleSecurity.limited") }}</p>
                 <p v-if="createDatabasesLoadError" class="text-[11px] text-destructive">{{ createDatabasesLoadError }}</p>
                 <p v-if="isOracle && privilegeAuthorizations.length && !privilegeAuthorizationsValid" class="text-[11px] text-destructive">{{ t("oracleSecurity.invalidObjectSelection") }}</p>
-                <AuthorizationScopeEditor :key="connection.id" v-model="privilegeAuthorizations" compact :provider="provider" :object-scope="oracleObjectScope" :databases="createDatabases" :databases-loading="createDatabasesLoading" :connection-id="connection.id" />
+                <AuthorizationScopeEditor :key="connectionIdentity" v-model="privilegeAuthorizations" compact :provider="provider" :object-scope="oracleObjectScope" :databases="createDatabases" :databases-loading="createDatabasesLoading" :connection-id="connection.id" />
                 <div v-if="currentTableGrantsLoading" class="flex items-center gap-2 text-[11px] text-muted-foreground">
                   <Loader2 class="h-3.5 w-3.5 animate-spin" />
                   {{ t("userAdmin.loadingGrants") }}
@@ -1277,42 +1414,44 @@ onBeforeUnmount(() => {
       </DialogContent>
     </Dialog>
 
-    <Dialog v-model:open="sqlDialogOpen">
+    <Dialog :open="sqlDialogOpen" @update:open="setSqlDialogOpen">
       <DialogContent class="max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto]">
         <DialogHeader>
+          <p v-if="oracleExecution" class="text-xs font-medium text-muted-foreground">{{ oracleExecution.targetLabel }} · {{ oracleExecutionStatus }}</p>
           <DialogTitle class="flex items-center gap-2">
             <AlertTriangle v-if="pendingDanger" class="h-4 w-4 text-destructive" />
             {{ t("userAdmin.sqlPreview") }}
           </DialogTitle>
           <p v-if="isOracle" class="text-xs text-muted-foreground">{{ t("oracleSecurity.managementHint") }}</p>
         </DialogHeader>
-        <div class="grid min-h-0 max-h-full min-w-0 gap-3 overflow-hidden" :class="pendingResults.length > 0 ? 'h-[70vh] grid-rows-[minmax(0,1fr)_minmax(0,1fr)]' : 'h-[50vh] grid-rows-[minmax(0,1fr)]'">
-          <pre class="min-h-0 min-w-0 overflow-auto overscroll-contain whitespace-pre-wrap rounded-md border bg-muted/30 p-3 font-mono text-xs leading-5" v-html="highlightedPendingSql" />
-          <div v-if="pendingResults.length > 0" class="grid min-h-0 min-w-0 content-start gap-2 overflow-y-auto overscroll-contain rounded-md border p-3">
-            <div class="text-xs font-semibold" :class="pendingStatus === 'success' ? 'text-green-600' : pendingStatus === 'partial' ? 'text-amber-600' : 'text-destructive'">
-              {{ t(pendingStatus === "success" ? "userAdmin.resultSuccess" : pendingStatus === "partial" ? "userAdmin.resultPartial" : "userAdmin.resultFailed") }}
+        <div class="grid min-h-0 max-h-full min-w-0 gap-3 overflow-hidden" :class="visibleResults.length > 0 ? 'h-[70vh] grid-rows-[minmax(0,1fr)_minmax(0,1fr)]' : 'h-[50vh] grid-rows-[minmax(0,1fr)]'">
+          <pre class="min-h-0 min-w-0 overflow-auto overscroll-contain whitespace-pre-wrap rounded-md border bg-muted/30 p-3 font-mono text-xs leading-5" v-html="highlight(oracleVisibleSql)" />
+          <div v-if="visibleResults.length > 0" class="grid min-h-0 min-w-0 content-start gap-2 overflow-y-auto overscroll-contain rounded-md border p-3">
+            <div class="text-xs font-semibold" :class="visibleStatus === 'success' ? 'text-green-600' : visibleStatus === 'partial' ? 'text-amber-600' : 'text-destructive'">
+              {{ t(visibleStatus === "success" ? "userAdmin.resultSuccess" : visibleStatus === "partial" ? "userAdmin.resultPartial" : "userAdmin.resultFailed") }}
             </div>
-            <div v-for="result in pendingResults" :key="result.step.id" class="flex items-start gap-2 text-xs">
+            <div v-for="result in visibleResults" :key="result.step.id" class="flex items-start gap-2 text-xs">
               <Check v-if="result.status === 'success'" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-600" />
               <AlertTriangle v-else-if="result.status === 'failed'" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
               <span v-else class="mt-1 h-2 w-2 shrink-0 rounded-full bg-muted-foreground" />
               <span class="min-w-0">
                 <span class="block">{{ authorizationStepLabel(result) }}</span>
-                <span v-if="result.message" class="mt-0.5 block break-all text-destructive">{{ result.message }}</span>
+                <span v-if="result.outcome === 'unknown'" class="mt-0.5 block text-destructive">{{ t("oracleSecurity.writeUnknown") }}</span>
+                <span v-else-if="result.message" class="mt-0.5 block break-all text-destructive">{{ result.message }}</span>
                 <span v-else-if="result.status === 'skipped'" class="mt-0.5 block text-muted-foreground">{{ t("userAdmin.stepSkipped") }}</span>
               </span>
             </div>
           </div>
         </div>
         <DialogFooter>
-          <template v-if="pendingResults.length === 0">
-            <Button variant="outline" @click="sqlDialogOpen = false">{{ t("dangerDialog.cancel") }}</Button>
-            <Button :variant="pendingDanger ? 'destructive' : 'default'" :disabled="applying" @click="applyPendingSql">
+          <template v-if="visibleResults.length === 0">
+            <Button variant="outline" @click="cancelSqlPreview">{{ t("dangerDialog.cancel") }}</Button>
+            <Button v-if="!oracleExecution || oracleExecution.settled" :variant="pendingDanger ? 'destructive' : 'default'" :disabled="applying" @click="applyPendingSql">
               <Loader2 v-if="applying" class="mr-1.5 h-3.5 w-3.5 animate-spin" />
               {{ t("userAdmin.applySql") }}
             </Button>
           </template>
-          <Button v-else @click="sqlDialogOpen = false">{{ t("userAdmin.closeResult") }}</Button>
+          <Button v-else :disabled="oracleExecution && !oracleExecution.settled" @click="setSqlDialogOpen(false)">{{ t("userAdmin.closeResult") }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

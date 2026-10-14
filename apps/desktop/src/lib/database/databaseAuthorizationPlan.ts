@@ -58,6 +58,7 @@ export type AuthorizationStepStatus = "success" | "failed" | "skipped";
 export interface AuthorizationStepResult {
   step: AuthorizationPlanStep;
   status: AuthorizationStepStatus;
+  outcome?: "unknown";
   message?: string;
 }
 
@@ -424,7 +425,7 @@ export async function executeAuthorizationPlan(plan: AuthorizationPlan, execute:
 
 export function authorizationPlanStatus(results: AuthorizationStepResult[]): "success" | "partial" | "failed" {
   const successes = results.filter((result) => result.status === "success").length;
-  const failures = results.filter((result) => result.status === "failed").length;
+  const failures = results.filter((result) => result.status !== "success").length;
   if (failures === 0) return "success";
   return successes > 0 ? "partial" : "failed";
 }
