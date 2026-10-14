@@ -203,6 +203,17 @@ pub fn rewrite_oracle_routine_references(input: OracleRoutineReferenceRewriteInp
         .enumerate()
         .filter_map(|(index, token)| (!matches!(token.token, Token::Whitespace(_))).then_some(index))
         .collect::<Vec<_>>();
+    if matches!(input.caller_type, ObjectSourceKind::Procedure | ObjectSourceKind::Function) {
+        if let Some(execute_index) =
+            find_oracle_execute_immediate(significant.iter().copied().map(|index| (index, &tokens[index].token)))
+        {
+            let location = tokens[execute_index].span.start;
+            return Err(format!(
+                "Dynamic SQL must be rewritten as a verifiable static call at line {}, column {}.",
+                location.line, location.column
+            ));
+        }
+    }
     if significant.windows(2).any(|pair| {
         (token_word_is(&tokens[pair[0]].token, "FUNCTION") || token_word_is(&tokens[pair[0]].token, "PROCEDURE"))
             && (token_matches_identifier(&tokens[pair[1]].token, &input.old_name)
@@ -349,10 +360,9 @@ pub fn rewrite_oracle_table_references(input: OracleTableReferenceRewriteInput) 
         .enumerate()
         .filter_map(|(index, token)| (!matches!(token.token, Token::Whitespace(_))).then_some(index))
         .collect::<Vec<_>>();
-    if let Some(execute_index) = significant.windows(2).find_map(|pair| {
-        (token_word_is(&tokens[pair[0]].token, "EXECUTE") && token_word_is(&tokens[pair[1]].token, "IMMEDIATE"))
-            .then_some(pair[0])
-    }) {
+    if let Some(execute_index) =
+        find_oracle_execute_immediate(significant.iter().copied().map(|index| (index, &tokens[index].token)))
+    {
         let location = tokens[execute_index].span.start;
         return Err(format!(
             "Dynamic SQL is outside the supported table-reference subset at line {}, column {}.",
@@ -1547,6 +1557,17 @@ fn rewrite_oracle_routine_self_references(
         .enumerate()
         .filter_map(|(index, token)| (!matches!(token.token, Token::Whitespace(_))).then_some(index))
         .collect::<Vec<_>>();
+    if old_name != new_name {
+        if let Some(execute_index) =
+            find_oracle_execute_immediate(significant.iter().copied().map(|index| (index, &tokens[index].token)))
+        {
+            let location = tokens[execute_index].span.start;
+            return Err(format!(
+                "Dynamic SQL must be rewritten as a verifiable static call at line {}, column {}.",
+                location.line, location.column
+            ));
+        }
+    }
     let routine_kind_position = significant
         .iter()
         .position(|index| {
@@ -1667,6 +1688,23 @@ fn routine_location_to_byte_offset(source: &str, location: sqlparser::tokenizer:
 
 fn token_word_is(token: &Token, expected: &str) -> bool {
     matches!(token, Token::Word(word) if word.value.eq_ignore_ascii_case(expected))
+}
+
+fn find_oracle_execute_immediate<'a>(tokens: impl IntoIterator<Item = (usize, &'a Token)>) -> Option<usize> {
+    let mut previous: Option<(usize, &'a Token)> = None;
+    for (index, token) in tokens {
+        if let Some((previous_index, previous_token)) = previous {
+            if token_unquoted_word_is(previous_token, "EXECUTE") && token_unquoted_word_is(token, "IMMEDIATE") {
+                return Some(previous_index);
+            }
+        }
+        previous = Some((index, token));
+    }
+    None
+}
+
+fn token_unquoted_word_is(token: &Token, expected: &str) -> bool {
+    matches!(token, Token::Word(word) if word.quote_style.is_none() && word.value.eq_ignore_ascii_case(expected))
 }
 
 fn token_matches_identifier(token: &Token, expected: &str) -> bool {
@@ -3336,6 +3374,83 @@ END "F_REC_2";"#
             source: "CREATE FUNCTION APP.CALLER RETURN NUMBER AS FUNCTION F_NEW(X NUMBER) RETURN NUMBER IS BEGIN RETURN X; END; BEGIN RETURN F_OLD(1); END;".into(),
         });
         assert!(result.unwrap_err().contains("F_OLD or F_NEW"));
+    }
+
+    #[test]
+    fn oracle_routine_caller_rewrite_rejects_dynamic_old_name_even_with_static_call() {
+        let result = rewrite_oracle_routine_references(OracleRoutineReferenceRewriteInput {
+            database_type: DatabaseType::Oracle,
+            caller_type: ObjectSourceKind::Procedure,
+            target_type: ObjectSourceKind::Procedure,
+            schema: Some("SYS".into()),
+            old_name: "DBX50_OLD_20261014_8F31".into(),
+            new_name: "DBX50_NEW_20261014_8F31".into(),
+            source: "CREATE OR REPLACE PROCEDURE \"SYS\".\"DBX50_CALL_20261014_8F31\" IS BEGIN DBX50_OLD_20261014_8F31; EXECUTE IMMEDIATE 'BEGIN DBX50_OLD_20261014_8F31; END;'; END".into(),
+        });
+
+        let error = result.unwrap_err();
+        assert!(error.contains("Dynamic SQL"));
+        assert!(error.contains("line 1") && error.contains("column"));
+    }
+
+    #[test]
+    fn oracle_routine_caller_rewrite_rejects_dynamic_sql_forms_and_comment_separated_keywords() {
+        for dynamic_sql in
+            ["'BEGIN DBX50_OLD_20261014_8F31; END;'", "statement_text", "'BEGIN ' || 'DBX50_OLD_20261014_8F31; END;'"]
+        {
+            let source = format!(
+                "CREATE OR REPLACE PROCEDURE SYS.CALLER IS BEGIN DBX50_OLD_20261014_8F31; EXECUTE /* comment */ IMMEDIATE {dynamic_sql}; END;"
+            );
+            let result = rewrite_oracle_routine_references(OracleRoutineReferenceRewriteInput {
+                database_type: DatabaseType::Oracle,
+                caller_type: ObjectSourceKind::Procedure,
+                target_type: ObjectSourceKind::Procedure,
+                schema: Some("SYS".into()),
+                old_name: "DBX50_OLD_20261014_8F31".into(),
+                new_name: "DBX50_NEW_20261014_8F31".into(),
+                source,
+            });
+
+            let error = result.unwrap_err();
+            assert!(error.contains("Dynamic SQL"), "accepted dynamic SQL: {dynamic_sql}");
+            assert!(error.contains("line 1") && error.contains("column"));
+        }
+    }
+
+    #[test]
+    fn oracle_routine_caller_rewrite_ignores_execute_immediate_in_literals_comments_and_quoted_words() {
+        let source = "CREATE OR REPLACE PROCEDURE SYS.CALLER IS v VARCHAR2(200); BEGIN DBX50_OLD_20261014_8F31; SELECT \"EXECUTE\" IMMEDIATE INTO v FROM DUAL; v := 'EXECUTE IMMEDIATE DBX50_OLD_20261014_8F31'; v := q'[EXECUTE IMMEDIATE DBX50_OLD_20261014_8F31]'; v := nq'[EXECUTE IMMEDIATE DBX50_OLD_20261014_8F31]'; -- EXECUTE IMMEDIATE DBX50_OLD_20261014_8F31\n DBMS_OUTPUT.PUT_LINE(\"EXECUTE\"); EXECUTE \"IMMEDIATE\"; END;";
+        let rewritten = rewrite_oracle_routine_references(OracleRoutineReferenceRewriteInput {
+            database_type: DatabaseType::Oracle,
+            caller_type: ObjectSourceKind::Procedure,
+            target_type: ObjectSourceKind::Procedure,
+            schema: Some("SYS".into()),
+            old_name: "DBX50_OLD_20261014_8F31".into(),
+            new_name: "DBX50_NEW_20261014_8F31".into(),
+            source: source.into(),
+        })
+        .unwrap();
+
+        assert!(rewritten.contains("\"DBX50_NEW_20261014_8F31\";"));
+        assert!(rewritten.contains("'EXECUTE IMMEDIATE DBX50_OLD_20261014_8F31'"));
+        assert!(rewritten.contains("q'[EXECUTE IMMEDIATE DBX50_OLD_20261014_8F31]'"));
+        assert!(rewritten.contains("nq'[EXECUTE IMMEDIATE DBX50_OLD_20261014_8F31]'"));
+    }
+
+    #[test]
+    fn oracle_routine_self_reference_rewrite_rejects_dynamic_sql() {
+        let result = build_routine_rename_object_source_statements(RoutineRenameObjectSourceInput {
+            database_type: DatabaseType::Oracle,
+            object_type: ObjectSourceKind::Procedure,
+            schema: Some("SYS".into()),
+            name: "DBX50_OLD_20261014_8F31".into(),
+            new_name: "DBX50_NEW_20261014_8F31".into(),
+            source: "CREATE OR REPLACE PROCEDURE SYS.DBX50_OLD_20261014_8F31 IS BEGIN DBX50_OLD_20261014_8F31; EXECUTE IMMEDIATE 'BEGIN DBX50_OLD_20261014_8F31; END;'; END;".into(),
+        });
+
+        let error = result.unwrap_err();
+        assert!(error.contains("Dynamic SQL"));
+        assert!(error.contains("line 1") && error.contains("column"));
     }
 
     #[test]
