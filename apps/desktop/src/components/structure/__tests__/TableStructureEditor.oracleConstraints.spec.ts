@@ -31,6 +31,7 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   getTablePartitioning: vi.fn().mockResolvedValue(null),
   buildTableStructureChangeSql: vi.fn().mockResolvedValue({ statements: [], warnings: [] }),
   saveHistory: vi.fn().mockResolvedValue(undefined),
+  disconnectDb: vi.fn().mockResolvedValue(undefined),
   executeQuery: vi.fn().mockResolvedValue({ columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 }),
 }));
 
@@ -60,7 +61,8 @@ async function mountConstraintEditor(
   draft?: TableStructureEditorDraft,
   indexCatalogConfigured = false,
   loadedColumns?: Array<{ name: string; data_type: string; is_nullable: boolean; is_primary_key: boolean; column_default: string | null; character_maximum_length?: number }>,
-  beforeMount?: () => void,
+  beforeMount: (() => void) | undefined = undefined,
+  events: { drafts?: unknown[]; saved?: unknown[] } = {},
 ) {
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -136,7 +138,12 @@ async function mountConstraintEditor(
   document.body.append(container);
   await invalidateObjectMetadataCache({ connectionId: connection.id });
   app = createApp({
-    render: () => h(TooltipProvider, {}, { default: () => h(TableStructureEditor, { connectionId: connection.id, database: "APP", schema: "APP", tableName: "CONTACTS", initialTab, ref: expose, draft }) }),
+    render: () =>
+      h(
+        TooltipProvider,
+        {},
+        { default: () => h(TableStructureEditor, { connectionId: connection.id, database: "APP", schema: "APP", tableName: "CONTACTS", initialTab, ref: expose, draft, "onUpdate:draft": (value: unknown) => events.drafts?.push(value), onSaved: (...args: unknown[]) => events.saved?.push(args) }) },
+      ),
   });
   app.use(pinia);
   app.use(i18n);
@@ -298,6 +305,83 @@ describe("Oracle CHECK and UNIQUE entry points", () => {
     expect(checkEdit).toBeTruthy();
     checkEdit!.click();
     await vi.waitFor(() => expect(container.querySelector('[data-constraint-editor="CK_AGE"]')).toBeTruthy());
+  });
+
+  it.each(["history", "refresh", "same-session"] as const)("handles CHECK results correctly when the connection is %s", async (pendingAt) => {
+    let dropped = false;
+    let postDropConstraintReads = 0;
+    let releaseHistory!: () => void;
+    let releaseRefresh!: () => void;
+    let refreshStarted!: () => void;
+    const refreshStartedPromise = new Promise<void>((resolve) => (refreshStarted = resolve));
+    const check = {
+      name: "CK_AGE",
+      constraint_type: "CHECK",
+      columns: [],
+      definition: '"AGE" >= 0',
+      ref_columns: [],
+      enabled: true,
+      valid: true,
+      deferrable: false,
+      initially_deferred: false,
+      oracle_metadata: { metadataComplete: true, owner: "APP", constraintType: "C", status: "ENABLED", validated: "VALIDATED", deferrable: "NOT DEFERRABLE", deferred: "IMMEDIATE", rely: null, indexOwner: null, indexName: null, indexSharing: null, index: null },
+    } as ConstraintInfo;
+    const beforeMount = () => {
+      vi.mocked(api.buildTableStructureChangeSql).mockImplementation(async (options) => ({ statements: options.oracleConstraintChanges?.length ? ['ALTER TABLE "APP"."CONTACTS" DROP CONSTRAINT "CK_AGE";'] : [], warnings: [] }) as never);
+      vi.mocked(api.listConstraints).mockImplementation(async () => {
+        if (dropped) {
+          postDropConstraintReads += 1;
+          if (pendingAt === "refresh" && postDropConstraintReads === 2) {
+            refreshStarted();
+            return new Promise((resolve) => {
+              releaseRefresh = () => resolve([] as never);
+            });
+          }
+          return [];
+        }
+        return [check];
+      });
+      vi.mocked(api.saveHistory).mockImplementation(() => (pendingAt === "history" ? (new Promise<void>((resolve) => (releaseHistory = resolve)) as never) : (Promise.resolve() as never)));
+      const baseExecute = vi.mocked(api.executeQuery).getMockImplementation();
+      vi.mocked(api.executeQuery).mockImplementation(async (connectionId, database, sql, schema, bindValues, options) => {
+        if (sql.startsWith("ALTER TABLE") && sql.includes('DROP CONSTRAINT "CK_AGE"')) {
+          dropped = true;
+          return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 1 } as never;
+        }
+        return baseExecute!(connectionId, database, sql, schema, bindValues, options);
+      });
+    };
+    let editor: { applyChanges: () => Promise<boolean> } | undefined;
+    const drafts: unknown[] = [];
+    const saved: unknown[] = [];
+    const container = await mountConstraintEditor("constraints", undefined, (instance) => (editor = instance), undefined, false, undefined, beforeMount, { drafts, saved });
+    const store = useConnectionStore();
+    const deleteCheck = container.querySelector<HTMLButtonElement>('[data-constraint-delete="CK_AGE"]');
+    expect(deleteCheck).toBeTruthy();
+    deleteCheck!.click();
+    await vi.waitFor(() => expect(vi.mocked(api.buildTableStructureChangeSql).mock.calls.some(([options]) => options.oracleConstraintChanges?.length)).toBe(true));
+    const draftUpdatesBeforeSave = drafts.length;
+
+    const pendingSave = editor!.applyChanges();
+    if (pendingAt === "history") await vi.waitFor(() => expect(api.saveHistory).toHaveBeenCalled());
+    else if (pendingAt === "refresh") await refreshStartedPromise;
+    if (pendingAt !== "same-session") {
+      await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+      if (pendingAt === "history") releaseHistory();
+      else releaseRefresh();
+    }
+    const outcome = await pendingSave;
+
+    if (pendingAt === "same-session") {
+      expect(outcome).toBe(true);
+      expect(saved).toEqual([[false]]);
+      expect(drafts.length).toBeGreaterThan(draftUpdatesBeforeSave);
+      expect(container.querySelector('[data-constraint-delete="CK_AGE"]')).toBeNull();
+    } else {
+      expect(outcome).toBe(false);
+      expect(saved).toEqual([]);
+      expect(drafts).toHaveLength(draftUpdatesBeforeSave);
+    }
   });
 
   it("opens the UNIQUE editor from its constraint card", async () => {

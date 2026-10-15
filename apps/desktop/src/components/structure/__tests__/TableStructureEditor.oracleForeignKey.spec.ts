@@ -209,4 +209,119 @@ describe("Oracle family foreign key editing entry", () => {
     expect(drafts).toHaveLength(draftUpdatesBeforeSave);
     expect(api.executeQuery.mock.calls.slice(-2).map((call) => String(call[2]).startsWith("CREATE TABLE") || String(call[2]).startsWith("ALTER TABLE"))).toEqual([true, true]);
   });
+
+  it.each(["history", "refresh"] as const)("keeps an existing foreign-key result out of a disconnected generation while %s is pending", async (pendingAt) => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useConnectionStore();
+    const id = "foreign-key-existing-generation";
+    store.connections = [{ id, name: "Foreign key fixture", db_type: "oracle", driver_profile: "oracle", host: "fixture", port: 1521, username: "APP", database: "APP" } as ConnectionConfig];
+    store.connectedIds.add(id);
+    vi.mocked(api.buildTableStructureChangeSql).mockImplementation(
+      async (options) =>
+        ({
+          statements: options.oracleForeignKeyChanges?.length ? ['ALTER TABLE "APP"."SOURCE" DISABLE CONSTRAINT "FK_SOURCE";'] : [],
+          warnings: [],
+        }) as never,
+    );
+    const result = (rows: unknown[][] = []) => ({ columns: [], rows, execution_time_ms: 0, rows_affected: 0, execution_error: false, truncated: false, has_more: false });
+    let fkEnabled = "ENABLED";
+    let releaseRefresh!: () => void;
+    let refreshStarted!: () => void;
+    const refreshStartedPromise = new Promise<void>((resolve) => (refreshStarted = resolve));
+    vi.mocked(api.listForeignKeys).mockImplementation(async () => {
+      if (fkEnabled === "DISABLED" && pendingAt === "refresh") {
+        refreshStarted();
+        return new Promise(
+          (resolve) =>
+            (releaseRefresh = () =>
+              resolve([
+                { name: "FK_SOURCE", column: "A", ref_schema: "PARENT_OWNER", ref_table: "PARENT", ref_column: "ID", on_delete: "CASCADE", on_update: null },
+                { name: "FK_SOURCE", column: "B", ref_schema: "PARENT_OWNER", ref_table: "PARENT", ref_column: "V", on_delete: "CASCADE", on_update: null },
+              ] as never)),
+        );
+      }
+      return [
+        { name: "FK_SOURCE", column: "A", ref_schema: "PARENT_OWNER", ref_table: "PARENT", ref_column: "ID", on_delete: "CASCADE", on_update: null },
+        { name: "FK_SOURCE", column: "B", ref_schema: "PARENT_OWNER", ref_table: "PARENT", ref_column: "V", on_delete: "CASCADE", on_update: null },
+      ] as never;
+    });
+    vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => {
+      if (sql.startsWith("ALTER TABLE")) {
+        fkEnabled = "DISABLED";
+        return result() as never;
+      }
+      if (sql.includes("SELECT USER, SYS_CONTEXT")) return result([["APP", "APP"]]) as never;
+      if (sql.includes("SYS.ALL_TABLES")) return result([["APP", "SOURCE"]]) as never;
+      if (sql.includes("SYS.ALL_OBJECTS")) return result(sql.includes("PARENT_OWNER") ? [["PARENT_OWNER", "PARENT", 99]] : [["APP", "SOURCE", 77]]) as never;
+      if (sql.includes("SYS.ALL_TAB_COLS"))
+        return result(
+          sql.includes("PARENT_OWNER")
+            ? [["ID", "NUMBER"]]
+            : [
+                ["A", "NUMBER", 22, null, null, "Y"],
+                ["B", "NUMBER", 22, null, null, "Y"],
+              ],
+        ) as never;
+      if (sql.includes("SYS.ALL_TAB_PRIVS")) return result([["REFERENCES"]]) as never;
+      if (sql.includes("SYS.ALL_COL_PRIVS") || sql.includes("SESSION_PRIVS")) return result() as never;
+      if (sql.includes("SYS.ALL_CONS_COLUMNS")) return result([["PK_PARENT", "P", "ENABLED", "VALIDATED", "NOT DEFERRABLE", "ID", 1]]) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME, TABLE_NAME")) return result([["FK_SOURCE", "SOURCE"]]) as never;
+      if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([["FK_SOURCE", fkEnabled, "VALIDATED", "NOT DEFERRABLE", "IMMEDIATE", null, "PARENT_OWNER", "PK_PARENT", "CASCADE"]]) as never;
+      if (sql.includes("DBMS_METADATA.GET_DDL")) return result([[`ALTER TABLE "APP"."SOURCE" ADD CONSTRAINT "FK_SOURCE" FOREIGN KEY ("A", "B") REFERENCES "PARENT_OWNER"."PARENT" ("ID", "V") ON DELETE CASCADE ${fkEnabled === "ENABLED" ? "ENABLE" : "DISABLE"} VALIDATE`]]) as never;
+      throw new Error(`Unexpected query during existing foreign-key update: ${sql}`);
+    });
+    let releaseHistory!: () => void;
+    vi.mocked(api.saveHistory).mockImplementation(() => (pendingAt === "history" ? (new Promise<void>((resolve) => (releaseHistory = resolve)) as never) : (Promise.resolve() as never)));
+    const container = document.createElement("div");
+    document.body.append(container);
+    const drafts: unknown[] = [];
+    const saved: unknown[] = [];
+    const editor = ref<{ applyChanges: () => Promise<boolean> }>();
+    app = createApp({
+      render: () =>
+        h(
+          TooltipProvider,
+          {},
+          {
+            default: () =>
+              h(TableStructureEditor, {
+                connectionId: id,
+                database: "APP",
+                schema: "APP",
+                tableName: "SOURCE",
+                initialTab: "foreignKeys",
+                ref: editor,
+                "onUpdate:draft": (draft: unknown) => drafts.push(draft),
+                onSaved: (...args: unknown[]) => saved.push(args),
+              }),
+          },
+        ),
+    });
+    app.use(pinia);
+    app.use(i18n);
+    app.component("LightTooltip", LightTooltip);
+    app.mount(container);
+    const edit = () => container.querySelector<HTMLButtonElement>("[data-oracle-foreign-key-edit]");
+    await vi.waitFor(() => expect(edit()).not.toBeNull());
+    edit()!.click();
+    const enabled = () => container.querySelector<HTMLInputElement>("[data-oracle-foreign-key-enabled]");
+    await vi.waitFor(() => expect(enabled()?.disabled).toBe(false));
+    enabled()!.checked = false;
+    enabled()!.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(vi.mocked(api.buildTableStructureChangeSql).mock.calls.some(([options]) => options.oracleForeignKeyChanges?.length)).toBe(true));
+    const draftUpdatesBeforeSave = drafts.length;
+
+    const pendingSave = editor.value!.applyChanges();
+    if (pendingAt === "history") await vi.waitFor(() => expect(api.saveHistory).toHaveBeenCalled());
+    else await refreshStartedPromise;
+    await store.disconnect(id, { skipTabHandling: true, markClosedByUser: false });
+    if (pendingAt === "history") releaseHistory();
+    else releaseRefresh();
+    await pendingSave;
+
+    expect(saved).toEqual([]);
+    expect(drafts).toHaveLength(draftUpdatesBeforeSave);
+    expect(api.executeQuery.mock.calls.some((call) => String(call[2]).startsWith("ALTER TABLE"))).toBe(true);
+  });
 });

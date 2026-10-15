@@ -4003,7 +4003,7 @@ async function loadStructure(
       setSecondaryMetadataLoading(effectiveScope, false);
     }
     if (!silent && requestId === structureLoadRequestId) loading.value = false;
-    if (!options.preserveDraft && loadedSuccessfully && requestId === structureLoadRequestId) {
+    if (!options.preserveDraft && loadedSuccessfully && oracleIndexLoadIsCurrent(requestId, loadTargetIdentity, loadConnectionRevision, loadConfigFingerprint)) {
       markDraftHydratedAndSync();
     }
   }
@@ -6120,6 +6120,7 @@ async function applyOracleForeignKeyPlan(): Promise<boolean> {
         console.warn("[DBX][structure-history:save-failed]", error);
       }
     }
+    if (!sameTarget() || !connectionCurrent()) return false;
     if (result.steps.some((step) => step.state !== "notExecuted")) {
       try {
         const affected = new Map([[JSON.stringify([plan.target.schema, plan.target.tableName]), { ...plan.target }]]);
@@ -6131,13 +6132,15 @@ async function applyOracleForeignKeyPlan(): Promise<boolean> {
         for (const object of affected.values()) {
           invalidateTableMetadataCache(object);
           await invalidateObjectMetadataCache(object);
+          if (!sameTarget() || !connectionCurrent()) return false;
           await invalidateObjectDdl(object);
+          if (!sameTarget() || !connectionCurrent()) return false;
         }
       } catch (error) {
         refreshError = error instanceof Error ? error.message : String(error);
       }
     }
-    if (sameTarget()) {
+    if (sameTarget() && connectionCurrent()) {
       existingOracleForeignKeyPlan.value = undefined;
       existingOracleForeignKeySession.value = undefined;
       pendingStatements.value = [];
@@ -6147,6 +6150,7 @@ async function applyOracleForeignKeyPlan(): Promise<boolean> {
         ddlFetched.value = false;
         rawDdlContent.value = "";
         const refresh = await loadStructure(true, { columns: false, indexes: false, constraints: false, foreignKeys: true, triggers: false, partitions: false, tableComment: false }, true, { forceMetadata: true, blockSecondaryMetadata: true });
+        if (!sameTarget() || !connectionCurrent()) return false;
         if (refresh?.error) refreshError = refresh.error;
         if (!refreshError && sameTarget()) emit("saved", false);
         syncDraftToParent();
@@ -6155,6 +6159,7 @@ async function applyOracleForeignKeyPlan(): Promise<boolean> {
       }
       syncDraftToParent();
     }
+    if (!sameTarget() || !connectionCurrent()) return false;
     const readbackError = [result.readbackError, refreshError].filter(Boolean).join("\n");
     const succeeded = completed && !readbackError;
     if (succeeded) toast(t("structureEditor.saved"), 2500);
@@ -6168,7 +6173,7 @@ async function applyOracleForeignKeyPlan(): Promise<boolean> {
     }
     return succeeded;
   } catch (error) {
-    if (sameTarget()) errorMessage.value = error instanceof Error ? error.message : String(error);
+    if (sameTarget() && connectionCurrent()) errorMessage.value = error instanceof Error ? error.message : String(error);
     return false;
   } finally {
     oracleForeignKeyBusy.value = false;
@@ -6228,20 +6233,24 @@ async function applyOracleConstraintPlan(): Promise<boolean> {
         console.warn("[DBX][structure-history:save-failed]", error);
       }
     }
+    if (!sameTarget() || !connectionCurrent()) return false;
     if (result.steps.some((step) => step.state !== "notExecuted")) {
       invalidateTableMetadataCache(plan.target);
       await invalidateObjectMetadataCache(plan.target);
+      if (!sameTarget() || !connectionCurrent()) return false;
       await invalidateObjectDdl(plan.target);
+      if (!sameTarget() || !connectionCurrent()) return false;
       loadedMetadataFacets.clear();
     }
-    if (sameTarget()) {
+    if (sameTarget() && connectionCurrent()) {
       oracleConstraintPlan.value = undefined;
       oracleConstraintSession.value = undefined;
       pendingStatements.value = [];
       if (completed) {
-        oracleConstraintDraft.value = undefined;
-        const refresh = await loadStructure(true, { columns: false, indexes: true, constraints: true, foreignKeys: false, triggers: false, partitions: false, tableComment: false }, true, { forceMetadata: true, blockSecondaryMetadata: true });
+        const refresh = await loadStructure(true, { columns: false, indexes: true, constraints: true, foreignKeys: false, triggers: false, partitions: false, tableComment: false }, true, { forceMetadata: true, blockSecondaryMetadata: true, preserveDraft: true });
+        if (!sameTarget() || !connectionCurrent()) return false;
         if (refresh?.error) result.readbackError = refresh.error;
+        oracleConstraintDraft.value = undefined;
         if (!result.readbackError) {
           syncDraftToParent();
           emit("saved", false);
@@ -6258,7 +6267,7 @@ async function applyOracleConstraintPlan(): Promise<boolean> {
     }
     return completed && !result.readbackError;
   } catch (error) {
-    if (sameTarget()) errorMessage.value = error instanceof Error ? error.message : String(error);
+    if (sameTarget() && connectionCurrent()) errorMessage.value = error instanceof Error ? error.message : String(error);
     return false;
   } finally {
     oracleConstraintBusy.value = false;
