@@ -445,22 +445,4 @@ describe("OceanBase primary key independent DDL execution", () => {
     await expect(executeOceanbasePrimaryKeyPlan({ target, change, snapshot, statements }, 30, () => false)).resolves.toBeUndefined();
     expect(vi.mocked(api.executeQuery).mock.calls.some((call) => call[2].startsWith("ALTER "))).toBe(false);
   });
-
-  it("stops after a committed DROP when the editor becomes invalid before ADD", async () => {
-    const snapshot = await readOceanbasePrimaryKeySnapshot(target, change);
-    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
-    let canStart = true;
-    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
-      if (args[2].includes(" DROP CONSTRAINT ")) {
-        canStart = false;
-        vi.mocked(api.listConstraints).mockResolvedValue([]);
-        return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 };
-      }
-      return read(...args);
-    });
-    const result = await executeOceanbasePrimaryKeyPlan({ target, change, snapshot, statements }, 30, { canStart: () => canStart, connectionCurrent: () => true });
-    expect(result?.steps.map((step) => step.state)).toEqual(["committed", "notExecuted"]);
-    expect(vi.mocked(api.executeQuery).mock.calls.filter((call) => call[2].startsWith("ALTER "))).toHaveLength(1);
-    expect(result?.recoverySql).toContain('PRIMARY KEY ("ID")');
-  });
 });

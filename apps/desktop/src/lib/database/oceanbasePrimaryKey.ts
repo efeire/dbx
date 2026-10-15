@@ -234,7 +234,7 @@ export async function executeOceanbasePrimaryKeyPlan(plan: OceanbasePrimaryKeyPl
       if (!canStart() || !connectionCurrent()) return undefined;
     } else {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      if (!canStart() || !connectionCurrent()) break;
+      if (!connectionCurrent()) break;
     }
     try {
       const result = await api.executeQuery(target.connectionId, target.database, step.sql.replace(/;\s*$/, ""), target.schema, undefined, { catalog: target.catalog, timeoutSecs });
