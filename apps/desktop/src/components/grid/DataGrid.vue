@@ -326,7 +326,7 @@ import {
   splitForeignKeyDisplayValues,
   type ForeignKeyDisplayConfig,
 } from "@/lib/dataGrid/dataGridForeignKeyDisplay";
-import { removeVirtualRowIdentifier, saveVirtualRowIdentifier, type VirtualRowIdentifierScope } from "@/lib/table/virtualRowIdentifier";
+import { removeVirtualRowIdentifier, saveVirtualRowIdentifier, tableDataVirtualRowIdentifierScope, type VirtualRowIdentifierScope } from "@/lib/table/virtualRowIdentifier";
 
 import { useToast } from "@/composables/useToast";
 import { translateBackendError } from "@/i18n/backend-errors";
@@ -949,7 +949,7 @@ function currentColumnSortState(): DataGridColumnSortState {
     column: sortCol.value,
     columnIndex: sortColIndex.value,
     direction: sortDir.value,
-    mode: sortMode.value,
+    mode: localSortMode.value,
   };
 }
 
@@ -1122,7 +1122,7 @@ const previewDialogConfig = shallowRef<{
 const transposeScrollRef = ref<HTMLElement | { $el?: HTMLElement }>();
 const transposeScrollLeft = ref(0);
 const transposeViewportWidth = ref(0);
-const { sortColumn: sortCol, sortColumnIndex: sortColIndex, sortDirection: sortDir, sortMode, setSort, clearSort } = useDataGridSort();
+const { sortColumn: sortCol, sortColumnIndex: sortColIndex, sortDirection: sortDir, sortMode: localSortMode, setSort, clearSort } = useDataGridSort();
 const queryControlsRef = ref<InstanceType<typeof DataGridQueryControls>>();
 const searchBarRef = ref<{ focus: (select?: boolean) => void } | null>(null);
 const replaceOpen = ref(false);
@@ -3783,7 +3783,7 @@ function currentWhereInput(): string | undefined {
 }
 
 function effectiveOrderBy(): string | undefined {
-  const columnOrderBy = sortMode.value === "database" && sortCol.value ? `${queryColumnRef(sortCol.value)} ${sortDir.value.toUpperCase()}` : undefined;
+  const columnOrderBy = localSortMode.value === "database" && sortCol.value ? `${queryColumnRef(sortCol.value)} ${sortDir.value.toUpperCase()}` : undefined;
   const manualOrderBy = orderByInput.value.trim() || columnOrderBy;
   return combineDataGridOrderByInputs(manualOrderBy, appliedStructuredOrderByInput.value);
 }
@@ -3843,7 +3843,7 @@ watch(
     const previousOrderWasControlled = previous?.[3] === "database" && simpleDataGridOrderByMatchesSort(orderByInput.value, previous[0], previous[2]);
     const isControlledSort = !!column && !!direction;
     setSort(column && direction ? column : null, typeof columnIndex === "number" && direction ? columnIndex : null, direction ?? "asc", mode ?? "database");
-    if (isControlledSort && sortMode.value === "database") {
+    if (isControlledSort && localSortMode.value === "database") {
       syncOrderByInputWithSort(sortCol.value, sortDir.value);
     } else if (previousOrderWasControlled) {
       syncOrderByInputWithSort(null, null);
@@ -4618,13 +4618,14 @@ const hasResultToolbarLeadingSlot = computed(() => !!slots["result-toolbar-leadi
 const hasResultToolbarActionsSlot = computed(() => !!slots["result-toolbar-actions"]);
 const virtualRowIdentifierScope = computed<VirtualRowIdentifierScope | undefined>(() => {
   if (!props.connectionId || !props.database || !props.tableMeta?.tableName) return undefined;
-  return {
+  const scope = {
     connectionId: props.connectionId,
     database: props.tableMeta.database ?? props.database,
     catalog: props.tableMeta.catalog,
     schema: props.tableMeta.schema,
     tableName: props.tableMeta.tableName,
   };
+  return props.context === "table-data" ? tableDataVirtualRowIdentifierScope(connectionStore.getConfig(props.connectionId), scope) : scope;
 });
 const virtualRowIdentifierColumns = computed(() => props.tableMeta?.virtualPrimaryKeys ?? []);
 const showVirtualRowIdentifierControl = computed(() => {
@@ -7238,7 +7239,7 @@ function applyColumnSort(column: string, columnIndex: number, direction: "asc" |
 
 function selectHeaderSort(value: string, column: string, columnIndex: number) {
   if (value === "clear") {
-    applyColumnSort(column, columnIndex, null, sortMode.value);
+    applyColumnSort(column, columnIndex, null, localSortMode.value);
     return;
   }
   const [mode, direction] = value.split("-") as [DataGridSortMode, DataGridSortDirection];
@@ -13581,7 +13582,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
       canCopyAlterSql: canCopyAlterColumnSql.value,
       canFilter: canUseWhereSearch.value,
       hasSort: !!sortCol.value,
-      sortMode: sortMode.value,
+      sortMode: localSortMode.value,
       databaseSortEnabled: props.databaseSortEnabled !== false && databaseSortSupportedForDatabase(resolvedDatabaseType.value),
       frozenColumnCount: frozenColumnCount.value,
       contextVisibleColIdx: contextHeaderVisibleColIdx.value ?? undefined,

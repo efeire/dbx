@@ -262,7 +262,6 @@ function draftWithColumns(columns: ColumnSeed[]) {
       name: column.name,
       dataType: "int",
       isNullable: true,
-      defaultValue: "",
       comment: "",
       isPrimaryKey: false,
       characterSet: "",
