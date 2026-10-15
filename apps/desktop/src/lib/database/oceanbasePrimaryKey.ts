@@ -92,7 +92,7 @@ async function availableOracleIndexName(target: PrimaryKeyTarget, columns: strin
     if (!indexes.length && !constraints.length) return candidate;
     taken.push(candidate);
   }
-  fail("definitionChanged");
+  return fail("definitionChanged");
 }
 
 export async function prepareOraclePrimaryKeyChange(target: PrimaryKeyTarget, draft: ExistingPrimaryKeyChange) {
