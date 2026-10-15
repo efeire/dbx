@@ -23,17 +23,31 @@ const rows = {
 };
 let fixture: Record<keyof typeof rows, unknown[][]>;
 let truncated = false;
+let capturedObjectId: unknown = 77;
+let capturedIdentity: unknown[][] = [["APP", "APP", "ORCL"]];
 
 beforeEach(() => {
   vi.resetAllMocks();
   truncated = false;
+  capturedObjectId = 77;
+  capturedIdentity = [["APP", "APP", "ORCL"]];
   fixture = structuredClone(rows);
   vi.mocked(api.getColumns).mockResolvedValue(["ID", "V"].map((name) => ({ name, data_type: "NUMBER", is_nullable: false, is_primary_key: name === "ID", column_default: null })));
   vi.mocked(api.listConstraints).mockResolvedValue([{ name: "PK_SOURCE", constraint_type: "PRIMARY KEY", columns: ["ID"], definition: "", ref_columns: [], enabled: true, valid: true, deferrable: false, initially_deferred: false }]);
   vi.mocked(api.listIndexes).mockResolvedValue([{ name: "PK_SOURCE", columns: ["ID"], is_unique: true, is_primary: true, index_type: "NORMAL" }]);
   vi.mocked(api.executeQuery).mockImplementation(async (_id, _database, sql) => {
     expect(sql).toMatch(/^SELECT /);
+    if (sql.includes("SYS_CONTEXT")) return { columns: [], rows: capturedIdentity, affected_rows: 0, execution_time_ms: 0 };
+    if (sql.includes("SYS.ALL_OBJECTS")) return { columns: [], rows: Array.isArray(capturedObjectId) ? capturedObjectId : [["APP", "SOURCE", capturedObjectId]], affected_rows: 0, execution_time_ms: 0 };
     if (sql.startsWith("SELECT RELY ")) return { columns: [], rows: [[null]], affected_rows: 0, execution_time_ms: 0 };
+    if (sql.startsWith("SELECT INDEX_NAME FROM SYS.ALL_INDEXES")) {
+      const name = /INDEX_NAME = '([^']+)'/.exec(sql)?.[1];
+      return { columns: [], rows: name && fixture.index.some((row) => row[1] === name) ? [[name]] : [], affected_rows: 0, execution_time_ms: 0 };
+    }
+    if (sql.startsWith("SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS")) {
+      const name = /CONSTRAINT_NAME = '([^']+)'/.exec(sql)?.[1];
+      return { columns: [], rows: name && fixture.key.some((row) => row[0] === name) ? [[name]] : [], affected_rows: 0, execution_time_ms: 0 };
+    }
     if (sql.includes("SYS.ALL_EXTERNAL_TABLES")) return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 };
     const selected = sql.includes("R_CONSTRAINT_NAME")
       ? fixture.references
@@ -124,6 +138,77 @@ describe("OceanBase existing primary key preflight", () => {
 
 describe("Native Oracle primary key index policy", () => {
   const oracleTarget = { ...target, databaseType: "oracle" as const };
+
+  it("requires complete session and object identity and blocks session drift before DDL", async () => {
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => (String(args[2]).includes("SYS_CONTEXT") ? (Promise.resolve({ columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 }) as never) : read(...args)));
+    await expect(readOceanbasePrimaryKeySnapshot(oracleTarget, { ...change, columns: [] })).rejects.toMatchObject({ key: "incompleteMetadata" });
+    expect(api.executeQuery.mock.calls.some((call) => String(call[2]).includes("SYS.ALL_OBJECTS") && String(call[2]).includes("OBJECT_NAME = 'SOURCE'"))).toBe(true);
+
+    vi.mocked(api.executeQuery).mockImplementation(read);
+    const deletion = { ...change, columns: [] };
+    const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, deletion);
+    capturedIdentity = [["OTHER_USER", "APP", "ORCL"]];
+    await expect(executeOceanbasePrimaryKeyPlan({ target: oracleTarget, ...prepared, statements: ['ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE" KEEP INDEX;'] }, 60, () => true)).rejects.toMatchObject({ key: "definitionChanged" });
+    expect(api.executeQuery.mock.calls.some((call) => String(call[2]).startsWith("ALTER TABLE"))).toBe(false);
+  });
+
+  it.each([
+    ["missing session identity", "session", []],
+    [
+      "multiple session identities",
+      "session",
+      [
+        ["APP", "APP", "ORCL"],
+        ["APP", "APP", "ORCL"],
+      ],
+    ],
+    ["missing object identity", "object", null],
+    [
+      "multiple object identities",
+      "object",
+      [
+        ["APP", "SOURCE", 77],
+        ["APP", "SOURCE", 78],
+      ],
+    ],
+    ["invalid object identity", "object", "not-an-id"],
+  ] as const)("rejects %s before returning a snapshot", async (_label, identityKind, value) => {
+    if (identityKind === "session") capturedIdentity = value as unknown[][];
+    else capturedObjectId = value;
+
+    await expect(readOceanbasePrimaryKeySnapshot(oracleTarget, { ...change, columns: [] })).rejects.toMatchObject({ key: "incompleteMetadata" });
+  });
+
+  it("refuses execution when the captured table object is replaced with the same PK metadata", async () => {
+    let objectId: number = 77;
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => {
+      if (String(args[2]).startsWith("ALTER TABLE")) return Promise.resolve({ columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 }) as never;
+      if (String(args[2]).includes("SYS.ALL_OBJECTS")) return Promise.resolve({ columns: [], rows: [["APP", "SOURCE", objectId]], affected_rows: 0, execution_time_ms: 0 }) as never;
+      return read(...args);
+    });
+    const deletion = { ...change, columns: [] };
+    const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, deletion);
+    objectId = 78;
+
+    await expect(executeOceanbasePrimaryKeyPlan({ target: oracleTarget, ...prepared, statements: ['ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE" KEEP INDEX;'] }, 60, () => true)).rejects.toMatchObject({ key: "definitionChanged" });
+
+    expect(vi.mocked(api.executeQuery).mock.calls.some((args) => String(args[2]).startsWith("ALTER TABLE"))).toBe(false);
+  });
+
+  it("refuses OceanBase execution when the captured table object is replaced", async () => {
+    let objectId = 77;
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => (String(args[2]).includes("SYS.ALL_OBJECTS") ? (Promise.resolve({ columns: [], rows: [["APP", "SOURCE", objectId]], affected_rows: 0, execution_time_ms: 0 }) as never) : read(...args)));
+    const deletion = { ...change, columns: [] };
+    const snapshot = await readOceanbasePrimaryKeySnapshot(target, deletion);
+    objectId = 78;
+
+    await expect(executeOceanbasePrimaryKeyPlan({ target, change: deletion, snapshot, statements: ['ALTER TABLE "APP"."SOURCE" DROP CONSTRAINT "PK_SOURCE";'] }, 60, () => true)).rejects.toMatchObject({ key: "definitionChanged" });
+
+    expect(vi.mocked(api.executeQuery).mock.calls.some((args) => String(args[2]).startsWith("ALTER TABLE"))).toBe(false);
+  });
 
   it.each(["external", "unreadable"])("blocks %s table metadata before any DDL", async (mode) => {
     const originalQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
@@ -284,7 +369,11 @@ describe("Native Oracle primary key index policy", () => {
   it("allocates the new index name in the owner's namespace without changing the draft", async () => {
     const read = vi.mocked(api.executeQuery).getMockImplementation()!;
     vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
-      if (args[2].startsWith("SELECT INDEX_NAME")) return { columns: [], rows: [["PK_SOURCE"], ["SOURCE_V_IDX"]], affected_rows: 0, execution_time_ms: 0 };
+      if (args[2].startsWith("SELECT INDEX_NAME FROM SYS.ALL_INDEXES")) {
+        const name = /INDEX_NAME = '([^']+)'/.exec(args[2])?.[1];
+        return { columns: [], rows: name === "SOURCE_V_IDX" ? [[name]] : [], affected_rows: 0, execution_time_ms: 0 };
+      }
+      if (args[2].startsWith("SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS")) return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 };
       return read(...args);
     });
     const prepared = await prepareOraclePrimaryKeyChange(oracleTarget, change);

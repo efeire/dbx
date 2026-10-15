@@ -103,8 +103,9 @@ beforeEach(() => {
       ]) as never;
     if (sql.includes("R_CONSTRAINT_NAME")) return result([]) as never;
     if (sql.includes("INDEX_NAME IS NOT NULL")) return result([]) as never;
+    if (sql.includes("SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS")) return result(sql.includes("'UQ_PAIR'") ? [["UQ_PAIR"]] : []) as never;
     if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([["UQ_PAIR", "CONTACTS"]]) as never;
-    if (sql.includes("SYS.ALL_INDEXES")) return result([["UQ_PAIR"]]) as never;
+    if (sql.includes("SYS.ALL_INDEXES")) return result(sql.includes("'UQ_PAIR'") ? [["UQ_PAIR"]] : []) as never;
     return result([]) as never;
   });
 });
@@ -229,6 +230,8 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
           ["B", "NUMBER", 22, null, 0, "Y"],
         ]) as never;
       if (sql.includes("INDEX_NAME IS NOT NULL")) return result([]) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS")) return result([]) as never;
+      if (sql.includes("SELECT INDEX_NAME FROM SYS.ALL_INDEXES") && sql.includes("INDEX_NAME =")) return result([]) as never;
       if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([[ddlApplied ? "UQ_NEW" : "UQ_PAIR", "CONTACTS"]]) as never;
       if (sql.includes("SYS.ALL_INDEXES")) return result([[ddlApplied ? generatedIndexName : "UQ_PAIR"]]) as never;
       return result([]) as never;
@@ -269,6 +272,49 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
     expect(generatedIndexName).toBeTruthy();
     expect(outcome?.steps.map((step) => step.state)).toEqual(["committed"]);
     expect(outcome?.readbackError).toBeUndefined();
+  });
+
+  it("plans an enabled NOVALIDATE UNIQUE with a new nonunique supporting index", async () => {
+    const base = makeChange().target!;
+    const change: OracleConstraintChange = {
+      original: null,
+      target: {
+        kind: "unique",
+        definition: {
+          ...base.definition,
+          name: "UQ_NOVALIDATE",
+          state: { ...state, validated: false },
+          index: { ...base.definition.index, name: "", metadataComplete: false, uniqueness: "UNIQUE", newName: undefined, newNameAvailable: false },
+        },
+      },
+    };
+
+    const plan = await prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, change);
+
+    expect(plan.change.target?.kind === "unique" && plan.change.target.definition.index).toMatchObject({ uniqueness: "NONUNIQUE", newNameAvailable: true });
+    expect(api.buildTableStructureChangeSql).toHaveBeenCalledWith(
+      expect.objectContaining({ oracleConstraintChanges: [expect.objectContaining({ target: expect.objectContaining({ definition: expect.objectContaining({ state: { ...state, validated: false }, index: expect.objectContaining({ uniqueness: "NONUNIQUE" }) }) }) })] }),
+    );
+  });
+
+  it("does not rename a frozen support-index candidate when it becomes occupied", async () => {
+    const change = makeChange();
+    change.indexPolicy = "drop";
+    let occupied = "";
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => {
+      const sql = String(args[2]);
+      const indexName = /INDEX_NAME = '([^']+)'/.exec(sql)?.[1];
+      if (sql.includes("SELECT INDEX_NAME FROM SYS.ALL_INDEXES") && indexName) return Promise.resolve(result(indexName === occupied ? [[indexName]] : [])) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS") && /CONSTRAINT_NAME =/.test(sql)) return Promise.resolve(result([])) as never;
+      return read(...args);
+    });
+    const plan = await prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, change);
+    occupied = plan.change.target?.kind === "unique" ? plan.change.target.definition.index.newName! : "";
+
+    await expect(executeOracleConstraintPlan(plan, 0, () => true)).rejects.toMatchObject({ reason: "changed" });
+
+    expect(vi.mocked(api.executeQuery).mock.calls.some((call) => String(call[2]).startsWith("ALTER TABLE"))).toBe(false);
   });
 
   it("reads back a new OceanBase UNIQUE constraint as a paired object", async () => {
@@ -407,6 +453,107 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
     expect(vi.mocked(api.executeQuery).mock.calls.filter((call) => String(call[2]).startsWith("ALTER TABLE"))).toHaveLength(1);
   });
 
+  it.each(["rejection", "throw"] as const)("does not read CHECK metadata after a stale DDL %s", async (mode) => {
+    const checkInfo: ConstraintInfo = {
+      name: "CK_AGE",
+      constraint_type: "CHECK",
+      columns: [],
+      definition: "AGE > 0",
+      ref_columns: [],
+      enabled: true,
+      valid: true,
+      deferrable: false,
+      initially_deferred: false,
+      oracle_metadata: { ...uniqueInfo.oracle_metadata!, constraintType: "C", indexOwner: null, indexName: null, indexSharing: null, index: null },
+    };
+    vi.mocked(api.listConstraints).mockResolvedValue([checkInfo]);
+    vi.mocked(api.buildTableStructureChangeSql).mockResolvedValue({ statements: ['ALTER TABLE "APP"."CONTACTS" DROP CONSTRAINT "CK_AGE";', 'ALTER TABLE "APP"."CONTACTS" ADD CONSTRAINT "CK_AGE" CHECK (AGE >= 0);'], warnings: [] } as never);
+    const change = {
+      original: { kind: "check" as const, definition: { name: "CK_AGE", expression: "AGE > 0", state } },
+      target: { kind: "check" as const, definition: { name: "CK_AGE", expression: "AGE >= 0", state } },
+    } satisfies OracleConstraintChange;
+    const plan = await prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, change);
+    const base = vi.mocked(api.executeQuery).getMockImplementation()!;
+    let current = true;
+    let metadataReadAfterStale = false;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      const sql = String(args[2]);
+      if (sql.startsWith("ALTER TABLE")) {
+        current = false;
+        if (mode === "throw") throw new Error("connection lost");
+        return { ...result([]), execution_error: true, error: { detail: "constraint rejected" } } as never;
+      }
+      if (!current && sql.includes("SYS_CONTEXT")) metadataReadAfterStale = true;
+      return base(...args);
+    });
+
+    await executeOracleConstraintPlan(plan, 0, () => current);
+
+    expect(metadataReadAfterStale).toBe(false);
+  });
+
+  it("does not read metadata when execution starts on a stale generation", async () => {
+    const plan = await prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, makeChange());
+    vi.mocked(api.executeQuery).mockClear();
+    vi.mocked(api.listConstraints).mockClear();
+
+    const outcome = await executeOracleConstraintPlan(plan, 0, () => false);
+
+    expect(outcome).toBeUndefined();
+    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(api.listConstraints).not.toHaveBeenCalled();
+  });
+
+  it("stops bounded support-index name allocation after repeated owner conflicts", async () => {
+    const change = makeChange();
+    change.indexPolicy = "drop";
+    vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => {
+      if (sql.includes("SYS_CONTEXT")) return result([["APP", "APP", "ORCL"]]) as never;
+      if (sql.includes("SYS.ALL_OBJECTS")) return result([["APP", "CONTACTS", 77]]) as never;
+      if (sql.includes("SYS.ALL_TABLES")) return result([[null, "N"]]) as never;
+      if (sql.includes("SYS.ALL_EXTERNAL_TABLES")) return result([]) as never;
+      if (sql.includes("SYS.ALL_IND_COLUMNS")) return result([["APP", "OLD_INDEX", "APP", "CONTACTS", "NORMAL", "UNIQUE", "VALID", "NO", "VISIBLE", "N", "A", "ASC", null]]) as never;
+      if (sql.includes("SYS.ALL_TAB_COLS"))
+        return result([
+          ["A", "NUMBER", 22, null, 0, "Y"],
+          ["B", "NUMBER", 22, null, 0, "Y"],
+        ]) as never;
+      if (sql.includes("R_CONSTRAINT_NAME") || sql.includes("INDEX_NAME IS NOT NULL")) return result([]) as never;
+      if (sql.includes("SELECT INDEX_NAME FROM SYS.ALL_INDEXES") && sql.includes("INDEX_NAME =")) return result([["occupied"]]) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS") && sql.includes("CONSTRAINT_NAME =")) return result([]) as never;
+      if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([["UQ_PAIR", "CONTACTS"]]) as never;
+      if (sql.includes("SYS.ALL_INDEXES")) return result([["OLD_INDEX"]]) as never;
+      return result([]) as never;
+    });
+
+    await expect(prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, change)).rejects.toMatchObject({ reason: "changed" });
+
+    expect(api.executeQuery.mock.calls.filter((call) => String(call[2]).includes("SELECT INDEX_NAME FROM SYS.ALL_INDEXES") && String(call[2]).includes("INDEX_NAME =")).length).toBe(64);
+    expect(api.buildTableStructureChangeSql).not.toHaveBeenCalled();
+  });
+
+  it("reports an in-flight DDL outcome as unknown after its generation changes", async () => {
+    const plan = await prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, makeChange());
+    const base = vi.mocked(api.executeQuery).getMockImplementation()!;
+    let finish!: (value: ReturnType<typeof result>) => void;
+    let current = true;
+    vi.mocked(api.executeQuery).mockImplementation((...args) =>
+      String(args[2]).startsWith("ALTER TABLE")
+        ? (new Promise((resolve) => {
+            finish = resolve as typeof finish;
+          }) as never)
+        : base(...args),
+    );
+    const pending = executeOracleConstraintPlan(plan, 0, () => current);
+    while (!finish) await new Promise((resolve) => setTimeout(resolve, 0));
+    current = false;
+    finish(result([]));
+
+    const outcome = await pending;
+
+    expect(outcome?.steps[0]?.state).toBe("unknown");
+  });
+
   it("builds a manual recovery candidate after DROP commits and ADD is rejected", async () => {
     const plan = await prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, makeChange());
     let dropped = false;
@@ -444,6 +591,8 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
         ]) as never;
       if (sql.includes("R_CONSTRAINT_NAME")) return result([]) as never;
       if (sql.includes("INDEX_NAME IS NOT NULL")) return result([]) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS")) return result([]) as never;
+      if (sql.includes("SELECT INDEX_NAME FROM SYS.ALL_INDEXES") && sql.includes("INDEX_NAME =")) return result([]) as never;
       if (sql.includes("SYS.ALL_CONSTRAINTS")) return result(dropped ? [] : [["UQ_PAIR", "CONTACTS"]]) as never;
       if (sql.includes("SYS.ALL_INDEXES")) return result([["UQ_PAIR"]]) as never;
       return result([]) as never;
@@ -455,9 +604,17 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
 
   it("does not send the next DDL when the fixed connection generation changes", async () => {
     const plan = await prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, makeChange());
-    let currentChecks = 0;
-    const outcome = await executeOracleConstraintPlan(plan, 0, () => ++currentChecks < 3);
-    expect(outcome?.steps.map((step) => step.state)).toEqual(["committed", "notExecuted"]);
+    let current = true;
+    const read = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => {
+      if (String(args[2]).startsWith("ALTER TABLE")) {
+        current = false;
+        return Promise.resolve(result([])) as never;
+      }
+      return read(...args);
+    });
+    const outcome = await executeOracleConstraintPlan(plan, 0, () => current);
+    expect(outcome?.steps.map((step) => step.state)).toEqual(["unknown", "notExecuted"]);
     expect(outcome?.readbackError).toContain("Connection or target changed");
     expect(vi.mocked(api.executeQuery).mock.calls.filter((call) => String(call[2]).startsWith("ALTER TABLE"))).toHaveLength(1);
   });

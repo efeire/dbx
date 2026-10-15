@@ -32,6 +32,8 @@ describe("Oracle index plans", () => {
   let ddl: string[];
   let rejectCreate: boolean;
   let indexColumns: unknown[][];
+  let unrelatedOwnerIndexRows: unknown[][];
+  let sharedIndexUsers: unknown[][];
   let functionIndexName: string | undefined;
   let failEnhancedColumns: boolean;
   let enhancedFailureRows: unknown[][] = [];
@@ -46,6 +48,8 @@ describe("Oracle index plans", () => {
     ddl = [];
     rejectCreate = true;
     indexColumns = [["EMAIL", "VARCHAR2", 100, null, null, "Y"]];
+    unrelatedOwnerIndexRows = [];
+    sharedIndexUsers = [];
     functionIndexName = undefined;
     failEnhancedColumns = false;
     enhancedFailureRows = [];
@@ -86,15 +90,43 @@ describe("Oracle index plans", () => {
       if (sql.includes("SELECT INDEX_NAME FROM SYS.ALL_INDEXES")) {
         indexNamesReads += 1;
         if (indexNamesReads === 5) supportedIndexes.add("IX_SECOND");
-        return result([...indexNames, ...otherOwnerIndexNames].sort().map((name) => [name])) as never;
+        const requested = [...sql.matchAll(/'([^']+)'/g)].map((match) => match[1]!);
+        const names = sql.includes("AND 1 = 0") ? [] : [...indexNames, ...otherOwnerIndexNames].filter((name) => requested.includes(name));
+        return result(names.sort().map((name) => [name])) as never;
       }
       if (sql.includes("SYS.ALL_IND_COLUMNS"))
-        return result(
-          indexNames.map((name) => ["APP", name, "APP", "CONTACTS", name === functionIndexName ? "FUNCTION-BASED NORMAL" : "NORMAL", "NONUNIQUE", "VALID", "NO", "VISIBLE", "N", name === functionIndexName ? "SYS_NC00001$" : "EMAIL", "ASC", name === functionIndexName ? "LOWER(EMAIL)" : null]),
-        ) as never;
-      if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([...supportedIndexes].map((name) => ["APP", "CONTACTS", `UQ_${name}`, name])) as never;
+        return result([
+          ...indexNames.map((name) => ["APP", name, "APP", "CONTACTS", name === functionIndexName ? "FUNCTION-BASED NORMAL" : "NORMAL", "NONUNIQUE", "VALID", "NO", "VISIBLE", "N", name === functionIndexName ? "SYS_NC00001$" : "EMAIL", "ASC", name === functionIndexName ? "LOWER(EMAIL)" : null]),
+          ...unrelatedOwnerIndexRows.filter((row) => row[3] === "CONTACTS"),
+        ]) as never;
+      if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([...supportedIndexes].map((name) => ["APP", name, "APP", "CONTACTS", `UQ_${name}`]).concat(sharedIndexUsers)) as never;
       throw new Error(`Unexpected SQL: ${sql}`);
     });
+  });
+
+  it("reads target indexes when unrelated indexes exceed the owner-wide row limit", async () => {
+    unrelatedOwnerIndexRows = Array.from({ length: 10_000 }, (_, i) => ["APP", `IX_OTHER_${i}`, "APP", `TABLE_${i}`, "NORMAL", "NONUNIQUE", "VALID", "NO", "VISIBLE", "N", "EMAIL", "ASC", null]);
+
+    const snapshot = await readOracleIndexSnapshot(target);
+
+    expect(snapshot.indexes.map((index) => index.name)).toEqual(["IX_OLD"]);
+  });
+
+  it("reads a target snapshot when unrelated owner index names exceed the row limit", async () => {
+    otherOwnerIndexNames = Array.from({ length: 10_000 }, (_, i) => `IX_OTHER_${i}`);
+
+    const snapshot = await readOracleIndexSnapshot(target);
+
+    expect(snapshot.indexes.map((index) => index.name)).toEqual(["IX_OLD"]);
+  });
+
+  it("does not invalidate a target plan when an unrelated owner index name changes", async () => {
+    const plan = await prepareOracleIndexPlan(target, ['DROP INDEX "APP"."IX_OLD";', 'CREATE INDEX "IX_NEW" ON "APP"."CONTACTS" ("EMAIL");'], drafts as never);
+    otherOwnerIndexNames = ["IX_OTHER_ADDED_AFTER_PREVIEW"];
+
+    const outcome = await executeOracleIndexPlan(plan, 10, () => true);
+
+    expect(outcome?.steps[0]?.state).toBe("committed");
   });
 
   it("stops after a rejected CREATE and reads back the completed DROP", async () => {
@@ -129,6 +161,15 @@ describe("Oracle index plans", () => {
     await expect(prepareOracleIndexPlan(target, ['DROP INDEX "APP"."IX_OLD";', 'CREATE INDEX "IX_NEW" ON "APP"."CONTACTS" ("EMAIL");'], drafts as never)).rejects.toThrow("Index metadata changed");
 
     expect(ddl).toHaveLength(0);
+  });
+
+  it("preserves a shared index relation owned by a different table constraint", async () => {
+    sharedIndexUsers = [["APP", "IX_OLD", "OTHER", "OTHER_TABLE", "UQ_SHARED"]];
+
+    await expect(prepareOracleIndexPlan(target, ['DROP INDEX "APP"."IX_OLD";'], [drafts[0]!] as never)).rejects.toThrow("Index metadata changed");
+
+    expect(api.executeQuery.mock.calls.some((call) => String(call[2]).includes("c.INDEX_OWNER, c.INDEX_NAME"))).toBe(true);
+    expect(api.executeQuery.mock.calls.some((call) => String(call[2]).includes("ORDER BY c.INDEX_OWNER, c.INDEX_NAME, c.OWNER, c.TABLE_NAME, c.CONSTRAINT_NAME"))).toBe(true);
   });
 
   it("plans a CREATE when a missing index draft is restored to its original definition", async () => {

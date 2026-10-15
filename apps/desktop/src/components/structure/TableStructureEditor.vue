@@ -3189,10 +3189,14 @@ async function refreshSqlPreview() {
     const revision = store.connectionStateRevision(target.connectionId);
     const config = store.getConfig(target.connectionId);
     const fingerprint = config ? connectionConfigFingerprint(config) : "";
+    const connectionCurrent = () => {
+      const currentConfig = store.getConfig(target.connectionId);
+      return store.connectionStateRevision(target.connectionId) === revision && store.isCurrentConnectionStateRevision(target.connectionId, revision) && (currentConfig ? connectionConfigFingerprint(currentConfig) : "") === fingerprint;
+    };
     const draftFingerprint = JSON.stringify(oracleConstraintDraft.value);
     try {
       if (!isOracleConstraintEditor.value || isCreateMode.value || existingPrimaryKeyChanged.value || hasPendingStructureChanges(false, false)) throw new Error("Apply CHECK/UNIQUE changes separately from other table structure drafts.");
-      const plan = await prepareOracleConstraintPlan(target, structureChangeOptions(), cloneDraftValue(oracleConstraintDraft.value));
+      const plan = await prepareOracleConstraintPlan(target, structureChangeOptions(), cloneDraftValue(oracleConstraintDraft.value), connectionCurrent);
       if (requestId !== sqlPreviewRequestId || JSON.stringify(target) !== JSON.stringify(primaryKeyTarget()) || draftFingerprint !== JSON.stringify(oracleConstraintDraft.value)) return;
       const currentConfig = store.getConfig(target.connectionId);
       if (store.connectionStateRevision(target.connectionId) !== revision || (currentConfig ? connectionConfigFingerprint(currentConfig) : "") !== fingerprint) throw new Error("Connection changed while preparing the constraint plan. Refresh and preview again.");
@@ -3219,10 +3223,14 @@ async function refreshSqlPreview() {
     const connectionRevision = store.connectionStateRevision(target.connectionId);
     const connectionConfig = store.getConfig(target.connectionId);
     const configFingerprint = connectionConfig ? connectionConfigFingerprint(connectionConfig) : "";
+    const connectionCurrent = () => {
+      const currentConfig = store.getConfig(target.connectionId);
+      return store.connectionStateRevision(target.connectionId) === connectionRevision && store.isCurrentConnectionStateRevision(target.connectionId, connectionRevision) && (currentConfig ? connectionConfigFingerprint(currentConfig) : "") === configFingerprint;
+    };
     try {
       const options = { ...structureChangeOptions(), oracleForeignKeyChanges: foreignKeyChanges };
       const partitioning = createPartitioningEnabled.value ? { kind: createPartitioningKind.value, columns: createPartitioningColumns.value, expression: createPartitioningExpression.value } : undefined;
-      const plan = await prepareOracleForeignKeyCreatePlan(target, options, foreignKeyChanges, partitioning);
+      const plan = await prepareOracleForeignKeyCreatePlan(target, options, foreignKeyChanges, partitioning, connectionCurrent);
       if (requestId !== sqlPreviewRequestId || JSON.stringify(target) !== JSON.stringify({ ...primaryKeyTarget(), schema: metadataSchema.value, tableName: newTableName.value.trim(), databaseType: target.databaseType })) return;
       const currentConfig = store.getConfig(target.connectionId);
       if (store.connectionStateRevision(target.connectionId) !== connectionRevision || (currentConfig ? connectionConfigFingerprint(currentConfig) : "") !== configFingerprint) throw new Error(t("oracleForeignKey.refreshRequired"));
@@ -3248,8 +3256,12 @@ async function refreshSqlPreview() {
     const connectionRevision = store.connectionStateRevision(target.connectionId);
     const connectionConfig = store.getConfig(target.connectionId);
     const configFingerprint = connectionConfig ? connectionConfigFingerprint(connectionConfig) : "";
+    const connectionCurrent = () => {
+      const currentConfig = store.getConfig(target.connectionId);
+      return store.connectionStateRevision(target.connectionId) === connectionRevision && store.isCurrentConnectionStateRevision(target.connectionId, connectionRevision) && (currentConfig ? connectionConfigFingerprint(currentConfig) : "") === configFingerprint;
+    };
     try {
-      const plan = await prepareOracleForeignKeyPlan(target, structureChangeOptions(), foreignKeyChanges);
+      const plan = await prepareOracleForeignKeyPlan(target, structureChangeOptions(), foreignKeyChanges, connectionCurrent);
       if (requestId !== sqlPreviewRequestId || JSON.stringify(target) !== JSON.stringify(primaryKeyTarget())) return;
       const currentConfig = store.getConfig(target.connectionId);
       if (store.connectionStateRevision(target.connectionId) !== connectionRevision || (currentConfig ? connectionConfigFingerprint(currentConfig) : "") !== configFingerprint) throw new Error(t("oracleForeignKey.refreshRequired"));
@@ -6055,9 +6067,8 @@ async function applyOracleForeignKeyPlan(): Promise<boolean> {
   const identity = JSON.stringify(plan.target);
   const changes = JSON.stringify(oracleForeignKeyChanges());
   const connectionAtStart = store.getConfig(plan.target.connectionId);
-  const sameTarget = () =>
-    !primaryKeyUnmounted &&
-    identity === JSON.stringify(primaryKeyTarget()) &&
+  const sameTarget = () => !primaryKeyUnmounted && identity === JSON.stringify(primaryKeyTarget());
+  const connectionCurrent = () =>
     store.connectionStateRevision(plan.target.connectionId) === plannedSession.revision &&
     store.isCurrentConnectionStateRevision(plan.target.connectionId, plannedSession.revision) &&
     (store.getConfig(plan.target.connectionId) ? connectionConfigFingerprint(store.getConfig(plan.target.connectionId)!) : "") === plannedSession.configFingerprint;
@@ -6065,7 +6076,8 @@ async function applyOracleForeignKeyPlan(): Promise<boolean> {
     const scope = captureStructureRefreshScope();
     return !scope.columns && !scope.indexes && !scope.triggers && !scope.tableComment && !partitionOperations.value.length && !existingPrimaryKeyChanged.value && !ddlDirty.value;
   };
-  const stillCurrent = () => sameTarget() && changes === JSON.stringify(oracleForeignKeyChanges()) && noOtherDrafts();
+  const canStart = () => sameTarget() && changes === JSON.stringify(oracleForeignKeyChanges()) && noOtherDrafts();
+  const stillCurrent = () => canStart() && connectionCurrent();
   if (!stillCurrent()) return false;
   oracleForeignKeyBusy.value = true;
   saving.value = true;
@@ -6085,7 +6097,7 @@ async function applyOracleForeignKeyPlan(): Promise<boolean> {
       if (!accepted || !stillCurrent()) return false;
     }
     const timeout = queryTimeoutSecsForConnection(connectionAtStart, settingsStore.editorSettings.globalQueryTimeoutSecs);
-    const result = await executeOracleForeignKeyPlan(plan, timeout, stillCurrent);
+    const result = await executeOracleForeignKeyPlan(plan, timeout, { canStart, connectionCurrent });
     if (!result) return false;
     const completed = result.steps.every((step) => step.state === "committed");
     let details = result.steps.map((step, index) => `${index + 1}. ${t(`oceanbasePrimaryKey.${step.state}`)}\n${step.sql}${step.error ? `\n${step.error}` : ""}`).join("\n\n");
@@ -6171,14 +6183,12 @@ async function applyOracleConstraintPlan(): Promise<boolean> {
   const draft = JSON.stringify(oracleConstraintDraft.value);
   const connection = store.getConfig(plan.target.connectionId);
   const sameTarget = () => !primaryKeyUnmounted && JSON.stringify(oracleConstraintTarget()) === JSON.stringify(plan.target);
-  const stillCurrent = () =>
-    sameTarget() &&
-    draft === JSON.stringify(oracleConstraintDraft.value) &&
-    !hasPendingStructureChanges(false, false) &&
-    !ddlDirty.value &&
+  const connectionCurrent = () =>
     store.connectionStateRevision(plan.target.connectionId) === session.revision &&
     store.isCurrentConnectionStateRevision(plan.target.connectionId, session.revision) &&
     (store.getConfig(plan.target.connectionId) ? connectionConfigFingerprint(store.getConfig(plan.target.connectionId)!) : "") === session.configFingerprint;
+  const canStart = () => sameTarget() && draft === JSON.stringify(oracleConstraintDraft.value) && !hasPendingStructureChanges(false, false) && !ddlDirty.value;
+  const stillCurrent = () => canStart() && connectionCurrent();
   if (!stillCurrent() || session.draftFingerprint !== draft) return false;
   oracleConstraintBusy.value = true;
   saving.value = true;
@@ -6197,7 +6207,7 @@ async function applyOracleConstraintPlan(): Promise<boolean> {
       if (!accepted || !stillCurrent()) return false;
     }
     const timeout = queryTimeoutSecsForConnection(connection, settingsStore.editorSettings.globalQueryTimeoutSecs);
-    const result = await executeOracleConstraintPlan(plan, timeout, stillCurrent);
+    const result = await executeOracleConstraintPlan(plan, timeout, { canStart, connectionCurrent });
     if (!result) return false;
     const completed = result.steps.length > 0 && result.steps.every((step) => step.state === "committed") && !result.readbackError;
     for (const step of result.steps.filter((item) => item.state !== "notExecuted")) {
@@ -6424,15 +6434,15 @@ async function applyOracleForeignKeyCreatePlan(): Promise<boolean> {
   const identity = JSON.stringify(plan.target);
   const changes = JSON.stringify(oracleForeignKeyChanges());
   const connectionAtStart = store.getConfig(plan.target.connectionId);
-  const sameTarget = () =>
-    !primaryKeyUnmounted &&
-    identity === JSON.stringify({ ...primaryKeyTarget(), schema: metadataSchema.value, tableName: newTableName.value.trim(), databaseType: plan.target.databaseType }) &&
+  const sameTarget = () => !primaryKeyUnmounted && identity === JSON.stringify({ ...primaryKeyTarget(), schema: metadataSchema.value, tableName: newTableName.value.trim(), databaseType: plan.target.databaseType });
+  const connectionCurrent = () =>
     store.connectionStateRevision(plan.target.connectionId) === plannedSession.revision &&
     store.isCurrentConnectionStateRevision(plan.target.connectionId, plannedSession.revision) &&
     (store.getConfig(plan.target.connectionId) ? connectionConfigFingerprint(store.getConfig(plan.target.connectionId)!) : "") === plannedSession.configFingerprint;
   const currentOptions = () => ({ ...structureChangeOptions(), schema: metadataSchema.value, tableName: newTableName.value.trim(), foreignKeys: [], oracleForeignKeyChanges: oracleForeignKeyChanges() });
   const currentPartitioning = () => (createPartitioningEnabled.value ? { kind: createPartitioningKind.value, columns: createPartitioningColumns.value, expression: createPartitioningExpression.value } : undefined);
-  const stillCurrent = () => sameTarget() && changes === JSON.stringify(oracleForeignKeyChanges()) && JSON.stringify({ options: currentOptions(), changes: oracleForeignKeyChanges(), partitioning: currentPartitioning() }) === plannedSession.draftFingerprint && isCreateMode.value;
+  const canStart = () => sameTarget() && changes === JSON.stringify(oracleForeignKeyChanges()) && JSON.stringify({ options: currentOptions(), changes: oracleForeignKeyChanges(), partitioning: currentPartitioning() }) === plannedSession.draftFingerprint && isCreateMode.value;
+  const stillCurrent = () => canStart() && connectionCurrent();
   if (!stillCurrent()) return false;
   oracleForeignKeyBusy.value = true;
   saving.value = true;
@@ -6451,7 +6461,7 @@ async function applyOracleForeignKeyCreatePlan(): Promise<boolean> {
       if (!accepted || !stillCurrent()) return false;
     }
     const timeout = queryTimeoutSecsForConnection(connectionAtStart, settingsStore.editorSettings.globalQueryTimeoutSecs);
-    const result = await executeOracleForeignKeyCreatePlan(plan, timeout, stillCurrent);
+    const result = await executeOracleForeignKeyCreatePlan(plan, timeout, { canStart, connectionCurrent });
     if (!result) return false;
     for (const step of result.steps.filter((item) => item.state !== "notExecuted")) {
       try {

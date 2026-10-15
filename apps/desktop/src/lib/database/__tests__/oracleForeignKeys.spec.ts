@@ -64,6 +64,26 @@ describe("Oracle foreign key definition reads", () => {
     expect(vi.mocked(api.executeQuery).mock.calls.every((call) => call[2].startsWith("SELECT "))).toBe(true);
   });
 
+  it("stops a segmented definition read when its generation changes after the first DDL fetch", async () => {
+    let current = true;
+    const secondRow = [...row];
+    secondRow[0] = "FK_SECOND";
+    const secondDdl = ddl.replace('"FK""name"', '"FK_SECOND"');
+    vi.mocked(api.executeQuery).mockImplementation(async (_id, _db, sql) => {
+      if (sql.includes("SYS.ALL_TABLES")) return result([[target.schema, target.tableName]]) as never;
+      if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([row, secondRow]) as never;
+      if (sql.includes("DBMS_METADATA.GET_DDL")) {
+        current = false;
+        return result([[sql.includes("FK_SECOND") ? secondDdl : ddl]]) as never;
+      }
+      return result([]) as never;
+    });
+
+    await expect(readOracleForeignKeyDefinitions(target, () => current)).rejects.toThrow();
+
+    expect(api.executeQuery.mock.calls.filter((call) => String(call[2]).includes("DBMS_METADATA.GET_DDL"))).toHaveLength(1);
+  });
+
   it.each([
     ddl + " DROP TABLE X",
     ddl.replace("DISABLE", "DISABLE ENABLE"),
@@ -364,6 +384,87 @@ describe("Oracle foreign key plan", () => {
     expect(vi.mocked(api.executeQuery).mock.calls.filter((call) => String(call[2]).startsWith("ALTER TABLE"))).toHaveLength(1);
   });
 
+  it("reports an in-flight DDL outcome as unknown after the generation changes", async () => {
+    const created = { name: "FK_NEW", columns: ["B"], refSchema: "Parent Owner", refTable: "Parent,Table", refColumns: ['ID"quoted'], onDelete: "NO ACTION" as const, state: { enabled: true, validated: true, deferrable: false, initiallyDeferred: false, rely: false } };
+    const change = { original: null, target: created };
+    const statement = 'ALTER TABLE "App Owner"."Child,Table" ADD CONSTRAINT "FK_NEW" FOREIGN KEY ("B") REFERENCES "Parent Owner"."Parent,Table" ("ID""quoted") ENABLE VALIDATE;';
+    vi.mocked(api.buildTableStructureChangeSql).mockResolvedValue({ statements: [statement], warnings: [] } as never);
+    vi.mocked(api.executeQuery).mockImplementation(async (_id, _db, sql) => {
+      if (sql.includes("SELECT USER,")) return result([["READER", target.schema]]) as never;
+      if (sql.includes("SYS.ALL_OBJECTS")) return result(sql.includes("OWNER = 'App Owner'") ? [[target.schema, target.tableName, 516042]] : [["Parent Owner", "Parent,Table", 24]]) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME, TABLE_NAME")) return result([]) as never;
+      if (sql.includes("SYS.ALL_TABLES")) return result([[target.schema, target.tableName]]) as never;
+      if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([["PK_PARENT", "P", "ENABLED", "VALIDATED", "NOT DEFERRABLE", 'ID"quoted', 1]]) as never;
+      if (sql.includes("SESSION_PRIVS")) return result([]) as never;
+      if (sql.includes("SYS.ALL_TAB_COLS")) return result(sql.includes("OWNER = 'App Owner'") ? [["B", "NUMBER", 22, null, null, "Y"]] : [['ID"quoted', "NUMBER"]]) as never;
+      if (sql.includes("SYS.ALL_TAB_PRIVS")) return result([["REFERENCES"]]) as never;
+      if (sql.includes("SYS.ALL_COL_PRIVS")) return result([]) as never;
+      if (sql.startsWith("SELECT 1 FROM")) return result([]) as never;
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const options = { databaseType: "oracle" as const, schema: target.schema, tableName: target.tableName, columns: [], indexes: [], foreignKeys: [] };
+    const plan = await prepareOracleForeignKeyPlan(target, options, [change]);
+    const base = vi.mocked(api.executeQuery).getMockImplementation()!;
+    let finish!: (value: ReturnType<typeof result>) => void;
+    let current = true;
+    vi.mocked(api.executeQuery).mockImplementation((...args) =>
+      String(args[2]).startsWith("ALTER TABLE")
+        ? (new Promise((resolve) => {
+            finish = resolve as typeof finish;
+          }) as never)
+        : base(...args),
+    );
+    const pending = executeOracleForeignKeyPlan(plan, 30, () => current);
+    while (!finish) await new Promise((resolve) => setTimeout(resolve, 0));
+    current = false;
+    finish(result([]));
+
+    const outcome = await pending;
+
+    expect(outcome?.steps[0]?.state).toBe("unknown");
+    expect(outcome?.readbackError).toContain("readback is unknown");
+  });
+
+  it("keeps a resolved DDL committed when only the UI target changes in flight", async () => {
+    const created = { name: "FK_NEW", columns: ["B"], refSchema: "Parent Owner", refTable: "Parent,Table", refColumns: ['ID"quoted'], onDelete: "NO ACTION" as const, state: { enabled: true, validated: true, deferrable: false, initiallyDeferred: false, rely: false } };
+    const statement = 'ALTER TABLE "App Owner"."Child,Table" ADD CONSTRAINT "FK_NEW" FOREIGN KEY ("B") REFERENCES "Parent Owner"."Parent,Table" ("ID""quoted") ENABLE VALIDATE;';
+    vi.mocked(api.buildTableStructureChangeSql).mockResolvedValue({ statements: [statement], warnings: [] } as never);
+    vi.mocked(api.executeQuery).mockImplementation(async (_id, _db, sql) => {
+      if (sql.includes("SELECT USER,")) return result([["READER", target.schema]]) as never;
+      if (sql.includes("SYS.ALL_OBJECTS")) return result(sql.includes("OWNER = 'App Owner'") ? [[target.schema, target.tableName, 516042]] : [["Parent Owner", "Parent,Table", 24]]) as never;
+      if (sql.includes("SELECT CONSTRAINT_NAME, TABLE_NAME")) return result([]) as never;
+      if (sql.includes("SYS.ALL_TABLES")) return result([[target.schema, target.tableName]]) as never;
+      if (sql.includes("SYS.ALL_CONSTRAINTS")) return result([["PK_PARENT", "P", "ENABLED", "VALIDATED", "NOT DEFERRABLE", 'ID"quoted', 1]]) as never;
+      if (sql.includes("SESSION_PRIVS")) return result([]) as never;
+      if (sql.includes("SYS.ALL_TAB_COLS")) return result(sql.includes("OWNER = 'App Owner'") ? [["B", "NUMBER", 22, null, null, "Y"]] : [['ID"quoted', "NUMBER"]]) as never;
+      if (sql.includes("SYS.ALL_TAB_PRIVS")) return result([["REFERENCES"]]) as never;
+      if (sql.includes("SYS.ALL_COL_PRIVS")) return result([]) as never;
+      if (sql.startsWith("SELECT 1 FROM")) return result([]) as never;
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const options = { databaseType: "oracle" as const, schema: target.schema, tableName: target.tableName, columns: [], indexes: [], foreignKeys: [] };
+    const plan = await prepareOracleForeignKeyPlan(target, options, [{ original: null, target: created }]);
+    const base = vi.mocked(api.executeQuery).getMockImplementation()!;
+    let finish!: (value: ReturnType<typeof result>) => void;
+    let canStart = true;
+    vi.mocked(api.executeQuery).mockImplementation((...args) =>
+      String(args[2]).startsWith("ALTER TABLE")
+        ? (new Promise((resolve) => {
+            finish = resolve as typeof finish;
+          }) as never)
+        : base(...args),
+    );
+    const pending = executeOracleForeignKeyPlan(plan, 30, { canStart: () => canStart, connectionCurrent: () => true });
+    while (!finish) await new Promise((resolve) => setTimeout(resolve, 0));
+    canStart = false;
+    finish(result([]));
+
+    const outcome = await pending;
+
+    expect(outcome?.steps[0]?.state).toBe("committed");
+    expect(outcome?.steps[0]?.error).toBeUndefined();
+  });
+
   it("offers only an unoccupied original ADD after a confirmed replacement DROP and rejected ADD", async () => {
     const obTarget: OracleForeignKeyTarget = { ...target, databaseType: "oceanbase-oracle" };
     const original = { name: "FK_OLD", columns: ["B"], refSchema: "Parent Owner", refTable: "Parent,Table", refColumns: ["V"], onDelete: "NO ACTION" as const, state: { enabled: true, validated: true, deferrable: false, initiallyDeferred: false, rely: false } };
@@ -487,12 +588,16 @@ describe("Oracle foreign key plan", () => {
     });
     const options = { databaseType: "oceanbase-oracle" as const, schema: obTarget.schema, tableName: obTarget.tableName, columns: [], indexes: [], foreignKeys: [] };
     const plan = await prepareOracleForeignKeyPlan(obTarget, options, [{ original, target: changed }]);
-    let callCount = 0;
-    const execution = await executeOracleForeignKeyPlan(plan, 30, () => {
-      callCount++;
-      if (!config.stillCurrent && callCount > 3) return false;
-      return true;
+    let stale = false;
+    const readQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => {
+      if (config.stillCurrent === false && dropAttempted && String(args[2]).includes("SELECT CONSTRAINT_NAME, TABLE_NAME")) {
+        stale = true;
+        return Promise.resolve(result([])) as never;
+      }
+      return readQuery(...args);
     });
+    const execution = await executeOracleForeignKeyPlan(plan, 30, () => !stale);
     expect(execution?.recoverySql).toBeUndefined();
   });
 });
@@ -565,6 +670,33 @@ describe("Oracle foreign keys in new table plans", () => {
     expect(execution?.readbackError).toBeUndefined();
     expect(vi.mocked(api.executeQuery).mock.calls.filter((call) => String(call[2]).startsWith("CREATE TABLE"))).toHaveLength(1);
     expect(vi.mocked(api.executeQuery).mock.calls.filter((call) => String(call[2]).startsWith("ALTER TABLE"))).toHaveLength(1);
+
+    vi.mocked(api.executeQuery).mockClear();
+    await expect(executeOracleForeignKeyCreatePlan(plan, 30, () => false)).resolves.toBeUndefined();
+    expect(api.executeQuery).not.toHaveBeenCalled();
+    vi.mocked(api.executeQuery).mockClear();
+    const readQuery = vi.mocked(api.executeQuery).getMockImplementation()!;
+    let current = true;
+    let finish!: (value: ReturnType<typeof result>) => void;
+    let readAfterStale = false;
+    vi.mocked(api.executeQuery).mockImplementation((...args) => {
+      const sql = String(args[2]);
+      if (sql.startsWith("CREATE TABLE"))
+        return new Promise((resolve) => {
+          finish = resolve as typeof finish;
+        }) as never;
+      if (!current) readAfterStale = true;
+      return readQuery(...args) as never;
+    });
+    const pendingLateCreate = executeOracleForeignKeyCreatePlan(plan, 30, () => current);
+    while (!finish) await new Promise((resolve) => setTimeout(resolve, 0));
+    current = false;
+    finish(result([]));
+    const lateCreate = await pendingLateCreate;
+    expect(lateCreate?.steps.map((step) => step.state)).toEqual(["unknown", "notExecuted"]);
+    expect(lateCreate?.tableExists).toBeUndefined();
+    expect(readAfterStale).toBe(false);
+    expect(api.executeQuery.mock.calls.filter((call) => String(call[2]).startsWith("CREATE TABLE"))).toHaveLength(1);
   });
 
   it("matches Oracle self-reference readback after identifier folding", async () => {

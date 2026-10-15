@@ -362,7 +362,7 @@ fn validate_unique(
             || index.table_name != table_name
             || index.index_type != "NORMAL"
             || (unique.state.deferrable && index.uniqueness != "NONUNIQUE")
-            || (!unique.state.deferrable && !matches!(index.uniqueness.as_str(), "UNIQUE" | "NONUNIQUE"))
+            || !matches!(index.uniqueness.as_str(), "UNIQUE" | "NONUNIQUE")
             || index.status != "VALID"
             || index.partitioned
             || index.visibility != "VISIBLE"
@@ -470,7 +470,7 @@ fn add_unique(
     } else {
         let new_name = index.new_name.as_deref()?;
         let index_ref = qualified_table(dialect, Some(&index.owner), new_name);
-        let kind = if unique.state.deferrable { "INDEX" } else { "UNIQUE INDEX" };
+        let kind = if unique.state.deferrable || !unique.state.validated { "INDEX" } else { "UNIQUE INDEX" };
         format!(" USING INDEX (CREATE {kind} {index_ref} ON {table} ({columns}))")
     };
     let (before_index, after_index) = constraint_state_parts(&unique.state, database_type);

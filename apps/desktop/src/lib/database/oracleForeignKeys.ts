@@ -138,27 +138,29 @@ export function parseOracleForeignKeyDdl(ddl: string, target: OracleForeignKeyTa
   return { name, columns: local, refSchema, refTable, refColumns: references, onDelete, state: { ...state } };
 }
 
-async function query(target: OracleForeignKeyTarget, sql: string): Promise<unknown[][]> {
+async function query(target: OracleForeignKeyTarget, sql: string, stillCurrent: () => boolean = () => true): Promise<unknown[][]> {
+  if (!stillCurrent()) invalid();
   const result = await api.executeQuery(target.connectionId, target.database, sql, target.schema, undefined, { catalog: target.catalog, maxRows: 10001 });
+  if (!stillCurrent()) invalid();
   if (result.execution_error || result.truncated || result.has_more || result.rows.length >= 10001) invalid();
   return result.rows;
 }
 
-async function sourceConstraintView(target: OracleForeignKeyTarget) {
+async function sourceConstraintView(target: OracleForeignKeyTarget, stillCurrent: () => boolean = () => true) {
   if (target.databaseType === "oceanbase-oracle") {
-    const users = await query(target, "SELECT USER FROM DUAL");
+    const users = await query(target, "SELECT USER FROM DUAL", stillCurrent);
     if (users.length !== 1 || users[0]?.length !== 1 || typeof users[0][0] !== "string" || !users[0][0]) invalid();
     if (users[0][0] === target.schema) return { view: "SYS.USER_CONSTRAINTS", owner: "" };
   }
   return { view: "SYS.ALL_CONSTRAINTS", owner: `OWNER = ${literal(target.schema)}` };
 }
 
-export async function readOracleForeignKeyConstraintNames(target: OracleForeignKeyTarget, selectedNames?: string[]): Promise<Array<{ name: string; table: string }>> {
+export async function readOracleForeignKeyConstraintNames(target: OracleForeignKeyTarget, selectedNames?: string[], stillCurrent: () => boolean = () => true): Promise<Array<{ name: string; table: string }>> {
   target = { ...target };
   if (selectedNames && !selectedNames.length) return [];
-  const source = await sourceConstraintView(target);
+  const source = await sourceConstraintView(target, stillCurrent);
   const conditions = [source.owner, selectedNames ? `CONSTRAINT_NAME IN (${selectedNames.map(literal).join(", ")})` : ""].filter(Boolean);
-  const rows = await query(target, `SELECT CONSTRAINT_NAME, TABLE_NAME FROM ${source.view}${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""} ORDER BY CONSTRAINT_NAME`);
+  const rows = await query(target, `SELECT CONSTRAINT_NAME, TABLE_NAME FROM ${source.view}${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""} ORDER BY CONSTRAINT_NAME`, stillCurrent);
   const names = new Set<string>();
   return rows.map((row) => {
     if (row.length !== 2 || typeof row[0] !== "string" || !row[0] || typeof row[1] !== "string" || !row[1] || names.has(row[0])) invalid();
@@ -167,15 +169,16 @@ export async function readOracleForeignKeyConstraintNames(target: OracleForeignK
   });
 }
 
-async function readOracleForeignKeyMetadata(target: OracleForeignKeyTarget, selectedNames?: string[]) {
+async function readOracleForeignKeyMetadata(target: OracleForeignKeyTarget, selectedNames?: string[], stillCurrent: () => boolean = () => true) {
   target = { ...target };
   if (selectedNames && !selectedNames.length) return { definitions: [], referenceKeys: [] };
-  const tables = await query(target, `SELECT OWNER, TABLE_NAME FROM SYS.ALL_TABLES WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)}`);
+  const tables = await query(target, `SELECT OWNER, TABLE_NAME FROM SYS.ALL_TABLES WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)}`, stillCurrent);
   if (tables.length !== 1 || tables[0]?.length !== 2 || tables[0][0] !== target.schema || tables[0][1] !== target.tableName) invalid();
-  const source = await sourceConstraintView(target);
+  const source = await sourceConstraintView(target, stillCurrent);
   const rows = await query(
     target,
     `SELECT CONSTRAINT_NAME, STATUS, VALIDATED, DEFERRABLE, DEFERRED, RELY, R_OWNER, R_CONSTRAINT_NAME, DELETE_RULE FROM ${source.view} WHERE ${source.owner ? `${source.owner} AND ` : ""}TABLE_NAME = ${literal(target.tableName)} AND CONSTRAINT_TYPE = 'R'${selectedNames ? ` AND CONSTRAINT_NAME IN (${selectedNames.map(literal).join(", ")})` : ""} ORDER BY CONSTRAINT_NAME`,
+    stillCurrent,
   );
   const names = new Set<string>();
   const definitions: OracleForeignKeyDefinition[] = [];
@@ -202,7 +205,7 @@ async function readOracleForeignKeyMetadata(target: OracleForeignKeyTarget, sele
     const state: OracleForeignKeyState = { enabled: enabled === "ENABLED", validated: validated === "VALIDATED", deferrable: deferrable === "DEFERRABLE", initiallyDeferred: initially === "DEFERRED", rely: validated !== "VALIDATED" && rely === "RELY" };
     if ((!state.deferrable && state.initiallyDeferred) || (target.databaseType === "oceanbase-oracle" && state.deferrable)) invalid();
     names.add(name);
-    const ddlRows = await query(target, `SELECT DBMS_METADATA.GET_DDL('REF_CONSTRAINT', ${literal(name)}, ${literal(target.schema)}) FROM DUAL`);
+    const ddlRows = await query(target, `SELECT DBMS_METADATA.GET_DDL('REF_CONSTRAINT', ${literal(name)}, ${literal(target.schema)}) FROM DUAL`, stillCurrent);
     if (ddlRows.length !== 1 || ddlRows[0]?.length !== 1 || typeof ddlRows[0][0] !== "string") invalid();
     definitions.push(parseOracleForeignKeyDdl(ddlRows[0][0], target, name, refOwner, String(action), state));
     referenceKeys.push({ name, owner: refOwner, constraint: refConstraint });
@@ -210,8 +213,8 @@ async function readOracleForeignKeyMetadata(target: OracleForeignKeyTarget, sele
   return { definitions, referenceKeys };
 }
 
-export async function readOracleForeignKeyDefinitions(target: OracleForeignKeyTarget): Promise<OracleForeignKeyDefinition[]> {
-  return (await readOracleForeignKeyMetadata(target)).definitions;
+export async function readOracleForeignKeyDefinitions(target: OracleForeignKeyTarget, stillCurrent: () => boolean = () => true): Promise<OracleForeignKeyDefinition[]> {
+  return (await readOracleForeignKeyMetadata(target, undefined, stillCurrent)).definitions;
 }
 
 export interface OracleForeignKeySourceSnapshot {
@@ -225,7 +228,7 @@ export interface OracleForeignKeySourceSnapshot {
 }
 
 /** Captures only metadata needed for a foreign key write, without issuing DDL. */
-export async function readOracleForeignKeySourceSnapshot(target: OracleForeignKeyTarget, changes?: OracleForeignKeyChange[]): Promise<OracleForeignKeySourceSnapshot> {
+export async function readOracleForeignKeySourceSnapshot(target: OracleForeignKeyTarget, changes?: OracleForeignKeyChange[], stillCurrent: () => boolean = () => true): Promise<OracleForeignKeySourceSnapshot> {
   target = { ...target };
   changes = changes ? (JSON.parse(JSON.stringify(changes)) as OracleForeignKeyChange[]) : undefined;
   const originalNames = changes ? changes.flatMap((change) => (change.original ? [change.original.name] : [])) : undefined;
@@ -233,11 +236,11 @@ export async function readOracleForeignKeySourceSnapshot(target: OracleForeignKe
   const selectedColumns = changes ? new Set(changes.flatMap((change) => [...(change.original?.columns ?? []), ...(change.target?.columns ?? [])])) : undefined;
   const where = `OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)}`;
   const [identity, objects, columns, metadata, names] = await Promise.all([
-    query(target, "SELECT USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL"),
-    query(target, `SELECT OWNER, OBJECT_NAME, OBJECT_ID FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(target.schema)} AND OBJECT_NAME = ${literal(target.tableName)} AND OBJECT_TYPE = 'TABLE'`),
-    query(target, `SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, NULLABLE FROM SYS.ALL_TAB_COLS WHERE ${where} ORDER BY COLUMN_ID`),
-    readOracleForeignKeyMetadata(target, originalNames),
-    readOracleForeignKeyConstraintNames(target, selectedNames),
+    query(target, "SELECT USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL", stillCurrent),
+    query(target, `SELECT OWNER, OBJECT_NAME, OBJECT_ID FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(target.schema)} AND OBJECT_NAME = ${literal(target.tableName)} AND OBJECT_TYPE = 'TABLE'`, stillCurrent),
+    query(target, `SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, NULLABLE FROM SYS.ALL_TAB_COLS WHERE ${where} ORDER BY COLUMN_ID`, stillCurrent),
+    readOracleForeignKeyMetadata(target, originalNames, stillCurrent),
+    readOracleForeignKeyConstraintNames(target, selectedNames, stillCurrent),
   ]);
   if (identity.length !== 1 || identity[0]?.length !== 2 || typeof identity[0][0] !== "string" || !identity[0][0] || typeof identity[0][1] !== "string" || !identity[0][1]) invalid();
   if (objects.length !== 1 || objects[0]?.length !== 3 || objects[0][0] !== target.schema || objects[0][1] !== target.tableName || (typeof objects[0][2] !== "string" && typeof objects[0][2] !== "number") || !/^[1-9]\d*$/.test(String(objects[0][2]))) invalid();
@@ -306,7 +309,7 @@ export interface OracleForeignKeyReferenceSnapshot {
 }
 
 /** Missing dictionary visibility is recorded as unknown, never as a missing parent. */
-export async function readOracleForeignKeyReferenceSnapshot(target: OracleForeignKeyTarget, user: string, definition: OracleForeignKeyDefinition): Promise<OracleForeignKeyReferenceSnapshot> {
+export async function readOracleForeignKeyReferenceSnapshot(target: OracleForeignKeyTarget, user: string, definition: OracleForeignKeyDefinition, stillCurrent: () => boolean = () => true): Promise<OracleForeignKeyReferenceSnapshot> {
   target = { ...target };
   definition = JSON.parse(JSON.stringify(definition)) as OracleForeignKeyDefinition;
   const owner = literal(definition.refSchema),
@@ -314,15 +317,16 @@ export async function readOracleForeignKeyReferenceSnapshot(target: OracleForeig
   const sameOwner = definition.refSchema === user;
   const grantee = `(GRANTEE = ${literal(user)} OR GRANTEE = 'PUBLIC')`;
   const requests = await Promise.allSettled([
-    query(target, `SELECT OWNER, OBJECT_NAME, OBJECT_ID FROM SYS.ALL_OBJECTS WHERE OWNER = ${owner} AND OBJECT_NAME = ${table} AND OBJECT_TYPE = 'TABLE'`),
+    query(target, `SELECT OWNER, OBJECT_NAME, OBJECT_ID FROM SYS.ALL_OBJECTS WHERE OWNER = ${owner} AND OBJECT_NAME = ${table} AND OBJECT_TYPE = 'TABLE'`, stillCurrent),
     query(
       target,
       `SELECT c.CONSTRAINT_NAME, c.CONSTRAINT_TYPE, c.STATUS, c.VALIDATED, c.DEFERRABLE, cc.COLUMN_NAME, cc.POSITION FROM SYS.ALL_CONSTRAINTS c JOIN SYS.ALL_CONS_COLUMNS cc ON cc.OWNER = c.OWNER AND cc.CONSTRAINT_NAME = c.CONSTRAINT_NAME WHERE c.OWNER = ${owner} AND c.TABLE_NAME = ${table} AND c.CONSTRAINT_TYPE IN ('P', 'U') ORDER BY c.CONSTRAINT_NAME, cc.POSITION`,
+      stillCurrent,
     ),
-    query(target, `SELECT COLUMN_NAME, DATA_TYPE FROM SYS.ALL_TAB_COLS WHERE OWNER = ${owner} AND TABLE_NAME = ${table} ORDER BY COLUMN_ID`),
-    sameOwner ? Promise.resolve([]) : query(target, `SELECT PRIVILEGE FROM SYS.ALL_TAB_PRIVS WHERE TABLE_SCHEMA = ${owner} AND TABLE_NAME = ${table} AND ${grantee} ORDER BY PRIVILEGE`),
-    sameOwner ? Promise.resolve([]) : query(target, `SELECT COLUMN_NAME, PRIVILEGE FROM SYS.ALL_COL_PRIVS WHERE OWNER = ${owner} AND TABLE_NAME = ${table} AND ${grantee} ORDER BY COLUMN_NAME, PRIVILEGE`),
-    sameOwner ? Promise.resolve([]) : query(target, "SELECT PRIVILEGE FROM SESSION_PRIVS ORDER BY PRIVILEGE"),
+    query(target, `SELECT COLUMN_NAME, DATA_TYPE FROM SYS.ALL_TAB_COLS WHERE OWNER = ${owner} AND TABLE_NAME = ${table} ORDER BY COLUMN_ID`, stillCurrent),
+    sameOwner ? Promise.resolve([]) : query(target, `SELECT PRIVILEGE FROM SYS.ALL_TAB_PRIVS WHERE TABLE_SCHEMA = ${owner} AND TABLE_NAME = ${table} AND ${grantee} ORDER BY PRIVILEGE`, stillCurrent),
+    sameOwner ? Promise.resolve([]) : query(target, `SELECT COLUMN_NAME, PRIVILEGE FROM SYS.ALL_COL_PRIVS WHERE OWNER = ${owner} AND TABLE_NAME = ${table} AND ${grantee} ORDER BY COLUMN_NAME, PRIVILEGE`, stillCurrent),
+    sameOwner ? Promise.resolve([]) : query(target, "SELECT PRIVILEGE FROM SESSION_PRIVS ORDER BY PRIVILEGE", stillCurrent),
   ]);
   const rows = (index: number) => (requests[index]?.status === "fulfilled" ? requests[index].value : null);
   const objects = rows(0);
@@ -445,7 +449,7 @@ export class OracleForeignKeyPreflightError extends Error {
   }
 }
 
-export async function checkOracleForeignKeyData(target: OracleForeignKeyTarget, change: OracleForeignKeyChange, destructiveReplacement: boolean): Promise<{ checked: boolean }> {
+export async function checkOracleForeignKeyData(target: OracleForeignKeyTarget, change: OracleForeignKeyChange, destructiveReplacement: boolean, stillCurrent: () => boolean = () => true): Promise<{ checked: boolean }> {
   target = { ...target };
   change = JSON.parse(JSON.stringify(change)) as OracleForeignKeyChange;
   const key = change.target;
@@ -457,7 +461,7 @@ export async function checkOracleForeignKeyData(target: OracleForeignKeyTarget, 
   const pairs = key.columns.map((name, index) => `fk_parent.${ident(key.refColumns[index]!)} = fk_child.${ident(name)}`).join(" AND ");
   let rows: unknown[][];
   try {
-    rows = await query(target, `SELECT 1 FROM ${child} fk_child WHERE ${nonnull} AND NOT EXISTS (SELECT 1 FROM ${parent} fk_parent WHERE ${pairs}) AND ROWNUM <= 1`);
+    rows = await query(target, `SELECT 1 FROM ${child} fk_child WHERE ${nonnull} AND NOT EXISTS (SELECT 1 FROM ${parent} fk_parent WHERE ${pairs}) AND ROWNUM <= 1`, stillCurrent);
   } catch {
     if (destructiveReplacement) throw new OracleForeignKeyPreflightError("referenceDataUnreadable");
     return { checked: false };
@@ -507,7 +511,7 @@ export interface OracleForeignKeyCreateExecutionResult {
 }
 
 /** Preflights every new-table reference before any CREATE statement can run. */
-export async function prepareOracleForeignKeyCreatePlan(target: OracleForeignKeyTarget, options: BuildTableStructureChangeSqlOptions, changes: OracleForeignKeyChange[], partitioning?: TablePartitionDefinition): Promise<OracleForeignKeyCreatePlan> {
+export async function prepareOracleForeignKeyCreatePlan(target: OracleForeignKeyTarget, options: BuildTableStructureChangeSqlOptions, changes: OracleForeignKeyChange[], partitioning?: TablePartitionDefinition, stillCurrent: () => boolean = () => true): Promise<OracleForeignKeyCreatePlan> {
   target = { ...target };
   changes = JSON.parse(JSON.stringify(changes)) as OracleForeignKeyChange[];
   options = { ...JSON.parse(JSON.stringify(options)), databaseType: target.databaseType, schema: target.schema, tableName: target.tableName, foreignKeys: [], oracleForeignKeyChanges: changes };
@@ -516,7 +520,7 @@ export async function prepareOracleForeignKeyCreatePlan(target: OracleForeignKey
   if (generated.warnings.length || !generated.statements.length) throw new Error(generated.warnings.join("\n") || "The create plan is empty.");
   if (!/^CREATE\s+TABLE\b/i.test(generated.statements[0]!.trimStart())) invalid();
   if (generated.statements.filter((statement) => statement.includes("FOREIGN KEY")).length !== changes.length) invalid();
-  const identity = await query(target, "SELECT USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL");
+  const identity = await query(target, "SELECT USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL", stillCurrent);
   if (identity.length !== 1 || identity[0]?.length !== 2 || identity[0].some((value) => typeof value !== "string" || !value)) invalid();
   const session = { user: identity[0]![0] as string, currentSchema: identity[0]![1] as string };
   const source = {
@@ -548,7 +552,7 @@ export async function prepareOracleForeignKeyCreatePlan(target: OracleForeignKey
       references.push(snapshot);
       continue;
     }
-    const snapshot = await readOracleForeignKeyReferenceSnapshot(target, session.user, definition);
+    const snapshot = await readOracleForeignKeyReferenceSnapshot(target, session.user, definition, stillCurrent);
     validateOracleForeignKeyReference(snapshot, source, definition, false, target.databaseType);
     references.push(snapshot);
   }
@@ -556,40 +560,55 @@ export async function prepareOracleForeignKeyCreatePlan(target: OracleForeignKey
 }
 
 /** Rechecks parent/session state, then executes CREATE and ordered FKs once each. */
-export async function executeOracleForeignKeyCreatePlan(plan: OracleForeignKeyCreatePlan, timeoutSecs: number, stillCurrent: () => boolean): Promise<OracleForeignKeyCreateExecutionResult | undefined> {
-  const fresh = await prepareOracleForeignKeyCreatePlan(plan.target, plan.options, plan.changes, plan.partitioning);
-  if (!stillCurrent()) return undefined;
+export async function executeOracleForeignKeyCreatePlan(plan: OracleForeignKeyCreatePlan, timeoutSecs: number, guards: (() => boolean) | { canStart?: () => boolean; connectionCurrent?: () => boolean }): Promise<OracleForeignKeyCreateExecutionResult | undefined> {
+  const canStart = typeof guards === "function" ? guards : (guards.canStart ?? (() => true));
+  const connectionCurrent = typeof guards === "function" ? guards : (guards.connectionCurrent ?? (() => true));
+  if (!canStart() || !connectionCurrent()) return undefined;
+  const fresh = await prepareOracleForeignKeyCreatePlan(plan.target, plan.options, plan.changes, plan.partitioning, connectionCurrent);
+  if (!connectionCurrent() || !canStart()) return undefined;
   if (fresh.snapshot !== plan.snapshot || JSON.stringify(fresh.statements) !== JSON.stringify(plan.statements)) invalid();
   const steps: OracleForeignKeyCreateExecutionResult["steps"] = plan.statements.map((sql) => ({ sql, state: "notExecuted" }));
   for (const step of steps) {
-    if (!stillCurrent()) break;
+    if (!canStart() || !connectionCurrent()) break;
     try {
       const result = await api.executeQuery(plan.target.connectionId, plan.target.database, step.sql.replace(/;\s*$/, ""), plan.target.schema, undefined, { catalog: plan.target.catalog, timeoutSecs });
+      if (!connectionCurrent()) {
+        step.state = "unknown";
+        step.error = "Connection or target changed during execution; outcome is unknown.";
+        const outcome: OracleForeignKeyCreateExecutionResult = { steps, readbackError: "Connection or target changed during CREATE DDL; readback is unknown." };
+        return outcome;
+      }
       if (result.execution_error) {
         step.state = "rejected";
         step.error = result.error?.detail || "Create statement rejected";
         break;
       }
       step.state = "committed";
+      if (!canStart()) break;
     } catch (error) {
       step.state = "unknown";
       step.error = error instanceof Error ? error.message : String(error);
+      if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during CREATE DDL; readback is unknown." };
       break;
     }
   }
   const outcome: OracleForeignKeyCreateExecutionResult = { steps };
   const createUnknown = steps[0]?.state === "unknown";
   if (!steps.some((step) => step.state === "committed") && !createUnknown) return outcome;
-  if (!stillCurrent()) {
+  if (!connectionCurrent()) {
     outcome.readbackError = "Connection, target, or draft changed before readback; the result remains unknown.";
     return outcome;
   }
   try {
     const readbackTarget = { ...plan.target, tableName: foldCreatedTableName(plan.target.tableName, plan.target.databaseType) };
-    const definitions = await readOracleForeignKeyDefinitions(readbackTarget);
+    const definitions = await readOracleForeignKeyDefinitions(readbackTarget, connectionCurrent);
+    if (!connectionCurrent()) {
+      outcome.readbackError = "Connection or target changed during readback; the result remains unknown.";
+      return outcome;
+    }
     outcome.tableExists = true;
     outcome.readbackDefinitions = definitions;
-    if (!stillCurrent()) outcome.readbackError = "Connection or target changed during readback; the result remains unknown.";
+    if (!connectionCurrent()) outcome.readbackError = "Connection or target changed during readback; the result remains unknown.";
     else
       for (const [index, change] of plan.changes.entries()) {
         const expected = change.target!;
@@ -615,13 +634,13 @@ export async function executeOracleForeignKeyCreatePlan(plan: OracleForeignKeyCr
 }
 
 /** Generates a complete preview and its preflight evidence. It never executes generated DDL. */
-export async function prepareOracleForeignKeyPlan(target: OracleForeignKeyTarget, options: BuildTableStructureChangeSqlOptions, changes: OracleForeignKeyChange[]): Promise<OracleForeignKeyPlan> {
+export async function prepareOracleForeignKeyPlan(target: OracleForeignKeyTarget, options: BuildTableStructureChangeSqlOptions, changes: OracleForeignKeyChange[], stillCurrent: () => boolean = () => true): Promise<OracleForeignKeyPlan> {
   target = { ...target };
   changes = JSON.parse(JSON.stringify(changes)) as OracleForeignKeyChange[];
   options = { ...JSON.parse(JSON.stringify(options)), databaseType: target.databaseType, schema: target.schema, tableName: target.tableName, foreignKeys: [], oracleForeignKeyChanges: changes };
   const whole = await api.buildTableStructureChangeSql(options);
   if (whole.warnings.length) throw new Error(whole.warnings.join("\n"));
-  const source = await readOracleForeignKeySourceSnapshot(target, changes);
+  const source = await readOracleForeignKeySourceSnapshot(target, changes, stillCurrent);
   validateOracleForeignKeySourceChanges(source, target, changes);
   const groups: OracleForeignKeyPlan["groups"] = [];
   const references: OracleForeignKeyPlan["references"] = [];
@@ -632,7 +651,7 @@ export async function prepareOracleForeignKeyPlan(target: OracleForeignKeyTarget
     const identity = JSON.stringify([definition.refSchema, definition.refTable, definition.refColumns]);
     const existing = referenceIndices.get(identity);
     if (existing !== undefined) return references[existing]!.snapshot;
-    const snapshot = await readOracleForeignKeyReferenceSnapshot(target, source.user, definition);
+    const snapshot = await readOracleForeignKeyReferenceSnapshot(target, source.user, definition, stillCurrent);
     referenceIndices.set(identity, references.length);
     references.push({
       columns: [...definition.refColumns],
@@ -657,7 +676,7 @@ export async function prepareOracleForeignKeyPlan(target: OracleForeignKeyTarget
     if (needsQualification) validateOracleForeignKeyReference(parent, source, change.target, replacement, target.databaseType);
     if (needsQualification && (!parent.objectId || !parent.keys || !parent.columns)) unverified.add("referenceDefinition");
     if (needsQualification && parent.references !== "present") unverified.add("referencesPermission");
-    const data = await checkOracleForeignKeyData(target, change, replacement);
+    const data = await checkOracleForeignKeyData(target, change, replacement, stillCurrent);
     const needsData = change.target.state.validated && (!change.original || replacement || !change.original.state.validated || (!change.original.state.enabled && change.target.state.enabled));
     if (needsData && !data.checked) unverified.add("existingData");
   }
@@ -667,37 +686,47 @@ export async function prepareOracleForeignKeyPlan(target: OracleForeignKeyTarget
 }
 
 /** Rechecks the full preflight snapshot, applies one statement at a time, then reads the definitions back. */
-export async function executeOracleForeignKeyPlan(plan: OracleForeignKeyPlan, timeoutSecs: number, stillCurrent: () => boolean): Promise<OracleForeignKeyExecutionResult | undefined> {
-  const fresh = await prepareOracleForeignKeyPlan(plan.target, plan.options, plan.changes);
-  if (!stillCurrent()) return undefined;
+export async function executeOracleForeignKeyPlan(plan: OracleForeignKeyPlan, timeoutSecs: number, guards: (() => boolean) | { canStart?: () => boolean; connectionCurrent?: () => boolean }): Promise<OracleForeignKeyExecutionResult | undefined> {
+  const canStart = typeof guards === "function" ? guards : (guards.canStart ?? (() => true));
+  const connectionCurrent = typeof guards === "function" ? guards : (guards.connectionCurrent ?? (() => true));
+  if (!canStart() || !connectionCurrent()) return undefined;
+  const fresh = await prepareOracleForeignKeyPlan(plan.target, plan.options, plan.changes, connectionCurrent);
+  if (!connectionCurrent() || !canStart()) return undefined;
   if (fresh.snapshot !== plan.snapshot || JSON.stringify(fresh.statements) !== JSON.stringify(plan.statements)) invalid();
-  if (!stillCurrent()) return undefined;
+  if (!canStart() || !connectionCurrent()) return undefined;
   const steps: OracleForeignKeyExecutionResult["steps"] = plan.statements.map((sql) => ({ sql, state: "notExecuted" }));
   for (const step of steps) {
-    if (!stillCurrent()) break;
+    if (!canStart() || !connectionCurrent()) break;
     try {
       const result = await api.executeQuery(plan.target.connectionId, plan.target.database, step.sql.replace(/;\s*$/, ""), plan.target.schema, undefined, { catalog: plan.target.catalog, timeoutSecs });
+      if (!connectionCurrent()) {
+        step.state = "unknown";
+        step.error = "Connection or target changed during execution; outcome is unknown.";
+        return { steps, readbackError: "Connection or target changed during foreign key DDL; readback is unknown." };
+      }
       if (result.execution_error) {
         step.state = "rejected";
         step.error = result.error?.detail || "Foreign key statement rejected";
         break;
       }
       step.state = "committed";
+      if (!canStart()) break;
     } catch (error) {
       step.state = "unknown";
       step.error = error instanceof Error ? error.message : String(error);
+      if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during foreign key DDL; readback is unknown." };
       break;
     }
   }
   const outcome: OracleForeignKeyExecutionResult = { steps };
   const recoveryTargets: OracleForeignKeyDefinition[] = [];
-  if (!stillCurrent()) {
+  if (!connectionCurrent()) {
     outcome.readbackError = "Connection, target, or draft changed during execution; readback is unknown.";
     return outcome;
   }
   try {
-    const current = await readOracleForeignKeyDefinitions(plan.target);
-    if (!stillCurrent()) {
+    const current = await readOracleForeignKeyDefinitions(plan.target, connectionCurrent);
+    if (!connectionCurrent()) {
       outcome.readbackError = "Connection or target changed during readback; the result remains unknown.";
       return outcome;
     }
@@ -722,12 +751,12 @@ export async function executeOracleForeignKeyPlan(plan: OracleForeignKeyPlan, ti
       }
       const needsRecovery = dropped && !original && !target && ((complete && !change.target) || groupSteps.some((step) => step.state === "rejected" || step.state === "unknown"));
       if (needsRecovery) {
-        if (!stillCurrent()) {
+        if (!canStart() || !connectionCurrent()) {
           outcome.readbackError = "Connection or target changed before recovery checks; the result remains unknown.";
           return outcome;
         }
-        const names = await readOracleForeignKeyConstraintNames(plan.target, [change.original!.name, ...(change.target && change.target.name !== change.original!.name ? [change.target.name] : [])]);
-        if (!stillCurrent()) {
+        const names = await readOracleForeignKeyConstraintNames(plan.target, [change.original!.name, ...(change.target && change.target.name !== change.original!.name ? [change.target.name] : [])], connectionCurrent);
+        if (!connectionCurrent()) {
           outcome.readbackError = "Connection or target changed during recovery checks; the result remains unknown.";
           return outcome;
         }
@@ -735,8 +764,8 @@ export async function executeOracleForeignKeyPlan(plan: OracleForeignKeyPlan, ti
           outcome.readbackError = "A foreign key name is occupied; manual recovery must be reviewed.";
           continue;
         }
-        const currentSource = await readOracleForeignKeySourceSnapshot(plan.target, plan.changes);
-        if (!stillCurrent()) {
+        const currentSource = await readOracleForeignKeySourceSnapshot(plan.target, plan.changes, connectionCurrent);
+        if (!connectionCurrent()) {
           outcome.readbackError = "Connection or target changed during source verification; the result remains unknown.";
           return outcome;
         }
@@ -758,13 +787,13 @@ export async function executeOracleForeignKeyPlan(plan: OracleForeignKeyPlan, ti
     outcome.readbackError = error instanceof Error ? error.message : String(error);
   }
   if (recoveryTargets.length) {
-    if (!stillCurrent()) {
+    if (!canStart() || !connectionCurrent()) {
       outcome.readbackError = "Connection or target changed before generating recovery statements; the result remains unknown.";
       return outcome;
     }
     const recoveryChanges = recoveryTargets.map((original) => ({ original: null, target: original }));
     const recovery = await api.buildTableStructureChangeSql({ ...plan.options, oracleForeignKeyChanges: recoveryChanges });
-    if (!stillCurrent()) {
+    if (!canStart() || !connectionCurrent()) {
       outcome.readbackError = "Connection or target changed during recovery statement generation; the result remains unknown.";
       return outcome;
     }

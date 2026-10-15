@@ -171,3 +171,33 @@ fn oracle_unique_disable_uses_explicit_index_policy() {
         vec!["ALTER TABLE \"APP\".\"CONTACTS\" DISABLE VALIDATE CONSTRAINT \"UQ_CONTACTS\" KEEP INDEX;"]
     );
 }
+#[test]
+fn oracle_enabling_novalidate_unique_without_an_index_creates_a_nonunique_index() {
+    let options: TableStructureSqlOptions = serde_json::from_value(json!({
+        "databaseType": "oracle", "schema": "APP", "tableName": "CONTACTS", "columns": [], "indexes": [],
+        "oracleConstraintChanges": [{
+            "indexPolicy": "keep",
+            "original": { "kind": "unique", "definition": {
+                "name": "UQ_CONTACTS", "columns": ["ID"], "relyRaw": "NULL",
+                "state": { "enabled": false, "validated": false, "deferrable": false, "initiallyDeferred": false, "rely": false },
+                "index": { "owner": "APP", "name": "", "tableOwner": "APP", "tableName": "CONTACTS", "sharing": "exclusive", "metadataComplete": true, "indexType": "NORMAL", "uniqueness": "UNIQUE", "status": "VALID", "partitioned": false, "visibility": "VISIBLE", "secondary": "N", "columns": [], "directions": [], "keyIsExpression": [], "includedColumns": [], "newNameAvailable": false }
+            } },
+            "target": { "kind": "unique", "definition": {
+                "name": "UQ_CONTACTS", "columns": ["ID"], "relyRaw": "NULL",
+                "state": { "enabled": true, "validated": false, "deferrable": false, "initiallyDeferred": false, "rely": false },
+                "index": { "owner": "APP", "name": "", "newName": "IX_UQ_CONTACTS", "newNameAvailable": true, "tableOwner": "APP", "tableName": "CONTACTS", "sharing": "exclusive", "metadataComplete": false, "indexType": "NORMAL", "uniqueness": "UNIQUE", "status": "VALID", "partitioned": false, "visibility": "VISIBLE", "secondary": "N", "columns": ["ID"], "directions": ["ASC"], "keyIsExpression": [false], "includedColumns": [] }
+            } }
+        }]
+    })).unwrap();
+
+    let result = build_table_structure_change_sql(options);
+
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"APP\".\"CONTACTS\" DROP CONSTRAINT \"UQ_CONTACTS\" KEEP INDEX;",
+            "ALTER TABLE \"APP\".\"CONTACTS\" ADD CONSTRAINT \"UQ_CONTACTS\" UNIQUE (\"ID\") NOT DEFERRABLE INITIALLY IMMEDIATE NORELY USING INDEX (CREATE INDEX \"APP\".\"IX_UQ_CONTACTS\" ON \"APP\".\"CONTACTS\" (\"ID\")) ENABLE NOVALIDATE;"
+        ]
+    );
+}

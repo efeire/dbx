@@ -99,6 +99,11 @@ async function prepareReorderedKey(rejectAdd = false, remove = false, databaseTy
   }));
   vi.mocked(api.executeQuery).mockImplementation(async (_id, _database, sql) => {
     const result = (rows: unknown[][] = []) => ({ columns: [], rows, affected_rows: 0, execution_time_ms: 0 });
+    if (sql.includes("SYS_CONTEXT")) return result([["APP", "APP", "APP"]]);
+    if (sql.includes("SYS.ALL_OBJECTS")) {
+      const tableName = /OBJECT_NAME = '([^']+)'/.exec(sql)?.[1] ?? "SOURCE_ID_V";
+      return result([["APP", tableName, 77]]);
+    }
     if (sql.startsWith("SELECT RELY ")) return result([[null]]);
     if (sql.includes("SYS.ALL_EXTERNAL_TABLES")) return result();
     if (sql.includes(" DROP CONSTRAINT ")) {

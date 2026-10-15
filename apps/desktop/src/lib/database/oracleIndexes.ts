@@ -314,7 +314,12 @@ function sameExpectedIndexes(actual: OracleIndexDefinition[], expected: OracleIn
 }
 
 export async function prepareOracleIndexPlan(target: OracleConstraintTarget, statements: string[], drafts: EditableStructureIndex[], context?: OracleIndexPrepareContext): Promise<OracleIndexPlan> {
-  const snapshot = await readOracleIndexSnapshot(target);
+  const mutationsRequested = expectedMutations(drafts);
+  const snapshot = await readOracleIndexSnapshot(
+    target,
+    () => true,
+    mutationsRequested.map((item) => item.name),
+  );
   if (context) {
     const { baseline } = context;
     if (!baseline.targetIdentity || !baseline.configFingerprint || baseline.columnsFingerprint !== context.columnsFingerprint || baseline.indexesFingerprint !== context.indexesFingerprint || !sameTargetIdentity(baseline.snapshot, snapshot)) invalid();
@@ -355,7 +360,8 @@ export async function prepareOracleIndexPlan(target: OracleConstraintTarget, sta
 }
 
 export async function executeOracleIndexPlan(plan: OracleIndexPlan, timeoutSecs: number, stillCurrent: () => boolean): Promise<OracleIndexExecutionResult | undefined> {
-  const fresh = await readOracleIndexSnapshot(plan.target);
+  const requestedNames = [...new Set(plan.mutations.map((mutation) => mutation.name))];
+  const fresh = await readOracleIndexSnapshot(plan.target, stillCurrent, requestedNames);
   if (!stillCurrent()) return undefined;
   if (JSON.stringify(fresh) !== plan.snapshotFingerprint) invalid();
   const originalIdentity = fresh;
@@ -364,7 +370,7 @@ export async function executeOracleIndexPlan(plan: OracleIndexPlan, timeoutSecs:
     if (!stillCurrent()) break;
     const mutation = plan.mutations[index]!;
     try {
-      const before = await readOracleIndexSnapshot(plan.target);
+      const before = await readOracleIndexSnapshot(plan.target, stillCurrent, requestedNames);
       if (!stillCurrent()) return { steps, readbackError: "Connection or target changed before index DDL; no further statements were run." };
       if (!sameTargetIdentity(before, originalIdentity) || JSON.stringify(before.indexNames) !== JSON.stringify(mutation.expectedOwnerNamesBefore) || !sameExpectedIndexes(before.indexes, mutation.expectedBefore)) {
         return { steps, readbackError: "Index metadata or constraint support changed before DDL; later statements stopped." };
@@ -374,6 +380,11 @@ export async function executeOracleIndexPlan(plan: OracleIndexPlan, timeoutSecs:
     }
     try {
       const result = await api.executeQuery(plan.target.connectionId, plan.target.database, step.sql.replace(/;\s*$/, ""), plan.target.schema, undefined, { catalog: plan.target.catalog, timeoutSecs });
+      if (!stillCurrent()) {
+        step.state = "unknown";
+        step.error = "Connection or target changed during execution; outcome is unknown.";
+        return { steps, readbackError: "Connection or target changed during index DDL; readback is unknown." };
+      }
       if (result.execution_error) {
         step.state = "rejected";
         step.error = result.error?.detail || "Index statement rejected";
@@ -390,7 +401,7 @@ export async function executeOracleIndexPlan(plan: OracleIndexPlan, timeoutSecs:
       return { steps, readbackError: "Connection or target changed during index DDL; readback is unknown." };
     }
     try {
-      const after = await readOracleIndexSnapshot(plan.target);
+      const after = await readOracleIndexSnapshot(plan.target, stillCurrent, requestedNames);
       if (!stillCurrent()) {
         step.state = "unknown";
         return { steps, readbackError: "Connection or target changed during index readback; actual state is unknown." };

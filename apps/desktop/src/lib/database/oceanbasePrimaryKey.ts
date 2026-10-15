@@ -80,6 +80,21 @@ async function readOracleIndex(target: PrimaryKeyTarget, owner: string, name: st
   return { properties, columns };
 }
 
+async function availableOracleIndexName(target: PrimaryKeyTarget, columns: string[]): Promise<string> {
+  const taken: string[] = [];
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const candidate = generateUniqueIndexName(target.tableName, columns, taken, 30) || generateUniqueIndexName("DBX_PK", [], taken, 30);
+    if (!candidate) break;
+    const [indexes, constraints] = await Promise.all([
+      queryPrimaryKey(target, `SELECT INDEX_NAME FROM SYS.ALL_INDEXES WHERE OWNER = ${literal(target.schema)} AND INDEX_NAME = ${literal(candidate)}`),
+      queryPrimaryKey(target, `SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS WHERE OWNER = ${literal(target.schema)} AND CONSTRAINT_NAME = ${literal(candidate)}`),
+    ]);
+    if (!indexes.length && !constraints.length) return candidate;
+    taken.push(candidate);
+  }
+  fail("definitionChanged");
+}
+
 export async function prepareOraclePrimaryKeyChange(target: PrimaryKeyTarget, draft: ExistingPrimaryKeyChange) {
   const snapshot = await readOceanbasePrimaryKeySnapshot(target, draft);
   const original = JSON.parse(snapshot) as { keys: Array<Array<string | null>>; oracleState: OraclePrimaryKeyState };
@@ -87,11 +102,7 @@ export async function prepareOraclePrimaryKeyChange(target: PrimaryKeyTarget, dr
   const name = original.keys[0]![6];
   const oracleIndex: NonNullable<ExistingPrimaryKeyChange["oracleIndex"]> = { policy: name === null ? "none" : policy, owner: target.schema, name: name ?? "" };
   if (original.oracleState.enabled && draft.columns.length && (policy === "drop" || !sameMembers(draft.originalColumns, draft.columns))) {
-    const rows = await queryPrimaryKey(target, `SELECT INDEX_NAME FROM SYS.ALL_INDEXES WHERE OWNER = ${literal(target.schema)} ORDER BY INDEX_NAME`);
-    if (rows.some((row) => row.length !== 1 || typeof row[0] !== "string" || !row[0])) fail("incompleteMetadata");
-    const taken = rows.map((row) => String(row[0]));
-    oracleIndex.newName = generateUniqueIndexName(target.tableName, draft.columns, taken, 30) || generateUniqueIndexName("DBX_PK", [], taken, 30);
-    if (taken.includes(oracleIndex.newName)) fail("definitionChanged");
+    oracleIndex.newName = await availableOracleIndexName(target, draft.columns);
   }
   return { snapshot, change: { ...draft, oracleIndex, oracleState: original.oracleState } };
 }
@@ -103,7 +114,9 @@ export async function readOceanbasePrimaryKeySnapshot(target: PrimaryKeyTarget, 
   if (new Set(change.originalColumns).size !== change.originalColumns.length || new Set(change.columns).size !== change.columns.length) fail("duplicateColumns");
   const query = (sql: string) => queryPrimaryKey(target, sql);
   const where = `OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)}`;
-  const [columns, constraints, indexes, keys, keyColumns, tableFlags, columnFlags, references, relyRows, externalTables] = await Promise.all([
+  const [identity, objects, columns, constraints, indexes, keys, keyColumns, tableFlags, columnFlags, references, relyRows, externalTables] = await Promise.all([
+    query("SELECT USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA'), SYS_CONTEXT('USERENV','DB_NAME') FROM DUAL"),
+    query(`SELECT OWNER, OBJECT_NAME, OBJECT_ID FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(target.schema)} AND OBJECT_NAME = ${literal(target.tableName)} AND OBJECT_TYPE = 'TABLE'`),
     api.getColumns(target.connectionId, target.database, target.schema, target.tableName, target.catalog),
     api.listConstraints(target.connectionId, target.database, target.schema, target.tableName, target.catalog),
     api.listIndexes(target.connectionId, target.database, target.schema, target.tableName, target.catalog),
@@ -115,6 +128,17 @@ export async function readOceanbasePrimaryKeySnapshot(target: PrimaryKeyTarget, 
     oracle ? query(`SELECT RELY FROM SYS.ALL_CONSTRAINTS WHERE ${where} AND CONSTRAINT_NAME = ${literal(change.name)} AND CONSTRAINT_TYPE = 'P'`) : Promise.resolve([]),
     oracle ? query(`SELECT TABLE_NAME FROM SYS.ALL_EXTERNAL_TABLES WHERE ${where}`) : Promise.resolve([]),
   ]);
+  if (identity.length !== 1 || identity[0]?.length !== 3 || identity[0].some((value) => typeof value !== "string" || !value)) fail("incompleteMetadata");
+  if (
+    objects.length !== 1 ||
+    objects[0]?.length !== 3 ||
+    objects[0][0] !== target.schema ||
+    objects[0][1] !== target.tableName ||
+    (typeof objects[0][2] !== "string" && typeof objects[0][2] !== "number") ||
+    !/^[1-9]\d*$/.test(String(objects[0][2])) ||
+    (typeof objects[0][2] === "number" && !Number.isSafeInteger(objects[0][2]))
+  )
+    fail("incompleteMetadata");
   if (externalTables.length || tableFlags.length !== 1 || tableFlags[0]?.length !== 2 || tableFlags[0][0] !== null || tableFlags[0][1] !== "N") fail("unsupportedTable");
   const key = keys[0];
   if (keys.length !== 1 || key?.length !== 7 || key[0] !== change.name) fail("incompleteMetadata");
@@ -214,7 +238,22 @@ export async function readOceanbasePrimaryKeySnapshot(target: PrimaryKeyTarget, 
       if (Number(rows[0][0]) !== 0) fail(error);
     }
   }
-  return JSON.stringify({ columns, keys, keyColumns, tableFlags, columnFlags, indexProperties, indexColumns, indexUsers, ...(oracle ? { oracleState: state, externalTables } : {}) });
+  return JSON.stringify({
+    user: identity[0]![0],
+    currentSchema: identity[0]![1],
+    database: target.database,
+    databaseName: identity[0]![2],
+    objectId: String(objects[0]![2]),
+    columns,
+    keys,
+    keyColumns,
+    tableFlags,
+    columnFlags,
+    indexProperties,
+    indexColumns,
+    indexUsers,
+    ...(oracle ? { oracleState: state, externalTables } : {}),
+  });
 }
 
 /** Rechecks the original target and stops at the first failed independent DDL. */

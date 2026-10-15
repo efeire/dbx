@@ -85,8 +85,10 @@ function invalid(reason: OracleConstraintMetadataError["reason"] = "incomplete")
 const literal = (value: string) => `'${value.replace(/'/g, "''")}'`;
 const ident = (value: string) => `"${value.replace(/"/g, '""')}"`;
 
-async function query(target: OracleConstraintTarget, sql: string): Promise<unknown[][]> {
+async function query(target: OracleConstraintTarget, sql: string, stillCurrent: () => boolean = () => true): Promise<unknown[][]> {
+  if (!stillCurrent()) invalid("changed");
   const result = await api.executeQuery(target.connectionId, target.database, sql, target.schema, undefined, { catalog: target.catalog, maxRows: 10001 });
+  if (!stillCurrent()) invalid("changed");
   if (result.execution_error || result.truncated || result.has_more || result.rows.length >= 10001) invalid();
   return result.rows;
 }
@@ -250,8 +252,8 @@ function expressionTokens(expression: string): string[] {
 }
 
 /** Reads the table/session/constraint/index/reference state required before a CHECK/UNIQUE write. */
-export async function readOracleIndexSnapshot(target: OracleConstraintTarget): Promise<OracleIndexSnapshot> {
-  const snapshot = await readOracleConstraintSnapshot(target, undefined, true);
+export async function readOracleIndexSnapshot(target: OracleConstraintTarget, stillCurrent: () => boolean = () => true, ownerNames: string[] = []): Promise<OracleIndexSnapshot> {
+  const snapshot = await readOracleConstraintSnapshot(target, undefined, true, stillCurrent, ownerNames);
   const columns = [...snapshot.columns].sort((left, right) => left.name.localeCompare(right.name));
   const userColumns = snapshot.indexColumnReadMode === "enhanced" ? columns.filter((column) => !(column.userGenerated === "NO" && column.hiddenColumn === "YES")) : columns;
   return {
@@ -268,7 +270,8 @@ export async function readOracleIndexSnapshot(target: OracleConstraintTarget): P
   };
 }
 
-export async function readOracleConstraintSnapshot(target: OracleConstraintTarget, change?: OracleConstraintChange, indexesOnly = false): Promise<OracleConstraintSnapshot> {
+export async function readOracleConstraintSnapshot(target: OracleConstraintTarget, change?: OracleConstraintChange, indexesOnly = false, stillCurrent: () => boolean = () => true, requestedIndexNames: string[] = []): Promise<OracleConstraintSnapshot> {
+  if (!stillCurrent()) invalid("changed");
   target = { ...target };
   if (change) change = JSON.parse(JSON.stringify(change)) as OracleConstraintChange;
   const baseColumnsSql = `SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, NULLABLE FROM SYS.ALL_TAB_COLS WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)} ORDER BY COLUMN_NAME`;
@@ -277,31 +280,39 @@ export async function readOracleConstraintSnapshot(target: OracleConstraintTarge
   const columnsQuery = indexesOnly
     ? (async () => {
         try {
-          const rows = await query(target, enhancedColumnsSql);
+          const rows = await query(target, enhancedColumnsSql, stillCurrent);
           indexColumnReadMode = "enhanced";
           return rows;
         } catch {
-          const rows = await query(target, baseColumnsSql);
+          const rows = await query(target, baseColumnsSql, stillCurrent);
           indexColumnReadMode = "strict-base";
           return rows;
         }
       })()
-    : query(target, `SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, NULLABLE FROM SYS.ALL_TAB_COLS WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)} ORDER BY COLUMN_ID`);
+    : query(target, `SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, NULLABLE FROM SYS.ALL_TAB_COLS WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)} ORDER BY COLUMN_ID`, stillCurrent);
+  const wantedConstraintNames = [...new Set([change?.original?.definition.name, change?.target?.definition.name].filter((name): name is string => !!name))];
+  const wantedIndexNames = [
+    ...new Set([...requestedIndexNames, ...(change?.original?.kind === "unique" ? [change.original.definition.index.name] : []), ...(change?.target?.kind === "unique" ? [change.target.definition.index.name, change.target.definition.index.newName || ""] : [])].filter(Boolean)),
+  ];
+  const inList = (column: string, names: string[]) => (names.length ? ` AND ${column} IN (${names.map(literal).join(", ")})` : " AND 1 = 0");
+  const sharedUsageNamesSql = `SELECT c.INDEX_OWNER, c.INDEX_NAME, c.OWNER, c.TABLE_NAME, c.CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS c WHERE c.CONSTRAINT_TYPE IN ('P', 'U') AND c.INDEX_NAME IS NOT NULL AND EXISTS (SELECT 1 FROM SYS.ALL_INDEXES i WHERE i.OWNER = c.INDEX_OWNER AND i.INDEX_NAME = c.INDEX_NAME AND i.TABLE_OWNER = ${literal(target.schema)} AND i.TABLE_NAME = ${literal(target.tableName)}) ORDER BY c.INDEX_OWNER, c.INDEX_NAME, c.OWNER, c.TABLE_NAME, c.CONSTRAINT_NAME`;
   const [identity, objects, tableShapes, externalTables, columns, infos, names, indexNames, indexDetails, indexUsage] = await Promise.all([
-    query(target, "SELECT USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA'), SYS_CONTEXT('USERENV','DB_NAME') FROM DUAL"),
-    query(target, `SELECT OWNER, OBJECT_NAME, OBJECT_ID FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(target.schema)} AND OBJECT_NAME = ${literal(target.tableName)} AND OBJECT_TYPE = 'TABLE'`),
-    query(target, `SELECT IOT_TYPE, TEMPORARY FROM SYS.ALL_TABLES WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)}`),
-    query(target, `SELECT OWNER, TABLE_NAME FROM SYS.ALL_EXTERNAL_TABLES WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)}`),
+    query(target, "SELECT USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA'), SYS_CONTEXT('USERENV','DB_NAME') FROM DUAL", stillCurrent),
+    query(target, `SELECT OWNER, OBJECT_NAME, OBJECT_ID FROM SYS.ALL_OBJECTS WHERE OWNER = ${literal(target.schema)} AND OBJECT_NAME = ${literal(target.tableName)} AND OBJECT_TYPE = 'TABLE'`, stillCurrent),
+    query(target, `SELECT IOT_TYPE, TEMPORARY FROM SYS.ALL_TABLES WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)}`, stillCurrent),
+    query(target, `SELECT OWNER, TABLE_NAME FROM SYS.ALL_EXTERNAL_TABLES WHERE OWNER = ${literal(target.schema)} AND TABLE_NAME = ${literal(target.tableName)}`, stillCurrent),
     columnsQuery,
     indexesOnly ? Promise.resolve([]) : api.listConstraints(target.connectionId, target.database, target.schema, target.tableName, target.catalog),
-    indexesOnly ? Promise.resolve([]) : query(target, `SELECT CONSTRAINT_NAME, TABLE_NAME FROM SYS.ALL_CONSTRAINTS WHERE OWNER = ${literal(target.schema)} ORDER BY CONSTRAINT_NAME`),
-    query(target, `SELECT INDEX_NAME FROM SYS.ALL_INDEXES WHERE OWNER = ${literal(target.schema)} ORDER BY INDEX_NAME`),
+    indexesOnly ? Promise.resolve([]) : query(target, `SELECT CONSTRAINT_NAME, TABLE_NAME FROM SYS.ALL_CONSTRAINTS WHERE OWNER = ${literal(target.schema)}${inList("CONSTRAINT_NAME", wantedConstraintNames)} ORDER BY CONSTRAINT_NAME`, stillCurrent),
+    query(target, `SELECT INDEX_NAME FROM SYS.ALL_INDEXES WHERE OWNER = ${literal(target.schema)}${inList("INDEX_NAME", wantedIndexNames)} ORDER BY INDEX_NAME`, stillCurrent),
     query(
       target,
-      `SELECT i.OWNER, i.INDEX_NAME, i.TABLE_OWNER, i.TABLE_NAME, i.INDEX_TYPE, i.UNIQUENESS, i.STATUS, i.PARTITIONED, i.VISIBILITY, i.SECONDARY, ic.COLUMN_NAME, ic.DESCEND, ie.COLUMN_EXPRESSION FROM SYS.ALL_INDEXES i JOIN SYS.ALL_IND_COLUMNS ic ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME LEFT JOIN SYS.ALL_IND_EXPRESSIONS ie ON ie.INDEX_OWNER = ic.INDEX_OWNER AND ie.INDEX_NAME = ic.INDEX_NAME AND ie.TABLE_OWNER = ic.TABLE_OWNER AND ie.TABLE_NAME = ic.TABLE_NAME AND ie.COLUMN_POSITION = ic.COLUMN_POSITION WHERE i.OWNER = ${literal(target.schema)} ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION`,
+      `SELECT i.OWNER, i.INDEX_NAME, i.TABLE_OWNER, i.TABLE_NAME, i.INDEX_TYPE, i.UNIQUENESS, i.STATUS, i.PARTITIONED, i.VISIBILITY, i.SECONDARY, ic.COLUMN_NAME, ic.DESCEND, ie.COLUMN_EXPRESSION FROM SYS.ALL_INDEXES i JOIN SYS.ALL_IND_COLUMNS ic ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME LEFT JOIN SYS.ALL_IND_EXPRESSIONS ie ON ie.INDEX_OWNER = ic.INDEX_OWNER AND ie.INDEX_NAME = ic.INDEX_NAME AND ie.TABLE_OWNER = ic.TABLE_OWNER AND ie.TABLE_NAME = ic.TABLE_NAME AND ie.COLUMN_POSITION = ic.COLUMN_POSITION WHERE i.TABLE_OWNER = ${literal(target.schema)} AND i.TABLE_NAME = ${literal(target.tableName)} ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION`,
+      stillCurrent,
     ),
-    query(target, `SELECT OWNER, TABLE_NAME, CONSTRAINT_NAME, INDEX_NAME FROM SYS.ALL_CONSTRAINTS WHERE OWNER = ${literal(target.schema)} AND CONSTRAINT_TYPE IN ('P', 'U') AND INDEX_NAME IS NOT NULL ORDER BY INDEX_NAME, CONSTRAINT_NAME`),
+    query(target, sharedUsageNamesSql, stillCurrent),
   ]);
+  if (!stillCurrent()) invalid("changed");
   if (identity.length !== 1 || identity[0]?.length !== 3 || identity[0].some((value) => typeof value !== "string" || !value)) invalid();
   if (objects.length !== 1 || objects[0]?.length !== 3 || objects[0][0] !== target.schema || objects[0][1] !== target.tableName || !/^[1-9]\d*$/.test(String(objects[0][2]))) invalid();
   if (tableShapes.length !== 1 || tableShapes[0]?.length !== 2 || (tableShapes[0][0] !== null && tableShapes[0][0] !== "") || tableShapes[0][1] !== "N") invalid();
@@ -338,11 +349,15 @@ export async function readOracleConstraintSnapshot(target: OracleConstraintTarge
     )
   )
     invalid();
-  if (indexUsage.some((row) => row.length !== 4 || row.some((value) => typeof value !== "string" || !value))) invalid();
+  if (indexUsage.some((row) => row.length !== 5 || row.some((value) => typeof value !== "string" || !value))) invalid();
   const references: OracleConstraintSnapshot["references"] = [];
   if (!indexesOnly && change?.original?.kind === "unique") {
     const original = change.original.definition;
-    const rows = await query(target, `SELECT OWNER, TABLE_NAME, CONSTRAINT_NAME, STATUS, VALIDATED FROM SYS.ALL_CONSTRAINTS WHERE R_OWNER = ${literal(target.schema)} AND R_CONSTRAINT_NAME = ${literal(original.name)} AND CONSTRAINT_TYPE = 'R' ORDER BY OWNER, TABLE_NAME, CONSTRAINT_NAME`);
+    const rows = await query(
+      target,
+      `SELECT OWNER, TABLE_NAME, CONSTRAINT_NAME, STATUS, VALIDATED FROM SYS.ALL_CONSTRAINTS WHERE R_OWNER = ${literal(target.schema)} AND R_CONSTRAINT_NAME = ${literal(original.name)} AND CONSTRAINT_TYPE = 'R' ORDER BY OWNER, TABLE_NAME, CONSTRAINT_NAME`,
+      stillCurrent,
+    );
     for (const row of rows) {
       if (row.length !== 5 || row.some((value) => typeof value !== "string" || !value)) invalid();
       references.push({ owner: String(row[0]), table: String(row[1]), name: String(row[2]), status: String(row[3]), validated: String(row[4]) });
@@ -377,7 +392,7 @@ export async function readOracleConstraintSnapshot(target: OracleConstraintTarge
         directions: rows.map((row) => String(row[11])),
         keyIsExpression: rows.map((row) => typeof row[12] === "string" && row[12].trim() !== ""),
         includedColumns: [],
-        constraints: indexUsage.filter((use) => use[0] === first[0] && use[1] === first[3] && use[3] === name).map((use) => ({ owner: String(use[0]), tableName: String(use[1]), name: String(use[2]) })),
+        constraints: indexUsage.filter((use) => use[0] === first[0] && use[1] === name).map((use) => ({ owner: String(use[2]), tableName: String(use[3]), name: String(use[4]) })),
       };
     }),
     references,
@@ -446,7 +461,7 @@ async function constraintRecoveryCandidate(plan: OracleConstraintPlan, snapshot:
       indexPolicy = "keep";
       recovery = { ...recovery, definition: { ...recovery.definition, index: { ...recovery.definition.index, sharing: "exclusive" } } };
     } else {
-      const candidate = generateUniqueIndexName(plan.target.tableName, recovery.definition.columns, [...snapshot.indexNames, ...snapshot.names.map((item) => item.name)], 30);
+      const candidate = await availableUniqueIndexName(plan.target, plan.target.tableName, recovery.definition.columns, [...snapshot.indexNames, ...snapshot.names.map((item) => item.name)], stillCurrent);
       if (!candidate) return undefined;
       recovery = { ...recovery, definition: { ...recovery.definition, index: { ...oldIndex, name: "", newName: candidate, newNameAvailable: true } } };
     }
@@ -460,7 +475,22 @@ async function constraintRecoveryCandidate(plan: OracleConstraintPlan, snapshot:
   return built.statements[0];
 }
 
-function prepareUniqueTargetIndex(snapshot: OracleConstraintSnapshot, target: OracleConstraintTarget, change: OracleConstraintChange): OracleConstraintChange {
+async function availableUniqueIndexName(target: OracleConstraintTarget, tableName: string, columns: string[], occupied: string[], stillCurrent: () => boolean): Promise<string | undefined> {
+  const taken = [...occupied];
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const candidate = generateUniqueIndexName(tableName, columns, taken, 30) || generateUniqueIndexName("DBX_UQ", [], taken, 30);
+    if (!candidate) return undefined;
+    const [indexes, constraints] = await Promise.all([
+      query(target, `SELECT INDEX_NAME FROM SYS.ALL_INDEXES WHERE OWNER = ${literal(target.schema)} AND INDEX_NAME = ${literal(candidate)}`, stillCurrent),
+      query(target, `SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS WHERE OWNER = ${literal(target.schema)} AND CONSTRAINT_NAME = ${literal(candidate)}`, stillCurrent),
+    ]);
+    if (!indexes.length && !constraints.length) return candidate;
+    taken.push(candidate);
+  }
+  return undefined;
+}
+
+async function prepareUniqueTargetIndex(snapshot: OracleConstraintSnapshot, target: OracleConstraintTarget, change: OracleConstraintChange, stillCurrent: () => boolean): Promise<OracleConstraintChange> {
   if (change.target?.kind !== "unique") return change;
   const next = JSON.parse(JSON.stringify(change)) as OracleConstraintChange;
   const targetDefinition = next.target!.definition as OracleUniqueConstraint;
@@ -535,9 +565,19 @@ function prepareUniqueTargetIndex(snapshot: OracleConstraintSnapshot, target: Or
     targetDefinition.index = { ...oldIndex, columns: [...oldIndex.columns], directions: [...oldIndex.directions], keyIsExpression: [...oldIndex.keyIsExpression], includedColumns: [...oldIndex.includedColumns], newNameAvailable: false };
     return next;
   }
-  const taken = [...snapshot.indexNames, ...snapshot.names.map((item) => item.name)];
-  const candidate = generateUniqueIndexName(target.tableName, targetDefinition.columns, taken, 30) || generateUniqueIndexName("DBX_UQ", [], taken, 30);
-  if (!candidate || taken.includes(candidate)) invalid("changed");
+  let candidate: string | undefined;
+  if (targetDefinition.index.newName && targetDefinition.index.newNameAvailable) {
+    const frozen = targetDefinition.index.newName;
+    const [indexes, constraints] = await Promise.all([
+      query(target, `SELECT INDEX_NAME FROM SYS.ALL_INDEXES WHERE OWNER = ${literal(target.schema)} AND INDEX_NAME = ${literal(frozen)}`, stillCurrent),
+      query(target, `SELECT CONSTRAINT_NAME FROM SYS.ALL_CONSTRAINTS WHERE OWNER = ${literal(target.schema)} AND CONSTRAINT_NAME = ${literal(frozen)}`, stillCurrent),
+    ]);
+    if (indexes.length || constraints.length) invalid("changed");
+    candidate = frozen;
+  } else {
+    candidate = await availableUniqueIndexName(target, target.tableName, targetDefinition.columns, [...snapshot.indexNames, ...snapshot.names.map((item) => item.name)], stillCurrent);
+  }
+  if (!candidate) invalid("changed");
   targetDefinition.index = {
     owner: target.schema,
     name: "",
@@ -546,7 +586,7 @@ function prepareUniqueTargetIndex(snapshot: OracleConstraintSnapshot, target: Or
     sharing: "exclusive",
     metadataComplete: false,
     indexType: "NORMAL",
-    uniqueness: "UNIQUE",
+    uniqueness: targetDefinition.state.deferrable || !targetDefinition.state.validated ? "NONUNIQUE" : "UNIQUE",
     status: "VALID",
     partitioned: false,
     visibility: "VISIBLE",
@@ -567,7 +607,7 @@ function readbackMatches(target: OracleConstraintTarget, actual: OracleConstrain
   if (expected.kind !== "unique" || actual.kind !== "unique") return false;
   if (sortedJson(actual.definition.columns) !== sortedJson(expected.definition.columns)) return false;
   const index = actual.definition.index;
-  const expectedUniqueness = expected.definition.state.deferrable ? "NONUNIQUE" : ["UNIQUE", "NONUNIQUE"];
+  const expectedUniqueness = expected.definition.index.uniqueness;
   if (!expected.definition.state.enabled && !expected.definition.index.name) return true;
   if (
     !index.metadataComplete ||
@@ -575,7 +615,7 @@ function readbackMatches(target: OracleConstraintTarget, actual: OracleConstrain
     index.tableOwner !== target.schema ||
     index.tableName !== target.tableName ||
     index.indexType !== "NORMAL" ||
-    !(typeof expectedUniqueness === "string" ? index.uniqueness === expectedUniqueness : expectedUniqueness.includes(index.uniqueness)) ||
+    index.uniqueness !== expectedUniqueness ||
     index.status !== "VALID" ||
     index.partitioned ||
     index.visibility !== "VISIBLE" ||
@@ -592,10 +632,10 @@ function readbackMatches(target: OracleConstraintTarget, actual: OracleConstrain
   return !!expectedIndexName && index.name === expectedIndexName;
 }
 
-async function checkCheckRows(target: OracleConstraintTarget, expression: string) {
+async function checkCheckRows(target: OracleConstraintTarget, expression: string, stillCurrent: () => boolean) {
   let rows: unknown[][];
   try {
-    rows = await query(target, `SELECT 1 FROM ${ident(target.schema)}.${ident(target.tableName)} WHERE NOT (\n${expression}\n) AND ROWNUM <= 1`);
+    rows = await query(target, `SELECT 1 FROM ${ident(target.schema)}.${ident(target.tableName)} WHERE NOT (\n${expression}\n) AND ROWNUM <= 1`, stillCurrent);
   } catch {
     invalid("unreadableData");
   }
@@ -603,12 +643,12 @@ async function checkCheckRows(target: OracleConstraintTarget, expression: string
   if (rows!.length) invalid("invalidData");
 }
 
-async function checkUniqueRows(target: OracleConstraintTarget, columns: string[]) {
+async function checkUniqueRows(target: OracleConstraintTarget, columns: string[], stillCurrent: () => boolean) {
   const names = columns.map(ident);
   const nonNull = names.map((name) => `${name} IS NOT NULL`).join(" OR ");
   let rows: unknown[][];
   try {
-    rows = await query(target, `SELECT 1 FROM (SELECT 1 FROM ${ident(target.schema)}.${ident(target.tableName)} WHERE ${nonNull} GROUP BY ${names.join(", ")} HAVING COUNT(*) > 1) WHERE ROWNUM <= 1`);
+    rows = await query(target, `SELECT 1 FROM (SELECT 1 FROM ${ident(target.schema)}.${ident(target.tableName)} WHERE ${nonNull} GROUP BY ${names.join(", ")} HAVING COUNT(*) > 1) WHERE ROWNUM <= 1`, stillCurrent);
   } catch {
     invalid("unreadableData");
   }
@@ -617,47 +657,58 @@ async function checkUniqueRows(target: OracleConstraintTarget, columns: string[]
 }
 
 /** Builds one checked constraint change and its non-destructive data preflight. */
-export async function prepareOracleConstraintPlan(target: OracleConstraintTarget, options: BuildTableStructureChangeSqlOptions, change: OracleConstraintChange): Promise<OracleConstraintPlan> {
+export async function prepareOracleConstraintPlan(target: OracleConstraintTarget, options: BuildTableStructureChangeSqlOptions, change: OracleConstraintChange, stillCurrent: () => boolean = () => true): Promise<OracleConstraintPlan> {
   target = { ...target };
   change = JSON.parse(JSON.stringify(change)) as OracleConstraintChange;
   options = { ...JSON.parse(JSON.stringify(options)), databaseType: target.databaseType, schema: target.schema, tableName: target.tableName, foreignKeys: [] };
-  const snapshot = await readOracleConstraintSnapshot(target, change);
+  const snapshot = await readOracleConstraintSnapshot(target, change, false, stillCurrent);
+  if (!stillCurrent()) invalid("changed");
   validateChange(snapshot, target, change);
-  change = prepareUniqueTargetIndex(snapshot, target, change);
+  change = await prepareUniqueTargetIndex(snapshot, target, change, stillCurrent);
   options.oracleConstraintChanges = [change];
   const generated = await api.buildTableStructureChangeSql(options);
   if (generated.warnings.length || !generated.statements.length) throw new Error(generated.warnings.join("\n") || "The constraint plan is empty.");
   const hasDrop = generated.statements.some((statement) => /\bDROP\s+CONSTRAINT\b/i.test(statement));
   const checkTarget = change.target?.kind === "check" ? change.target.definition : undefined;
   const checkSource = change.original?.kind === "check" ? change.original.definition : undefined;
-  if (checkTarget && checkTarget.state.validated && checkSource && (checkSource.expression !== checkTarget.expression || hasDrop)) await checkCheckRows(target, checkTarget.expression);
+  if (checkTarget && checkTarget.state.validated && checkSource && (checkSource.expression !== checkTarget.expression || hasDrop)) await checkCheckRows(target, checkTarget.expression, stillCurrent);
   const uniqueTarget = change.target?.kind === "unique" ? change.target.definition : undefined;
   const uniqueSource = change.original?.kind === "unique" ? change.original.definition : undefined;
   if (uniqueSource && hasDrop && snapshot.references.length) invalid("changed");
   if (uniqueTarget && uniqueSource && uniqueTarget.state.validated && hasDrop) {
-    await checkUniqueRows(target, uniqueTarget.columns);
+    await checkUniqueRows(target, uniqueTarget.columns, stillCurrent);
   }
+  if (!stillCurrent()) invalid("changed");
   const dropsConstraint = generated.statements.some((statement) => /\bDROP\s+CONSTRAINT\b/i.test(statement));
   const notices = target.databaseType === "oceanbase-oracle" && change.original?.kind === "unique" && dropsConstraint ? ["oracleConstraint.pairedIndexImpact"] : [];
   return { target, options, change, snapshot, snapshotFingerprint: JSON.stringify(snapshot), statements: [...generated.statements], notices };
 }
 
 /** Rechecks the fixed table identity before each DDL, stops on first failure, and never retries. */
-export async function executeOracleConstraintPlan(plan: OracleConstraintPlan, timeoutSecs: number, stillCurrent: () => boolean): Promise<OracleConstraintExecutionResult | undefined> {
-  const fresh = await prepareOracleConstraintPlan(plan.target, plan.options, plan.change);
-  if (!stillCurrent()) return undefined;
+export async function executeOracleConstraintPlan(plan: OracleConstraintPlan, timeoutSecs: number, guards: (() => boolean) | { canStart?: () => boolean; connectionCurrent?: () => boolean }): Promise<OracleConstraintExecutionResult | undefined> {
+  const canStart = typeof guards === "function" ? guards : (guards.canStart ?? (() => true));
+  const connectionCurrent = typeof guards === "function" ? guards : (guards.connectionCurrent ?? (() => true));
+  if (!canStart() || !connectionCurrent()) return undefined;
+  const fresh = await prepareOracleConstraintPlan(plan.target, plan.options, plan.change, connectionCurrent);
+  if (!connectionCurrent()) return undefined;
+  if (!canStart()) return undefined;
   if (fresh.snapshotFingerprint !== plan.snapshotFingerprint || JSON.stringify(fresh.statements) !== JSON.stringify(plan.statements)) invalid("changed");
   const steps: OracleConstraintExecutionResult["steps"] = plan.statements.map((sql) => ({ sql, state: "notExecuted" }));
   for (const step of steps) {
-    if (!stillCurrent()) break;
+    if (!canStart() || !connectionCurrent()) break;
     try {
       const result = await api.executeQuery(plan.target.connectionId, plan.target.database, step.sql.replace(/;\s*$/, ""), plan.target.schema, undefined, { catalog: plan.target.catalog, timeoutSecs });
+      if (!connectionCurrent()) {
+        step.state = "unknown";
+        step.error = "Connection or target changed during execution; outcome is unknown.";
+        return { steps, readbackError: "Connection or target changed during constraint DDL; readback is unknown." };
+      }
       if (result.execution_error) {
         step.state = "rejected";
         step.error = result.error?.detail || "Constraint statement rejected";
         try {
-          const actual = await readOracleConstraintSnapshot(plan.target, plan.change);
-          if (!stillCurrent()) return { steps, readbackError: "Connection or target changed during failure readback; actual state is unknown." };
+          const actual = await readOracleConstraintSnapshot(plan.target, plan.change, false, connectionCurrent);
+          if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during failure readback; actual state is unknown." };
           if (actual.objectId !== plan.snapshot.objectId) return { steps, readbackError: "Target table was replaced after a rejected constraint statement." };
           if (plan.change.target && actual.constraints.some((item) => readbackMatches(plan.target, item, plan.change.target!))) {
             step.error += " Actual target definition is present after readback.";
@@ -666,7 +717,7 @@ export async function executeOracleConstraintPlan(plan: OracleConstraintPlan, ti
           } else {
             step.error += " Readback shows a partial or unexpected constraint state; inspect before recovery.";
           }
-          const recoverySql = await constraintRecoveryCandidate(plan, actual, stillCurrent);
+          const recoverySql = await constraintRecoveryCandidate(plan, actual, () => canStart() && connectionCurrent());
           if (recoverySql) step.error += ` Manual recovery candidate: ${recoverySql}`;
         } catch (readbackError) {
           return { steps, readbackError: readbackError instanceof Error ? readbackError.message : String(readbackError) };
@@ -674,12 +725,14 @@ export async function executeOracleConstraintPlan(plan: OracleConstraintPlan, ti
         break;
       }
       step.state = "committed";
+      if (!canStart()) break;
     } catch (error) {
       step.state = "unknown";
       step.error = error instanceof Error ? error.message : String(error);
+      if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during unknown constraint outcome; readback is unknown." };
       try {
-        const actual = await readOracleConstraintSnapshot(plan.target, plan.change);
-        if (!stillCurrent()) return { steps, readbackError: "Connection or target changed during unknown-outcome readback; actual state is unknown." };
+        const actual = await readOracleConstraintSnapshot(plan.target, plan.change, false, stillCurrent);
+        if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during unknown-outcome readback; actual state is unknown." };
         if (actual.objectId !== plan.snapshot.objectId) return { steps, readbackError: "Target table was replaced after an unknown constraint outcome." };
         if (plan.change.target && actual.constraints.some((item) => readbackMatches(plan.target, item, plan.change.target!))) {
           step.error += " Actual target definition is present after readback.";
@@ -688,17 +741,18 @@ export async function executeOracleConstraintPlan(plan: OracleConstraintPlan, ti
         } else {
           step.error += " Readback shows a partial or unexpected constraint state; inspect before recovery.";
         }
-        const recoverySql = await constraintRecoveryCandidate(plan, actual, stillCurrent);
+        const recoverySql = await constraintRecoveryCandidate(plan, actual, () => canStart() && connectionCurrent());
         if (recoverySql) step.error += ` Manual recovery candidate: ${recoverySql}`;
       } catch (readbackError) {
         return { steps, readbackError: readbackError instanceof Error ? readbackError.message : String(readbackError) };
       }
       break;
     }
-    if (!stillCurrent()) break;
+    if (!canStart()) break;
+    if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during execution; readback is unknown." };
     try {
-      const current = await readOracleConstraintSnapshot(plan.target, plan.change);
-      if (!stillCurrent()) break;
+      const current = await readOracleConstraintSnapshot(plan.target, plan.change, false, connectionCurrent);
+      if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during readback; actual state is unknown." };
       if (
         current.user !== plan.snapshot.user ||
         current.currentSchema !== plan.snapshot.currentSchema ||
@@ -719,14 +773,14 @@ export async function executeOracleConstraintPlan(plan: OracleConstraintPlan, ti
   const plannedIndexName = plan.change.target?.kind === "unique" ? plan.change.target.definition.index.newName || plan.change.target.definition.index.name : undefined;
   const destructiveIndexChange =
     !!oldIndexName && (plan.change.target === null || plan.change.target?.kind !== "unique" || plan.change.target.definition.columns.join("\0") !== oldUnique?.columns.join("\0") || plan.change.target.definition.state.deferrable !== oldUnique?.state.deferrable || plan.change.indexPolicy === "drop");
-  if (!stillCurrent()) {
+  if (!connectionCurrent()) {
     outcome.readbackError = "Connection or target changed during execution; readback is unknown.";
     return outcome;
   }
   if (steps.some((step) => step.state !== "notExecuted")) {
     try {
-      const readback = await readOracleConstraintSnapshot(plan.target, plan.change);
-      if (!stillCurrent()) outcome.readbackError = "Connection or target changed during readback; result is unknown.";
+      const readback = await readOracleConstraintSnapshot(plan.target, plan.change, false, connectionCurrent);
+      if (!connectionCurrent()) outcome.readbackError = "Connection or target changed during readback; result is unknown.";
       else if (readback.objectId !== plan.snapshot.objectId) outcome.readbackError = "Target table was replaced during constraint DDL.";
       else if (steps.every((step) => step.state === "committed") && plan.change.target && !readback.constraints.some((item) => readbackMatches(plan.target, item, plan.change.target!))) outcome.readbackError = "Constraint readback differs from the submitted definition.";
       else if (!plan.change.target && readback.constraints.some((item) => item.definition.name === plan.change.original?.definition.name)) outcome.readbackError = "Deleted constraint is still present after readback.";
@@ -735,7 +789,8 @@ export async function executeOracleConstraintPlan(plan: OracleConstraintPlan, ti
         outcome.readbackError = "The replaced or dropped supporting index remains after readback.";
       else if (plannedIndexName && plan.change.target?.kind === "unique" && plan.change.target.definition.state.enabled && plan.change.target.definition.index.newName && !readback.indexNames.includes(plannedIndexName))
         outcome.readbackError = "The planned supporting index is missing after readback.";
-      if (oldUnique && !readback.constraints.some((item) => item.kind === "unique" && item.definition.name === oldUnique.name) && plan.change.target?.kind === "unique" && destructiveIndexChange) outcome.recoverySql = await constraintRecoveryCandidate(plan, readback, stillCurrent);
+      if (oldUnique && !readback.constraints.some((item) => item.kind === "unique" && item.definition.name === oldUnique.name) && plan.change.target?.kind === "unique" && destructiveIndexChange && canStart())
+        outcome.recoverySql = await constraintRecoveryCandidate(plan, readback, () => canStart() && connectionCurrent());
     } catch (error) {
       outcome.readbackError = error instanceof Error ? error.message : String(error);
     }
