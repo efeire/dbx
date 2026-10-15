@@ -3803,6 +3803,7 @@ async function loadStructure(
           return result.value;
         })
       : Promise.resolve(undefined);
+    const secondaryMetadataResultsPromise = Promise.allSettled([indexesPromise, foreignKeysPromise, constraintsPromise, triggersPromise, partitioningPromise]);
 
     let nextColumns = await columnsPromise;
     if (!oracleIndexLoadIsCurrent(requestId, loadTargetIdentity, loadConnectionRevision, loadConfigFingerprint)) return;
@@ -3860,7 +3861,7 @@ async function loadStructure(
       }
     }
     const applySecondaryMetadata = async () => {
-      const [indexesResult, foreignKeysResult, constraintsResult, triggersResult, partitioningResult] = await Promise.allSettled([indexesPromise, foreignKeysPromise, constraintsPromise, triggersPromise, partitioningPromise]);
+      const [indexesResult, foreignKeysResult, constraintsResult, triggersResult, partitioningResult] = await secondaryMetadataResultsPromise;
       if (!oracleIndexLoadIsCurrent(requestId, loadTargetIdentity, loadConnectionRevision, loadConfigFingerprint)) return;
 
       type SecondaryMetadataResult = { facet: ObjectMetadataFacet; result: PromiseSettledResult<unknown> };

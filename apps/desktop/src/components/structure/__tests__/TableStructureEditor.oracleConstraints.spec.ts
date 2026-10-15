@@ -28,9 +28,11 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   listForeignKeys: vi.fn().mockResolvedValue([]),
   listTriggers: vi.fn().mockResolvedValue([]),
   getTableComment: vi.fn().mockResolvedValue(""),
+  getTablePartitionStatus: vi.fn().mockResolvedValue({ isPartitionedParent: false, isPartition: false, isForeign: false }),
   getTablePartitioning: vi.fn().mockResolvedValue(null),
   buildTableStructureChangeSql: vi.fn().mockResolvedValue({ statements: [], warnings: [] }),
   saveHistory: vi.fn().mockResolvedValue(undefined),
+  saveOpenTabsState: vi.fn().mockResolvedValue(undefined),
   disconnectDb: vi.fn().mockResolvedValue(undefined),
   executeQuery: vi.fn().mockResolvedValue({ columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 }),
 }));
@@ -309,7 +311,8 @@ describe("Oracle CHECK and UNIQUE entry points", () => {
 
   it.each(["history", "refresh", "same-session"] as const)("handles CHECK results correctly when the connection is %s", async (pendingAt) => {
     let dropped = false;
-    let postDropConstraintReads = 0;
+    let componentRefreshStarted = false;
+    let historySaved = false;
     let releaseHistory!: () => void;
     let releaseRefresh!: () => void;
     let refreshStarted!: () => void;
@@ -328,10 +331,18 @@ describe("Oracle CHECK and UNIQUE entry points", () => {
     } as ConstraintInfo;
     const beforeMount = () => {
       vi.mocked(api.buildTableStructureChangeSql).mockImplementation(async (options) => ({ statements: options.oracleConstraintChanges?.length ? ['ALTER TABLE "APP"."CONTACTS" DROP CONSTRAINT "CK_AGE";'] : [], warnings: [] }) as never);
+      vi.mocked(api.getColumns).mockImplementation(async () => {
+        if (dropped && pendingAt === "refresh") {
+          componentRefreshStarted = true;
+        }
+        return [
+          { name: "EMAIL", data_type: "VARCHAR2(120 BYTE)", character_maximum_length: 120, is_nullable: true, is_primary_key: false, column_default: null },
+          { name: "AGE", data_type: "NUMBER", is_nullable: true, is_primary_key: false, column_default: null },
+        ];
+      });
       vi.mocked(api.listConstraints).mockImplementation(async () => {
         if (dropped) {
-          postDropConstraintReads += 1;
-          if (pendingAt === "refresh" && postDropConstraintReads === 2) {
+          if (pendingAt === "refresh" && componentRefreshStarted) {
             refreshStarted();
             return new Promise((resolve) => {
               releaseRefresh = () => resolve([] as never);
@@ -341,7 +352,10 @@ describe("Oracle CHECK and UNIQUE entry points", () => {
         }
         return [check];
       });
-      vi.mocked(api.saveHistory).mockImplementation(() => (pendingAt === "history" ? (new Promise<void>((resolve) => (releaseHistory = resolve)) as never) : (Promise.resolve() as never)));
+      vi.mocked(api.saveHistory).mockImplementation(async () => {
+        if (pendingAt === "history") await new Promise<void>((resolve) => (releaseHistory = resolve));
+        historySaved = true;
+      });
       const baseExecute = vi.mocked(api.executeQuery).getMockImplementation();
       vi.mocked(api.executeQuery).mockImplementation(async (connectionId, database, sql, schema, bindValues, options) => {
         if (sql.startsWith("ALTER TABLE") && sql.includes('DROP CONSTRAINT "CK_AGE"')) {
@@ -364,11 +378,15 @@ describe("Oracle CHECK and UNIQUE entry points", () => {
 
     const pendingSave = editor!.applyChanges();
     if (pendingAt === "history") await vi.waitFor(() => expect(api.saveHistory).toHaveBeenCalled());
-    else if (pendingAt === "refresh") await refreshStartedPromise;
+    else if (pendingAt === "refresh") {
+      await refreshStartedPromise;
+      expect(historySaved).toBe(true);
+    }
     if (pendingAt !== "same-session") {
-      await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+      const disconnecting = store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
       if (pendingAt === "history") releaseHistory();
       else releaseRefresh();
+      await disconnecting;
     }
     const outcome = await pendingSave;
 
