@@ -2096,6 +2096,7 @@ export interface DatabaseSearchTabState {
 }
 
 export interface QueryTab {
+  isDefaultQuery?: boolean;
   id: string;
   /** Stable creation time used when tabs are displayed in creation order. */
   createdAt?: number;
@@ -2529,6 +2530,8 @@ export interface SavedSqlFolder {
 }
 
 export interface SavedSqlFile {
+  /** The persistent, autosaved query for this connection/catalog/database. */
+  isDefaultQuery?: boolean;
   id: string;
   connectionId: string;
   folderId?: string;
@@ -2569,6 +2572,8 @@ export interface TransferTaskConfig {
   targetTableNameCase: TransferTableNameCase;
   quoteTargetColumnNames: boolean;
   batchSize: number;
+  /** Per-operation timeout for this task. Undefined inherits each connection; 0 disables the limit. */
+  operationTimeoutSecs?: number;
   /** Optional per-source-table transfer filter (bare WHERE or a full SELECT). */
   tableFilters?: Record<string, string>;
   /** Legacy-compatible rebuild flag; true takes precedence over the saved DML mode. */
