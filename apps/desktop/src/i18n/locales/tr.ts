@@ -6619,6 +6619,7 @@ export default withEnglishFallback({
     exportData: "Veri Dışa Aktar",
   },
   sqlFile: {
+    encodingHint: "Seçilen tüm dosyalara uygulanır. BOM varsa belirttiği kodlama önceliklidir.",
     restoreScope: "Geri yükleme kapsamı",
     restoreAll: "Tüm içerik",
     restoreSelectedTables: "Seçili tablolar",
