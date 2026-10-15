@@ -6481,6 +6481,7 @@ async function applyOracleForeignKeyCreatePlan(): Promise<boolean> {
         console.warn("[DBX][structure-history:save-failed]", error);
       }
     }
+    if (!connectionCurrent()) return false;
     const created = result.steps[0]?.state === "committed" || result.tableExists === true;
     const issues = [
       ...result.steps.filter((step) => step.state === "rejected" || step.state === "unknown").map((step) => `${step.state}: ${step.error || step.sql}`),
@@ -6508,6 +6509,7 @@ async function applyOracleForeignKeyCreatePlan(): Promise<boolean> {
         toast(`${t("oracleForeignKey.executionFailed")}\n${details}`, 10000);
         return false;
       }
+      if (!connectionCurrent()) return false;
       newOracleForeignKeyPlan.value = undefined;
       newOracleForeignKeySession.value = undefined;
       pendingStatements.value = [];
@@ -6586,7 +6588,7 @@ async function applyOracleForeignKeyCreatePlan(): Promise<boolean> {
       toast(t("structureEditor.created"), 2500);
       return issues.length === 0;
     }
-    if (sameTarget()) {
+    if (sameTarget() && connectionCurrent()) {
       errorMessage.value = issues.join("\n") || t("oracleForeignKey.executionFailed");
       newOracleForeignKeyPlan.value = undefined;
       newOracleForeignKeySession.value = undefined;
@@ -6609,7 +6611,7 @@ async function applyOracleForeignKeyCreatePlan(): Promise<boolean> {
     }
     return false;
   } catch (error) {
-    if (sameTarget()) errorMessage.value = error instanceof Error ? error.message : String(error);
+    if (sameTarget() && connectionCurrent()) errorMessage.value = error instanceof Error ? error.message : String(error);
     return false;
   } finally {
     oracleForeignKeyBusy.value = false;

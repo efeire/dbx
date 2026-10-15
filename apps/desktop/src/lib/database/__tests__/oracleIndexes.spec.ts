@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "@/lib/backend/api";
 import { executeOracleIndexPlan, mergeOracleIndexDraftsAfterRefresh, oracleIndexSnapshotMatchesLoadedColumns, prepareOracleIndexPlan } from "../oracleIndexes";
-import { readOracleIndexSnapshot } from "../oracleConstraints";
+import { readOracleConstraintSnapshot, readOracleIndexSnapshot } from "../oracleConstraints";
 
 vi.mock("@/lib/backend/api", () => ({ executeQuery: vi.fn(), listConstraints: vi.fn() }));
 
@@ -118,6 +118,25 @@ describe("Oracle index plans", () => {
     const snapshot = await readOracleIndexSnapshot(target);
 
     expect(snapshot.indexes.map((index) => index.name)).toEqual(["IX_OLD"]);
+  });
+
+  it("preserves same-named indexes from different owners and rejects ambiguous drafts", async () => {
+    unrelatedOwnerIndexRows = [["OTHER", "IX_OLD", "APP", "CONTACTS", "NORMAL", "NONUNIQUE", "VALID", "NO", "VISIBLE", "N", "PHONE", "DESC", null]];
+    sharedIndexUsers = [["OTHER", "IX_OLD", "OTHER", "OTHER_TABLE", "PK_OTHER"]];
+
+    const fullSnapshot = await readOracleConstraintSnapshot(target, undefined, true);
+    const indexSnapshot = await readOracleIndexSnapshot(target);
+    await expect(prepareOracleIndexPlan(target, ['DROP INDEX "APP"."IX_OLD";', 'CREATE INDEX "IX_NEW" ON "APP"."CONTACTS" ("EMAIL");'], drafts as never)).rejects.toThrow("Index metadata changed");
+
+    expect(fullSnapshot.indexes.map(({ owner, name, columns, directions, constraints }) => ({ owner, name, columns, directions, constraints }))).toEqual([
+      { owner: "APP", name: "IX_OLD", columns: ["EMAIL"], directions: ["ASC"], constraints: [] },
+      { owner: "OTHER", name: "IX_OLD", columns: ["PHONE"], directions: ["DESC"], constraints: [{ owner: "OTHER", tableName: "OTHER_TABLE", name: "PK_OTHER" }] },
+    ]);
+    expect(indexSnapshot.indexes.map(({ owner, name, columns, directions }) => ({ owner, name, columns, directions }))).toEqual([
+      { owner: "APP", name: "IX_OLD", columns: ["EMAIL"], directions: ["ASC"] },
+      { owner: "OTHER", name: "IX_OLD", columns: ["PHONE"], directions: ["DESC"] },
+    ]);
+    expect(ddl).toEqual([]);
   });
 
   it("does not invalidate a target plan when an unrelated owner index name changes", async () => {

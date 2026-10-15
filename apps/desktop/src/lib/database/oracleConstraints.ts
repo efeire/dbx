@@ -307,7 +307,7 @@ export async function readOracleConstraintSnapshot(target: OracleConstraintTarge
     query(target, `SELECT INDEX_NAME FROM SYS.ALL_INDEXES WHERE OWNER = ${literal(target.schema)}${inList("INDEX_NAME", wantedIndexNames)} ORDER BY INDEX_NAME`, stillCurrent),
     query(
       target,
-      `SELECT i.OWNER, i.INDEX_NAME, i.TABLE_OWNER, i.TABLE_NAME, i.INDEX_TYPE, i.UNIQUENESS, i.STATUS, i.PARTITIONED, i.VISIBILITY, i.SECONDARY, ic.COLUMN_NAME, ic.DESCEND, ie.COLUMN_EXPRESSION FROM SYS.ALL_INDEXES i JOIN SYS.ALL_IND_COLUMNS ic ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME LEFT JOIN SYS.ALL_IND_EXPRESSIONS ie ON ie.INDEX_OWNER = ic.INDEX_OWNER AND ie.INDEX_NAME = ic.INDEX_NAME AND ie.TABLE_OWNER = ic.TABLE_OWNER AND ie.TABLE_NAME = ic.TABLE_NAME AND ie.COLUMN_POSITION = ic.COLUMN_POSITION WHERE i.TABLE_OWNER = ${literal(target.schema)} AND i.TABLE_NAME = ${literal(target.tableName)} ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION`,
+      `SELECT i.OWNER, i.INDEX_NAME, i.TABLE_OWNER, i.TABLE_NAME, i.INDEX_TYPE, i.UNIQUENESS, i.STATUS, i.PARTITIONED, i.VISIBILITY, i.SECONDARY, ic.COLUMN_NAME, ic.DESCEND, ie.COLUMN_EXPRESSION FROM SYS.ALL_INDEXES i JOIN SYS.ALL_IND_COLUMNS ic ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME LEFT JOIN SYS.ALL_IND_EXPRESSIONS ie ON ie.INDEX_OWNER = ic.INDEX_OWNER AND ie.INDEX_NAME = ic.INDEX_NAME AND ie.TABLE_OWNER = ic.TABLE_OWNER AND ie.TABLE_NAME = ic.TABLE_NAME AND ie.COLUMN_POSITION = ic.COLUMN_POSITION WHERE i.TABLE_OWNER = ${literal(target.schema)} AND i.TABLE_NAME = ${literal(target.tableName)} ORDER BY i.OWNER, i.INDEX_NAME, ic.COLUMN_POSITION`,
       stillCurrent,
     ),
     query(target, sharedUsageNamesSql, stillCurrent),
@@ -374,12 +374,13 @@ export async function readOracleConstraintSnapshot(target: OracleConstraintTarge
     constraints: definitions,
     names: nameRows,
     indexNames: indexNames.map((row) => String(row[0])),
-    indexes: [...new Set(indexDetails.map((row) => String(row[1])))].map((name) => {
-      const rows = indexDetails.filter((row) => row[1] === name);
+    indexes: [...new Set(indexDetails.map((row) => `${String(row[0])}\u0000${String(row[1])}`))].sort().map((identity) => {
+      const [owner, name] = identity.split("\u0000");
+      const rows = indexDetails.filter((row) => row[0] === owner && row[1] === name);
       const first = rows[0]!;
       return {
         owner: String(first[0]),
-        name,
+        name: String(name),
         tableOwner: String(first[2]),
         tableName: String(first[3]),
         indexType: String(first[4]),
@@ -731,7 +732,7 @@ export async function executeOracleConstraintPlan(plan: OracleConstraintPlan, ti
       step.error = error instanceof Error ? error.message : String(error);
       if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during unknown constraint outcome; readback is unknown." };
       try {
-        const actual = await readOracleConstraintSnapshot(plan.target, plan.change, false, stillCurrent);
+        const actual = await readOracleConstraintSnapshot(plan.target, plan.change, false, connectionCurrent);
         if (!connectionCurrent()) return { steps, readbackError: "Connection or target changed during unknown-outcome readback; actual state is unknown." };
         if (actual.objectId !== plan.snapshot.objectId) return { steps, readbackError: "Target table was replaced after an unknown constraint outcome." };
         if (plan.change.target && actual.constraints.some((item) => readbackMatches(plan.target, item, plan.change.target!))) {

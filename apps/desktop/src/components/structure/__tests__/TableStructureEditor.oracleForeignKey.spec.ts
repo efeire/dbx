@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { createApp, h, type App } from "vue";
+import { createApp, h, ref, type App } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TableStructureEditor from "../TableStructureEditor.vue";
@@ -30,6 +30,9 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   getTableComment: vi.fn().mockResolvedValue(""),
   getTablePartitioning: vi.fn().mockResolvedValue(null),
   buildTableStructureChangeSql: vi.fn().mockResolvedValue({ statements: [], warnings: [] }),
+  buildCreateTableSql: vi.fn().mockResolvedValue({ statements: [], warnings: [] }),
+  saveHistory: vi.fn().mockResolvedValue(undefined),
+  disconnectDb: vi.fn().mockResolvedValue(undefined),
   executeQuery: vi.fn(async (_id, _database, sql: string) => ({
     columns: [],
     rows: sql.includes("SELECT USER")
@@ -127,5 +130,83 @@ describe("Oracle family foreign key editing entry", () => {
     parentTable.value = "OtherParent";
     parentTable.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.waitFor(() => expect(referenceInputs().map((input) => input.value)).toEqual(["", ""]));
+  });
+
+  it("does not publish a created-table result into a reconnected session", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useConnectionStore();
+    const id = "foreign-key-create-generation";
+    store.connections = [{ id, name: "Create fixture", db_type: "oracle", driver_profile: "oracle", host: "fixture", port: 1521, username: "APP", database: "APP" } as ConnectionConfig];
+    store.connectedIds.add(id);
+    const createSql = 'CREATE TABLE "APP"."NEW_TABLE" ("ID" NUMBER PRIMARY KEY)';
+    const addSql = 'ALTER TABLE "APP"."NEW_TABLE" ADD CONSTRAINT "FK_SELF" FOREIGN KEY ("ID") REFERENCES "APP"."NEW_TABLE" ("ID") ENABLE VALIDATE';
+    vi.mocked(api.buildCreateTableSql).mockResolvedValue({ statements: [`${createSql};`, `${addSql};`], warnings: [] } as never);
+    const result = (rows: unknown[][] = []) => ({ columns: [], rows, execution_time_ms: 0, rows_affected: 0 });
+    let finishAdd!: (value: ReturnType<typeof result>) => void;
+    vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => {
+      if (sql.includes("SELECT USER, SYS_CONTEXT")) return result([["APP", "APP"]]) as never;
+      if (sql.startsWith(createSql)) return result([]) as never;
+      if (sql.startsWith(addSql))
+        return new Promise((resolve) => {
+          finishAdd = resolve as typeof finishAdd;
+        }) as never;
+      throw new Error(`Unexpected query during create: ${sql}`);
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const drafts: unknown[] = [];
+    const saved: unknown[] = [];
+    const editor = ref<{ applyChanges: () => Promise<boolean> }>();
+    app = createApp({
+      render: () =>
+        h(
+          TooltipProvider,
+          {},
+          {
+            default: () =>
+              h(TableStructureEditor, {
+                connectionId: id,
+                database: "APP",
+                schema: "APP",
+                tableName: "",
+                initialTab: "foreignKeys",
+                draft: {
+                  dirty: true,
+                  activeTab: "foreignKeys",
+                  newTableName: "NEW_TABLE",
+                  tableComment: "",
+                  originalTableComment: "",
+                  columns: [{ id: "new:id", name: "ID", dataType: "NUMBER", isNullable: false, defaultValue: "", comment: "", isPrimaryKey: true, extra: {}, markedForDrop: false }],
+                  indexes: [],
+                  foreignKeys: [{ id: "new:fk", name: "FK_SELF", column: "ID", columns: ["ID"], refSchema: "APP", refTable: "NEW_TABLE", refColumn: "ID", refColumns: ["ID"], onUpdate: "", onDelete: "NO ACTION" }],
+                  triggers: [],
+                  initialized: true,
+                },
+                ref: editor,
+                "onUpdate:draft": (draft: unknown) => drafts.push(draft),
+                onSaved: (...args: unknown[]) => saved.push(args),
+              }),
+          },
+        ),
+    });
+    app.use(pinia);
+    app.use(i18n);
+    app.component("LightTooltip", LightTooltip);
+    app.mount(container);
+    await vi.waitFor(() => expect(api.buildCreateTableSql).toHaveBeenCalled());
+    const applyButton = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === i18n.global.t("structureEditor.apply"));
+    await vi.waitFor(() => expect(applyButton()?.disabled).toBe(false));
+    const draftUpdatesBeforeSave = drafts.length;
+
+    const pendingSave = editor.value!.applyChanges();
+    await vi.waitFor(() => expect(finishAdd).toBeTypeOf("function"));
+    await store.disconnect(id, { skipTabHandling: true, markClosedByUser: false });
+    finishAdd(result([]));
+    await pendingSave;
+
+    expect(saved).toEqual([]);
+    expect(drafts).toHaveLength(draftUpdatesBeforeSave);
+    expect(api.executeQuery.mock.calls.slice(-2).map((call) => String(call[2]).startsWith("CREATE TABLE") || String(call[2]).startsWith("ALTER TABLE"))).toEqual([true, true]);
   });
 });

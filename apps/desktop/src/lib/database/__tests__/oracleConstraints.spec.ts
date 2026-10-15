@@ -554,7 +554,7 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
     expect(outcome?.steps[0]?.state).toBe("unknown");
   });
 
-  it("builds a manual recovery candidate after DROP commits and ADD is rejected", async () => {
+  it.each(["execution_error", "throw"] as const)("builds a manual recovery candidate after DROP commits and ADD returns %s", async (mode) => {
     const plan = await prepareOracleConstraintPlan(target, { tableName: target.tableName, columns: [], indexes: [] }, makeChange());
     let dropped = false;
     vi.mocked(api.listConstraints).mockImplementation(async () => (dropped ? [] : [uniqueInfo]));
@@ -571,6 +571,7 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
           dropped = true;
           return result([]) as never;
         }
+        if (mode === "throw") throw new Error("ADD response lost");
         return { ...result([]), execution_error: true, error: { detail: "ADD rejected" } } as never;
       }
       if (sql.includes("SYS_CONTEXT")) return result([["APP", "APP", "ORCL"]]) as never;
@@ -598,7 +599,7 @@ describe("Oracle CHECK/UNIQUE constraint preflight", () => {
       return result([]) as never;
     });
     const outcome = await executeOracleConstraintPlan(plan, 0, () => true);
-    expect(outcome?.steps.map((step) => step.state)).toEqual(["committed", "rejected"]);
+    expect(outcome?.steps.map((step) => step.state)).toEqual(mode === "throw" ? ["committed", "unknown"] : ["committed", "rejected"]);
     expect(recoveryBuilt).toBe(true);
   });
 

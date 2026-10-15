@@ -83,7 +83,7 @@ function assertOriginalsMatchLoaded(snapshot: OracleIndexSnapshot, target: Oracl
   const originals = drafts.flatMap((draft) => (draft.original && !draft.oracleOriginalMissing ? [draft.original] : []));
   if (originals.length !== snapshot.indexes.length) invalid();
   for (const original of originals) {
-    const current = snapshot.indexes.find((index) => index.name === original.name);
+    const current = snapshot.indexes.find((index) => index.owner === target.schema && index.name === original.name);
     if (!current || !actualIndexMatchesLoaded(current, original, target)) invalid();
   }
   for (const draft of drafts) {
