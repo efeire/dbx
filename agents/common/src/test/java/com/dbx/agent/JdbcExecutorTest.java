@@ -223,6 +223,17 @@ class JdbcExecutorTest {
 
         assertTrue(result.getExecution_time_ms() >= 25L,
             "driver message reading must count toward execution_time_ms but was " + result.getExecution_time_ms() + "ms");
+        for (boolean bounded : List.of(false, true)) {
+            Connection connection = executionConnection(false, -1, null, new AtomicInteger(), null, null);
+            QueryPageResult page = bounded
+                ? JdbcExecutor.INSTANCE.executeBoundedPage(connection, "BEGIN OUTPUT_TEXT(); END;", "",
+                    schema -> "", () -> "", new QueryPageOptions(), JdbcExecutor.INSTANCE::defaultResultValue, reader)
+                : JdbcExecutor.INSTANCE.executePage(connection, "BEGIN OUTPUT_TEXT(); END;", "",
+                    schema -> "", () -> "", new QueryPageOptions(), JdbcExecutor.INSTANCE::defaultResultValue, reader, false);
+            assertEquals(List.of(List.of("procedure output")), page.getRows());
+            assertTrue(page.getExecution_time_ms() >= 25L,
+                "paged message reading must count toward execution_time_ms but was " + page.getExecution_time_ms() + "ms");
+        }
     }
 
     @Test

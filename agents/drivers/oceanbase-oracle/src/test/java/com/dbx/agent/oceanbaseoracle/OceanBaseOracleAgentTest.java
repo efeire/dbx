@@ -44,6 +44,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 class OceanBaseOracleAgentTest {
     @Test
     void returnsDbmsOutputThroughRegularAndBoundedExecutionPaths() throws Exception {
+        assertDbmsOutputExecution(false);
+    }
+
+    @Test
+    void returnsDbmsOutputWhenSessionTimeoutIsRejectedAsReadOnly() throws Exception {
+        assertDbmsOutputExecution(true);
+    }
+
+    private void assertDbmsOutputExecution(boolean readOnlyTimeout) throws Exception {
         String block = "BEGIN DBMS_OUTPUT.PUT_LINE('hello world'); END;";
         for (boolean paged : List.of(false, true)) {
             AtomicInteger prepareCalls = new AtomicInteger();
@@ -62,6 +71,9 @@ class OceanBaseOracleAgentTest {
             Statement statement = proxy(Statement.class, (method, args) -> {
                 if ("execute".equals(method.getName())) {
                     executedSql.add(String.valueOf(args[0]));
+                    if (readOnlyTimeout && String.valueOf(args[0]).startsWith("ALTER SESSION SET ob_query_timeout")) {
+                        throw new SQLException("read only", "25006");
+                    }
                     return false;
                 }
                 if ("getConnection".equals(method.getName())) return connectionRef[0];

@@ -633,6 +633,7 @@ public final class JdbcExecutor {
                     } else {
                         appendStatementWarnings(result, stmt);
                     }
+                    result.setExecution_time_ms(System.currentTimeMillis() - start);
                     activeStatements.remove(stmt);
                     stmt.close();
                     QueryPageResult page = new QueryPageResult(
