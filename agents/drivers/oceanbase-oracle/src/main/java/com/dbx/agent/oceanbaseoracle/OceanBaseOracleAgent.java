@@ -118,10 +118,26 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         try (QueryTiming timing = QueryTiming.begin()) {
             prepareLobExecution(sql, options.getDeferLobs());
             captureDbmsOutput = isDbmsOutputStatement(sql);
+            long prepareStarted = System.nanoTime();
             outputConnection = requireConnected();
+            Connection connection = outputConnection;
+            uncheckedVoid(() -> beforeQueryExecution(connection, options.getTimeoutSecs()));
+            QueryTiming.record("session_prepare", prepareStarted);
             dbmsOutputEnabled = captureDbmsOutput;
             dbmsOutputWarning = captureDbmsOutput ? enableDbmsOutput(outputConnection) : null;
-            QueryResult result = super.executeQuery(sql, schema, options);
+            QueryResult result = JdbcExecutor.current().execute(
+                outputConnection,
+                sql,
+                schema,
+                this::setSchemaSQL,
+                this::resetSchemaSQL,
+                options.getMaxRows(),
+                options.getFetchSize(),
+                options.getTimeoutSecs(),
+                resultValueReader(),
+                statementMessageReader(),
+                advancePastUpdateCounts()
+            );
             var marked = OceanBaseLobValues.mark(result.getColumns(), result.getColumn_types(), result.getRows());
             if (marked != null) {
                 var spatialColumns = remapLobSpatialColumns(result.getSpatial_columns(), marked.columns());
@@ -157,10 +173,10 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             dbmsOutputWarning = null;
             long prepareStarted = System.nanoTime();
             outputConnection = requireConnected();
-            if (captureDbmsOutput) dbmsOutputWarning = enableDbmsOutput(outputConnection);
             Connection connection = outputConnection;
             uncheckedVoid(() -> beforeQueryExecution(connection, options.getTimeoutSecs()));
             QueryTiming.record("session_prepare", prepareStarted);
+            if (captureDbmsOutput) dbmsOutputWarning = enableDbmsOutput(outputConnection);
             QueryPageResult result = JdbcExecutor.current().executeBoundedPage(
                 connection, sql, schema, this::setSchemaSQL, this::resetSchemaSQL, options, resultValueReader(), statementMessageReader()
             );
@@ -436,8 +452,9 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             }
 
             @Override
-            public void close(Statement statement) throws SQLException {
-                if (outputEnabled) cleanup(statement, new ArrayList<>());
+            public List<String> close(Statement statement) throws SQLException {
+                if (!outputEnabled) return setupWarning == null ? List.of() : List.of(setupWarning);
+                return read(statement);
             }
 
             private void cleanup(Statement statement, List<String> messages) throws SQLException {

@@ -99,6 +99,8 @@ class OceanBaseOracleAgentTest {
             Assertions.assertEquals(2, getLineCalls.get());
             Assertions.assertEquals(1, executedSql.stream().filter(block::equals).count());
             Assertions.assertTrue(executedSql.contains("BEGIN DBMS_OUTPUT.DISABLE; DBMS_OUTPUT.ENABLE(NULL); END;"));
+            Assertions.assertTrue(executedSql.indexOf("BEGIN DBMS_OUTPUT.DISABLE; DBMS_OUTPUT.ENABLE(NULL); END;")
+                > executedSql.indexOf("ALTER SESSION SET ob_query_timeout"));
             Assertions.assertEquals("BEGIN DBMS_OUTPUT.DISABLE; END;", executedSql.get(executedSql.size() - 1));
 
             if (paged) {
@@ -177,6 +179,7 @@ class OceanBaseOracleAgentTest {
             if ("execute".equals(method.getName())) {
                 String sql = String.valueOf(args[0]);
                 if (block.equals(sql)) userStatementCalls.incrementAndGet();
+                if (sql.startsWith("ALTER SESSION SET ob_query_timeout")) return false;
                 throw new SQLTimeoutException("setup timed out", "HYT00");
             }
             return defaultValue(method.getReturnType());
@@ -329,6 +332,7 @@ class OceanBaseOracleAgentTest {
         String block = "BEGIN OPEN :cursor FOR SELECT 1 FROM DUAL; END;";
         List<String> executedSql = new ArrayList<>();
         int[] row = {-1};
+        AtomicInteger outputCalls = new AtomicInteger();
         ResultSetMetaData meta = proxy(ResultSetMetaData.class, (method, args) -> {
             if ("getColumnCount".equals(method.getName())) return 1;
             if ("getColumnLabel".equals(method.getName())) return "N";
@@ -340,6 +344,15 @@ class OceanBaseOracleAgentTest {
             if ("next".equals(method.getName())) return ++row[0] == 0;
             if ("getMetaData".equals(method.getName())) return meta;
             if ("getObject".equals(method.getName()) || "getInt".equals(method.getName())) return 1;
+            return defaultValue(method.getReturnType());
+        });
+        CallableStatement output = proxy(CallableStatement.class, (method, args) -> {
+            if ("execute".equals(method.getName())) {
+                outputCalls.incrementAndGet();
+                return false;
+            }
+            if ("getInt".equals(method.getName())) return outputCalls.get() == 1 ? 0 : 1;
+            if ("getString".equals(method.getName())) return "cursor output";
             return defaultValue(method.getReturnType());
         });
         Connection[] connectionRef = new Connection[1];
@@ -356,6 +369,7 @@ class OceanBaseOracleAgentTest {
         });
         Connection connection = proxy(Connection.class, (method, args) -> {
             if ("createStatement".equals(method.getName())) return statement;
+            if ("prepareCall".equals(method.getName())) return output;
             return defaultValue(method.getReturnType());
         });
         connectionRef[0] = connection;
@@ -366,6 +380,8 @@ class OceanBaseOracleAgentTest {
 
         Assertions.assertEquals(List.of("N"), result.getColumns());
         Assertions.assertEquals(List.of(List.of(1)), result.getRows());
+        Assertions.assertTrue(result.getMessages().stream().anyMatch(message -> "cursor output".equals(message.get("message"))));
+        Assertions.assertEquals(2, outputCalls.get());
         Assertions.assertTrue(executedSql.contains("BEGIN DBMS_OUTPUT.DISABLE; END;"),
             "closing the completed result-set session must disable DBMS_OUTPUT");
     }

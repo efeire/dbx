@@ -337,6 +337,42 @@ class JdbcExecutorTest {
     }
 
     @Test
+    void executeRetainsRowsAndAddsDriverMessagesWhenResultSetCompletes() {
+        CountingResultSetFixture fixture = countingResultSet(new Object[][]{{1, "Ada"}});
+        boolean[] closed = {false};
+        JdbcExecutor.StatementMessageReader reader = new JdbcExecutor.StatementMessageReader() {
+            @Override
+            public List<String> read(Statement statement) {
+                return Collections.emptyList();
+            }
+
+            @Override
+            public List<String> close(Statement statement) {
+                closed[0] = true;
+                return Arrays.asList("procedure output");
+            }
+        };
+
+        QueryResult result = JdbcExecutor.INSTANCE.execute(
+            executionConnection(true, -1, null, new AtomicInteger(), fixture.resultSet(), null),
+            "BEGIN OPEN_RESULT(); END;",
+            "",
+            schema -> "",
+            () -> "",
+            100,
+            null,
+            0,
+            JdbcExecutor.INSTANCE::defaultResultValue,
+            reader
+        );
+
+        assertTrue(closed[0]);
+        assertEquals(Arrays.asList("id", "name"), result.getColumns());
+        assertEquals(Arrays.asList(Arrays.asList(1, "Ada")), result.getRows());
+        assertEquals("procedure output", result.getMessages().get(0).get("message"));
+    }
+
+    @Test
     void executePageRetainsWarningsWithOrdinaryRows() {
         CountingResultSetFixture fixture = countingResultSet(new Object[][]{{1, "Ada"}});
         QueryPageResult result = JdbcExecutor.INSTANCE.executePage(
