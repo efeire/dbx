@@ -123,6 +123,52 @@ class OceanBaseOracleAgentTest {
     }
 
     @Test
+    void recognizesLabeledAnonymousBlocksForDbmsOutput() throws Exception {
+        Method classify = OceanBaseOracleAgent.class.getDeclaredMethod("isDbmsOutputStatement", String.class);
+        classify.setAccessible(true);
+
+        Assertions.assertEquals(true, classify.invoke(null, "<<output_block>> BEGIN DBMS_OUTPUT.PUT_LINE('x'); END;"));
+    }
+
+    @Test
+    void continuesWhenOceanBaseReportsDbmsOutputAsUndeclared() throws Exception {
+        String block = "BEGIN NULL; END;";
+        AtomicInteger userStatementCalls = new AtomicInteger();
+        AtomicInteger closedConnections = new AtomicInteger();
+        Statement statement = proxy(Statement.class, (method, args) -> {
+            if ("execute".equals(method.getName())) {
+                String sql = String.valueOf(args[0]);
+                if (sql.startsWith("BEGIN DBMS_OUTPUT.DISABLE")) {
+                    throw new SQLException("PLS-00201: identifier 'DBMS_OUTPUT' must be declared", "42000", 5543);
+                }
+                if (block.equals(sql)) userStatementCalls.incrementAndGet();
+                return false;
+            }
+            if ("getUpdateCount".equals(method.getName())) return -1;
+            if ("getWarnings".equals(method.getName())) return null;
+            return defaultValue(method.getReturnType());
+        });
+        Connection connection = proxy(Connection.class, (method, args) -> {
+            if ("createStatement".equals(method.getName())) return statement;
+            if ("close".equals(method.getName())) {
+                closedConnections.incrementAndGet();
+                return null;
+            }
+            return defaultValue(method.getReturnType());
+        });
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, connection);
+
+        QueryResult result = agent.executeQuery(block, null, new ExecuteQueryOptions());
+
+        Assertions.assertEquals(1, userStatementCalls.get());
+        Assertions.assertEquals(0, closedConnections.get());
+        Assertions.assertEquals(List.of("Message"), result.getColumns());
+        Assertions.assertTrue(result.getRows().stream().flatMap(List::stream)
+            .anyMatch(value -> String.valueOf(value).contains("could not be enabled")));
+    }
+
+    @Test
     void doesNotExecuteUserSqlAfterDbmsOutputSetupTimeout() throws Exception {
         String block = "BEGIN DBMS_OUTPUT.PUT_LINE('hello world'); END;";
         AtomicInteger userStatementCalls = new AtomicInteger();
@@ -184,6 +230,7 @@ class OceanBaseOracleAgentTest {
         connectionRef[0] = connection;
         OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
         setField(agent, "captureDbmsOutput", true);
+        setField(agent, "dbmsOutputEnabled", true);
         Method readerMethod = OceanBaseOracleAgent.class.getDeclaredMethod("statementMessageReader");
         readerMethod.setAccessible(true);
 
@@ -217,6 +264,7 @@ class OceanBaseOracleAgentTest {
         connectionRef[0] = connection;
         OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
         setField(agent, "captureDbmsOutput", true);
+        setField(agent, "dbmsOutputEnabled", true);
         Method readerMethod = OceanBaseOracleAgent.class.getDeclaredMethod("statementMessageReader");
         readerMethod.setAccessible(true);
 

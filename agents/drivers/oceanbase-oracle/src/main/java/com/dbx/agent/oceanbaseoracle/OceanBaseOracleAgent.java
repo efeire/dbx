@@ -77,6 +77,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     private final OceanBaseLobValues lobValues = new OceanBaseLobValues();
     private boolean deferCharacterLobs;
     private boolean captureDbmsOutput;
+    private boolean dbmsOutputEnabled;
     private String dbmsOutputWarning;
 
     public static final JdbcAgentProfile OCEANBASE_ORACLE_PROFILE = new JdbcAgentProfile(
@@ -118,6 +119,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             prepareLobExecution(sql, options.getDeferLobs());
             captureDbmsOutput = isDbmsOutputStatement(sql);
             outputConnection = requireConnected();
+            dbmsOutputEnabled = captureDbmsOutput;
             dbmsOutputWarning = captureDbmsOutput ? enableDbmsOutput(outputConnection) : null;
             QueryResult result = super.executeQuery(sql, schema, options);
             var marked = OceanBaseLobValues.mark(result.getColumns(), result.getColumn_types(), result.getRows());
@@ -133,11 +135,13 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             result.setQuery_timings_ms(timing.finish());
             return result;
         } catch (RuntimeException error) {
-            if (captureDbmsOutput && outputConnection != null) cleanupDbmsOutputAfterFailure(outputConnection, error);
+            if (dbmsOutputEnabled && outputConnection != null) cleanupDbmsOutputAfterFailure(outputConnection, error);
             lobValues.releaseSince(lobCheckpoint);
             throw error;
         } finally {
             captureDbmsOutput = false;
+            dbmsOutputEnabled = false;
+            dbmsOutputWarning = null;
             deferCharacterLobs = false;
         }
     }
@@ -149,6 +153,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         try (QueryTiming timing = QueryTiming.begin()) {
             prepareLobExecution(sql, options.getDeferLobs());
             captureDbmsOutput = isDbmsOutputStatement(sql);
+            dbmsOutputEnabled = captureDbmsOutput;
             dbmsOutputWarning = null;
             long prepareStarted = System.nanoTime();
             outputConnection = requireConnected();
@@ -163,11 +168,13 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             result.setQuery_timings_ms(timing.finish());
             return result;
         } catch (RuntimeException error) {
-            if (captureDbmsOutput && outputConnection != null) cleanupDbmsOutputAfterFailure(outputConnection, error);
+            if (dbmsOutputEnabled && outputConnection != null) cleanupDbmsOutputAfterFailure(outputConnection, error);
             lobValues.releaseSince(lobCheckpoint);
             throw error;
         } finally {
             captureDbmsOutput = false;
+            dbmsOutputEnabled = false;
+            dbmsOutputWarning = null;
             deferCharacterLobs = false;
         }
     }
@@ -373,15 +380,16 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     @Override
     protected JdbcExecutor.StatementMessageReader statementMessageReader() {
         if (!captureDbmsOutput) return JdbcExecutor.StatementMessageReader.NONE;
+        String setupWarning = dbmsOutputWarning;
+        boolean outputEnabled = dbmsOutputEnabled;
         return new JdbcExecutor.StatementMessageReader() {
             private boolean cleaned;
 
             @Override
             public List<String> read(Statement statement) throws SQLException {
                 List<String> lines = new ArrayList<>();
-                if (dbmsOutputWarning != null) {
-                    lines.add(dbmsOutputWarning);
-                    cleanup(statement, lines);
+                if (!outputEnabled) {
+                    if (setupWarning != null) lines.add(setupWarning);
                     return lines;
                 }
                 int characters = 0;
@@ -429,7 +437,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
 
             @Override
             public void close(Statement statement) throws SQLException {
-                cleanup(statement, new ArrayList<>());
+                if (outputEnabled) cleanup(statement, new ArrayList<>());
             }
 
             private void cleanup(Statement statement, List<String> messages) throws SQLException {
@@ -443,7 +451,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     private static boolean isDbmsOutputStatement(String sql) {
         if (sql == null) return false;
         String leading = sql.replaceFirst("(?s)^(?:\\s|--[^\\r\\n]*(?:\\r?\\n|$)|/\\*.*?\\*/)*", "");
-        return leading.matches("(?is)^(?:BEGIN|DECLARE|CALL|EXEC|EXECUTE)\\b.*");
+        return leading.matches("(?is)^(?:<<\\s*[\\p{L}_][\\p{L}\\p{N}_$#]*\\s*>>\\s*)?(?:BEGIN|DECLARE|CALL|EXEC|EXECUTE)\\b.*");
     }
 
     private String enableDbmsOutput(Connection connection) {
@@ -459,9 +467,11 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                     error.addSuppressed(discardError);
                 }
                 captureDbmsOutput = false;
+                dbmsOutputEnabled = false;
                 throw new RuntimeException("DBMS_OUTPUT setup failed; the connection was discarded", error);
             }
             if (isExpectedDbmsOutputUnavailable(error)) {
+                dbmsOutputEnabled = false;
                 return "DBMS_OUTPUT could not be enabled; statement execution continued";
             }
             throw new RuntimeException("DBMS_OUTPUT setup failed", error);
@@ -481,8 +491,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             int code = Math.abs(current.getErrorCode());
             String message = current.getMessage();
             String lower = message == null ? "" : message.toLowerCase(Locale.ROOT);
-            if (code == 1031 || lower.contains("insufficient privilege")
-                || lower.contains("not declared") && lower.contains("dbms_output")
+            if (code == 1031 || code == 5543 || code == 5546 || lower.contains("insufficient privilege")
+                || (lower.contains("not declared") || lower.contains("must be declared")) && lower.contains("dbms_output")
                 || lower.contains("dbms_output") && (lower.contains("not supported") || lower.contains("does not exist"))) {
                 return true;
             }
