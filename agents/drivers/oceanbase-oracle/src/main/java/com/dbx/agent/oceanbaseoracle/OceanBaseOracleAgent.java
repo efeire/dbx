@@ -35,6 +35,7 @@ import com.dbx.agent.SpatialColumn;
 import com.dbx.agent.TableInfo;
 import com.dbx.agent.TriggerInfo;
 
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -73,6 +74,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     private boolean queryTimeoutChanged;
     private final OceanBaseLobValues lobValues = new OceanBaseLobValues();
     private boolean deferCharacterLobs;
+    private boolean captureDbmsOutput;
+    private String dbmsOutputWarning;
 
     public static final JdbcAgentProfile OCEANBASE_ORACLE_PROFILE = new JdbcAgentProfile(
         "com.oceanbase.jdbc.Driver",
@@ -110,6 +113,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         var lobCheckpoint = lobValues.checkpoint();
         try (QueryTiming timing = QueryTiming.begin()) {
             prepareLobExecution(sql, options.getDeferLobs());
+            captureDbmsOutput = isDbmsOutputStatement(sql);
+            dbmsOutputWarning = captureDbmsOutput ? enableDbmsOutput(requireConnected()) : null;
             QueryResult result = super.executeQuery(sql, schema, options);
             var marked = OceanBaseLobValues.mark(result.getColumns(), result.getColumn_types(), result.getRows());
             if (marked != null) {
@@ -127,6 +132,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             lobValues.releaseSince(lobCheckpoint);
             throw error;
         } finally {
+            captureDbmsOutput = false;
             deferCharacterLobs = false;
         }
     }
@@ -136,12 +142,15 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         var lobCheckpoint = lobValues.checkpoint();
         try (QueryTiming timing = QueryTiming.begin()) {
             prepareLobExecution(sql, options.getDeferLobs());
+            captureDbmsOutput = isDbmsOutputStatement(sql);
+            dbmsOutputWarning = null;
             long prepareStarted = System.nanoTime();
             Connection connection = requireConnected();
+            if (captureDbmsOutput) dbmsOutputWarning = enableDbmsOutput(connection);
             uncheckedVoid(() -> beforeQueryExecution(connection, options.getTimeoutSecs()));
             QueryTiming.record("session_prepare", prepareStarted);
             QueryPageResult result = JdbcExecutor.current().executeBoundedPage(
-                connection, sql, schema, this::setSchemaSQL, this::resetSchemaSQL, options, resultValueReader()
+                connection, sql, schema, this::setSchemaSQL, this::resetSchemaSQL, options, resultValueReader(), statementMessageReader()
             );
             markLobPage(result);
             result.setQuery_timings_ms(timing.finish());
@@ -150,6 +159,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             lobValues.releaseSince(lobCheckpoint);
             throw error;
         } finally {
+            captureDbmsOutput = false;
             deferCharacterLobs = false;
         }
     }
@@ -349,6 +359,83 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 throw error;
             }
             queryTimeoutChanged = true;
+        }
+    }
+
+    @Override
+    protected JdbcExecutor.StatementMessageReader statementMessageReader() {
+        return statement -> {
+            if (!captureDbmsOutput) return List.of();
+            if (dbmsOutputWarning != null) return List.of(dbmsOutputWarning);
+            List<String> lines = new ArrayList<>();
+            int characters = 0;
+            try (CallableStatement call = statement.getConnection().prepareCall("{call DBMS_OUTPUT.GET_LINE(?, ?)}")) {
+                call.setQueryTimeout(2);
+                call.registerOutParameter(1, Types.VARCHAR);
+                call.registerOutParameter(2, Types.INTEGER);
+                long deadline = System.nanoTime() + 5_000_000_000L;
+                while (lines.size() < 256 && characters < 65_536) {
+                    if (System.nanoTime() >= deadline) {
+                        appendDbmsOutputCleanupWarning(statement.getConnection(), lines);
+                        lines.add("DBMS_OUTPUT truncated after 5 seconds");
+                        break;
+                    }
+                    call.execute();
+                    if (call.getInt(2) != 0) break;
+                    String line = call.getString(1);
+                    if (line == null) line = "";
+                    int remaining = 65_536 - characters;
+                    if (line.length() > remaining) {
+                        lines.add(line.substring(0, remaining));
+                        appendDbmsOutputCleanupWarning(statement.getConnection(), lines);
+                        lines.add("DBMS_OUTPUT truncated at 65536 characters");
+                        break;
+                    }
+                    lines.add(line);
+                    characters += line.length();
+                }
+                if (lines.size() == 256 || characters >= 65_536) {
+                    appendDbmsOutputCleanupWarning(statement.getConnection(), lines);
+                    lines.add("DBMS_OUTPUT truncated at the output limit");
+                }
+            } catch (SQLException ignored) {
+                List<String> warnings = new ArrayList<>();
+                warnings.add("DBMS_OUTPUT could not be read after statement execution");
+                appendDbmsOutputCleanupWarning(statement.getConnection(), warnings);
+                return warnings;
+            }
+            return lines;
+        };
+    }
+
+    private static boolean isDbmsOutputStatement(String sql) {
+        if (sql == null) return false;
+        String leading = sql.replaceFirst("(?s)^(?:\\s|--[^\\r\\n]*(?:\\r?\\n|$)|/\\*.*?\\*/)*", "");
+        return leading.matches("(?is)^(?:BEGIN|DECLARE|CALL|EXEC|EXECUTE)\\b.*");
+    }
+
+    private static String enableDbmsOutput(Connection connection) {
+        try (var statement = connection.createStatement()) {
+            statement.setQueryTimeout(2);
+            statement.execute("BEGIN DBMS_OUTPUT.DISABLE; DBMS_OUTPUT.ENABLE(100000); END;");
+            return null;
+        } catch (SQLException ignored) {
+            return "DBMS_OUTPUT could not be enabled; statement execution continued";
+        }
+    }
+
+    private void appendDbmsOutputCleanupWarning(Connection connection, List<String> messages) {
+        try (var statement = connection.createStatement()) {
+            statement.setQueryTimeout(2);
+            statement.execute("BEGIN DBMS_OUTPUT.DISABLE; DBMS_OUTPUT.ENABLE(100000); END;");
+        } catch (SQLException cleanupError) {
+            try {
+                discardConnection(connection);
+                messages.add("DBMS_OUTPUT cleanup failed; the connection was discarded");
+            } catch (SQLException discardError) {
+                cleanupError.addSuppressed(discardError);
+                messages.add("DBMS_OUTPUT cleanup and connection disposal failed");
+            }
         }
     }
 

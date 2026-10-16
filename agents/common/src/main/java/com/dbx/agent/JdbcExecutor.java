@@ -418,6 +418,21 @@ public final class JdbcExecutor {
         Function<String, String> setSchemaSql,
         Supplier<String> resetSchemaSql,
         QueryPageOptions options,
+        ResultValueReader valueReader,
+        StatementMessageReader statementMessageReader,
+        boolean advancePastUpdateCounts
+    ) {
+        return executePage(conn, sql, schema, setSchemaSql, resetSchemaSql, options, valueReader,
+            statementMessageReader, sessions, advancePastUpdateCounts);
+    }
+
+    public QueryPageResult executePage(
+        Connection conn,
+        String sql,
+        String schema,
+        Function<String, String> setSchemaSql,
+        Supplier<String> resetSchemaSql,
+        QueryPageOptions options,
         ResultValueReader valueReader
     ) {
         return executePage(conn, sql, schema, setSchemaSql, resetSchemaSql, options, valueReader, StatementMessageReader.NONE, sessions);
@@ -469,6 +484,20 @@ public final class JdbcExecutor {
     ) {
         return executePage(conn, sql, schema, setSchemaSql, resetSchemaSql, options, valueReader,
             StatementMessageReader.NONE, sessions, false, true);
+    }
+
+    public QueryPageResult executeBoundedPage(
+        Connection conn,
+        String sql,
+        String schema,
+        Function<String, String> setSchemaSql,
+        Supplier<String> resetSchemaSql,
+        QueryPageOptions options,
+        ResultValueReader valueReader,
+        StatementMessageReader statementMessageReader
+    ) {
+        return executePage(conn, sql, schema, setSchemaSql, resetSchemaSql, options, valueReader,
+            statementMessageReader, sessions, false, true);
     }
 
     public QueryPageResult startTableRead(

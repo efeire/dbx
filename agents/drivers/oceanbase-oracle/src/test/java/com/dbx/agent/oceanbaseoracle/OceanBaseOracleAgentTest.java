@@ -22,8 +22,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -36,8 +38,123 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
 
 class OceanBaseOracleAgentTest {
+    @Test
+    void returnsDbmsOutputThroughRegularAndBoundedExecutionPaths() throws Exception {
+        String block = "BEGIN DBMS_OUTPUT.PUT_LINE('hello world'); END;";
+        for (boolean paged : List.of(false, true)) {
+            AtomicInteger prepareCalls = new AtomicInteger();
+            AtomicInteger getLineCalls = new AtomicInteger();
+            List<String> executedSql = new ArrayList<>();
+            Connection[] connectionRef = new Connection[1];
+            CallableStatement output = proxy(CallableStatement.class, (method, args) -> {
+                if ("execute".equals(method.getName())) {
+                    getLineCalls.incrementAndGet();
+                    return false;
+                }
+                if ("getInt".equals(method.getName())) return getLineCalls.get() == 1 ? 0 : 1;
+                if ("getString".equals(method.getName())) return "hello world";
+                return defaultValue(method.getReturnType());
+            });
+            Statement statement = proxy(Statement.class, (method, args) -> {
+                if ("execute".equals(method.getName())) {
+                    executedSql.add(String.valueOf(args[0]));
+                    return false;
+                }
+                if ("getConnection".equals(method.getName())) return connectionRef[0];
+                if ("getUpdateCount".equals(method.getName())) return -1;
+                if ("getWarnings".equals(method.getName())) return null;
+                return defaultValue(method.getReturnType());
+            });
+            Connection connection = proxy(Connection.class, (method, args) -> {
+                if ("createStatement".equals(method.getName())) return statement;
+                if ("prepareCall".equals(method.getName())) {
+                    prepareCalls.incrementAndGet();
+                    return output;
+                }
+                return defaultValue(method.getReturnType());
+            });
+            connectionRef[0] = connection;
+            OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+            TestSupport.setPrivateConnection(agent, connection);
+
+            List<String> columns;
+            List<List<Object>> rows;
+            if (paged) {
+                QueryPageResult result = agent.executeQueryPage(block, null, new QueryPageOptions());
+                columns = result.getColumns();
+                rows = result.getRows();
+            } else {
+                QueryResult result = agent.executeQuery(block, null, new ExecuteQueryOptions());
+                columns = result.getColumns();
+                rows = result.getRows();
+            }
+
+            Assertions.assertEquals(List.of("Message"), columns);
+            Assertions.assertEquals(List.of(List.of("hello world")), rows);
+            Assertions.assertEquals(1, prepareCalls.get());
+            Assertions.assertEquals(2, getLineCalls.get());
+            Assertions.assertEquals(1, executedSql.stream().filter(block::equals).count());
+
+            if (paged) {
+                agent.executeQueryPage("SELECT 1 FROM DUAL", null, new QueryPageOptions());
+            } else {
+                agent.executeQuery("SELECT 1 FROM DUAL", null, new ExecuteQueryOptions());
+            }
+            Assertions.assertEquals(1, prepareCalls.get(), "ordinary SQL must not read DBMS_OUTPUT");
+        }
+    }
+
+    @Test
+    void discardsConnectionWhenDbmsOutputCleanupFails() throws Exception {
+        String block = "BEGIN DBMS_OUTPUT.PUT_LINE('hello world'); END;";
+        AtomicInteger outputSetupCalls = new AtomicInteger();
+        AtomicInteger userStatementCalls = new AtomicInteger();
+        AtomicInteger closedConnections = new AtomicInteger();
+        Connection[] connectionRef = new Connection[1];
+        CallableStatement output = proxy(CallableStatement.class, (method, args) -> {
+            if ("execute".equals(method.getName())) throw new SQLException("GET_LINE failed");
+            return defaultValue(method.getReturnType());
+        });
+        Statement statement = proxy(Statement.class, (method, args) -> {
+            if ("execute".equals(method.getName())) {
+                String sql = String.valueOf(args[0]);
+                if (sql.startsWith("BEGIN DBMS_OUTPUT.DISABLE")) {
+                    if (outputSetupCalls.incrementAndGet() > 1) throw new SQLException("cleanup failed");
+                }
+                if (block.equals(sql)) userStatementCalls.incrementAndGet();
+                return false;
+            }
+            if ("getConnection".equals(method.getName())) return connectionRef[0];
+            if ("getUpdateCount".equals(method.getName())) return -1;
+            if ("getWarnings".equals(method.getName())) return null;
+            return defaultValue(method.getReturnType());
+        });
+        Connection connection = proxy(Connection.class, (method, args) -> {
+            if ("createStatement".equals(method.getName())) return statement;
+            if ("prepareCall".equals(method.getName())) return output;
+            if ("close".equals(method.getName())) {
+                closedConnections.incrementAndGet();
+                return null;
+            }
+            return defaultValue(method.getReturnType());
+        });
+        connectionRef[0] = connection;
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, connection);
+
+        QueryResult result = agent.executeQuery(block, null, new ExecuteQueryOptions());
+
+        Assertions.assertEquals(List.of("Message"), result.getColumns());
+        Assertions.assertTrue(result.getRows().stream().flatMap(List::stream)
+            .anyMatch(value -> String.valueOf(value).contains("DBMS_OUTPUT cleanup failed")));
+        Assertions.assertEquals(1, closedConnections.get(), "a connection with unknown DBMS_OUTPUT state must be discarded");
+        Assertions.assertEquals(2, outputSetupCalls.get(), "one initial enable and one failed reset are expected");
+        Assertions.assertEquals(1, userStatementCalls.get(), "cleanup failure must not retry the user statement");
+    }
+
     @Test
     void buildsOceanBaseJdbcUrl() {
         ConnectParams params = new ConnectParams();
