@@ -149,7 +149,7 @@ describe("TreeItem visible filter connection detail", () => {
     expect(document.body.textContent).toContain("mysql://admin@tenant@127.0.0.1:2881/filter_alpha?password=***");
     expect(document.body.textContent).not.toContain("synthetic-secret");
     const copied = buildConnectionUrlCopy(state.config, "url")!;
-    expect(copied).toContain("admin%40tenant@");
+    expect(copied).toContain("admin@tenant@");
     expect(parseConnectionUrl(copied).username).toBe("admin@tenant");
   });
 
@@ -160,6 +160,16 @@ describe("TreeItem visible filter connection detail", () => {
 
     expect(document.body.textContent).toContain("mysql://user%3Aname@tenant%2540cluster@127.0.0.1:3306/filter_alpha");
     expect(document.body.textContent).not.toContain("synthetic-secret");
+  });
+
+  it("uses the same readable OceanBase username punctuation in previews and copies", async () => {
+    const username = "u!$()*,=@tenant";
+    state.config = { ...mysqlConnection(), driver_profile: "oceanbase", username };
+
+    await openConnectionTooltip();
+
+    expect(document.body.textContent).toContain("mysql://" + username + "@127.0.0.1:3306/filter_alpha");
+    expect(buildConnectionUrlCopy(state.config, "url")).toContain("oceanbase://" + username + "@");
   });
 
   it("shows an active database filter count in the connection tooltip", async () => {
