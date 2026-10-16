@@ -97,6 +97,8 @@ class OceanBaseOracleAgentTest {
             Assertions.assertEquals(1, prepareCalls.get());
             Assertions.assertEquals(2, getLineCalls.get());
             Assertions.assertEquals(1, executedSql.stream().filter(block::equals).count());
+            Assertions.assertTrue(executedSql.contains("BEGIN DBMS_OUTPUT.DISABLE; DBMS_OUTPUT.ENABLE(NULL); END;"));
+            Assertions.assertEquals("BEGIN DBMS_OUTPUT.DISABLE; END;", executedSql.get(executedSql.size() - 1));
 
             if (paged) {
                 agent.executeQueryPage("SELECT 1 FROM DUAL", null, new QueryPageOptions());
@@ -105,6 +107,18 @@ class OceanBaseOracleAgentTest {
             }
             Assertions.assertEquals(1, prepareCalls.get(), "ordinary SQL must not read DBMS_OUTPUT");
         }
+    }
+
+    @Test
+    void doesNotInstallDbmsOutputReaderForOrdinaryStatements() throws Exception {
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        Method readerMethod = OceanBaseOracleAgent.class.getDeclaredMethod("statementMessageReader");
+        readerMethod.setAccessible(true);
+
+        Assertions.assertSame(
+            com.dbx.agent.JdbcExecutor.StatementMessageReader.NONE,
+            readerMethod.invoke(agent)
+        );
     }
 
     @Test
