@@ -612,7 +612,7 @@ function oceanbaseCheckTokens(expression: string): string[] {
   }
   if (depth !== 0) return [];
   // OceanBase wraps CHECK dictionary expressions; preserve all internal grouping.
-  while (tokens[0] === "(" && tokens.at(-1) === ")") {
+  while (tokens[0] === "(" && tokens[tokens.length - 1] === ")") {
     depth = 0;
     const end = tokens.findIndex((token) => {
       if (token === "(") depth++;
