@@ -204,6 +204,28 @@ class JdbcExecutorTest {
     }
 
     @Test
+    void executeCountsDriverMessageReadingInExecutionTime() {
+        JdbcExecutor.StatementMessageReader reader = statement -> {
+            try {
+                Thread.sleep(30L);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new SQLException(error);
+            }
+            return Collections.singletonList("procedure output");
+        };
+
+        QueryResult result = JdbcExecutor.INSTANCE.execute(
+            executionConnection(false, -1, null, new AtomicInteger(), null, null),
+            "BEGIN OUTPUT_TEXT(); END;", "", schema -> "", () -> "", 100, null, 0,
+            JdbcExecutor.INSTANCE::defaultResultValue, reader
+        );
+
+        assertTrue(result.getExecution_time_ms() >= 25L,
+            "driver message reading must count toward execution_time_ms but was " + result.getExecution_time_ms() + "ms");
+    }
+
+    @Test
     void executeReturnsMultipleStatementWarningsForNoResultStatements() {
         SQLWarning first = new SQLWarning("identity value is 443", "S0003", 7998);
         first.setNextWarning(new SQLWarning("DBCC execution completed", "S0001", 2528));

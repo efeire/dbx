@@ -427,7 +427,12 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                         if (line == null) line = "";
                         int remaining = 65_536 - characters;
                         if (line.length() > remaining) {
-                            lines.add(line.substring(0, remaining));
+                            int end = remaining;
+                            if (end > 0 && Character.isHighSurrogate(line.charAt(end - 1))
+                                && Character.isLowSurrogate(line.charAt(end))) {
+                                end--;
+                            }
+                            lines.add(line.substring(0, end));
                             lines.add("DBMS_OUTPUT truncated at 65536 characters");
                             truncated = true;
                             break;
@@ -468,7 +473,8 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     private static boolean isDbmsOutputStatement(String sql) {
         if (sql == null) return false;
         String leading = sql.replaceFirst("(?s)^(?:\\s|--[^\\r\\n]*(?:\\r?\\n|$)|/\\*.*?\\*/)*", "");
-        return leading.matches("(?is)^(?:<<\\s*[\\p{L}_][\\p{L}\\p{N}_$#]*\\s*>>\\s*)?(?:BEGIN|DECLARE|CALL|EXEC|EXECUTE)\\b.*");
+        return leading.matches("(?is)^(?:<<\\s*[\\p{L}_][\\p{L}\\p{N}_$#]*\\s*>>\\s*)?(?:BEGIN|DECLARE|CALL|EXEC|EXECUTE)\\b.*")
+            || leading.matches("(?is)^\\{\\s*(?:\\?\\s*=\\s*)?CALL\\b.*\\}");
     }
 
     private String enableDbmsOutput(Connection connection) {

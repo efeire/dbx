@@ -130,6 +130,9 @@ class OceanBaseOracleAgentTest {
         classify.setAccessible(true);
 
         Assertions.assertEquals(true, classify.invoke(null, "<<output_block>> BEGIN DBMS_OUTPUT.PUT_LINE('x'); END;"));
+        Assertions.assertEquals(true, classify.invoke(null, "{call app.print_output() }"));
+        Assertions.assertEquals(true, classify.invoke(null, "{ ? = call app.get_output() }"));
+        Assertions.assertEquals(false, classify.invoke(null, "SELECT 1 FROM DUAL"));
     }
 
     @Test
@@ -210,6 +213,16 @@ class OceanBaseOracleAgentTest {
     }
 
     @Test
+    void doesNotSplitSupplementaryUnicodeWhenTruncatingOutput() throws Exception {
+        List<String> messages = readOutputLines(List.of("x".repeat(65_535), "😀"));
+
+        Assertions.assertEquals(65_535, messages.get(0).length());
+        Assertions.assertFalse(messages.get(0).contains("\uD800"));
+        Assertions.assertEquals("", messages.get(1));
+        Assertions.assertTrue(messages.get(2).contains("truncated"));
+    }
+
+    @Test
     void reportsTruncationOnlyWhenAnotherLineExistsPastLineLimit() throws Exception {
         List<String> outputLines = new ArrayList<>(java.util.Collections.nCopies(257, "x"));
         AtomicInteger callCount = new AtomicInteger();
@@ -246,6 +259,12 @@ class OceanBaseOracleAgentTest {
     }
 
     private static void assertOutputLimit(List<String> outputLines) throws Exception {
+        List<String> messages = readOutputLines(outputLines);
+        Assertions.assertEquals(outputLines, messages);
+        Assertions.assertFalse(messages.stream().anyMatch(message -> message.contains("truncated")));
+    }
+
+    private static List<String> readOutputLines(List<String> outputLines) throws Exception {
         AtomicInteger callCount = new AtomicInteger();
         Connection[] connectionRef = new Connection[1];
         CallableStatement output = proxy(CallableStatement.class, (method, args) -> {
@@ -274,9 +293,12 @@ class OceanBaseOracleAgentTest {
         @SuppressWarnings("unchecked")
         List<String> messages = ((com.dbx.agent.JdbcExecutor.StatementMessageReader) readerMethod.invoke(agent)).read(statement);
 
-        Assertions.assertEquals(outputLines.size() + 1, callCount.get());
-        Assertions.assertEquals(outputLines, messages);
-        Assertions.assertFalse(messages.stream().anyMatch(message -> message.contains("truncated")));
+        int characters = outputLines.stream().mapToInt(String::length).sum();
+        int expectedCalls = outputLines.size() > 256 || characters > 65_536
+            ? Math.min(outputLines.size(), 256)
+            : outputLines.size() + 1;
+        Assertions.assertEquals(expectedCalls, callCount.get());
+        return messages;
     }
 
     @Test

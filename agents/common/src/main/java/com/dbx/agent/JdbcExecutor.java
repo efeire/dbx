@@ -318,7 +318,9 @@ public final class JdbcExecutor {
                         false
                     );
                 }
-                return withStatementMessages(result, stmt, effectiveMaxRows, statementMessageReader);
+                QueryResult completed = withStatementMessages(result, stmt, effectiveMaxRows, statementMessageReader);
+                completed.setExecution_time_ms(System.currentTimeMillis() - start);
+                return completed;
                 } finally {
                     activeStatements.remove(stmt);
                 }
