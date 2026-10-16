@@ -40,6 +40,8 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
+import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -371,46 +373,70 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     @Override
     protected JdbcExecutor.StatementMessageReader statementMessageReader() {
         if (!captureDbmsOutput) return JdbcExecutor.StatementMessageReader.NONE;
-        return statement -> {
-            List<String> lines = new ArrayList<>();
-            if (dbmsOutputWarning != null) {
-                lines.add(dbmsOutputWarning);
-                appendDbmsOutputCleanupWarning(statement.getConnection(), lines);
+        return new JdbcExecutor.StatementMessageReader() {
+            private boolean cleaned;
+
+            @Override
+            public List<String> read(Statement statement) throws SQLException {
+                List<String> lines = new ArrayList<>();
+                if (dbmsOutputWarning != null) {
+                    lines.add(dbmsOutputWarning);
+                    cleanup(statement, lines);
+                    return lines;
+                }
+                int characters = 0;
+                boolean truncated = false;
+                try (CallableStatement call = statement.getConnection().prepareCall("{call DBMS_OUTPUT.GET_LINE(?, ?)}")) {
+                    call.setQueryTimeout(2);
+                    call.registerOutParameter(1, Types.VARCHAR);
+                    call.registerOutParameter(2, Types.INTEGER);
+                    long deadline = System.nanoTime() + 5_000_000_000L;
+                    while (lines.size() < 256 && characters < 65_536) {
+                        if (System.nanoTime() >= deadline) {
+                            lines.add("DBMS_OUTPUT truncated after 5 seconds");
+                            truncated = true;
+                            break;
+                        }
+                        call.execute();
+                        if (call.getInt(2) != 0) break;
+                        String line = call.getString(1);
+                        if (line == null) line = "";
+                        int remaining = 65_536 - characters;
+                        if (line.length() > remaining) {
+                            lines.add(line.substring(0, remaining));
+                            lines.add("DBMS_OUTPUT truncated at 65536 characters");
+                            truncated = true;
+                            break;
+                        }
+                        lines.add(line);
+                        characters += line.length();
+                    }
+                    if (!truncated && (lines.size() == 256 || characters >= 65_536)) {
+                        if (System.nanoTime() >= deadline) {
+                            lines.add("DBMS_OUTPUT truncated after 5 seconds");
+                        } else {
+                            call.execute();
+                            if (call.getInt(2) == 0) lines.add("DBMS_OUTPUT truncated at the output limit");
+                        }
+                    }
+                } catch (SQLException ignored) {
+                    lines.add("DBMS_OUTPUT could not be read after statement execution");
+                } finally {
+                    cleanup(statement, lines);
+                }
                 return lines;
             }
-            int characters = 0;
-            try (CallableStatement call = statement.getConnection().prepareCall("{call DBMS_OUTPUT.GET_LINE(?, ?)}")) {
-                call.setQueryTimeout(2);
-                call.registerOutParameter(1, Types.VARCHAR);
-                call.registerOutParameter(2, Types.INTEGER);
-                long deadline = System.nanoTime() + 5_000_000_000L;
-                while (lines.size() < 256 && characters < 65_536) {
-                    if (System.nanoTime() >= deadline) {
-                        lines.add("DBMS_OUTPUT truncated after 5 seconds");
-                        break;
-                    }
-                    call.execute();
-                    if (call.getInt(2) != 0) break;
-                    String line = call.getString(1);
-                    if (line == null) line = "";
-                    int remaining = 65_536 - characters;
-                    if (line.length() > remaining) {
-                        lines.add(line.substring(0, remaining));
-                        lines.add("DBMS_OUTPUT truncated at 65536 characters");
-                        break;
-                    }
-                    lines.add(line);
-                    characters += line.length();
-                }
-                if (lines.size() == 256 || characters >= 65_536) {
-                    lines.add("DBMS_OUTPUT truncated at the output limit");
-                }
-            } catch (SQLException ignored) {
-                lines.add("DBMS_OUTPUT could not be read after statement execution");
-            } finally {
-                appendDbmsOutputCleanupWarning(statement.getConnection(), lines);
+
+            @Override
+            public void close(Statement statement) throws SQLException {
+                cleanup(statement, new ArrayList<>());
             }
-            return lines;
+
+            private void cleanup(Statement statement, List<String> messages) throws SQLException {
+                if (cleaned) return;
+                cleaned = true;
+                appendDbmsOutputCleanupWarning(statement.getConnection(), messages);
+            }
         };
     }
 
@@ -420,14 +446,48 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         return leading.matches("(?is)^(?:BEGIN|DECLARE|CALL|EXEC|EXECUTE)\\b.*");
     }
 
-    private static String enableDbmsOutput(Connection connection) {
+    private String enableDbmsOutput(Connection connection) {
         try (var statement = connection.createStatement()) {
             statement.setQueryTimeout(2);
             statement.execute("BEGIN DBMS_OUTPUT.DISABLE; DBMS_OUTPUT.ENABLE(NULL); END;");
             return null;
-        } catch (SQLException ignored) {
-            return "DBMS_OUTPUT could not be enabled; statement execution continued";
+        } catch (SQLException error) {
+            if (error instanceof SQLTimeoutException || hasConnectionFailure(error)) {
+                try {
+                    discardConnection(connection);
+                } catch (SQLException discardError) {
+                    error.addSuppressed(discardError);
+                }
+                captureDbmsOutput = false;
+                throw new RuntimeException("DBMS_OUTPUT setup failed; the connection was discarded", error);
+            }
+            if (isExpectedDbmsOutputUnavailable(error)) {
+                return "DBMS_OUTPUT could not be enabled; statement execution continued";
+            }
+            throw new RuntimeException("DBMS_OUTPUT setup failed", error);
         }
+    }
+
+    private static boolean hasConnectionFailure(SQLException error) {
+        for (SQLException current = error; current != null; current = current.getNextException()) {
+            String state = current.getSQLState();
+            if (state != null && state.startsWith("08")) return true;
+        }
+        return false;
+    }
+
+    private static boolean isExpectedDbmsOutputUnavailable(SQLException error) {
+        for (SQLException current = error; current != null; current = current.getNextException()) {
+            int code = Math.abs(current.getErrorCode());
+            String message = current.getMessage();
+            String lower = message == null ? "" : message.toLowerCase(Locale.ROOT);
+            if (code == 1031 || lower.contains("insufficient privilege")
+                || lower.contains("not declared") && lower.contains("dbms_output")
+                || lower.contains("dbms_output") && (lower.contains("not supported") || lower.contains("does not exist"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void appendDbmsOutputCleanupWarning(Connection connection, List<String> messages) {

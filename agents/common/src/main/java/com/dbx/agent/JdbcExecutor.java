@@ -300,6 +300,7 @@ public final class JdbcExecutor {
                     try (ResultSet rs = stmt.getResultSet()) {
                         result = readResultSet(rs, elapsed, effectiveMaxRows, valueReader);
                     }
+                    statementMessageReader.close(stmt);
                     // `elapsed` stops at `stmt.execute()`. Retrieving and
                     // converting the rows above is frequently the dominant
                     // cost of a statement, so report the whole duration the
@@ -671,7 +672,8 @@ public final class JdbcExecutor {
                     sqlTypeByIndex,
                     typeNameByIndex,
                     Math.max(options.getMaxRows(), 1),
-                    valueReader
+                    valueReader,
+                    statementMessageReader
                 );
                 createdSession = session;
                 targetSessions.put(sessionId, session);
@@ -1030,6 +1032,10 @@ public final class JdbcExecutor {
             } catch (Exception ignored) {
             }
             try {
+                session.statementMessageReader.close(session.statement);
+            } catch (Exception ignored) {
+            }
+            try {
                 session.statement.close();
             } catch (Exception ignored) {
             }
@@ -1246,6 +1252,9 @@ public final class JdbcExecutor {
         StatementMessageReader NONE = statement -> Collections.emptyList();
 
         List<String> read(Statement statement) throws SQLException;
+
+        default void close(Statement statement) throws SQLException {
+        }
     }
 
     /**
@@ -1291,6 +1300,7 @@ public final class JdbcExecutor {
         private final String[] typeNameByIndex;
         private final int maxRows;
         private final ResultValueReader valueReader;
+        private final StatementMessageReader statementMessageReader;
         private int rowsRead;
         private List<Object> pendingRow;
         private long lastAccessedAtMillis;
@@ -1304,7 +1314,8 @@ public final class JdbcExecutor {
             int[] sqlTypeByIndex,
             String[] typeNameByIndex,
             int maxRows,
-            ResultValueReader valueReader
+            ResultValueReader valueReader,
+            StatementMessageReader statementMessageReader
         ) {
             this.id = id;
             this.statement = statement;
@@ -1315,6 +1326,7 @@ public final class JdbcExecutor {
             this.typeNameByIndex = typeNameByIndex;
             this.maxRows = maxRows;
             this.valueReader = valueReader;
+            this.statementMessageReader = statementMessageReader;
             this.lastAccessedAtMillis = System.currentTimeMillis();
         }
     }
