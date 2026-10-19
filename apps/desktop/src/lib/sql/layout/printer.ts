@@ -1,6 +1,6 @@
 import type { AstNode, ClauseNode, LimitClauseNode, ParenthesisNode, SetOperationNode, StatementNode } from "sql-formatter/dist/esm/parser/ast.js";
 import { createTableLayout, isCreateTable } from "./ddl";
-import { ruleCommaPosition, ruleListLayout, ruleLogicalNewline, supportsSqlRules } from "./rules";
+import { hasRuleLineBreak, ruleCommaPosition, ruleListLayout, ruleLogicalNewline, supportsSqlRules } from "./rules";
 import {
   clauseChildContext,
   collapsedContext,
@@ -174,15 +174,17 @@ function printRuleList(writer: Writer, items: AstNode[][], baseColumn: number, c
   const comma = ruleCommaPosition(ctx);
   const firstColumn = writer.column;
   const continuation = ctx.options.rules!.listItemAlignment === "indent" ? baseColumn + ctx.options.indentWidth : firstColumn;
-  const width = mode === "singleLine" ? Number.MAX_SAFE_INTEGER : ctx.options.lineWidth - writer.column;
   const nodes = items.flatMap((item, index) => (index === 0 ? item : [{ type: "comma" } as AstNode, ...item]));
-  const flat = mode === "vertical" && items.length > 1 ? null : renderInline(ctx, nodes, width);
+  // Single-line lists keep their own separators inline, but each item still
+  // visits its nested lists with their actual remaining width.
+  const flat = mode === "singleLine" || (mode === "vertical" && items.length > 1) ? null : renderInline(ctx, nodes, ctx.options.lineWidth - writer.column);
   if (flat) {
     writer.write(flat);
     return;
   }
   const available = ctx.options.lineWidth - Math.max(firstColumn, continuation);
-  const aligned = items.length > 1 ? (ctx.listKind === "select" && ctx.options.rules!.alignSelectAliases ? alignedProjectionItems(items, ctx, available) : ctx.listKind === "update" && ctx.options.rules!.alignUpdateAssignments ? alignedAssignmentItems(items, ctx, available) : null) : null;
+  const aligned =
+    mode !== "singleLine" && items.length > 1 ? (ctx.listKind === "select" && ctx.options.rules!.alignSelectAliases ? alignedProjectionItems(items, ctx, available) : ctx.listKind === "update" && ctx.options.rules!.alignUpdateAssignments ? alignedAssignmentItems(items, ctx, available) : null) : null;
 
   items.forEach((item, index) => {
     let itemNodes = item;
@@ -246,7 +248,7 @@ function printRuleJoins(writer: Writer, nodes: AstNode[], baseColumn: number, ct
 
 function printRuleElement(writer: Writer, nodes: AstNode[], baseColumn: number, ctx: SqlLayoutContext): void {
   if (nodes.length === 0) return;
-  const whole = renderInline(ctx, nodes, ruleListLayout(ctx) === "singleLine" ? Number.MAX_SAFE_INTEGER : ctx.options.lineWidth - writer.column);
+  const whole = renderInline(ctx, nodes, ctx.options.lineWidth - writer.column);
   if (whole) {
     writer.write(whole);
     return;
@@ -306,13 +308,15 @@ function printRuleElement(writer: Writer, nodes: AstNode[], baseColumn: number, 
       writer.space();
       printRuleComments(writer, node.leadingComments, writer.column, ctx);
       const caseCtx: SqlLayoutContext = { ...ctx, listKind: "general", logicalContext: "expression" };
+      const inlineCase = ruleListLayout(ctx) === "singleLine" && !hasRuleLineBreak(ctx, [node]);
       writer.write(keywordText(node.caseKw, ctx));
       if (node.expr.length) {
         writer.space();
         printRuleElement(writer, node.expr, baseColumn, caseCtx);
       }
       for (const branch of node.clauses) {
-        writer.newline(baseColumn + ctx.options.indentWidth);
+        if (inlineCase) writer.space();
+        else writer.newline(baseColumn + ctx.options.indentWidth);
         printRuleComments(writer, branch.leadingComments, writer.column, ctx);
         if (branch.type === "case_when") {
           writer.write(keywordText(branch.whenKw, ctx));
@@ -325,7 +329,8 @@ function printRuleElement(writer: Writer, nodes: AstNode[], baseColumn: number, 
         printRuleElement(writer, branch.result, baseColumn + ctx.options.indentWidth, caseCtx);
         printRuleComments(writer, branch.trailingComments, writer.column, ctx);
       }
-      writer.newline(baseColumn);
+      if (inlineCase) writer.space();
+      else writer.newline(baseColumn);
       writer.write(keywordText(node.endKw, ctx));
       printRuleComments(writer, node.trailingComments, writer.column, ctx);
       index += 1;

@@ -79,6 +79,8 @@ Additional controls:
 - `whereLogicalOperatorNewline`, `onLogicalOperatorNewline`, and `expressionLogicalOperatorNewline` control AND/OR in WHERE, JOIN ON, and other expressions. Values are `before`, `after`, `none`, or `inherit`. `newlineBeforeJoinOn` starts ON on a new line. BETWEEN's own AND is not a condition separator.
 - `collapseShortStatements` allows short statements on one line but cannot override required breaks. `emptyLineMode` removes code-only blank lines (`remove`), collapses consecutive blank lines to one (`single`), preserves them (`preserve`), or inherits `preserveEmptyLines` (`inherit`). Blank lines inside literals and comments remain intact.
 
+`remove` and `single` also limit generated spacing between queries to `0` and `1` blank lines, respectively. Disabling custom rules restores the saved query spacing.
+
 Edit the sample SQL and dialect in the panel to preview changes before applying them. The preview never executes SQL or replaces an open query. Formatting the same SQL in the editor with the same dialect and settings produces the same result; text outside a selection stays unchanged and editor undo restores the original.
 
 Inputs outside the rule model, such as complete procedural blocks, retain the selected base formatting behavior and report that custom rules were not applied. Select an independent SELECT, INSERT, or UPDATE inside a procedure to apply the rules to that selection. PL/SQL declarations, `:=` assignment alignment, and arbitrary casing dictionaries are not provided.

@@ -136,6 +136,22 @@ describe("configurable SQL formatting rules (issue #8570)", () => {
     expect(await formatSqlText(result, "postgres", options)).toBe(result);
   });
 
+  it.each(["fit", "wrap"] as const)("keeps nested %s widths independent of the SELECT single-line rule", async (listLayout) => {
+    const options = rules({ listLayout, selectListLayout: "singleLine", expressionWidth: 44, collapseShortStatements: false });
+    const result = await formatSqlText("select coalesce(alpha_col,bravo_col,charlie_col,delta_col) from t;", "postgres", options);
+    if (listLayout === "fit") expect(result).toMatch(/coalesce\(alpha_col,\n\s*bravo_col,\n\s*charlie_col,\n\s*delta_col\)/);
+    else expect(result).toMatch(/coalesce\(alpha_col, bravo_col,\n\s*charlie_col, delta_col\)/);
+    expect(result.split("\n").every((line) => line.length <= 44)).toBe(true);
+    expect(await formatSqlText(result, "postgres", options)).toBe(result);
+  });
+
+  it("keeps single-line function arguments and scalar CASE items allowed to exceed the width", async () => {
+    const options = rules({ listLayout: "singleLine", selectListLayout: "singleLine", expressionWidth: 20, collapseShortStatements: false });
+    const result = await formatSqlText("select coalesce(alpha_col,bravo_col),case when a=1 then 'a long literal' else 'another long literal' end as label from t;", "postgres", options);
+    expect(result).toContain("SELECT coalesce(alpha_col, bravo_col), CASE WHEN a = 1 THEN 'a long literal' ELSE 'another long literal' END AS label");
+    expect(await formatSqlText(result, "postgres", options)).toBe(result);
+  });
+
   it.each(["before", "after"] as const)("keeps SELECT annotations safe with %s commas", async (selectCommaPosition) => {
     const sql = "select a as x, -- first field\n long_name as y, /* next field */\n c as z from t;";
     const options = rules({ selectListLayout: "vertical", selectCommaPosition });
@@ -273,6 +289,22 @@ describe("configurable SQL formatting rules (issue #8570)", () => {
     const breaks = emptyLineMode === "remove" ? "\n" : emptyLineMode === "single" ? "\n\n" : "\n\n\n";
     expect(result).toContain(`-- heading${breaks}SELECT`);
     expect(result).not.toContain("__DBX_PRESERVE_EMPTY_LINE_");
+  });
+
+  it.each([
+    ["remove", 0],
+    ["single", 1],
+    ["preserve", 2],
+    ["inherit", 2],
+  ] as const)("limits generated query spacing with emptyLineMode=%s", async (emptyLineMode, blankLines) => {
+    const options = rules({ emptyLineMode, linesBetweenQueries: 2 });
+    const result = await formatSqlText("select 1; select 2;", "oracle", options);
+    expect(result).toBe(`SELECT 1;${"\n".repeat(blankLines + 1)}SELECT 2;`);
+    expect(await formatSqlText(result, "oracle", options)).toBe(result);
+  });
+
+  it("preserves the saved query spacing when custom rules are disabled", async () => {
+    expect(await formatSqlText("select 1; select 2;", "oracle", { customRulesEnabled: false, emptyLineMode: "remove", linesBetweenQueries: 2 })).toBe("SELECT 1;\n\n\nSELECT 2;");
   });
 
   it.each(["preserve", "upper", "lower"] as const)("keeps functionCase=%s when arguments must expand", async (functionCase) => {

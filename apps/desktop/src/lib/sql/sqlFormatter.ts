@@ -444,9 +444,11 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
 
   const sqlFormatter = await import("sql-formatter");
   const { format, formatDialect } = sqlFormatter;
-  const options = sqlFormatterOptions(normalizedSettings);
   const language = formatterLanguage(dialect);
   const emptyLineMode = normalizedSettings.customRulesEnabled && normalizedSettings.emptyLineMode !== "inherit" ? normalizedSettings.emptyLineMode : normalizedSettings.preserveEmptyLines ? "preserve" : "remove";
+  const linesBetweenQueries =
+    normalizedSettings.customRulesEnabled && normalizedSettings.emptyLineMode === "remove" ? 0 : normalizedSettings.customRulesEnabled && normalizedSettings.emptyLineMode === "single" && normalizedSettings.linesBetweenQueries === 2 ? 1 : normalizedSettings.linesBetweenQueries;
+  const options = sqlFormatterOptions({ ...normalizedSettings, linesBetweenQueries });
   const emptyLineProtection = emptyLineMode === "remove" ? null : normalizedSettings.customRulesEnabled ? protectRuleEmptyLines(sql, dialect, emptyLineMode === "single") : protectEmptyLines(sql);
   const sqlWithProtectedEmptyLines = emptyLineProtection?.sql ?? sql;
   const protectedInput = dialect === "duckdb" ? protectDuckDbPrefixAliasSeparators(sqlWithProtectedEmptyLines) : { sql: sqlWithProtectedEmptyLines, marker: null };
@@ -516,7 +518,7 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
     lineWidth: normalizedSettings.expressionWidth,
     indentWidth: normalizedSettings.tabWidth,
     useTabs: normalizedSettings.useTabs,
-    linesBetweenQueries: normalizedSettings.linesBetweenQueries,
+    linesBetweenQueries,
     fromClauseSourceOnSameLine: normalizedSettings.fromClauseLayout === "sameLine",
     keywordCase: normalizedSettings.keywordCase,
     logicalOperatorNewline: normalizedSettings.logicalOperatorNewline,
