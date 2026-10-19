@@ -1,6 +1,6 @@
 use super::{
-    DataGridExtractError, DataGridExtractErrorCode, DataGridExtractWarning, DataGridExtractWarningCode,
-    DataGridPhpArraySyntax, ExtractContext, write_bytes,
+    write_bytes, DataGridExtractError, DataGridExtractErrorCode, DataGridExtractWarning, DataGridExtractWarningCode,
+    DataGridPhpArraySyntax, ExtractContext,
 };
 use crate::models::connection::DatabaseType;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
@@ -305,7 +305,11 @@ fn binary_text(value: &Value) -> Result<String, DataGridExtractError> {
 }
 
 fn dbunit_value_text(value: &Value, binary: bool) -> Result<String, DataGridExtractError> {
-    if binary { binary_text(value) } else { Ok(value_text(value)) }
+    if binary {
+        binary_text(value)
+    } else {
+        Ok(value_text(value))
+    }
 }
 
 fn binary_bytes(value: &Value) -> Result<Vec<u8>, DataGridExtractError> {
@@ -427,7 +431,7 @@ mod tests {
     use super::{is_temporal_type, iso_date};
     use crate::data_grid_extractors::tests::request;
     use crate::data_grid_extractors::{
-        DataGridExtractColumn, DataGridExtractWarningCode, DataGridExtractorId, extract_data_grid_selection,
+        extract_data_grid_selection, DataGridExtractColumn, DataGridExtractWarningCode, DataGridExtractorId,
     };
     use crate::models::connection::DatabaseType;
     use serde_json::json;
