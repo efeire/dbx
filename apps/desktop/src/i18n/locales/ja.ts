@@ -4177,6 +4177,7 @@ export default withEnglishFallback({
     closeAllRegularTabs: "すべての通常タブを閉じる",
     closeAllFixedTabs: "すべての固定タブを閉じる",
     copyName: "名前をコピー",
+    copyAdvancedInfo: "詳細情報をコピー",
     name: "名前",
     fullPath: "フルパス",
     copyFinalProxyPort: "最終プロキシポートをコピー",
