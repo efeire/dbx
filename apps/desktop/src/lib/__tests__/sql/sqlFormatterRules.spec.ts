@@ -229,6 +229,25 @@ describe("configurable SQL formatting rules (issue #8570)", () => {
     expect(result).not.toContain("__DBX_PRESERVE_EMPTY_LINE_");
   });
 
+  it.each(["remove", "single", "preserve"] as const)("keeps alternative quoted literals intact with %s rules", async (emptyLineMode) => {
+    const literal = "nQ'{first 'quoted'\r\n\r\n-- AND is data\r\nlast}'";
+    const source = `select ${literal} as note, q'!second 'quoted'\nlast!' as other from dual;\n\nselect :id from dual;`;
+    const options = rules({ emptyLineMode, selectListLayout: "vertical", preserveEmptyLines: false });
+    const result = await formatSqlText(source, "oracle", options);
+    expect(result).toContain(literal);
+    expect(tokenizeSqlSemantic(result, "oracle").map((token) => token.normalized)).toEqual(tokenizeSqlSemantic(source, "oracle").map((token) => token.normalized));
+    expect(await formatSqlText(result, "oracle", options)).toBe(result);
+  });
+
+  it("keeps a line comment boundary even when WHERE rules request no logical breaks", async () => {
+    const source = "select a,b from t where x=1 -- note\r\nand y=2;";
+    const options = rules({ whereLogicalOperatorNewline: "none" });
+    const result = await formatSqlText(source, "postgres", options);
+    expect(result).toMatch(/-- note\n\s*AND y = 2/);
+    expect(tokenizeSqlSemantic(result, "postgres").map((token) => token.normalized)).toEqual(tokenizeSqlSemantic(source, "postgres").map((token) => token.normalized));
+    expect(await formatSqlText(result, "postgres", options)).toBe(result);
+  });
+
   it.each(["preserve", "single", "inherit"] as const)("does not mistake quoted or commented marker-like lines for %s empty lines", async (emptyLineMode) => {
     const sql = "select 'first\n-- __DBX_PRESERVE_EMPTY_LINE_0_0__\nlast' as note from t;\n\nselect 2; /* first\n-- __DBX_PRESERVE_EMPTY_LINE_0_0__\nlast */";
     const options = rules({ emptyLineMode, preserveEmptyLines: true });

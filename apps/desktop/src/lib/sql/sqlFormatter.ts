@@ -64,6 +64,9 @@ function resolveClickHouseIdentifierSafeDialect(sqlFormatter: SqlFormatterModule
 // functions (e.g. SUBSTR, INSTR, LENGTH) and omits Oracle's byte/multibyte/code-point
 // variants. Register them as reserved function names so functionCase normalizes them.
 const ORACLE_EXTENDED_FUNCTION_NAMES = ["SUBSTRB", "SUBSTR2", "SUBSTR4", "SUBSTRC", "INSTRB", "INSTR2", "INSTR4", "INSTRC", "LENGTHB", "LENGTH2", "LENGTH4", "LENGTHC"];
+// The bundled q-quote pattern uses `.`, so it stops matching at a line break.
+// Keep each complete alternative literal as one token in both layout engines.
+const ORACLE_Q_QUOTE_PATTERN = String.raw`[Nn]?[Qq]'(?:\[[\s\S]*?\]|\{[\s\S]*?\}|\([\s\S]*?\)|<[\s\S]*?>|(?<dbxOracleQuote>[^\s<\[({])[\s\S]*?\k<dbxOracleQuote>)'`;
 let oracleExtendedDialect: SqlFormatterModule["plsql"] | null = null;
 
 function resolveOracleExtendedDialect(sqlFormatter: SqlFormatterModule): SqlFormatterModule["plsql"] {
@@ -77,6 +80,7 @@ function resolveOracleExtendedDialect(sqlFormatter: SqlFormatterModule): SqlForm
     tokenizerOptions: {
       ...sqlFormatter.plsql.tokenizerOptions,
       reservedFunctionNames: [...sqlFormatter.plsql.tokenizerOptions.reservedFunctionNames, ...extraFunctions],
+      stringTypes: sqlFormatter.plsql.tokenizerOptions.stringTypes.map((type) => (typeof type !== "string" && "quote" in type && type.quote === "q''" ? { regex: ORACLE_Q_QUOTE_PATTERN } : type)),
     },
   };
   return oracleExtendedDialect;
@@ -273,7 +277,9 @@ function restoreProtectedEmptyLines(sql: string, markers: readonly string[]): st
   if (markers.length === 0) return sql;
 
   const markerSet = new Set(markers);
-  const lines = sql.split(/\r\n|\r|\n/);
+  // Keep each terminator: normalizing the whole result would also rewrite
+  // line breaks inside string literals and block comments.
+  const lines = Array.from(sql.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g), ([line]) => line);
   for (let index = 0; index < lines.length;) {
     if (!markerSet.has(lines[index].trim())) {
       index += 1;
@@ -299,12 +305,12 @@ function restoreProtectedEmptyLines(sql: string, markers: readonly string[]): st
     }
 
     for (let markerIndex = index; markerIndex < runEnd; markerIndex += 1) {
-      lines[markerIndex] = "";
+      lines[markerIndex] = lines[markerIndex].replace(/[^\r\n]+/, "");
     }
     index = runEnd;
   }
 
-  return lines.join("\n");
+  return lines.join("");
 }
 
 const DUCKDB_ALIAS_IDENTIFIER_START_RE = /[\p{L}_]/u;
@@ -427,6 +433,24 @@ function restoreDuckDbPrefixAliasSeparators(sql: string, marker: string | null):
   return marker ? sql.split(marker).join(":") : sql;
 }
 
+function protectBlockCommentLineEndings(sql: string, dialect: SqlFormatDialect): { sql: string; markers: Map<string, string> } {
+  const markers = new Map<string, string>();
+  if (!sql.includes("\r")) return { sql, markers };
+
+  let namespace = 0;
+  while (sql.includes(`__DBX_PRESERVE_BLOCK_COMMENT_${namespace}_`)) namespace += 1;
+  const { masked, spans } = maskStringAndCommentSpans(sql, dialect);
+  const protectedSpans = spans.map((span) => {
+    if (!span.startsWith("/*") || !span.includes("\r")) return span;
+    // Keep hints and MySQL executable comments in their original comment category.
+    const kind = span[2] === "+" || span[2] === "!" ? span[2] : "";
+    const marker = `/*${kind}__DBX_PRESERVE_BLOCK_COMMENT_${namespace}_${markers.size}__*/`;
+    markers.set(marker, span);
+    return marker;
+  });
+  return { sql: restoreSpans(masked, protectedSpans), markers };
+}
+
 export type SqlFormatterDiagnostic = "custom-rules-fallback";
 
 export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "generic", settings: Partial<SqlFormatterSettings> = DEFAULT_SQL_FORMATTER_SETTINGS, onDiagnostic?: (diagnostic: SqlFormatterDiagnostic) => void): Promise<string> {
@@ -449,8 +473,11 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
   const linesBetweenQueries =
     normalizedSettings.customRulesEnabled && normalizedSettings.emptyLineMode === "remove" ? 0 : normalizedSettings.customRulesEnabled && normalizedSettings.emptyLineMode === "single" && normalizedSettings.linesBetweenQueries === 2 ? 1 : normalizedSettings.linesBetweenQueries;
   const options = sqlFormatterOptions({ ...normalizedSettings, linesBetweenQueries });
-  const emptyLineProtection = emptyLineMode === "remove" ? null : normalizedSettings.customRulesEnabled ? protectRuleEmptyLines(sql, dialect, emptyLineMode === "single") : protectEmptyLines(sql);
-  const sqlWithProtectedEmptyLines = emptyLineProtection?.sql ?? sql;
+  // The external formatter reindents multiline block comments and drops CRs.
+  // Preserve affected comments until all formatting and layout passes finish.
+  const commentProtection = protectBlockCommentLineEndings(sql, dialect);
+  const emptyLineProtection = emptyLineMode === "remove" ? null : normalizedSettings.customRulesEnabled ? protectRuleEmptyLines(commentProtection.sql, dialect, emptyLineMode === "single") : protectEmptyLines(commentProtection.sql);
+  const sqlWithProtectedEmptyLines = emptyLineProtection?.sql ?? commentProtection.sql;
   const protectedInput = dialect === "duckdb" ? protectDuckDbPrefixAliasSeparators(sqlWithProtectedEmptyLines) : { sql: sqlWithProtectedEmptyLines, marker: null };
   const formatterOptions =
     language === "postgresql"
@@ -506,7 +533,8 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
     }
     const restoredDuckDbAliases = restoreDuckDbPrefixAliasSeparators(formatted, protectedInput.marker);
     const laidOut = appliedCustomRules ? normalizeLikeOperatorCase(restoredDuckDbAliases, normalizedSettings, dialect) : applySqlFormatterLayout(restoredDuckDbAliases, normalizedSettings, dialect);
-    return emptyLineProtection ? restoreProtectedEmptyLines(laidOut, emptyLineProtection.markers) : laidOut;
+    const restored = emptyLineProtection ? restoreProtectedEmptyLines(laidOut, emptyLineProtection.markers) : laidOut;
+    return commentProtection.markers.size ? restored.replace(/\/\*[+!]?__DBX_PRESERVE_BLOCK_COMMENT_\d+_\d+__\*\//g, (marker) => commentProtection.markers.get(marker) ?? marker) : restored;
   };
 
   // DBX's own layout printer produces the default `dbx` style. It needs the AST
@@ -576,7 +604,7 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
  * line, but masking them is cheap and defends against callers that ever pass
  * raw (non-formatter) SQL through this path.
  */
-function maskStringAndCommentSpans(sql: string, dialect: SqlFormatDialect): { masked: string; spans: string[] } {
+function maskStringAndCommentSpans(sql: string, dialect: SqlFormatDialect, protectLineCommentTerminator = false): { masked: string; spans: string[] } {
   const len = sql.length;
   const spans: string[] = [];
   const placeholder = (index: number) => `\x00${index}\x00`;
@@ -653,6 +681,7 @@ function maskStringAndCommentSpans(sql: string, dialect: SqlFormatDialect): { ma
       const start = i;
       i += startsDashComment ? 2 : 1;
       while (i < len && sql[i] !== "\n" && sql[i] !== "\r") i++;
+      if (protectLineCommentTerminator && i < len) i += sql[i] === "\r" && sql[i + 1] === "\n" ? 2 : 1;
       emit(start, i);
       continue;
     }
@@ -774,7 +803,8 @@ function restoreSpans(masked: string, spans: string[]): string {
 function keepLogicalOperatorsOnSameLine(sql: string, dialect: SqlFormatDialect = "generic"): string {
   // 先遮罩块注释/字符串/引号标识符，避免正则命中注释或字面量内部的 AND/OR/XOR
   // （块注释内部跨行的 AND/OR 会被误折叠成空格，破坏用户多行注释格式）。
-  const { masked, spans } = maskStringAndCommentSpans(sql, dialect);
+  // A line comment's terminator is a code boundary, not optional layout whitespace.
+  const { masked, spans } = maskStringAndCommentSpans(sql, dialect, true);
   const collapsed = masked.replace(/\n[ \t]*(AND|OR|XOR)\b/gi, " $1").replace(/\b(AND|OR|XOR)[ \t]*\n[ \t]*/gi, "$1 ");
   return restoreSpans(collapsed, spans);
 }
@@ -792,8 +822,9 @@ function normalizeLikeOperatorCase(sql: string, settings: SqlFormatterSettings, 
   return restoreSpans(normalized, spans);
 }
 
-function keepFromClauseAndFirstSourceOnSameLine(sql: string, indentStyle: SqlFormatterIndentStyle): string {
-  const lines = sql.split("\n");
+function keepFromClauseAndFirstSourceOnSameLine(sql: string, indentStyle: SqlFormatterIndentStyle, dialect: SqlFormatDialect): string {
+  const { masked, spans } = maskStringAndCommentSpans(sql, dialect);
+  const lines = masked.split("\n");
   for (let index = 0; index < lines.length - 1; index += 1) {
     const clauseMatch = lines[index].match(/^(\s*)FROM\s*$/i);
     if (!clauseMatch) continue;
@@ -804,7 +835,8 @@ function keepFromClauseAndFirstSourceOnSameLine(sql: string, indentStyle: SqlFor
     const source = sourceMatch[2];
     // Keep derived tables and leading comments multiline; merging these would
     // make nested SQL and comment boundaries substantially harder to read.
-    if (source.startsWith("(") || source.startsWith("/*") || source.startsWith("--")) continue;
+    const leadingSpan = source.startsWith("\x00") ? spans[Number(source.split("\x00", 3)[1])] : "";
+    if (source.startsWith("(") || leadingSpan.startsWith("/*") || leadingSpan.startsWith("--") || (dialect === "mysql" && leadingSpan.startsWith("#"))) continue;
 
     const clauseIndent = clauseMatch[1];
     const sourceIndent = sourceMatch[1];
@@ -819,7 +851,7 @@ function keepFromClauseAndFirstSourceOnSameLine(sql: string, indentStyle: SqlFor
     lines.splice(index + 1, 1);
     index -= 1;
   }
-  return lines.join("\n");
+  return restoreSpans(lines.join("\n"), spans);
 }
 
 function formatLeadingCommas(sql: string, dialect: SqlFormatDialect = "generic"): string {
@@ -887,7 +919,7 @@ function formatLeadingCommas(sql: string, dialect: SqlFormatDialect = "generic")
 function applySqlFormatterLayout(sql: string, settings: SqlFormatterSettings, dialect: SqlFormatDialect): string {
   let formatted = normalizeLikeOperatorCase(sql, settings, dialect);
   if (settings.logicalOperatorNewline === "none") formatted = keepLogicalOperatorsOnSameLine(formatted, dialect);
-  if (settings.fromClauseLayout === "sameLine") formatted = keepFromClauseAndFirstSourceOnSameLine(formatted, settings.indentStyle);
+  if (settings.fromClauseLayout === "sameLine") formatted = keepFromClauseAndFirstSourceOnSameLine(formatted, settings.indentStyle, dialect);
   if (settings.commaPosition === "before") formatted = formatLeadingCommas(formatted, dialect);
   return formatted;
 }
