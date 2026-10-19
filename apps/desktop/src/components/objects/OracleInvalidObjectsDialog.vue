@@ -8,6 +8,7 @@ import type { ConnectionConfig, DatabaseType } from "@/types/database";
 import * as api from "@/lib/backend/api";
 import { executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
+import { uuid } from "@/lib/common/utils";
 import {
   oracleCompileUnsupportedReason,
   buildOracleCompileSql,
@@ -42,9 +43,9 @@ const outcome = ref("");
 const generation = ref(0);
 type ManagedSession = { id: string; connectionId: string; database: string; active: number; closeRequested: boolean; closed: boolean };
 function newManagedSession(connectionId: string, database: string): ManagedSession {
-  return { id: `invalid-objects:${crypto.randomUUID()}`, connectionId, database, active: 0, closeRequested: false, closed: false };
+  return { id: `invalid-objects:${uuid()}`, connectionId, database, active: 0, closeRequested: false, closed: false };
 }
-let managedSession = newManagedSession(props.connection.id, props.database);
+let managedSession: ManagedSession | null = null;
 const databaseType = computed(() => (effectiveDatabaseTypeForConnection(props.connection) ?? props.connection.db_type) as DatabaseType);
 
 function isCurrent(token: number): boolean {
@@ -54,8 +55,8 @@ function isCurrent(token: number): boolean {
 async function query(sql: string, maxRows = 501) {
   const connectionId = props.connection.id;
   const database = props.database;
-  if (managedSession.connectionId !== connectionId || managedSession.database !== database || managedSession.closeRequested || managedSession.closed) rotateManagedSession(connectionId, database);
-  const session = managedSession;
+  if (!managedSession || managedSession.connectionId !== connectionId || managedSession.database !== database || managedSession.closeRequested || managedSession.closed) rotateManagedSession(connectionId, database);
+  const session = managedSession!;
   session.active++;
   try {
     return await api.executeQuery(connectionId, database, sql, props.schema, undefined, { maxRows, clientSessionId: session.id });
@@ -75,11 +76,13 @@ function closeManagedSession(session: ManagedSession) {
 function rotateManagedSession(connectionId: string, database: string) {
   const previous = managedSession;
   managedSession = newManagedSession(connectionId, database);
+  if (!previous) return;
   previous.closeRequested = true;
   closeManagedSession(previous);
 }
 
 function closeCurrentManagedSession() {
+  if (!managedSession) return;
   managedSession.closeRequested = true;
   closeManagedSession(managedSession);
 }
@@ -186,6 +189,7 @@ async function confirmCompile() {
         if (!row || String(row[0]) !== target.objectId || String(row[1] ?? "") !== target.lastDdlTime) {
           previewSql.value = "";
           await loadList(token);
+          if (!isCurrent(token)) return undefined;
           outcome.value = t("processList.oracleInvalidObjects.targetChanged");
           return undefined;
         }
@@ -203,6 +207,7 @@ async function confirmCompile() {
     const sameObject = statusRow && String(statusRow[0]) === target.objectId;
     const status = sameObject ? String(statusRow[2] ?? "") : "";
     await loadList(token, { allowLastDdlTimeChange: true });
+    if (!isCurrent(token)) return;
     outcome.value = !statusRow
       ? t("processList.oracleInvalidObjects.compileGone")
       : !sameObject
@@ -218,6 +223,7 @@ async function confirmCompile() {
       if (actionSubmitted) {
         previewSql.value = "";
         await loadList(token);
+        if (!isCurrent(token)) return;
         outcome.value = `${t("processList.oracleInvalidObjects.compileUnknown")} ${error instanceof Error ? error.message : String(error)}`;
       } else {
         outcome.value = t("processList.oracleInvalidObjects.compileFailed", { message: error instanceof Error ? error.message : String(error) });

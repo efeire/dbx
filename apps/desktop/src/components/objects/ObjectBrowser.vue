@@ -254,6 +254,7 @@ const selectedSchema = ref<string | undefined>(props.schema);
 const oracleInvalidObjectsOpen = ref(false);
 let invalidObjectsDialogGeneration = 0;
 let invalidObjectSourceRequestGeneration = 0;
+let objectBrowserUnmounted = false;
 const rows = ref<ObjectBrowserRow[]>([]);
 const rootRef = ref<HTMLElement>();
 const search = ref(props.initialSearchQuery ?? "");
@@ -1839,6 +1840,7 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
   const catalog = props.catalog;
   const schema = selectedSchema.value || database;
   const isCurrentRequest = () =>
+    !objectBrowserUnmounted &&
     requestGeneration === invalidObjectSourceRequestGeneration &&
     dialogGeneration === invalidObjectsDialogGeneration &&
     oracleInvalidObjectsOpen.value &&
@@ -4405,6 +4407,9 @@ function matchesRefreshScope(scope: { schema?: string; catalog?: string }): bool
 defineExpose({ focusSearch, refresh, matchesRefreshScope });
 
 onBeforeUnmount(() => {
+  objectBrowserUnmounted = true;
+  invalidObjectsDialogGeneration++;
+  invalidObjectSourceRequestGeneration++;
   clearTimeout(objectSearchTimer);
   sidePanelGuard.bump();
   objectBrowserRowsLoadGuard.invalidate();

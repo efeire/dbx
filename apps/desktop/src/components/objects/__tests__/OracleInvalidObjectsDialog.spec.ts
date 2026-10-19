@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   truncatedErrors: false,
   failCompile: false,
   failInvalidObjectList: false,
+  postCompileListGate: null as null | (() => Promise<void>),
 }));
 
 function passthrough(tag: string): Component {
@@ -67,12 +68,18 @@ beforeEach(() => {
   mocks.truncatedErrors = false;
   mocks.failCompile = false;
   mocks.failInvalidObjectList = false;
+  mocks.postCompileListGate = null;
   mocks.executeAllowed = true;
   mocks.guard.mockReset();
   mocks.closeClientConnectionSession.mockReset().mockResolvedValue(undefined);
   mocks.compileFinished.mockReset();
   mocks.executeQuery.mockReset().mockImplementation(async (_connectionId: string, _database: string, sql: string) => {
     if (sql.includes("FROM (SELECT OWNER")) {
+      if (compiled && mocks.postCompileListGate) {
+        const gate = mocks.postCompileListGate;
+        mocks.postCompileListGate = null;
+        await gate();
+      }
       if (mocks.failInvalidObjectList) throw new Error("ORA-01031: insufficient privileges");
       return { columns: [], rows: !compiled || compileStatus === "INVALID" ? [["APP", "P_BAD", "PROCEDURE", 9, compiled ? "2026-10-20 09:01:00" : "2026-10-20 09:00:00"]] : [] };
     }
@@ -429,5 +436,36 @@ describe("OracleInvalidObjectsDialog production flow", () => {
       ?.click();
     await vi.waitFor(() => expect(root?.querySelector<HTMLButtonElement>('button[title="common.refresh"]')?.disabled).toBe(false));
     expect(dialogButtons().find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.previewCompile")?.disabled).toBe(false);
+  });
+
+  it("does not write a late compile outcome into the reopened dialog after readback refresh", async () => {
+    let release!: () => void;
+    mocks.postCompileListGate = () => new Promise<void>((resolve) => (release = resolve));
+    const { open } = await mountDialog();
+    dialogButtons()
+      .find((button) => button.textContent?.includes("P_BAD"))
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("invalid identifier"));
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.previewCompile")
+      ?.click();
+    await nextTick();
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.confirmCompile")
+      ?.click();
+    await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).length).toBeGreaterThan(1));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+
+    open.value = false;
+    await nextTick();
+    open.value = true;
+    await nextTick();
+    await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).length).toBeGreaterThan(2));
+    release();
+    await nextTick();
+    await vi.waitFor(() => expect(root?.textContent).toContain("processList.oracleInvalidObjects.empty"));
+    expect(root?.textContent).not.toContain("processList.oracleInvalidObjects.compileValid");
+    expect(root?.textContent).not.toContain("processList.oracleInvalidObjects.compileGone");
+    expect(root?.textContent).not.toContain("processList.oracleInvalidObjects.compileUnknown");
   });
 });

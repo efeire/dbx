@@ -14,14 +14,17 @@ const mocks = vi.hoisted(() => ({
   executeMulti: vi.fn(),
   closeClientConnectionSession: vi.fn(),
   contextGuard: vi.fn(),
+  contextGuardGate: null as null | (() => Promise<void>),
   toast: vi.fn(),
   oceanbaseRows: [] as unknown[][],
   oceanbaseTerminated: false,
+  oceanbaseKeepTerminatedRow: false,
   oceanbaseListFailure: "",
   oceanbaseListTruncated: false,
   oceanbaseLockFailure: "",
   oceanbaseLockRows: [] as unknown[][],
   oceanbaseLockTruncated: false,
+  oceanbaseLockGate: null as null | (() => Promise<void>),
   oceanbaseTerminateFailure: "",
   oceanbaseTargetChanged: false,
   oracleVersionValue: "19.0.0.0.0",
@@ -110,8 +113,9 @@ vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: mocks.toast
 vi.mock("@/lib/backend/api", () => ({ executeQuery: mocks.executeQuery, executeMulti: mocks.executeMulti, closeClientConnectionSession: mocks.closeClientConnectionSession }));
 vi.mock("@/lib/database/productionExecutionGuard", () => ({
   executeWithProductionSqlGuard: (options: { execute: () => Promise<unknown> }) => options.execute(),
-  executeWithProductionContextGuard: (options: { execute: () => Promise<unknown> }) => {
+  executeWithProductionContextGuard: async (options: { execute: () => Promise<unknown> }) => {
     mocks.contextGuard(options);
+    if (mocks.contextGuardGate) await mocks.contextGuardGate();
     return options.execute();
   },
 }));
@@ -253,13 +257,17 @@ beforeEach(() => {
     if (sql === OCEANBASE_OWN_SESSION_SQL) return { columns: ["ID", "USER", "TENANT"], rows: [["5", "APP", "tenant_a"]] };
     if (sql === buildOceanbaseSessionListSql()) {
       if (mocks.oceanbaseListFailure) throw new Error(mocks.oceanbaseListFailure);
-      return { columns: [], rows: mocks.oceanbaseTerminated ? mocks.oceanbaseRows.filter((row) => String(row[0]) !== "21") : mocks.oceanbaseRows, truncated: mocks.oceanbaseListTruncated };
+      return { columns: [], rows: mocks.oceanbaseTerminated && !mocks.oceanbaseKeepTerminatedRow ? mocks.oceanbaseRows.filter((row) => String(row[0]) !== "21") : mocks.oceanbaseRows, truncated: mocks.oceanbaseListTruncated };
     }
     if (sql.includes("FROM GV$OB_LOCKS l")) {
       if (mocks.oceanbaseLockFailure) throw new Error(mocks.oceanbaseLockFailure);
+      const rows = mocks.oceanbaseLockRows;
+      const gate = mocks.oceanbaseLockGate;
+      mocks.oceanbaseLockGate = null;
+      if (gate) await gate();
       return {
         columns: ["SERVER_IP", "SERVER_PORT", "TENANT_ID", "TRANS_ID", "SESSION_ID", "TYPE", "ID1", "ID2", "ID3", "LMODE", "REQUEST", "CTIME", "BLOCK", "SESSION_USER", "SESSION_STATE"],
-        rows: mocks.oceanbaseLockRows,
+        rows,
         truncated: mocks.oceanbaseLockTruncated,
       };
     }
@@ -274,6 +282,7 @@ beforeEach(() => {
   mocks.executeMulti.mockReset().mockResolvedValue([{ columns: [], rows: [] }]);
   mocks.closeClientConnectionSession.mockReset().mockResolvedValue(undefined);
   mocks.contextGuard.mockReset();
+  mocks.contextGuardGate = null;
   mocks.toast.mockReset();
   oracleTerminated = false;
   oracleTerminateError = "";
@@ -283,11 +292,13 @@ beforeEach(() => {
     ["22", "PROXY", "tenant_a", "proxyhost", "db", "Query", "5", "active", "SELECT 3", "99", "127.0.0.2", "2882"],
   ];
   mocks.oceanbaseTerminated = false;
+  mocks.oceanbaseKeepTerminatedRow = false;
   mocks.oceanbaseListFailure = "";
   mocks.oceanbaseListTruncated = false;
   mocks.oceanbaseLockFailure = "";
   mocks.oceanbaseLockRows = [["127.0.0.1", "2882", "7", "900", "21", "TX", "100", "200", "300", "6", "0", "10", "1", "OTHER", "WAITING"]];
   mocks.oceanbaseLockTruncated = false;
+  mocks.oceanbaseLockGate = null;
   mocks.oceanbaseTerminateFailure = "";
   mocks.oceanbaseTargetChanged = false;
   mocks.oracleVersionValue = "19.0.0.0.0";
@@ -437,6 +448,15 @@ describe("ProcessListPanel batch terminate", () => {
     expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("ALTER SYSTEM KILL SESSION"))).toBe(false);
   });
 
+  it("renders the terminate action from the actual zh-CN message table", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    await mountReactivePanel(oracleConnection);
+    processRow("21").querySelector<HTMLButtonElement>('button[title="终止会话"]')?.click();
+    await nextTick();
+    expect(findDialogButton("终止会话")).toBeDefined();
+    expect(mocks.contextGuard).not.toHaveBeenCalled();
+  });
+
   it("consumes OceanBase sessions and locks, filters and refreshes rows, and terminates one supported session", async () => {
     mocks.oceanbaseListTruncated = true;
     await mountOceanbasePanel();
@@ -476,7 +496,7 @@ describe("ProcessListPanel batch terminate", () => {
     expect(root?.textContent).toContain("processList.oracleTenant");
     expect(root?.textContent).toContain("processList.oracleNode");
     findDialogButton("processList.terminate")?.click();
-    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("processList.terminateSuccess:21", 2500));
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("processList.oracleTerminateUnknown", 5000));
     const killCall = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("EXECUTE IMMEDIATE 'KILL CONNECTION"));
     expect(killCall?.[2]).toContain("ID = 21 AND USER = 'UPDATED' AND TENANT = 'tenant_a'");
     expect(killCall?.[5]).toMatchObject({ clientSessionId: expect.stringMatching(/^process-list:/) });
@@ -505,6 +525,48 @@ describe("ProcessListPanel batch terminate", () => {
     await mountOceanbasePanel();
     processRow("21").querySelector<HTMLButtonElement>('button[title="锁详情"]')?.click();
     await vi.waitFor(() => expect(root?.textContent).toContain("此会话没有可见的锁记录。"));
+  });
+
+  it("clears a closed lock request and ignores its late response after reopening", async () => {
+    let release!: () => void;
+    mocks.oceanbaseLockRows = [["127.0.0.1", "2882", "7", "900", "21", "TX", "100", "200", "300", "6", "0", "10", "1", "OLD", "WAITING"]];
+    mocks.oceanbaseLockGate = () => new Promise<void>((resolve) => (release = resolve));
+    await mountOceanbasePanel();
+    const lockButton = processRow("21").querySelector<HTMLButtonElement>('button[title="processList.oracleLockDetails"]')!;
+    lockButton.click();
+    await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM GV$OB_LOCKS l")).length).toBe(1));
+    root?.querySelector<HTMLButtonElement>("[data-dialog] button")?.click();
+    await nextTick();
+    expect(lockButton.disabled).toBe(false);
+
+    mocks.oceanbaseLockRows = [["127.0.0.1", "2882", "7", "901", "21", "TX", "101", "201", "301", "6", "0", "10", "1", "FRESH", "WAITING"]];
+    lockButton.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("FRESH"));
+    release();
+    await nextTick();
+    expect(root?.textContent).toContain("FRESH");
+    expect(root?.textContent).not.toContain("OLD");
+  });
+
+  it("does not report termination success when the truncated refresh omits the target", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    mocks.oceanbaseListTruncated = true;
+    await mountOceanbasePanel();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="终止会话"]')?.click();
+    await nextTick();
+    findDialogButton("终止会话")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("终止请求结果不明。请刷新会话列表确认状态，不要重复提交。", 5000));
+    expect(mocks.toast).not.toHaveBeenCalledWith("processList.terminateSuccess:21", 2500);
+  });
+
+  it("uses the existing pending message when the terminated row remains in the refreshed list", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    mocks.oceanbaseKeepTerminatedRow = true;
+    await mountOceanbasePanel();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="终止会话"]')?.click();
+    await nextTick();
+    findDialogButton("终止会话")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("终止请求已接受，会话仍在回滚或尚未退出。刷新以查看状态。", 4000));
   });
 
   it("keeps an OceanBase list permission failure distinct from confirmed empty results", async () => {
@@ -602,7 +664,7 @@ describe("ProcessListPanel batch terminate", () => {
     await nextTick();
     findDialogButton("processList.terminate")?.click();
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("ORA-01031: insufficient privileges"), 5000));
-    expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("processList.terminateUnknown"), 5000);
+    expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("processList.oracleTerminateUnknown"), 5000);
   });
 
   it("opens lock details for the selected Oracle session using the managed session", async () => {

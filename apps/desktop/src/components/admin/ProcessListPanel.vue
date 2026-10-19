@@ -11,6 +11,7 @@ import { useToast } from "@/composables/useToast";
 import type { ConnectionConfig } from "@/types/database";
 import * as api from "@/lib/backend/api";
 import { executeWithProductionContextGuard, executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
+import { uuid } from "@/lib/common/utils";
 import { clampInterval, createProcessListLoadCoordinator, DEFAULT_REFRESH_SECONDS, processListExecutionError, processListSessionCount } from "@/lib/database/mysqlProcessList";
 import { resolveProcessListDriverForConnection, type ProcessRow } from "@/lib/database/processListDrivers";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
@@ -93,6 +94,7 @@ const lockRows = ref<unknown[][]>([]);
 const lockError = ref("");
 const lockTruncated = ref(false);
 const loadingLocks = ref(false);
+let lockRequestGeneration = 0;
 
 trackUiState(() => ({ search: search.value, sortKey: sortKey.value, sortDir: sortDir.value, autoRefresh: autoRefresh.value, intervalSeconds: intervalSeconds.value }));
 
@@ -110,7 +112,7 @@ function closeManagedSession(session: ManagedClientSession) {
 function managedSessionFor(connection: ConnectionConfig, database: string): ManagedClientSession {
   if (!managedClientSession || managedClientSession.connectionId !== connection.id || managedClientSession.database !== database) {
     const previous = managedClientSession;
-    managedClientSession = { id: `process-list:${crypto.randomUUID()}`, connectionId: connection.id, database, active: 0, closeRequested: false };
+    managedClientSession = { id: `process-list:${uuid()}`, connectionId: connection.id, database, active: 0, closeRequested: false };
     if (previous) {
       previous.closeRequested = true;
       closeManagedSession(previous);
@@ -419,6 +421,7 @@ function isOwnSession(row: ProcessRow): boolean {
 async function showLocks(row: ProcessRow) {
   const activeDriver = driver.value;
   if (!activeDriver?.buildLockDetailsSql || loadingLocks.value || actionsLocked.value) return;
+  const requestGeneration = ++lockRequestGeneration;
   const generation = connectionGeneration;
   const connection = { ...props.connection };
   lockTarget.value = row;
@@ -430,15 +433,21 @@ async function showLocks(row: ProcessRow) {
   try {
     const sql = activeDriver.buildLockDetailsSql(row, versionMajor.value ?? undefined);
     const result = await executeProcessQuery(connection.id, activeDriver.database ?? "", sql, 1000, activeDriver);
-    if (disposed || generation !== connectionGeneration || lockTarget.value !== row) return;
+    if (disposed || generation !== connectionGeneration || requestGeneration !== lockRequestGeneration) return;
     lockColumns.value = result.columns;
     lockRows.value = result.rows;
     lockTruncated.value = result.truncated === true;
   } catch (error) {
-    if (!disposed && generation === connectionGeneration && lockTarget.value === row) lockError.value = error instanceof Error ? error.message : String(error);
+    if (!disposed && generation === connectionGeneration && requestGeneration === lockRequestGeneration) lockError.value = error instanceof Error ? error.message : String(error);
   } finally {
-    if (!disposed && generation === connectionGeneration && lockTarget.value === row) loadingLocks.value = false;
+    if (!disposed && generation === connectionGeneration && requestGeneration === lockRequestGeneration) loadingLocks.value = false;
   }
+}
+
+function closeLockDialog() {
+  lockRequestGeneration++;
+  lockTarget.value = null;
+  loadingLocks.value = false;
 }
 
 function requestCancel(row: ProcessRow) {
@@ -535,7 +544,7 @@ async function confirmTerminate() {
     const terminateSql = buildRowTerminateSql?.(target, versionMajor.value ?? undefined) ?? buildTerminateSql!.call(activeDriver, Number(target.id));
     let usedFallbackTerminateSql = false;
     const executeTerminateSql = async (sql: string) => {
-      if (!isCurrentConnection()) throw new Error(t("processList.connectionChanged"));
+      if (!isCurrentConnection()) throw new Error(t("processList.oracleConnectionChanged"));
       actionSubmitted = true;
       if (activeDriver.useClientSession) {
         const queryResult = await executeProcessQuery(connection.id, activeDriver.database ?? "", sql, 1, activeDriver);
@@ -549,7 +558,7 @@ async function confirmTerminate() {
       return results;
     };
     const execute = async () => {
-      if (!isCurrentConnection()) throw new Error(t("processList.connectionChanged"));
+      if (!isCurrentConnection()) throw new Error(t("processList.oracleConnectionChanged"));
       try {
         return await executeTerminateSql(terminateSql);
       } catch (error) {
@@ -570,8 +579,8 @@ async function confirmTerminate() {
       terminating.value = false;
       await load({ silent: true });
       if (!isCurrent()) return;
-      if (loadError.value) toast(t("processList.terminateUnknown"), 5000);
-      else if (rows.value.some((row) => (activeDriver.rowKey?.(row) ?? String(row.id)) === targetKey)) toast(t("processList.terminatePending"), 4000);
+      if (loadError.value || truncated.value) toast(t("processList.oracleTerminateUnknown"), 5000);
+      else if (rows.value.some((row) => (activeDriver.rowKey?.(row) ?? String(row.id)) === targetKey)) toast(t("processList.oracleTerminatePending"), 4000);
       else toast(t("processList.terminateSuccess", { id: target.id }), 2500);
       return;
     }
@@ -580,7 +589,7 @@ async function confirmTerminate() {
     if (isCurrent()) {
       if (rowAware && actionSubmitted) {
         terminateTarget.value = null;
-        toast(`${t("processList.terminateUnknown")} ${error instanceof Error ? error.message : String(error)}`, 5000);
+        toast(`${t("processList.oracleTerminateUnknown")} ${error instanceof Error ? error.message : String(error)}`, 5000);
         void load({ silent: true });
       } else {
         toast(t("processList.terminateFailed", { message: error?.message || String(error) }), 5000);
@@ -649,6 +658,7 @@ watch(
     lockError.value = "";
     lockTruncated.value = false;
     loadingLocks.value = false;
+    lockRequestGeneration++;
     search.value = "";
     sortKey.value = driver.value?.defaultSortKey ?? "time";
     sortDir.value = "desc";
@@ -905,7 +915,7 @@ onBeforeUnmount(() => {
       </DialogContent>
     </Dialog>
 
-    <Dialog :open="lockTarget !== null" @update:open="(open) => !open && (lockTarget = null)">
+    <Dialog :open="lockTarget !== null" @update:open="(open) => !open && closeLockDialog()">
       <DialogContent class="max-h-[min(80vh,700px)] max-w-5xl overflow-hidden">
         <DialogHeader
           ><DialogTitle>{{ t("processList.oracleLockDetails") }} · {{ lockTarget?.id }}</DialogTitle></DialogHeader
@@ -930,7 +940,7 @@ onBeforeUnmount(() => {
           </table>
         </div>
         <DialogFooter
-          ><Button variant="outline" @click="lockTarget = null">{{ t("common.close") }}</Button></DialogFooter
+          ><Button variant="outline" @click="closeLockDialog">{{ t("common.close") }}</Button></DialogFooter
         >
       </DialogContent>
     </Dialog>

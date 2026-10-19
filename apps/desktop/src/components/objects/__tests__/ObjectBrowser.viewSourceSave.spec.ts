@@ -17,9 +17,11 @@ const mocks = vi.hoisted(() => ({
   ensureConnected: vi.fn(),
   toast: vi.fn(),
   sourceTabs: [] as Array<{ id: string; sourceLoad?: { error?: string }; objectSource?: unknown }>,
+  openObjectSourceTabPending: vi.fn(),
   sourceLoadFailure: "",
   deferSourceTabLoad: false,
   finishSourceTabLoad: undefined as (() => void) | undefined,
+  invalidObjectType: "PROCEDURE",
 }));
 
 vi.mock("@/lib/backend/api", () => ({
@@ -45,23 +47,24 @@ vi.mock("@/stores/connectionStore", () => ({
 vi.mock("@/stores/queryStore", async () => {
   const { reactive } = await import("vue");
   const tabs = reactive(mocks.sourceTabs);
+  mocks.openObjectSourceTabPending.mockImplementation(() => {
+    const tab = reactive({ id: "source-1", sourceLoad: {} as { error?: string } | undefined, objectSource: undefined as unknown });
+    tabs.push(tab);
+    const finish = () => {
+      if (mocks.sourceLoadFailure) tab.sourceLoad!.error = mocks.sourceLoadFailure;
+      else {
+        tab.sourceLoad = undefined;
+        tab.objectSource = { name: "P_BAD", objectType: "PROCEDURE" };
+      }
+    };
+    mocks.finishSourceTabLoad = finish;
+    if (!mocks.deferSourceTabLoad) setTimeout(finish, 0);
+    return tab.id;
+  });
   return {
     useQueryStore: () => ({
       tabs,
-      openObjectSourceTabPending: vi.fn(() => {
-        const tab = reactive({ id: "source-1", sourceLoad: {} as { error?: string } | undefined, objectSource: undefined as unknown });
-        tabs.push(tab);
-        const finish = () => {
-          if (mocks.sourceLoadFailure) tab.sourceLoad!.error = mocks.sourceLoadFailure;
-          else {
-            tab.sourceLoad = undefined;
-            tab.objectSource = { name: "P_BAD", objectType: "PROCEDURE" };
-          }
-        };
-        mocks.finishSourceTabLoad = finish;
-        if (!mocks.deferSourceTabLoad) setTimeout(finish, 0);
-        return tab.id;
-      }),
+      openObjectSourceTabPending: (...args: unknown[]) => mocks.openObjectSourceTabPending(...args),
     }),
   };
 });
@@ -72,7 +75,7 @@ vi.mock("@/components/objects/OracleInvalidObjectsDialog.vue", async () => {
       props: { open: Boolean },
       emits: ["update:open", "open-source", "compile-finished"],
       setup(props, { emit }) {
-        return () => (props.open ? h("div", { "data-invalid-object-dialog": "" }, [h("button", { onClick: () => emit("open-source", { owner: "APP", name: "P_BAD", type: "PROCEDURE" }) }, "open-source"), h("button", { onClick: () => emit("update:open", false) }, "close-dialog")]) : null);
+        return () => (props.open ? h("div", { "data-invalid-object-dialog": "" }, [h("button", { onClick: () => emit("open-source", { owner: "APP", name: "P_BAD", type: mocks.invalidObjectType }) }, "open-source"), h("button", { onClick: () => emit("update:open", false) }, "close-dialog")]) : null);
       },
     }),
   };
@@ -153,6 +156,7 @@ beforeEach(() => {
   mocks.sourceLoadFailure = "";
   mocks.deferSourceTabLoad = false;
   mocks.finishSourceTabLoad = undefined;
+  mocks.invalidObjectType = "PROCEDURE";
   mocks.listObjects.mockResolvedValue([{ name: VIEW_NAME, schema: "app", object_type: "VIEW" }]);
   mocks.listSchemas.mockResolvedValue([]);
   mocks.getObjectSource.mockResolvedValue({ source: VIEW_SQL, editable: true });
@@ -277,6 +281,29 @@ describe("ObjectBrowser view source save", () => {
     await nextTick();
     expect(host.querySelector("[data-invalid-object-dialog]")).not.toBeNull();
     expect(mocks.toast).not.toHaveBeenCalled();
+  });
+
+  it("does not create a repair tab or toast when an Oracle TYPE source request returns after unmount", async () => {
+    let release!: (value: { source: string; editable: boolean }) => void;
+    mocks.invalidObjectType = "TYPE";
+    mocks.getObjectSource.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const host = await mountBrowser(oracleConnection, "ORCL");
+    const opener = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("processList.oracleInvalidObjects.title"));
+    opener?.click();
+    await nextTick();
+    host.querySelector<HTMLButtonElement>("[data-invalid-object-dialog] button")?.click();
+    await vi.waitFor(() => expect(mocks.getObjectSource).toHaveBeenCalledWith(oracleConnection.id, "ORCL", "APP", "P_BAD", "TYPE"));
+    const mounted = mountedApps.splice(
+      mountedApps.findIndex((item) => item.host === host),
+      1,
+    )[0]!;
+    mounted.app.unmount();
+    release({ source: "CREATE TYPE P_BAD AS OBJECT (...)", editable: true });
+    await Promise.resolve();
+    await nextTick();
+    expect(mocks.openObjectSourceTabPending).not.toHaveBeenCalled();
+    expect(mocks.toast).not.toHaveBeenCalled();
+    host.remove();
   });
 
   it("does not dispatch a save whose source identity changed during SQL construction", async () => {

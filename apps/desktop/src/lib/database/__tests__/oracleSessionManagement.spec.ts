@@ -18,7 +18,11 @@ describe("Oracle session identity and SQL", () => {
     expect(buildOracleKillSessionBlock(target!, false)).toContain("CON_ID = 0");
     expect(buildOracleKillSessionBlock(target!, false)).toContain("SID = 17 AND SERIAL# = 8 AND INST_ID = 2 AND CON_ID = 0");
     expect(buildOracleKillSessionBlock(target!, false)).toContain("ALTER SYSTEM KILL SESSION ''17,8,@2'' IMMEDIATE");
-    expect(buildOracleLockDetailsSql(target!, false)).toContain("l.CON_ID = 0");
+    const lockSql = buildOracleLockDetailsSql(target!, false);
+    expect(lockSql).toContain("l.CON_ID = 0");
+    expect(lockSql).toContain("target.SID = 17 AND target.SERIAL# = 8 AND target.INST_ID = 2 AND target.CON_ID = 0");
+    expect(lockSql).toContain("target.AUDSID = 99");
+    expect(lockSql).toContain("TO_CHAR(target.LOGON_TIME,'YYYY-MM-DD HH24:MI:SS') = '2026-10-20 10:00:00'");
   });
 
   it("rejects unsafe Oracle target identities", () => {
@@ -53,8 +57,11 @@ describe("OceanBase session identity and SQL", () => {
   it("rejects proxy sessions and includes same-resource lock rows within the target tenant", () => {
     expect(() => buildOceanbaseKillConnectionBlock({ ...row, proxySessionId: "88" })).toThrow("Unsupported");
     const sql = buildOceanbaseLockDetailsSql({ ...row, tenantId: 7 });
-    expect(sql).toContain("t.ID3 = l.ID3");
+    expect(sql).toContain("tl.ID3 = l.ID3");
     expect(sql).toContain('p."USER" AS SESSION_USER');
-    expect(sql).toContain("TENANT_ID = (SELECT TENANT_ID FROM GV$OB_SESSION");
+    expect(sql).toContain(`tp."USER" = 'APP''X'`);
+    expect(sql).toContain("tl.SESSION_ID = 9007199254740993 AND tl.SVR_IP = '127.0.0.1' AND tl.SVR_PORT = 2882");
+    expect(sql).toContain("p.SVR_IP = l.SVR_IP AND p.SVR_PORT = l.SVR_PORT");
+    expect(sql).not.toContain("TENANT_ID FROM GV$OB_SESSION");
   });
 });

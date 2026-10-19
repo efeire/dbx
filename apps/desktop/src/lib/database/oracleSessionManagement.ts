@@ -134,18 +134,21 @@ export function canTerminateOracleSession(row: ProcessRow): boolean {
 
 export function buildOracleLockDetailsSql(target: OracleSessionTarget, legacy: boolean): string {
   const sid = positiveInteger(target.id, "SID");
+  const serial = positiveInteger(target.serial, "serial number");
   const instance = positiveInteger(target.instance, "instance id");
   const container = legacy ? "0" : nonNegativeInteger(target.container, "container id");
   const conIdColumn = legacy ? "0" : "l.CON_ID";
   const sessionConId = legacy ? "0" : "s.CON_ID";
   const containerJoin = legacy ? "" : " AND s.CON_ID = l.CON_ID";
   const containerFilter = legacy ? "" : ` AND l.CON_ID = ${container}`;
+  const targetConId = legacy ? "" : ` AND target.CON_ID = ${container}`;
   const related = `s.SID = ${sid} AND s.INST_ID = ${instance}${legacy ? "" : ` AND s.CON_ID = ${container}`}`;
   const blockerMatch =
     /^\d+$/.test(String(target.blockingSession ?? "")) && Number(target.blockingSession) > 0 && /^\d+$/.test(String(target.blockingInstance ?? "")) && Number(target.blockingInstance) > 0
       ? `s.SID = ${positiveInteger(String(target.blockingSession), "blocking SID")} AND s.INST_ID = ${positiveInteger(String(target.blockingInstance), "blocking instance")}${legacy ? "" : ` AND s.CON_ID = ${container}`}`
       : "1 = 0";
-  return `SELECT ${conIdColumn} AS CONTAINER_ID, l.INST_ID AS INSTANCE_ID, l.SID AS SESSION_ID, l.TYPE AS LOCK_TYPE, TO_CHAR(l.ID1) AS ID1, TO_CHAR(l.ID2) AS ID2, l.LMODE AS HELD_MODE, l.REQUEST AS REQUESTED_MODE, l.BLOCK AS BLOCKING, s.USERNAME AS SESSION_USER, s.STATUS AS SESSION_STATUS, TO_CHAR(s.BLOCKING_INSTANCE) || ':' || TO_CHAR(s.BLOCKING_SESSION) AS BLOCKER\nFROM GV$LOCK l JOIN GV$SESSION s ON s.SID = l.SID AND s.INST_ID = l.INST_ID${containerJoin}\nWHERE (${related} OR ${blockerMatch} OR s.BLOCKING_INSTANCE = ${instance} AND s.BLOCKING_SESSION = ${sid}${legacy ? "" : ` AND ${sessionConId} = ${container}`})${containerFilter}\nORDER BY l.TYPE, l.ID1, l.ID2, l.REQUEST`;
+  const targetIdentity = `target.SID = ${sid} AND target.SERIAL# = ${serial} AND target.INST_ID = ${instance}${targetConId} AND target.USERNAME = ${sqlLiteral(target.user)} AND target.AUDSID = ${positiveInteger(target.auditSession, "audit session id")} AND TO_CHAR(target.LOGON_TIME,'YYYY-MM-DD HH24:MI:SS') = ${sqlLiteral(target.logonTime)}`;
+  return `SELECT ${conIdColumn} AS CONTAINER_ID, l.INST_ID AS INSTANCE_ID, l.SID AS SESSION_ID, l.TYPE AS LOCK_TYPE, TO_CHAR(l.ID1) AS ID1, TO_CHAR(l.ID2) AS ID2, l.LMODE AS HELD_MODE, l.REQUEST AS REQUESTED_MODE, l.BLOCK AS BLOCKING, s.USERNAME AS SESSION_USER, s.STATUS AS SESSION_STATUS, TO_CHAR(s.BLOCKING_INSTANCE) || ':' || TO_CHAR(s.BLOCKING_SESSION) AS BLOCKER\nFROM GV$LOCK l JOIN GV$SESSION s ON s.SID = l.SID AND s.INST_ID = l.INST_ID${containerJoin}\nWHERE EXISTS (SELECT 1 FROM GV$SESSION target WHERE ${targetIdentity}) AND (${related} OR ${blockerMatch} OR s.BLOCKING_INSTANCE = ${instance} AND s.BLOCKING_SESSION = ${sid}${legacy ? "" : ` AND ${sessionConId} = ${container}`})${containerFilter}\nORDER BY l.TYPE, l.ID1, l.ID2, l.REQUEST`;
 }
 
 export function buildOceanbaseSessionListSql(): string {
@@ -200,9 +203,14 @@ export function buildOceanbaseLockDetailsSql(row: ProcessRow): string {
   const id = positiveDecimalString(String(row.id), "session id");
   const user = String(row.user ?? "");
   const tenant = String(row.tenant ?? "");
-  if (!user || !tenant) throw new Error("Incomplete OceanBase session identity");
-  const tenantId = `(SELECT TENANT_ID FROM GV$OB_SESSION WHERE ID = ${id} AND USER = ${sqlLiteral(user)} AND TENANT = ${sqlLiteral(tenant)} AND ROWNUM = 1)`;
-  return `SELECT l.SVR_IP, l.SVR_PORT, l.TENANT_ID, l.TRANS_ID, l.SESSION_ID, l.TYPE, TO_CHAR(l.ID1), TO_CHAR(l.ID2), TO_CHAR(l.ID3), l.LMODE, l.REQUEST, l.CTIME, l.BLOCK, p."USER" AS SESSION_USER, p.STATE AS SESSION_STATE FROM GV$OB_LOCKS l LEFT JOIN GV$OB_PROCESSLIST p ON p.ID = l.SESSION_ID AND p.TENANT = ${sqlLiteral(tenant)} WHERE l.TENANT_ID = ${tenantId} AND (l.SESSION_ID = ${id} OR EXISTS (SELECT 1 FROM GV$OB_LOCKS t WHERE t.SESSION_ID = ${id} AND t.TENANT_ID = ${tenantId} AND t.TYPE = l.TYPE AND t.ID1 = l.ID1 AND t.ID2 = l.ID2 AND t.ID3 = l.ID3)) ORDER BY l.TYPE, l.ID1, l.ID2, l.SESSION_ID, l.TRANS_ID`;
+  const serverIp = String(row.serverIp ?? "");
+  const serverPort = positiveInteger(String(row.serverPort ?? ""), "server port");
+  if (!user || !tenant || !serverIp) throw new Error("Incomplete OceanBase session identity");
+  const proxySessionPredicate = row.proxySessionId === null || row.proxySessionId === undefined || String(row.proxySessionId) === "" ? "IS NULL" : `= ${sqlLiteral(String(row.proxySessionId))}`;
+  const targetSessionIdentity = `tp.ID = ${id} AND tp."USER" = ${sqlLiteral(user)} AND tp.TENANT = ${sqlLiteral(tenant)} AND tp.SVR_IP = ${sqlLiteral(serverIp)} AND tp.SVR_PORT = ${serverPort} AND tp.PROXY_SESSID ${proxySessionPredicate}`;
+  const targetLockIdentity = `tl.SESSION_ID = ${id} AND tl.SVR_IP = ${sqlLiteral(serverIp)} AND tl.SVR_PORT = ${serverPort}`;
+  const tenantIds = `SELECT DISTINCT tl.TENANT_ID FROM GV$OB_LOCKS tl WHERE ${targetLockIdentity} AND EXISTS (SELECT 1 FROM GV$OB_PROCESSLIST tp WHERE ${targetSessionIdentity})`;
+  return `SELECT l.SVR_IP, l.SVR_PORT, l.TENANT_ID, l.TRANS_ID, l.SESSION_ID, l.TYPE, TO_CHAR(l.ID1), TO_CHAR(l.ID2), TO_CHAR(l.ID3), l.LMODE, l.REQUEST, l.CTIME, l.BLOCK, p."USER" AS SESSION_USER, p.STATE AS SESSION_STATE FROM GV$OB_LOCKS l LEFT JOIN GV$OB_PROCESSLIST p ON p.ID = l.SESSION_ID AND p.TENANT = ${sqlLiteral(tenant)} AND p.SVR_IP = l.SVR_IP AND p.SVR_PORT = l.SVR_PORT WHERE l.TENANT_ID IN (${tenantIds}) AND ((l.SESSION_ID = ${id} AND l.SVR_IP = ${sqlLiteral(serverIp)} AND l.SVR_PORT = ${serverPort}) OR EXISTS (SELECT 1 FROM GV$OB_LOCKS tl WHERE ${targetLockIdentity} AND tl.TYPE = l.TYPE AND tl.ID1 = l.ID1 AND tl.ID2 = l.ID2 AND tl.ID3 = l.ID3)) ORDER BY l.TYPE, l.ID1, l.ID2, l.SESSION_ID, l.TRANS_ID`;
 }
 
 export const ORACLE_SESSION_DRIVER_COLUMNS = ORACLE_COLUMNS;
