@@ -489,7 +489,8 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
     return { initialRequest, request, result };
   }
 
-  async function copyWithExtractor(extractor: DataGridCopyExtractorId, extractorOptions: DataGridExtractorOptions = options.extractorOptions?.value ?? DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS): Promise<boolean> {
+  async function copyWithExtractor(extractor: DataGridCopyExtractorId, extractorOptions: DataGridExtractorOptions = options.extractorOptions?.value ?? DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, isSessionValid?: () => boolean): Promise<boolean> {
+    if (isSessionValid && !isSessionValid()) return false;
     if (hasUnsupportedDiscreteSelection.value && !hasContextPredicateTarget(extractor)) {
       toast(t("grid.copyExtractorUnsupportedSelection"), 5000);
       return false;
@@ -497,7 +498,7 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
     if (!canCopyWithExtractor(extractor, extractorOptions)) return false;
     try {
       const extraction = await extractWithExtractor(extractor, extractorOptions);
-      if (!extraction) return false;
+      if (!extraction || (isSessionValid && !isSessionValid())) return false;
       const { request, result } = extraction;
       // Derive the grid paste-back payload from the effective request schema so
       // hidden support columns, row headers, NULLs, tabs, and newlines keep the
@@ -516,6 +517,7 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
             return { rows, header };
           })()
         : undefined;
+      if (isSessionValid && !isSessionValid()) return false;
       const copied = await options.copyText(result.text, gridCopy, extractor === "html" ? result.text : undefined);
       if (!copied) return false;
       showWarnings(result.warnings, result.omittedColumns);
@@ -539,13 +541,14 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
     return { ...result, sourceRowCount, truncated: sourceRowCount > result.rowCount };
   }
 
-  async function copyWithPreference(preference: DataGridCopyPreference, extractorOptions: DataGridExtractorOptions = options.extractorOptions?.value ?? DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS): Promise<boolean> {
+  async function copyWithPreference(preference: DataGridCopyPreference, extractorOptions: DataGridExtractorOptions = options.extractorOptions?.value ?? DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, isSessionValid?: () => boolean): Promise<boolean> {
+    if (isSessionValid && !isSessionValid()) return false;
     if (hasUnsupportedDiscreteSelection.value) {
       toast(t("grid.copyExtractorUnsupportedSelection"), 5000);
       return false;
     }
     const extractor = resolveCopyPreference(preference, extractorOptions);
-    return extractor ? copyWithExtractor(extractor, extractorOptions) : false;
+    return extractor ? copyWithExtractor(extractor, extractorOptions, isSessionValid) : false;
   }
 
   async function previewWithPreference(preference: DataGridCopyPreference, extractorOptions: DataGridExtractorOptions): Promise<DataGridExtractPreview> {

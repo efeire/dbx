@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import type { DatabaseType, QueryResult } from "@/types/database";
 import type { DataGridTableMeta } from "@/lib/dataGrid/dataGridSql";
-import { DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS } from "@/lib/dataGrid/dataGridCopyExtractor";
+import { DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS, DATA_GRID_EXTRACTOR_PREVIEW_MAX_ROWS } from "@/lib/dataGrid/dataGridCopyExtractor";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mocks = vi.hoisted(() => ({
@@ -580,6 +580,7 @@ describe("DataGrid context menu target lifecycle", () => {
   it("keeps SQL Select available in Copy as by default and restores it after hiding it", async () => {
     const { host, settingsStore } = mountGrid(hydratedResult(1, "value"));
     await settle();
+    columnHeader(host, 1).click();
     openContextMenu(gridCell(host));
     await settle();
     contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
@@ -613,6 +614,109 @@ describe("DataGrid context menu target lifecycle", () => {
     contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
     await settle();
     expect(contextMenuLabels()).toContain("SQL Select");
+  });
+
+  it("copies the full current result using temporary advanced-copy options without saving settings", async () => {
+    const rows = Array.from({ length: DATA_GRID_EXTRACTOR_PREVIEW_MAX_ROWS + 2 }, (_, index) => [index + 1, `value-${index + 1}`]);
+    const { host, settingsStore } = mountGrid({ columns: ["id", "payload"], rows, affected_rows: 0, execution_time_ms: 0 });
+    await settle();
+    selectAllHeader(host).click();
+    openContextMenu(selectAllHeader(host));
+    await settle();
+    contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    await settle();
+    contextMenuButton("Advanced copy…").click();
+    await settle();
+
+    expect(mocks.extractDataGridSelection).not.toHaveBeenCalled();
+    const php = document.querySelector<HTMLInputElement>('input[type="radio"][value="php"]');
+    expect(php).toBeTruthy();
+    php!.click();
+    await settle();
+    mocks.extractDataGridSelection.mockResolvedValueOnce({ text: "<?php return ['value'];", mimeType: "text/x-php", fileExtension: "php", rowCount: rows.length, columnCount: 1 });
+    mocks.copyToClipboard.mockResolvedValueOnce(true);
+    const copy = [...document.querySelectorAll<HTMLButtonElement>("button")].filter((button) => button.textContent?.trim() === "Copy").at(-1);
+    expect(copy).toBeTruthy();
+    expect(copy!.disabled).toBe(false);
+    copy!.click();
+    await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith("<?php return ['value'];"));
+    const request = mocks.extractDataGridSelection.mock.calls[0]?.[0] as { rows: unknown[][]; extractor: string };
+    expect(request.extractor).toBe("php");
+    expect(request.rows).toHaveLength(DATA_GRID_EXTRACTOR_PREVIEW_MAX_ROWS + 2);
+    expect(request.rows[0]?.[0]).toBe(1);
+    expect(request.rows.at(-1)?.[0]).toBe(DATA_GRID_EXTRACTOR_PREVIEW_MAX_ROWS + 2);
+    expect(settingsStore.editorSettings.dataGridCopyExtractor).toBe("smart");
+  });
+
+  it("does not write to the clipboard when the advanced-copy dialog closes during extraction", async () => {
+    const pending = deferred<{ text: string; mimeType: string; fileExtension: string; rowCount: number; columnCount: number }>();
+    const { host } = mountGrid(hydratedResult(1, "value"));
+    await settle();
+    columnHeader(host, 1).click();
+    openContextMenu(gridCell(host));
+    await settle();
+    contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    await settle();
+    contextMenuButton("Advanced copy…").click();
+    await settle();
+    mocks.extractDataGridSelection.mockReturnValueOnce(pending.promise);
+    const copy = [...document.querySelectorAll<HTMLButtonElement>("button")].filter((button) => button.textContent?.trim() === "Copy").at(-1)!;
+    copy.click();
+    await vi.waitFor(() => expect(mocks.extractDataGridSelection).toHaveBeenCalledOnce());
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Cancel")!.click();
+    await settle();
+    pending.resolve({ text: "stale copy", mimeType: "text/plain", fileExtension: "txt", rowCount: 1, columnCount: 2 });
+    await settle();
+    expect(mocks.copyToClipboard).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("invalidates advanced copy when the result changes during extraction", async () => {
+    const pending = deferred<{ text: string; mimeType: string; fileExtension: string; rowCount: number; columnCount: number }>();
+    const { host, replaceResult } = mountGrid(hydratedResult(1, "value"));
+    await settle();
+    columnHeader(host, 1).click();
+    openContextMenu(gridCell(host));
+    await settle();
+    contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    await settle();
+    contextMenuButton("Advanced copy…").click();
+    await settle();
+    mocks.extractDataGridSelection.mockReturnValueOnce(pending.promise);
+    const copy = [...document.querySelectorAll<HTMLButtonElement>("button")].filter((button) => button.textContent?.trim() === "Copy").at(-1)!;
+    copy.click();
+    await vi.waitFor(() => expect(mocks.extractDataGridSelection).toHaveBeenCalledOnce());
+    replaceResult(hydratedResult(2, "updated"));
+    await settle();
+    pending.resolve({ text: "stale result", mimeType: "text/plain", fileExtension: "txt", rowCount: 1, columnCount: 2 });
+    await settle();
+    expect(mocks.copyToClipboard).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("result or selection changed");
+  });
+
+  it("invalidates advanced copy when the selection changes during extraction", async () => {
+    const pending = deferred<{ text: string; mimeType: string; fileExtension: string; rowCount: number; columnCount: number }>();
+    const { host } = mountGrid(hydratedResult(1, "value"));
+    await settle();
+    columnHeader(host, 1).click();
+    openContextMenu(gridCell(host));
+    await settle();
+    contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    await settle();
+    contextMenuButton("Advanced copy…").click();
+    await settle();
+    mocks.extractDataGridSelection.mockReturnValueOnce(pending.promise);
+    const copy = [...document.querySelectorAll<HTMLButtonElement>("button")].filter((button) => button.textContent?.trim() === "Copy").at(-1)!;
+    copy.click();
+    await vi.waitFor(() => expect(mocks.extractDataGridSelection).toHaveBeenCalledOnce());
+    selectAllHeader(host).click();
+    await settle();
+    pending.resolve({ text: "stale selection", mimeType: "text/plain", fileExtension: "txt", rowCount: 1, columnCount: 2 });
+    await settle();
+    expect(mocks.copyToClipboard).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("result or selection changed");
   });
 
   it("keeps the initial select-all menu on the data selection target", async () => {

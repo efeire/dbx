@@ -9238,6 +9238,76 @@ function sqlInsertModeLabel(mode: DataGridPrimaryKeyMode): string {
 const selectedCopyPreference = computed(() => settingsStore.editorSettings.dataGridCopyExtractor);
 const defaultCopyPreferenceLabel = computed(() => copyPreferenceLabel(selectedCopyPreference.value));
 const extractorConfigOpen = ref(false);
+const advancedCopyOpen = ref(false);
+let advancedCopySession = 0;
+let advancedCopyGeneration = 0;
+let advancedCopyBinding: ReturnType<typeof advancedCopySnapshot> | undefined;
+
+const advancedCopySelectionKey = computed(() =>
+  JSON.stringify({
+    rows: [...selectedRowIds.value].sort((a, b) => a - b),
+    columns: [...selectedColumnIndexes.value].sort((a, b) => a - b),
+    cells: [...selectedCellKeys.value].sort(),
+    range: selectedRange.value,
+    anchor: selectionAnchor.value,
+    focus: selectionFocus.value,
+  }),
+);
+
+watch(
+  [() => props.result, advancedCopySelectionKey],
+  () => {
+    advancedCopyGeneration += 1;
+  },
+  { flush: "sync" },
+);
+
+function advancedCopySnapshot() {
+  return {
+    result: props.result,
+    rows: props.result.rows,
+    columns: props.result.columns,
+    selection: advancedCopySelectionKey.value,
+    generation: advancedCopyGeneration,
+  };
+}
+
+function isAdvancedCopySessionValid(session: number, binding: ReturnType<typeof advancedCopySnapshot>): boolean {
+  const current = advancedCopySnapshot();
+  return advancedCopyOpen.value && session === advancedCopySession && current.result === binding.result && current.rows === binding.rows && current.columns === binding.columns && current.selection === binding.selection && current.generation === binding.generation;
+}
+
+function openAdvancedCopy() {
+  advancedCopySession += 1;
+  advancedCopyBinding = advancedCopySnapshot();
+  advancedCopyOpen.value = true;
+}
+
+watch(advancedCopyOpen, (open) => {
+  if (open) return;
+  advancedCopySession += 1;
+  advancedCopyBinding = undefined;
+});
+onUnmounted(() => {
+  advancedCopySession += 1;
+  advancedCopyOpen.value = false;
+});
+
+function canCopyAdvancedFormat(preference: DataGridCopyPreference): boolean {
+  if (preference === "smart") return canCopyWithExtractor("raw") || canCopyWithExtractor("tsv");
+  return canCopyWithExtractor(preference);
+}
+
+async function copyAdvancedFormat(preference: DataGridCopyPreference, extractorOptions: typeof settingsStore.editorSettings.dataGridExtractorOptions): Promise<boolean> {
+  const session = advancedCopySession;
+  const binding = advancedCopyBinding;
+  const isValid = () => !!binding && isAdvancedCopySessionValid(session, binding);
+  if (!isValid()) throw new Error(t("grid.copyExtractorSelectionChanged"));
+  const copied = await copyWithPreference(preference, extractorOptions, isValid);
+  if (!isValid()) throw new Error(t("grid.copyExtractorSelectionChanged"));
+  return copied;
+}
+
 const copyPreferenceMenuItems = computed(() =>
   DATA_GRID_DEFAULT_COPY_PREFERENCES.map((preference) => {
     const extractor = preference === "smart" ? undefined : preference;
@@ -13980,6 +14050,12 @@ function copySubmenu(): ContextMenuItem {
       icon: Settings2,
       action: openExtractorConfiguration,
     },
+    {
+      label: t("grid.copyExtractorAdvancedCopy"),
+      icon: Copy,
+      action: openAdvancedCopy,
+      disabled: !copyPreferenceMenuItems.value.some((item) => !item.disabled && canCopyAdvancedFormat(item.value)),
+    },
     defaultCopyPreferenceContextItem(),
     { label: "", separator: true },
   ];
@@ -16623,6 +16699,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
 
     <DataGridExtractorDialog
       v-model:open="extractorConfigOpen"
+      mode="configure"
       :preference="selectedCopyPreference"
       :source-table-name="props.tableMeta?.tableName"
       :visible-copy-extractors="settingsStore.editorSettings.dataGridVisibleCopyExtractors"
@@ -16631,6 +16708,19 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
       :visible-items="visibleCopyExtractorItems"
       :preview="previewWithPreference"
       @save="saveExtractorConfiguration"
+    />
+    <DataGridExtractorDialog
+      v-model:open="advancedCopyOpen"
+      mode="copy"
+      :preference="selectedCopyPreference"
+      :source-table-name="props.tableMeta?.tableName"
+      :visible-copy-extractors="settingsStore.editorSettings.dataGridVisibleCopyExtractors"
+      :options="settingsStore.editorSettings.dataGridExtractorOptions"
+      :items="copyPreferenceMenuItems"
+      :visible-items="visibleCopyExtractorItems"
+      :preview="previewWithPreference"
+      :can-copy="canCopyAdvancedFormat"
+      :copy="copyAdvancedFormat"
     />
     <DataGridCopyColumnNamesDialog v-if="copyColumnNamesDialogMounted" v-model:open="copyColumnNamesDialogOpen" :column-names="copyColumnNamesDialogColumns" :database-type="resolvedDatabaseType" :column-comments="columnCommentMap" @copy="copyText" />
     <GridSnapshotDialog v-model:open="gridSnapshotOpen" :source="gridSnapshotSource" />
