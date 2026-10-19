@@ -142,7 +142,7 @@ fn is_numeric_type(data_type: Option<&str>) -> bool {
         "fixed",
     ];
     exact.contains(&first)
-        || tokens.iter().any(|token| *token == "unsigned")
+        || tokens.contains(&"unsigned")
         || ["int", "float", "double", "decimal", "numeric", "number", "serial"].iter().any(|prefix| {
             first
                 .strip_prefix(prefix)
