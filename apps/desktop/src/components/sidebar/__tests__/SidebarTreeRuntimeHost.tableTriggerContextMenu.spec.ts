@@ -100,6 +100,25 @@ describe("Table trigger context menu", () => {
     expect(copyToClipboard).toHaveBeenCalledWith('"sales"."users"."id"');
   });
 
+  it("uses the JDBC driver's identifier quote for a Phoenix column in the real menu action", async () => {
+    const { copyToClipboard } = await import("@/lib/common/clipboard");
+    vi.mocked(copyToClipboard).mockClear();
+    const host = await mountHost("jdbc");
+    const store = useConnectionStore();
+    store.connections[0]!.driver_profile = "phoenix";
+    vi.spyOn(store, "connectionIdentifierQuote").mockReturnValue('"');
+    const column: TreeNode = {
+      ...node("column", "first name", "T"),
+      schema: "APP",
+      meta: { name: "first name" },
+    };
+    const menu = host.buildContextMenu(column);
+    const copyItem = menu.flatMap((item) => item.children ?? []).find((item) => item.label === tr("contextMenu.copyQualifiedName"));
+    expect(copyItem).toBeDefined();
+    await copyItem?.action?.();
+    expect(copyToClipboard).toHaveBeenCalledWith('"APP"."T"."first name"');
+  });
+
   it("rejects cross-connection qualified-name selections before writing the clipboard", async () => {
     const { copyToClipboard } = await import("@/lib/common/clipboard");
     const active = { ...node("table", "orders"), schema: "sales" };

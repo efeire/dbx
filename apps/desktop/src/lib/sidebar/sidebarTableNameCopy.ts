@@ -98,7 +98,7 @@ export function qualifiedNameForSidebarNode(node: TreeNode, options: Omit<Format
   const dbType = options.databaseType;
   const schema = node.parentSchema || node.schema;
   if (!schema && !["mysql", "clickhouse", "doris", "starrocks", "goldendb"].includes(dbType)) return null;
-  const quote = (part: string) => quoteTableIdentifier(dbType, part);
+  const quote = (part: string) => (dbType === "jdbc" ? quoteTableIdentifierIfNeeded(dbType, part, options.identifierQuote) : quoteTableIdentifier(dbType, part));
   if (node.type === "table" || node.type === "view" || node.type === "materialized_view") {
     return qualifiedTableName({ ...options, schema: node.schema, tableName: node.objectName || node.tableName || node.label, database: node.database, catalog: node.catalog, includeDatabaseName: true });
   }

@@ -1,6 +1,6 @@
 use super::{
-    write_bytes, DataGridExtractError, DataGridExtractErrorCode, DataGridExtractWarning, DataGridExtractWarningCode,
-    DataGridPhpArraySyntax, ExtractContext,
+    DataGridExtractError, DataGridExtractErrorCode, DataGridExtractWarning, DataGridExtractWarningCode,
+    DataGridPhpArraySyntax, ExtractContext, write_bytes,
 };
 use crate::models::connection::DatabaseType;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
@@ -39,11 +39,13 @@ pub(super) fn write_dbunit(context: &ExtractContext<'_>, output: &mut dyn Write)
     if options.include_null_values {
         for row in &context.request.rows {
             for (column, index) in context.selected_columns.iter().zip(&context.selected_source_indexes) {
-                if !is_binary_type(column.data_type.as_deref())
-                    && row[*index].as_str() == Some(options.null_value_string.as_str())
+                let value = &row[*index];
+                if !value.is_null()
+                    && dbunit_value_text(value, is_binary_type(column.data_type.as_deref()))?
+                        == options.null_value_string
                 {
                     return Err(invalid_format(
-                        "A selected text value matches the DbUnit NULL marker. Choose another marker before copying.",
+                        "A selected value matches the DbUnit NULL marker after serialization. Choose another marker before copying.",
                     ));
                 }
             }
@@ -64,10 +66,8 @@ pub(super) fn write_dbunit(context: &ExtractContext<'_>, output: &mut dyn Write)
             write_bytes(output, b"=\"")?;
             if value.is_null() {
                 write_xml_attribute(output, &options.null_value_string)?;
-            } else if is_binary_type(column.data_type.as_deref()) {
-                write_xml_attribute(output, &binary_text(value)?)?;
             } else {
-                write_xml_attribute(output, &value_text(value))?;
+                write_xml_attribute(output, &dbunit_value_text(value, is_binary_type(column.data_type.as_deref()))?)?;
             }
             write_bytes(output, b"\"")?;
         }
@@ -304,6 +304,10 @@ fn binary_text(value: &Value) -> Result<String, DataGridExtractError> {
     Ok(base64(&binary_bytes(value)?))
 }
 
+fn dbunit_value_text(value: &Value, binary: bool) -> Result<String, DataGridExtractError> {
+    if binary { binary_text(value) } else { Ok(value_text(value)) }
+}
+
 fn binary_bytes(value: &Value) -> Result<Vec<u8>, DataGridExtractError> {
     let Some(text) = value.as_str() else {
         return Err(invalid_format("Binary value is not in the grid's hexadecimal representation."));
@@ -423,7 +427,7 @@ mod tests {
     use super::{is_temporal_type, iso_date};
     use crate::data_grid_extractors::tests::request;
     use crate::data_grid_extractors::{
-        extract_data_grid_selection, DataGridExtractColumn, DataGridExtractWarningCode, DataGridExtractorId,
+        DataGridExtractColumn, DataGridExtractWarningCode, DataGridExtractorId, extract_data_grid_selection,
     };
     use crate::models::connection::DatabaseType;
     use serde_json::json;
@@ -499,6 +503,64 @@ mod tests {
 
         let result = extract_data_grid_selection(request).expect("binary marker text is encoded as bytes");
         assert!(result.text.contains("W05VTExd"));
+    }
+
+    #[test]
+    fn dbunit_rejects_numeric_output_matching_null_marker() {
+        let mut request = request(DataGridExtractorId::Dbunit);
+        request.source_table_name = Some("T".into());
+        request.columns.truncate(1);
+        request.columns[0].data_type = Some("INTEGER".into());
+        request.selected_column_indexes = vec![0];
+        request.rows = vec![vec![json!(1)]];
+        request.options.dbunit.null_value_string = "1".into();
+
+        let error = extract_data_grid_selection(request).unwrap_err();
+        assert!(error.message.contains("matches the DbUnit NULL marker"));
+    }
+
+    #[test]
+    fn dbunit_rejects_boolean_output_matching_null_marker() {
+        let mut request = request(DataGridExtractorId::Dbunit);
+        request.source_table_name = Some("T".into());
+        request.columns.truncate(1);
+        request.columns[0].data_type = Some("BOOLEAN".into());
+        request.selected_column_indexes = vec![0];
+        request.rows = vec![vec![json!(true)]];
+        request.options.dbunit.null_value_string = "true".into();
+
+        let error = extract_data_grid_selection(request).unwrap_err();
+        assert!(error.message.contains("matches the DbUnit NULL marker"));
+    }
+
+    #[test]
+    fn dbunit_rejects_binary_output_matching_null_marker() {
+        let mut request = request(DataGridExtractorId::Dbunit);
+        request.source_table_name = Some("T".into());
+        request.columns.truncate(1);
+        request.columns[0].data_type = Some("BLOB".into());
+        request.selected_column_indexes = vec![0];
+        request.rows = vec![vec![json!("0x0102")]];
+        request.options.dbunit.null_value_string = "AQI=".into();
+
+        let error = extract_data_grid_selection(request).unwrap_err();
+        assert!(error.message.contains("matches the DbUnit NULL marker"));
+    }
+
+    #[test]
+    fn dbunit_without_null_attributes_keeps_numeric_and_binary_text_values() {
+        let mut request = request(DataGridExtractorId::Dbunit);
+        request.source_table_name = Some("T".into());
+        request.columns[0].data_type = Some("INTEGER".into());
+        request.columns[1].data_type = Some("BLOB".into());
+        request.selected_column_indexes = vec![0, 1];
+        request.rows = vec![vec![json!(1), json!("[NULL]")]];
+        request.options.dbunit.include_null_values = false;
+        request.options.dbunit.null_value_string = "[NULL]".into();
+
+        let result = extract_data_grid_selection(request).expect("non-NULL values do not collide after serialization");
+        assert!(result.text.contains("ID=\"1\""), "{}", result.text);
+        assert!(result.text.contains("NAME=\"W05VTExd\""), "{}", result.text);
     }
 
     #[test]

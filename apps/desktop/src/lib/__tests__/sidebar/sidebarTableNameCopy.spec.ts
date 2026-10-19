@@ -100,6 +100,21 @@ describe("sidebarTableNameCopy", () => {
     expect(qualifiedNameForSidebarNode(routine, { databaseType: "jdbc", identifierQuote: '"' })).toBe('app."find user"');
   });
 
+  it("quotes JDBC column names using the driver's identifier quote", () => {
+    const phoenixColumn: TreeNode = {
+      id: "phoenix-column",
+      label: "first name",
+      objectName: "first name",
+      type: "column",
+      connectionId: "phoenix",
+      database: "APP",
+      schema: "APP",
+      tableName: "T",
+      meta: { name: "first name" },
+    };
+    expect(qualifiedNameForSidebarNode(phoenixColumn, { databaseType: "jdbc", driverProfile: "phoenix", identifierQuote: '"' })).toBe('"APP"."T"."first name"');
+  });
+
   it("resolves multi-column drag targets for the same table", () => {
     const first = column("c1", "id (bigint)", "id");
     const second = column("c2", "name (text)", "name");
