@@ -313,11 +313,12 @@ function save() {
                   ></Select
                 >
               </div>
-              <label v-if="draftExtractor !== 'one-row'" class="flex items-center gap-2 text-sm"
-                ><input type="checkbox" :checked="draftOptions.dsv.includeRowHeader" @change="updateDsv('includeRowHeader', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorIncludeRowHeader") }}</label
-              >
             </details>
           </template>
+
+          <label v-if="isDsv && draftExtractor !== 'one-row'" class="flex items-center gap-2 text-sm"
+            ><input type="checkbox" :checked="draftOptions.dsv.includeRowHeader" @change="updateDsv('includeRowHeader', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorIncludeRowHeader") }}</label
+          >
 
           <template v-if="isSql">
             <label class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.sql.skipComputedColumns" @change="updateSql('skipComputedColumns', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorSkipComputed") }}</label>

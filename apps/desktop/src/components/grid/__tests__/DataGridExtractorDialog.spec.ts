@@ -118,6 +118,21 @@ describe("extractor draft preview", () => {
     expect(csv.host.querySelector("details summary")?.textContent).toBe("common.advanced");
   });
 
+  it.each(["tsv", "tsv-with-headers", "pipe-separated"] as const)("keeps the row-number option available for %s", async (preference) => {
+    const { props, host, save } = mountDialog(undefined, true, preference);
+    await advancePreview();
+
+    const label = Array.from(host.querySelectorAll("label")).find((item) => item.textContent?.includes("grid.copyExtractorIncludeRowHeader"));
+    expect(label).toBeTruthy();
+    expect(label?.closest("details")).toBeNull();
+    await toggle(host, "grid.copyExtractorIncludeRowHeader");
+
+    const button = Array.from(host.querySelectorAll("button")).find((item) => item.textContent?.includes("common.save"))!;
+    button.click();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ options: expect.objectContaining({ dsv: expect.objectContaining({ includeRowHeader: true }) }) }));
+    expect(props.options.dsv.includeRowHeader).toBe(false);
+  });
+
   it("previews an initially open dialog", async () => {
     const { preview, host } = mountDialog(undefined, true);
     await advancePreview();
