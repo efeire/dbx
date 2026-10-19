@@ -3645,6 +3645,14 @@ async function compileXuguObject(row: ObjectBrowserRow) {
   }
 }
 
+async function refreshAfterInvalidObjectCompile(object: { owner: string; name: string }) {
+  const schema = object.owner || selectedSchema.value || props.database;
+  const scope = { connectionId: props.connection.id, database: props.database, schema, tableName: object.name };
+  await Promise.all([invalidateObjectMetadataCache(scope), invalidateObjectDdl(scope)]);
+  invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
+  await Promise.all([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
+}
+
 async function compileDamengView(row: ObjectBrowserRow) {
   if (effectiveDatabaseType.value !== "dameng" || row.type !== "VIEW") return;
   const schema = row.schema || selectedSchema.value;
@@ -4684,7 +4692,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
     @confirm="cloneDialog.confirm"
   />
   <FirebirdObjectManager v-if="effectiveDatabaseType === 'firebird'" v-model:open="firebirdManagerOpen" :connection-id="connection.id" :database="database" />
-  <OracleInvalidObjectsDialog v-if="oracleInvalidObjectsSupported" v-model:open="oracleInvalidObjectsOpen" :connection="connection" :database="database" :schema="selectedSchema || database" @open-source="openInvalidObjectSource" />
+  <OracleInvalidObjectsDialog v-if="oracleInvalidObjectsSupported" v-model:open="oracleInvalidObjectsOpen" :connection="connection" :database="database" :schema="selectedSchema || database" @open-source="openInvalidObjectSource" @compile-finished="refreshAfterInvalidObjectCompile" />
   <div ref="rootRef" data-object-browser-root class="flex h-full min-h-0 min-w-0 flex-col bg-background outline-none" tabindex="0" @keydown="onObjectBrowserKeydown">
     <SidebarMenuPreferencesDialog v-if="sidebarMenuPreferences" v-model:open="sidebarMenuPreferencesOpen" :scope="sidebarMenuPreferences.scope" :items="sidebarMenuPreferences.items" />
     <div v-if="!isEventEditor" ref="toolbarRef" class="flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b px-3">

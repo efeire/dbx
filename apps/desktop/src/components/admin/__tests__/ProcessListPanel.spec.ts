@@ -150,6 +150,7 @@ const oracleConnection: ConnectionConfig = {
 };
 
 let oracleTerminated = false;
+let oracleTerminateError = "";
 function oracleListResult() {
   const rows: unknown[][] = [["5", "30", "1", "3", "APP", "ACTIVE", "localhost", "DBX", "selfsql", null, null, null, "500", "2026-10-20 09:00:00"]];
   if (!oracleTerminated) rows.push(["21", "42", "2", "3", "OTHER", "INACTIVE", "apphost", "worker", null, "SQL*Net message from client", null, null, "700", "2026-10-20 08:00:00"]);
@@ -207,6 +208,7 @@ beforeEach(() => {
     if (sql.includes("FROM GV$LOCK l JOIN GV$SESSION s"))
       return { columns: ["CONTAINER_ID", "INSTANCE_ID", "SESSION_ID", "LOCK_TYPE", "ID1", "ID2", "HELD_MODE", "REQUESTED_MODE", "BLOCKING", "SESSION_USER", "SESSION_STATUS", "BLOCKER"], rows: [["3", "2", "21", "TX", "100", "200", "6", "0", "1", "OTHER", "INACTIVE", "—"]] };
     if (sql.includes("ALTER SYSTEM KILL SESSION")) {
+      if (oracleTerminateError) throw new Error(oracleTerminateError);
       oracleTerminated = true;
       return { columns: [], rows: [] };
     }
@@ -217,6 +219,7 @@ beforeEach(() => {
   mocks.contextGuard.mockReset();
   mocks.toast.mockReset();
   oracleTerminated = false;
+  oracleTerminateError = "";
   root = document.createElement("div");
   document.body.appendChild(root);
 });
@@ -300,6 +303,20 @@ describe("ProcessListPanel batch terminate", () => {
     expect(actionSession).toBeTruthy();
     expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("GV$SESSION")).every((call) => (call[5] as { clientSessionId?: string })?.clientSessionId === actionSession)).toBe(true);
     expect(mocks.contextGuard.mock.calls[0]?.[0]).toMatchObject({ scope: "connection", database: "", source: "production.sourceAdmin" });
+  });
+
+  it("preserves the database denial when termination outcome is unknown", async () => {
+    oracleTerminateError = "ORA-01031: insufficient privileges";
+    app = createApp(ProcessListPanel, { connection: oracleConnection });
+    app.mount(root!);
+    await vi.waitFor(() => expect(root?.textContent).toContain("21"));
+    gridButtons()
+      .filter((button) => button.textContent?.trim() === "processList.terminate")[1]
+      ?.click();
+    await nextTick();
+    findDialogButton("processList.terminate")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("ORA-01031: insufficient privileges"), 5000));
+    expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("processList.terminateUnknown"), 5000);
   });
 
   it("opens lock details for the selected Oracle session using the managed session", async () => {

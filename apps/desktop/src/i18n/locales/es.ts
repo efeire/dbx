@@ -11202,6 +11202,7 @@ export default withEnglishFallback({
       compileValid: "Estado leído después de compilar: VALID.",
       compileStillInvalid: "El objeto sigue INVALID. Revise el diagnóstico o corrija el código fuente antes de volver a intentarlo.",
       compileUnknown: "Es posible que se enviara la compilación, pero no se pudo confirmar el resultado. Se actualizó la lista; compruebe el estado antes de continuar.",
+      compileGone: "El objeto ya no existe. Se actualizó la lista.",
       compileFailed: "No se completó la compilación: {message}",
       previewCompile: "Vista previa de compilación",
       confirmCompile: "Confirmar compilación",

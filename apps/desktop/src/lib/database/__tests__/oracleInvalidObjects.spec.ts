@@ -28,6 +28,7 @@ describe("Oracle invalid-object SQL and mapping", () => {
 
   it.each([
     ["oracle", "PROCEDURE", 'ALTER PROCEDURE "APP"."P" COMPILE REUSE SETTINGS'],
+    ["oracle", "PACKAGE", 'ALTER PACKAGE "APP"."P" COMPILE SPECIFICATION REUSE SETTINGS'],
     ["oracle", "PACKAGE BODY", 'ALTER PACKAGE "APP"."P" COMPILE BODY REUSE SETTINGS'],
     ["oracle", "TYPE", 'ALTER TYPE "APP"."T" COMPILE SPECIFICATION REUSE SETTINGS'],
     ["oceanbase-oracle", "PROCEDURE", 'ALTER PROCEDURE "APP"."P" COMPILE'],

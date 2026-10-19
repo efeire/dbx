@@ -10952,6 +10952,7 @@ export default withEnglishFallback({
       compileValid: "編譯後讀取的狀態：VALID。",
       compileStillInvalid: "物件仍為 INVALID。請檢視診斷或修正原始碼後再試一次。",
       compileUnknown: "編譯可能已送出，但無法確認結果。清單已重新整理；請先確認物件狀態再繼續。",
+      compileGone: "物件已不存在。清單已重新整理。",
       compileFailed: "編譯未完成：{message}",
       previewCompile: "預覽編譯",
       confirmCompile: "確認編譯",

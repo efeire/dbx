@@ -10946,6 +10946,7 @@ export default withEnglishFallback({
       compileValid: "Stato letto dopo la compilazione: VALID.",
       compileStillInvalid: "L'oggetto è ancora INVALID. Esaminare la diagnostica o correggere la sorgente prima di riprovare.",
       compileUnknown: "La compilazione potrebbe essere stata inviata, ma non è stato possibile verificarne l'esito. Elenco aggiornato; controllare lo stato prima di procedere.",
+      compileGone: "L'oggetto non esiste più. Elenco aggiornato.",
       compileFailed: "Compilazione non completata: {message}",
       previewCompile: "Anteprima compilazione",
       confirmCompile: "Conferma compilazione",

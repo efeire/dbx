@@ -4648,6 +4648,7 @@ export default withEnglishFallback({
       compileValid: "컴파일 후 읽은 상태: VALID.",
       compileStillInvalid: "객체가 여전히 INVALID입니다. 진단을 확인하거나 소스를 수정한 뒤 다시 시도하세요.",
       compileUnknown: "컴파일이 제출되었을 수 있지만 결과를 확인할 수 없습니다. 목록을 새로 고쳤습니다. 계속하기 전에 객체 상태를 확인하세요.",
+      compileGone: "객체가 더 이상 존재하지 않습니다. 목록을 새로 고쳤습니다.",
       compileFailed: "컴파일을 완료하지 못했습니다: {message}",
       previewCompile: "컴파일 미리 보기",
       confirmCompile: "컴파일 확인",

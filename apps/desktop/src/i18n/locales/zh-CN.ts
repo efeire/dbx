@@ -5061,6 +5061,7 @@ export default withEnglishFallback({
       compileValid: "编译后读回状态为 VALID。",
       compileStillInvalid: "对象仍为 INVALID；请检查诊断或修正源码后重试。",
       compileUnknown: "编译可能已提交，但无法确认结果。已刷新列表；请检查对象状态后再决定下一步。",
+      compileGone: "对象已不存在。已刷新列表。",
       compileFailed: "编译未能完成：{message}",
       previewCompile: "预览编译",
       confirmCompile: "确认编译",

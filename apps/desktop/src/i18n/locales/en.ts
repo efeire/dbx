@@ -5132,6 +5132,7 @@ export default {
       compileValid: "Read-back status after compilation: VALID.",
       compileStillInvalid: "The object is still INVALID. Review its diagnostics or repair the source before retrying.",
       compileUnknown: "Compilation may have been submitted, but its result could not be confirmed. The list was refreshed; check the object state before proceeding.",
+      compileGone: "The object no longer exists. The list was refreshed.",
       compileFailed: "Compilation did not complete: {message}",
       previewCompile: "Preview compile",
       confirmCompile: "Confirm compile",

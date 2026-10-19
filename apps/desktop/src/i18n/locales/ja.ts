@@ -10982,6 +10982,7 @@ export default withEnglishFallback({
       compileValid: "コンパイル後に読み取った状態: VALID。",
       compileStillInvalid: "オブジェクトはまだ INVALID です。診断を確認するか、ソースを修正してから再試行してください。",
       compileUnknown: "コンパイルが送信された可能性がありますが、結果を確認できませんでした。一覧を更新しました。状態を確認してから次へ進んでください。",
+      compileGone: "オブジェクトは存在しなくなりました。一覧を更新しました。",
       compileFailed: "コンパイルを完了できませんでした: {message}",
       previewCompile: "コンパイルをプレビュー",
       confirmCompile: "コンパイルを実行",

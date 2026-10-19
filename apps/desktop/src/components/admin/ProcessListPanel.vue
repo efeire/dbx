@@ -581,7 +581,7 @@ async function confirmTerminate() {
     if (isCurrent()) {
       if (rowAware && actionSubmitted) {
         terminateTarget.value = null;
-        toast(t("processList.terminateUnknown"), 5000);
+        toast(`${t("processList.terminateUnknown")} ${error instanceof Error ? error.message : String(error)}`, 5000);
         void load({ silent: true });
       } else {
         toast(t("processList.terminateFailed", { message: error?.message || String(error) }), 5000);

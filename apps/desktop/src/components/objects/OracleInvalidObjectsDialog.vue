@@ -22,7 +22,7 @@ import {
 } from "@/lib/database/oracleInvalidObjects";
 
 const props = defineProps<{ open: boolean; connection: ConnectionConfig; database: string; schema: string }>();
-const emit = defineEmits<{ "update:open": [open: boolean]; "open-source": [object: OracleInvalidObject] }>();
+const emit = defineEmits<{ "update:open": [open: boolean]; "open-source": [object: OracleInvalidObject]; "compile-finished": [object: OracleInvalidObject] }>();
 const { t } = useI18n();
 const objects = ref<OracleInvalidObject[]>([]);
 const selected = ref<OracleInvalidObject | null>(null);
@@ -167,22 +167,22 @@ async function confirmCompile() {
   compiling.value = true;
   outcome.value = "";
   try {
-    const identity = await query(buildOracleObjectIdentitySql(target.owner, target), 2);
-    const row = identity.rows[0];
-    if (!isCurrent(token)) return;
-    if (!row || String(row[0]) !== target.objectId || String(row[1] ?? "") !== target.lastDdlTime) {
-      previewSql.value = "";
-      await loadList(token);
-      outcome.value = t("processList.oracleInvalidObjects.targetChanged");
-      return;
-    }
     const result = await executeWithProductionSqlGuard({
       connection,
       database: props.schema,
       sql,
       source: t("production.sourceAdmin"),
-      execute: () => {
+      execute: async () => {
         if (!isCurrent(token) || props.connection.id !== connection.id || props.database !== database) throw new Error(t("processList.oracleInvalidObjects.targetChanged"));
+        const identity = await query(buildOracleObjectIdentitySql(target.owner, target), 2);
+        const row = identity.rows[0];
+        if (!isCurrent(token)) return undefined;
+        if (!row || String(row[0]) !== target.objectId || String(row[1] ?? "") !== target.lastDdlTime) {
+          previewSql.value = "";
+          await loadList(token);
+          outcome.value = t("processList.oracleInvalidObjects.targetChanged");
+          return undefined;
+        }
         actionSubmitted = true;
         return query(sql, 1);
       },
@@ -197,20 +197,29 @@ async function confirmCompile() {
     const sameObject = statusRow && String(statusRow[0]) === target.objectId;
     const status = sameObject ? String(statusRow[2] ?? "") : "";
     await loadList(token, { allowLastDdlTimeChange: true });
-    outcome.value = !sameObject ? t("processList.oracleInvalidObjects.targetChanged") : status === "VALID" ? t("processList.oracleInvalidObjects.compileValid") : status === "INVALID" ? t("processList.oracleInvalidObjects.compileStillInvalid") : t("processList.oracleInvalidObjects.compileUnknown");
+    outcome.value = !statusRow
+      ? t("processList.oracleInvalidObjects.compileGone")
+      : !sameObject
+        ? t("processList.oracleInvalidObjects.targetChanged")
+        : status === "VALID"
+          ? t("processList.oracleInvalidObjects.compileValid")
+          : status === "INVALID"
+            ? t("processList.oracleInvalidObjects.compileStillInvalid")
+            : t("processList.oracleInvalidObjects.compileUnknown");
     previewSql.value = "";
   } catch (error) {
     if (isCurrent(token)) {
       if (actionSubmitted) {
         previewSql.value = "";
         await loadList(token);
-        outcome.value = t("processList.oracleInvalidObjects.compileUnknown");
+        outcome.value = `${t("processList.oracleInvalidObjects.compileUnknown")} ${error instanceof Error ? error.message : String(error)}`;
       } else {
         outcome.value = t("processList.oracleInvalidObjects.compileFailed", { message: error instanceof Error ? error.message : String(error) });
       }
     }
   } finally {
-    if (isCurrent(token)) compiling.value = false;
+    if (actionSubmitted) emit("compile-finished", target);
+    compiling.value = false;
   }
 }
 
@@ -254,7 +263,7 @@ onBeforeUnmount(() => {
         <section class="min-h-0 overflow-auto border-r" :aria-label="t('processList.oracleInvalidObjects.listLabel')">
           <div class="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-3 py-2 text-xs text-muted-foreground">
             <span>{{ t("processList.oracleInvalidObjects.listCount", { count: objects.length }) }}</span>
-            <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('common.refresh')" :disabled="loading || compiling" @click="loadList"><RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" /></Button>
+            <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('common.refresh')" :disabled="loading || compiling" @click="loadList()"><RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" /></Button>
           </div>
           <div v-if="loadError" class="m-3 rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{{ loadError }}</div>
           <p v-else-if="!loading && objects.length === 0" class="px-4 py-8 text-center text-sm text-muted-foreground">{{ t("processList.oracleInvalidObjects.empty") }}</p>
@@ -289,9 +298,9 @@ onBeforeUnmount(() => {
             <div class="min-h-0 flex-1 overflow-auto px-4 py-3">
               <div class="mb-2 text-xs font-medium">{{ t("processList.oracleInvalidObjects.errorsTitle") }}</div>
               <div v-if="errorLoadError" class="rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{{ errorLoadError }}</div>
-              <p v-else-if="errorsTruncated" class="mb-2 rounded border bg-muted/30 p-2 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.errorsTruncated") }}</p>
-              <p v-else-if="errors.length === 0" class="py-4 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.noErrors") }}</p>
-              <div v-else class="overflow-auto rounded border">
+              <p v-if="!errorLoadError && errorsTruncated" class="mb-2 rounded border bg-muted/30 p-2 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.errorsTruncated") }}</p>
+              <p v-if="!errorLoadError && errors.length === 0" class="py-4 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.noErrors") }}</p>
+              <div v-if="!errorLoadError && errors.length > 0" class="overflow-auto rounded border">
                 <table class="w-full border-collapse text-xs">
                   <thead class="sticky top-0 bg-muted/60">
                     <tr>

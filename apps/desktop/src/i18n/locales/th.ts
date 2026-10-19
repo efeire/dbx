@@ -5054,6 +5054,7 @@ export default withEnglishFallback({
       compileValid: "สถานะที่อ่านกลับหลังคอมไพล์: VALID",
       compileStillInvalid: "ออบเจ็กต์ยังเป็น INVALID ตรวจสอบการวินิจฉัยหรือแก้ซอร์สก่อนลองอีกครั้ง",
       compileUnknown: "อาจส่งคำสั่งคอมไพล์แล้ว แต่ยืนยันผลไม่ได้ รีเฟรชรายการแล้ว โปรดตรวจสอบสถานะก่อนดำเนินการต่อ",
+      compileGone: "ออบเจ็กต์นี้ไม่มีอยู่แล้ว รีเฟรชรายการแล้ว",
       compileFailed: "คอมไพล์ไม่สำเร็จ: {message}",
       previewCompile: "ดูตัวอย่างการคอมไพล์",
       confirmCompile: "ยืนยันการคอมไพล์",

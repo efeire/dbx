@@ -60,9 +60,10 @@ export function buildOracleCompileSql(dbType: DatabaseType, owner: string, objec
   if (type === "SYNONYM") return `ALTER ${owner === "PUBLIC" ? "PUBLIC " : ""}SYNONYM ${owner === "PUBLIC" ? quoteOracleIdentifier(object.name) : qualified} COMPILE`;
   if (type === "MATERIALIZED VIEW") return `ALTER MATERIALIZED VIEW ${qualified} COMPILE`;
   if (type === "PACKAGE BODY") return `ALTER PACKAGE ${qualified} COMPILE BODY${dbType === "oracle" ? " REUSE SETTINGS" : ""}`;
+  if (type === "PACKAGE" && dbType === "oracle") return `ALTER PACKAGE ${qualified} COMPILE SPECIFICATION REUSE SETTINGS`;
   if (type === "TYPE") return `ALTER TYPE ${qualified} COMPILE SPECIFICATION${dbType === "oracle" ? " REUSE SETTINGS" : ""}`;
   if (type === "TYPE BODY") return `ALTER TYPE ${qualified} COMPILE BODY${dbType === "oracle" ? " REUSE SETTINGS" : ""}`;
-  const reuseSettings = dbType === "oracle" && ["PROCEDURE", "FUNCTION", "PACKAGE", "TRIGGER"].includes(type) ? " REUSE SETTINGS" : "";
+  const reuseSettings = dbType === "oracle" && ["PROCEDURE", "FUNCTION", "TRIGGER"].includes(type) ? " REUSE SETTINGS" : "";
   return `ALTER ${type} ${qualified} COMPILE${reuseSettings}`;
 }
 
