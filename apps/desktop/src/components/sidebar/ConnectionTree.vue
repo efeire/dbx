@@ -3019,7 +3019,7 @@ defineExpose({
       :format-dialect="sidebarObjectSourceFormatDialect"
       :initial-editing="sidebarObjectSourceTarget.initialEditing"
       :initial-section="sidebarObjectSourceTarget.initialSection"
-      @open-object="(context, target) => emit('open-dependency-object', context, target)"
+      @open-object="(context: ObjectDependencyTarget, target: SqlObjectNavigationTarget) => emit('open-dependency-object', context, target)"
       @saved="refreshSidebarActionTarget"
     />
 

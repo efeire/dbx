@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, ref, watch, type Ref } from "vue";
 import * as api from "@/lib/backend/api";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { uuid } from "@/lib/common/utils";
 import { objectDependencyRows, objectDependencySql, type ObjectDependencyRow, type ObjectDependencyTarget } from "@/lib/database/objectDependencyDetails";
 
 export function useObjectDependencies(target: Readonly<Ref<ObjectDependencyTarget | undefined>>, enabled: Readonly<Ref<boolean>>) {
@@ -26,7 +27,7 @@ export function useObjectDependencies(target: Readonly<Ref<ObjectDependencyTarge
     invalidate();
     const serial = generation;
     const requestKey = key.value;
-    const id = `object-dependencies-${crypto.randomUUID()}`;
+    const id = `object-dependencies-${uuid()}`;
     executionId = id;
     loading.value = true;
     error.value = "";

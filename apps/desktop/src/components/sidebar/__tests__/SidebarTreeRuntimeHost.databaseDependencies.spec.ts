@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { createApp, defineComponent, h, nextTick, ref, type App } from "vue";
-import { createPinia, setActivePinia } from "pinia";
+import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import type { DatabaseType, TreeNode } from "@/types/database";
@@ -12,6 +12,7 @@ const backend = vi.hoisted(() => ({
   checkConnectionHealth: vi.fn(async () => undefined),
   getObjectSource: vi.fn(async () => ({ name: "BATCH_API", object_type: "PACKAGE", source: "package source", editable: false })),
   buildEditableObjectSource: vi.fn(async (input: { source: string }) => input.source),
+  analyzeEditableQueryEditability: vi.fn(async () => ({ editable: false, reason: "set-operation" })),
 }));
 
 vi.mock("@/lib/backend/api", async (importOriginal) => ({
@@ -29,7 +30,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 
-const mounted: { app: App; container: HTMLElement }[] = [];
+const mounted: { app: App; container: HTMLElement; pinia: Pinia }[] = [];
 
 async function mountContextMenu(databaseType: DatabaseType, mode: "query-tab" | "dialog" = "query-tab") {
   const pinia = createPinia();
@@ -50,7 +51,7 @@ async function mountContextMenu(databaseType: DatabaseType, mode: "query-tab" | 
   app.use(pinia);
   app.use(i18n);
   app.mount(container);
-  mounted.push({ app, container });
+  mounted.push({ app, container, pinia });
   await nextTick();
 
   return { host: host.value as unknown as { buildContextMenu(node: TreeNode): ContextMenuItem[] }, queries, onOpenObjectSource };
@@ -62,10 +63,12 @@ describe("routine dependency context-menu action", () => {
   });
 
   afterEach(() => {
-    for (const { app, container } of mounted.splice(0)) {
+    for (const { app, container, pinia } of mounted.splice(0)) {
       app.unmount();
       container.remove();
+      disposePinia(pinia);
     }
+    setActivePinia(undefined);
   });
 
   it.each(["oracle", "oceanbase-oracle"] as const)("opens object dependencies from an Oracle package member in %s", async (databaseType) => {
@@ -116,6 +119,7 @@ describe("routine dependency context-menu action", () => {
     expect(queries.tabs[0]?.objectDetails).toBeUndefined();
     expect(backend.executeMulti).toHaveBeenCalledTimes(1);
     expect(queries.tabs[0]?.result).toMatchObject({ columns: ["DIRECTION"], rows: [["DEPENDS_ON"]] });
+    await vi.waitFor(() => expect(queries.tabs[0]?.queryEditabilityReason).toBe("set-operation"));
   });
 
   it("keeps package-member dependency action hidden for Xugu", async () => {
