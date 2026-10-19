@@ -5396,8 +5396,13 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
         config.connection_string = config.connection_string?.trim() || JDBCX_DEFAULT_URL;
         config.jdbc_driver_class = config.jdbc_driver_class?.trim() || JDBCX_JDBC_DRIVER_CLASS;
       } else {
-        config.host = "";
-        config.port = 0;
+        const keepsExistingTarget = editingId.value === id && props.editConfig?.id === id && config.db_type === props.editConfig.db_type && config.driver_profile === props.editConfig.driver_profile && config.connection_string === props.editConfig.connection_string;
+        if (!keepsExistingTarget) {
+          config.host = "";
+          config.port = 0;
+        } else if (props.editConfig.production_badge_scope == null && config.production_badge_scope === sidebarProductionBadgeScope(props.editConfig)) {
+          config.production_badge_scope = undefined;
+        }
         config.connection_string = config.connection_string?.trim() || "";
       }
     } else if (config.db_type === "prestosql") {

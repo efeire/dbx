@@ -4,7 +4,7 @@ import { createApp, defineComponent, h, nextTick, reactive, type App } from "vue
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import type { ConnectionConfig } from "@/types/database";
-import { parseConnectionDeepLinkUpdate } from "@/lib/connection/connectionDeepLink";
+import { parseConnectionDeepLink, parseConnectionDeepLinkUpdate } from "@/lib/connection/connectionDeepLink";
 
 const visibleTab = vi.hoisted(() => ({ value: "connection" }));
 
@@ -193,6 +193,28 @@ async function mountDialog(config: ConnectionConfig, url: string, initiallyOpen 
   return props;
 }
 
+async function mountNewDialog(url?: string) {
+  const props = reactive({ open: true, prefillConfig: url ? parseConnectionDeepLink(url) : null });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const app = createApp(
+    defineComponent({
+      setup: () => () =>
+        h(ConnectionDialog, {
+          ...props,
+          "onUpdate:open": (value: boolean) => {
+            props.open = value;
+          },
+        }),
+    }),
+  );
+  app.use(i18n);
+  mountedApps.push(app);
+  app.mount(container);
+  await settle();
+  return props;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   visibleTab.value = "connection";
@@ -309,6 +331,140 @@ describe("ConnectionDialog deep-link edit confirmation", () => {
     );
     expect(store.addConnection).not.toHaveBeenCalled();
     expect(store.connect).not.toHaveBeenCalled();
+  });
+
+  it("preserves a protected generic JDBC target when only its name changes", async () => {
+    const saved = savedConnection({
+      db_type: "jdbc",
+      driver_profile: "jdbc",
+      driver_label: "JDBC",
+      host: "db.example.test",
+      port: 2881,
+      username: "saved-user",
+      password: "__DBX_SAVED_CREDENTIAL__:synthetic-password",
+      connection_string: "__DBX_SAVED_CREDENTIAL__:synthetic-url",
+      jdbc_driver_class: "example.Driver",
+      jdbc_driver_paths: ["driver.jar"],
+      jdbc_dialect: "oceanbase-oracle",
+      production_badge_scope: undefined,
+    });
+    await mountDialog(saved, "");
+    const name = [...document.querySelectorAll<HTMLInputElement>("input")].find((input) => input.value === saved.name);
+    expect(name).toBeTruthy();
+    name!.value = "Renamed JDBC";
+    name!.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    const save = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save");
+    save!.click();
+    await settle();
+
+    expect(store.updateConnection).toHaveBeenCalledTimes(1);
+    const submitted = store.updateConnection.mock.calls[0][0];
+    expect(submitted.name).toBe("Renamed JDBC");
+    expect(submitted.production_badge_scope).toBeUndefined();
+    expect(submitted).toMatchObject({
+      db_type: saved.db_type,
+      driver_profile: saved.driver_profile,
+      host: saved.host,
+      port: saved.port,
+      username: saved.username,
+      password: saved.password,
+      connection_string: saved.connection_string,
+      jdbc_driver_class: saved.jdbc_driver_class,
+      jdbc_driver_paths: saved.jdbc_driver_paths,
+    });
+  });
+
+  it("keeps an explicitly selected badge scope on an unchanged generic JDBC target", async () => {
+    visibleTab.value = "advanced";
+    const saved = savedConnection({
+      db_type: "jdbc",
+      driver_profile: "jdbc",
+      driver_label: "JDBC",
+      host: "db.example.test",
+      port: 2881,
+      connection_string: "__DBX_SAVED_CREDENTIAL__:synthetic-url",
+      jdbc_driver_class: "example.Driver",
+      jdbc_driver_paths: ["driver.jar"],
+      production_badge_scope: undefined,
+    });
+    await mountDialog(saved, "");
+    const trigger = document.querySelector<HTMLButtonElement>("#production-badge-scope");
+    expect(trigger?.textContent).toContain("Database / schema (default)");
+    trigger!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => element.textContent?.trim() === "Table / object");
+    expect(option).toBeTruthy();
+    option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    const save = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save");
+    save!.click();
+    await settle();
+
+    expect(store.updateConnection).toHaveBeenCalledWith(expect.objectContaining({ production_badge_scope: "table", host: "db.example.test", port: 2881 }));
+  });
+
+  it("keeps the existing generic JDBC normalization when its URL is replaced", async () => {
+    const saved = savedConnection({
+      db_type: "jdbc",
+      driver_profile: "jdbc",
+      driver_label: "JDBC",
+      host: "db.example.test",
+      port: 2881,
+      connection_string: "__DBX_SAVED_CREDENTIAL__:synthetic-url",
+      jdbc_driver_class: "example.Driver",
+      jdbc_driver_paths: ["driver.jar"],
+    });
+    await mountDialog(saved, "");
+    const url = [...document.querySelectorAll<HTMLInputElement>("input")].find((input) => input.value === saved.connection_string);
+    expect(url).toBeTruthy();
+    url!.value = "jdbc:example://new.example.test:9999/db";
+    url!.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    const save = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save");
+    save!.click();
+    await settle();
+
+    expect(store.updateConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connection_string: "jdbc:example://new.example.test:9999/db",
+        host: "",
+        port: 0,
+      }),
+    );
+  });
+
+  it("keeps the generic JDBC new-connection endpoint normalization", async () => {
+    await mountNewDialog();
+    const jdbcCategory = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "JDBC connection");
+    expect(jdbcCategory).toBeTruthy();
+    jdbcCategory!.click();
+    await settle();
+    const jdbcOption = document.querySelector<HTMLButtonElement>('[title="JDBC"]');
+    expect(jdbcOption).toBeTruthy();
+    jdbcOption!.click();
+    await settle();
+    jdbcOption!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await settle();
+    const url = [...document.querySelectorAll<HTMLInputElement>("input")].find((input) => input.placeholder.startsWith("jdbc:"));
+    expect(url).toBeTruthy();
+    url!.value = "jdbc:example://host/db";
+    url!.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    const save = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save");
+    expect(save).toBeTruthy();
+    save!.click();
+    await settle();
+
+    expect(store.addConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        db_type: "jdbc",
+        connection_string: "jdbc:example://host/db",
+        host: "",
+        port: 0,
+      }),
+      null,
+    );
   });
 
   it("applies explicit empty passwords and false TLS values without create defaults", async () => {
