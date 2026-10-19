@@ -54,7 +54,7 @@ describe("OceanBase session identity and SQL", () => {
     expect(() => buildOceanbaseKillConnectionBlock({ ...row, proxySessionId: "88" })).toThrow("Unsupported");
     const sql = buildOceanbaseLockDetailsSql({ ...row, tenantId: 7 });
     expect(sql).toContain("t.ID3 = l.ID3");
-    expect(sql).toContain("p.USER AS SESSION_USER");
+    expect(sql).toContain('p."USER" AS SESSION_USER');
     expect(sql).toContain("TENANT_ID = (SELECT TENANT_ID FROM GV$OB_SESSION");
   });
 });

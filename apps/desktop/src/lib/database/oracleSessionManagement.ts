@@ -202,7 +202,7 @@ export function buildOceanbaseLockDetailsSql(row: ProcessRow): string {
   const tenant = String(row.tenant ?? "");
   if (!user || !tenant) throw new Error("Incomplete OceanBase session identity");
   const tenantId = `(SELECT TENANT_ID FROM GV$OB_SESSION WHERE ID = ${id} AND USER = ${sqlLiteral(user)} AND TENANT = ${sqlLiteral(tenant)} AND ROWNUM = 1)`;
-  return `SELECT l.SVR_IP, l.SVR_PORT, l.TENANT_ID, l.TRANS_ID, l.SESSION_ID, l.TYPE, TO_CHAR(l.ID1), TO_CHAR(l.ID2), TO_CHAR(l.ID3), l.LMODE, l.REQUEST, l.CTIME, l.BLOCK, p.USER AS SESSION_USER, p.STATE AS SESSION_STATE FROM GV$OB_LOCKS l LEFT JOIN GV$OB_PROCESSLIST p ON p.ID = l.SESSION_ID AND p.TENANT = ${sqlLiteral(tenant)} WHERE l.TENANT_ID = ${tenantId} AND (l.SESSION_ID = ${id} OR EXISTS (SELECT 1 FROM GV$OB_LOCKS t WHERE t.SESSION_ID = ${id} AND t.TENANT_ID = ${tenantId} AND t.TYPE = l.TYPE AND t.ID1 = l.ID1 AND t.ID2 = l.ID2 AND t.ID3 = l.ID3)) ORDER BY l.TYPE, l.ID1, l.ID2, l.SESSION_ID, l.TRANS_ID`;
+  return `SELECT l.SVR_IP, l.SVR_PORT, l.TENANT_ID, l.TRANS_ID, l.SESSION_ID, l.TYPE, TO_CHAR(l.ID1), TO_CHAR(l.ID2), TO_CHAR(l.ID3), l.LMODE, l.REQUEST, l.CTIME, l.BLOCK, p."USER" AS SESSION_USER, p.STATE AS SESSION_STATE FROM GV$OB_LOCKS l LEFT JOIN GV$OB_PROCESSLIST p ON p.ID = l.SESSION_ID AND p.TENANT = ${sqlLiteral(tenant)} WHERE l.TENANT_ID = ${tenantId} AND (l.SESSION_ID = ${id} OR EXISTS (SELECT 1 FROM GV$OB_LOCKS t WHERE t.SESSION_ID = ${id} AND t.TENANT_ID = ${tenantId} AND t.TYPE = l.TYPE AND t.ID1 = l.ID1 AND t.ID2 = l.ID2 AND t.ID3 = l.ID3)) ORDER BY l.TYPE, l.ID1, l.ID2, l.SESSION_ID, l.TRANS_ID`;
 }
 
 export const ORACLE_SESSION_DRIVER_COLUMNS = ORACLE_COLUMNS;
