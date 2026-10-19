@@ -160,6 +160,13 @@ describe("ObjectBrowser table copy", () => {
     columnsArea.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }));
     await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenLastCalledWith("second\nfirst"));
 
+    const copied: string[] = [];
+    const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copyEvent, "clipboardData", { value: { setData: (_type: string, value: string) => copied.push(value) } });
+    columnsArea.dispatchEvent(copyEvent);
+    expect(copyEvent.defaultPrevented).toBe(true);
+    expect(copied).toEqual(["second\nfirst"]);
+
     columnsArea.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, shiftKey: true, bubbles: true }));
     await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenLastCalledWith('#\tgrid.columnName\tgrid.columnType\tgrid.tableInfoNullable\tstructureEditor.defaultValue\tgrid.columnComment\n1\tsecond\tVARCHAR(20)\tNO\t"x\ty"\t"line 1\nline 2"\n2\tfirst\tNUMBER\tYES\t—\t"quote ""value"""'));
   });

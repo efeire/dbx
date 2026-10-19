@@ -1294,6 +1294,14 @@ function tableInfoColumnContextMenuItems(): ContextMenuItem[] {
   return [{ label: t("contextMenu.copyAdvancedInfo"), icon: Copy, shortcut: "Ctrl+Shift+C", action: copyTableInfoColumnDetails }];
 }
 
+function onTableInfoColumnsCopy(event: ClipboardEvent) {
+  if (selectedTableInfoColumns.value.length === 0 || !event.clipboardData) return;
+  const names = filteredTableColumns.value.filter((column) => selectedTableInfoColumns.value.includes(column.name)).map((column) => column.name);
+  if (names.length === 0) return;
+  event.clipboardData.setData("text/plain", names.join("\n"));
+  event.preventDefault();
+}
+
 function onTableInfoColumnsKeydown(event: KeyboardEvent) {
   const target = event.target;
   if (event.defaultPrevented || selectedTableInfoColumns.value.length === 0 || !(target instanceof Element) || (!target.closest("[data-table-info-column]") && target !== event.currentTarget) || !(event.ctrlKey || event.metaKey) || event.altKey) return;
@@ -5265,7 +5273,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               </div>
             </div>
           </div>
-          <div v-else-if="tableInfoTab === 'columns'" data-table-info-columns class="flex-1 min-h-0 overflow-auto" tabindex="0" @keydown="onTableInfoColumnsKeydown">
+          <div v-else-if="tableInfoTab === 'columns'" data-table-info-columns class="flex-1 min-h-0 overflow-auto" tabindex="0" @keydown="onTableInfoColumnsKeydown" @copy="onTableInfoColumnsCopy">
             <div v-if="tableColumnsLoading" class="h-full flex items-center justify-center">
               <Loader2 class="w-4 h-4 animate-spin text-muted-foreground" />
             </div>
