@@ -9,8 +9,8 @@ export function oracleObjectDependenciesSql(options: { schema: string; objectNam
   const name = quoteSqlString(options.objectName);
   const typeFilter = options.objectType === "PACKAGE" ? "d.TYPE IN ('PACKAGE', 'PACKAGE BODY')" : `d.TYPE = '${options.objectType}'`;
   const referenceTypeFilter = options.objectType === "PACKAGE" ? "d.REFERENCED_TYPE IN ('PACKAGE', 'PACKAGE BODY')" : `d.REFERENCED_TYPE = '${options.objectType}'`;
-  return `-- Direct dependency and reverse-reference rows visible to the current account via ALL_DEPENDENCIES; dynamic SQL references may not be present.
--- Package-member nodes query the owning package (package/body scope), not member-level dependencies.
+  const scopeNote = options.objectType === "PACKAGE" ? " Package/body scope, not member-level dependencies." : "";
+  return `-- Direct dependencies and reverse references visible to the current account via ALL_DEPENDENCIES. Dynamic SQL references may be absent.${scopeNote}
 SELECT 'DEPENDS_ON' AS DIRECTION,
        ${owner} AS TARGET_OWNER,
        ${name} AS TARGET_NAME,

@@ -15,6 +15,7 @@ describe("Oracle object dependencies", () => {
     }
     expect(sql).toContain("FROM ALL_DEPENDENCIES d");
     expect(sql).not.toContain("DBA_DEPENDENCIES");
+    expect(sql).not.toContain("Package/body scope");
   });
 
   it("matches local reverse references without hiding remote outbound dependencies", () => {
@@ -32,6 +33,7 @@ describe("Oracle object dependencies", () => {
     expect(sql).toContain("'PAYROLL' AS TARGET_NAME");
     expect(sql).toContain("d.TYPE IN ('PACKAGE', 'PACKAGE BODY')");
     expect(sql).not.toContain("'CALC' AS TARGET_NAME");
+    expect(sql).toContain("Package/body scope, not member-level dependencies");
   });
 
   it("keeps package and body types distinct in package-scoped results", () => {
