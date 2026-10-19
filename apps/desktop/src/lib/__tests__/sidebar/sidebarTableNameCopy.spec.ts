@@ -73,6 +73,28 @@ describe("sidebarTableNameCopy", () => {
     expect(qualifiedNameForSidebarNode(routine, { databaseType: "mysql" })).toBe("`sales`.`rebuild`");
   });
 
+  it("maps supported object namespaces to their database-qualified names and rejects unsupported namespaces", () => {
+    const schemaNode = (id: string, type: TreeNode["type"], name: string): TreeNode => ({
+      id,
+      label: name,
+      objectName: name,
+      type,
+      connectionId: "c1",
+      database: "db",
+      schema: "app",
+    });
+
+    expect(qualifiedNameForSidebarNode(schemaNode("seq", "sequence", "seq"), { databaseType: "postgres" })).toBe('"app"."seq"');
+    expect(qualifiedNameForSidebarNode(schemaNode("syn", "synonym", "syn"), { databaseType: "oracle" })).toBe('"app"."syn"');
+    expect(qualifiedNameForSidebarNode(schemaNode("pkg", "package", "pkg"), { databaseType: "oracle" })).toBe('"app"."pkg"');
+    expect(qualifiedNameForSidebarNode(schemaNode("type", "type", "address_t"), { databaseType: "oracle" })).toBe('"app"."address_t"');
+    expect(qualifiedNameForSidebarNode(schemaNode("type-body", "type-body", "address_t"), { databaseType: "oracle" })).toBe('"app"."address_t"');
+    expect(qualifiedNameForSidebarNode({ ...schemaNode("index", "index", "idx_users"), meta: { name: "idx_users" } }, { databaseType: "postgres" })).toBe('"app"."idx_users"');
+    expect(qualifiedNameForSidebarNode(schemaNode("mysql-trigger", "trigger", "trg_users"), { databaseType: "mysql" })).toBeNull();
+    expect(qualifiedNameForSidebarNode(schemaNode("mysql-index", "index", "idx_users"), { databaseType: "mysql" })).toBeNull();
+    expect(qualifiedNameForSidebarNode({ ...schemaNode("doris", "table", "orders"), schema: undefined, database: "sales", catalog: "lake" }, { databaseType: "doris" })).toBe("`lake`.`sales`.`orders`");
+  });
+
   it("quotes JDBC routine names using the driver's identifier quote", () => {
     const routine: TreeNode = { id: "f", label: "find user", objectName: "find user", type: "function", connectionId: "c1", database: "db", schema: "app" };
     expect(qualifiedNameForSidebarNode(routine, { databaseType: "jdbc", identifierQuote: '"' })).toBe('app."find user"');
