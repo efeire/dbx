@@ -117,6 +117,7 @@ import { prepareOracleTableRename, executeOracleTableRename, OracleTableRenameFa
 import OracleTableRenamePreview from "@/components/objects/OracleTableRenamePreview.vue";
 import OracleRoutineRenamePreview from "@/components/objects/OracleRoutineRenamePreview.vue";
 import OraclePackageSaveAsDialog from "@/components/objects/OraclePackageSaveAsDialog.vue";
+import OracleInvalidObjectsDialog from "@/components/objects/OracleInvalidObjectsDialog.vue";
 import { executeOraclePackageSaveAs, OraclePackageSaveAsFailure, prepareOraclePackageSaveAs, type OraclePackageSaveAsPlan } from "@/lib/table/oraclePackageSaveAs";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
@@ -249,6 +250,7 @@ const refreshTooltip = computed(() => {
 const firebirdManagerOpen = ref(false);
 const schemas = ref<string[]>([]);
 const selectedSchema = ref<string | undefined>(props.schema);
+const oracleInvalidObjectsOpen = ref(false);
 const rows = ref<ObjectBrowserRow[]>([]);
 const rootRef = ref<HTMLElement>();
 const search = ref(props.initialSearchQuery ?? "");
@@ -345,6 +347,7 @@ const sidePanelGuard = createSidePanelRequestGuard();
 const sidePanelRef = ref<InstanceType<typeof CustomTypeInfoPanel> | null>(null);
 const tableMetadataCapabilities = computed<TableMetadataCapabilities>(() => getTableMetadataCapabilities(effectiveDatabaseType.value));
 const effectiveDatabaseType = computed(() => effectiveDatabaseTypeForConnection(props.connection) ?? props.connection.db_type);
+const oracleInvalidObjectsSupported = computed(() => effectiveDatabaseType.value === "oracle" || effectiveDatabaseType.value === "oceanbase-oracle");
 const usesServerObjectPaging = computed(() => props.connection.db_type === "oceanbase-oracle");
 const objectPageSize = computed(() => Math.max(1, Math.min(10_000, Math.floor(settingsStore.desktopSettings?.sidebar_table_page_size || 500))));
 const isGaussdbM = computed(() => effectiveDatabaseType.value === "gaussdb" && props.connection.driver_profile?.toLowerCase() === "gaussdb-m");
@@ -1811,6 +1814,35 @@ async function openSource(row: ObjectBrowserRow) {
     return;
   }
   await loadSourcePanel(row);
+}
+
+async function openInvalidObjectSource(object: { owner: string; name: string; type: string }) {
+  const objectType = ({ "MATERIALIZED VIEW": "MATERIALIZED_VIEW", "PACKAGE BODY": "PACKAGE_BODY", "TYPE BODY": "TYPE_BODY" } as Record<string, string>)[object.type] ?? object.type;
+  if (objectType === "TYPE" || objectType === "TYPE_BODY" || objectType === "TRIGGER") {
+    const connection = { ...props.connection };
+    const connectionKey = JSON.stringify(connection);
+    const database = props.database;
+    const catalog = props.catalog;
+    try {
+      const source = await api.getObjectSource(connection.id, database, object.owner, object.name, objectType as ObjectSourceKind);
+      if (props.connection.id !== connection.id || JSON.stringify(props.connection) !== connectionKey || props.database !== database || props.catalog !== catalog) return;
+      if (!source.source?.trim()) throw new Error(t("processList.oracleInvalidObjects.sourceUnavailable"));
+      const tabId = queryStore.createTab(connection.id, database, `Repair - ${object.name}`, "query", object.owner, undefined, catalog);
+      queryStore.updateSql(tabId, source.source);
+    } catch (error) {
+      toast(t("processList.oracleInvalidObjects.sourceLoadFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+    }
+    return;
+  }
+  queryStore.openObjectSourceTabPending({
+    connectionId: props.connection.id,
+    database: props.database,
+    title: `Source - ${object.name}`,
+    schema: object.owner,
+    catalog: props.catalog,
+    initialEditing: true,
+    request: { name: object.name, objectType: objectType as ObjectSourceKind },
+  });
 }
 
 let sourceIdentity: SourceIdentitySnapshot | undefined;
@@ -4652,10 +4684,12 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
     @confirm="cloneDialog.confirm"
   />
   <FirebirdObjectManager v-if="effectiveDatabaseType === 'firebird'" v-model:open="firebirdManagerOpen" :connection-id="connection.id" :database="database" />
+  <OracleInvalidObjectsDialog v-if="oracleInvalidObjectsSupported" v-model:open="oracleInvalidObjectsOpen" :connection="connection" :database="database" :schema="selectedSchema || database" @open-source="openInvalidObjectSource" />
   <div ref="rootRef" data-object-browser-root class="flex h-full min-h-0 min-w-0 flex-col bg-background outline-none" tabindex="0" @keydown="onObjectBrowserKeydown">
     <SidebarMenuPreferencesDialog v-if="sidebarMenuPreferences" v-model:open="sidebarMenuPreferencesOpen" :scope="sidebarMenuPreferences.scope" :items="sidebarMenuPreferences.items" />
     <div v-if="!isEventEditor" ref="toolbarRef" class="flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b px-3">
       <Button v-if="effectiveDatabaseType === 'firebird'" variant="outline" size="sm" @click="firebirdManagerOpen = true">{{ t("tree.firebirdObjectManager") }}</Button>
+      <Button v-if="oracleInvalidObjectsSupported" variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="oracleInvalidObjectsOpen = true">{{ t("processList.oracleInvalidObjects.title") }}</Button>
       <div class="flex min-w-12 items-center gap-2">
         <span class="inline-flex max-w-[14rem] min-w-0 items-center rounded border border-border bg-muted/50 px-2 py-0.5 text-xs font-medium truncate" :title="selectedSchema || props.database">
           {{ selectedSchema || props.database }}

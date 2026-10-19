@@ -5,11 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionConfig } from "@/types/database";
 import { PG_PROCESS_LIST_SQL } from "@/lib/database/postgresProcessList";
 import { XUGU_OWN_SESSION_SQL, XUGU_TRANSACTION_LIST_SQL } from "@/lib/database/xuguProcessList";
+import { buildOracleOwnSessionSql, buildOracleSessionListSql, ORACLE_SESSION_VERSION_SQL } from "@/lib/database/oracleSessionManagement";
 
 const mocks = vi.hoisted(() => ({
   ensureConnected: vi.fn(),
   executeQuery: vi.fn(),
   executeMulti: vi.fn(),
+  closeClientConnectionSession: vi.fn(),
+  contextGuard: vi.fn(),
   toast: vi.fn(),
 }));
 
@@ -81,9 +84,13 @@ vi.mock("@/stores/connectionStore", () => ({
   useConnectionStore: () => ({ ensureConnected: mocks.ensureConnected }),
 }));
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
-vi.mock("@/lib/backend/api", () => ({ executeQuery: mocks.executeQuery, executeMulti: mocks.executeMulti }));
+vi.mock("@/lib/backend/api", () => ({ executeQuery: mocks.executeQuery, executeMulti: mocks.executeMulti, closeClientConnectionSession: mocks.closeClientConnectionSession }));
 vi.mock("@/lib/database/productionExecutionGuard", () => ({
   executeWithProductionSqlGuard: (options: { execute: () => Promise<unknown> }) => options.execute(),
+  executeWithProductionContextGuard: (options: { execute: () => Promise<unknown> }) => {
+    mocks.contextGuard(options);
+    return options.execute();
+  },
 }));
 vi.mock("@/lib/tabs/tabUiState", () => ({ useTabUiState: () => ({ initialState: {}, track: () => {} }) }));
 vi.mock("@/lib/database/processListDrivers", async (importOriginal) => {
@@ -132,6 +139,23 @@ const xuguConnection: ConnectionConfig = {
   password: "",
 };
 
+const oracleConnection: ConnectionConfig = {
+  id: "oracle-1",
+  name: "Oracle",
+  db_type: "oracle",
+  host: "localhost",
+  port: 1521,
+  username: "APP",
+  password: "",
+};
+
+let oracleTerminated = false;
+function oracleListResult() {
+  const rows: unknown[][] = [["5", "30", "1", "3", "APP", "ACTIVE", "localhost", "DBX", "selfsql", null, null, null, "500", "2026-10-20 09:00:00"]];
+  if (!oracleTerminated) rows.push(["21", "42", "2", "3", "OTHER", "INACTIVE", "apphost", "worker", null, "SQL*Net message from client", null, null, "700", "2026-10-20 08:00:00"]);
+  return { columns: [], rows };
+}
+
 function xuguTransactionResult() {
   return {
     columns: ["NODE_ID", "TRANSACTION_ID", "SESSION_ID", "USER_NAME", "DB_NAME", "CLIENT_IP", "START_TIME"],
@@ -177,9 +201,22 @@ beforeEach(() => {
     if (sql === PG_PROCESS_LIST_SQL) return postgresListResult();
     if (sql === XUGU_OWN_SESSION_SQL) return { columns: ["NODEID", "SESSION_ID"], rows: [[1, 5]] };
     if (sql === XUGU_TRANSACTION_LIST_SQL) return xuguTransactionResult();
+    if (sql === ORACLE_SESSION_VERSION_SQL) return { columns: ["VERSION"], rows: [["19.0.0.0.0"]] };
+    if (sql === buildOracleOwnSessionSql(false)) return { columns: [], rows: [["5", "1", "3"]] };
+    if (sql === buildOracleSessionListSql(false)) return oracleListResult();
+    if (sql.includes("FROM GV$LOCK l JOIN GV$SESSION s"))
+      return { columns: ["CONTAINER_ID", "INSTANCE_ID", "SESSION_ID", "LOCK_TYPE", "ID1", "ID2", "HELD_MODE", "REQUESTED_MODE", "BLOCKING", "SESSION_USER", "SESSION_STATUS", "BLOCKER"], rows: [["3", "2", "21", "TX", "100", "200", "6", "0", "1", "OTHER", "INACTIVE", "—"]] };
+    if (sql.includes("ALTER SYSTEM KILL SESSION")) {
+      oracleTerminated = true;
+      return { columns: [], rows: [] };
+    }
     return { columns: [], rows: [] };
   });
   mocks.executeMulti.mockReset().mockResolvedValue([{ columns: [], rows: [] }]);
+  mocks.closeClientConnectionSession.mockReset().mockResolvedValue(undefined);
+  mocks.contextGuard.mockReset();
+  mocks.toast.mockReset();
+  oracleTerminated = false;
   root = document.createElement("div");
   document.body.appendChild(root);
 });
@@ -235,6 +272,54 @@ async function mountXuguPanel() {
 }
 
 describe("ProcessListPanel batch terminate", () => {
+  it("terminates one Oracle row through the independent managed session and reads the row back", async () => {
+    app = createApp(ProcessListPanel, { connection: oracleConnection });
+    app.mount(root!);
+    await vi.waitFor(() => expect(root?.textContent).toContain("21"));
+    await vi.waitFor(() => expect(root?.textContent).toContain("processList.oracleSerial"));
+
+    expect(gridButtons().some((button) => button.textContent?.trim() === "processList.kill")).toBe(false);
+    const terminateButtons = gridButtons().filter((button) => button.textContent?.trim() === "processList.terminate");
+    expect(terminateButtons).toHaveLength(2);
+    expect(terminateButtons[0]?.disabled).toBe(true);
+    expect(terminateButtons[1]?.disabled).toBe(false);
+
+    terminateButtons[1]?.click();
+    await nextTick();
+    expect(root?.textContent).toContain("processList.oracleContainer");
+    expect(root?.textContent).toContain("processList.oracleInstance");
+    expect(root?.textContent).toContain("processList.oracleSerial");
+    findDialogButton("processList.terminate")?.click();
+
+    await vi.waitFor(() => expect(oracleTerminated).toBe(true));
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("processList.terminateSuccess:21", 2500));
+    const actionCall = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("ALTER SYSTEM KILL SESSION"));
+    expect(actionCall?.[2]).toContain("CON_ID = 3");
+    expect(actionCall?.[2]).toContain("SERIAL# = 42");
+    const actionSession = (actionCall?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId;
+    expect(actionSession).toBeTruthy();
+    expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("GV$SESSION")).every((call) => (call[5] as { clientSessionId?: string })?.clientSessionId === actionSession)).toBe(true);
+    expect(mocks.contextGuard.mock.calls[0]?.[0]).toMatchObject({ scope: "connection", database: "", source: "production.sourceAdmin" });
+  });
+
+  it("opens lock details for the selected Oracle session using the managed session", async () => {
+    app = createApp(ProcessListPanel, { connection: oracleConnection });
+    app.mount(root!);
+    await vi.waitFor(() => expect(root?.textContent).toContain("21"));
+
+    const lockButtons = gridButtons().filter((button) => button.textContent?.trim() === "processList.lockDetails");
+    expect(lockButtons).toHaveLength(2);
+    lockButtons[1]?.click();
+
+    await vi.waitFor(() => expect(root?.textContent).toContain("TX"));
+    expect(root?.textContent).toContain("processList.lockTarget");
+    const lockQuery = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("FROM GV$LOCK l JOIN GV$SESSION s"));
+    expect(lockQuery?.[2]).toContain("l.CON_ID = 3");
+    const managedSession = (lockQuery?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId;
+    expect(managedSession).toBeTruthy();
+    expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("GV$SESSION")).every((call) => (call[5] as { clientSessionId?: string })?.clientSessionId === managedSession)).toBe(true);
+  });
+
   it("terminates every selected session one by one after confirmation", async () => {
     await mountPanel(mysqlConnection);
     await selectSessions(11, 12);

@@ -180,4 +180,27 @@ describe("production context execution guard (non-SQL)", () => {
     expect(useProductionSafetyStore().pending).toBeUndefined();
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  it("connection scope confirms any marked database even when the current schema is unmarked", async () => {
+    const execute = vi.fn().mockResolvedValue("killed");
+    const pending = executeWithProductionContextGuard({
+      connection: connection({ db_type: "oracle", production_databases: ["PROD_A", "PROD_B"] }),
+      database: "scratch",
+      reviewText: "terminate session 42",
+      scope: "connection",
+      execute,
+    });
+    await Promise.resolve();
+    expect(useProductionSafetyStore().pending).toMatchObject({ productionDatabases: ["prod_a", "prod_b"] });
+    useProductionSafetyStore().confirm();
+    await expect(pending).resolves.toBe("killed");
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("connection scope leaves unmarked connections immediate and preserves the default database scope", async () => {
+    const execute = vi.fn().mockResolvedValue("done");
+    await expect(executeWithProductionContextGuard({ connection: connection({ db_type: "oracle", production_databases: [] }), database: "scratch", reviewText: "terminate session", scope: "connection", execute })).resolves.toBe("done");
+    await expect(executeWithProductionContextGuard({ connection: connection({ db_type: "oracle", production_databases: ["prod_a"] }), database: "scratch", reviewText: "legacy action", execute })).resolves.toBe("done");
+    expect(useProductionSafetyStore().pending).toBeUndefined();
+  });
 });
