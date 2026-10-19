@@ -285,7 +285,7 @@ function save() {
               </div>
             </div>
             <details v-if="supportsCsvOptions" class="space-y-2 rounded-md border p-3">
-              <summary class="cursor-pointer text-sm font-medium">{{ t("common.advanced") }}</summary>
+              <summary class="cursor-pointer text-sm font-medium">{{ t("grid.copyExtractorAdvancedOptions") }}</summary>
               <label class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.dsv.quoteNumericStrings" @change="updateDsv('quoteNumericStrings', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorQuoteNumericStrings") }}</label>
               <label class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.dsv.escapeFormulas" @change="updateDsv('escapeFormulas', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorEscapeFormulas") }}</label>
               <div class="space-y-1.5">

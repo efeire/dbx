@@ -4,7 +4,7 @@ import { createApp, defineComponent, h, nextTick, reactive, type App } from "vue
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA_GRID_COPY_EXTRACTOR_IDS, DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS, normalizeDataGridExtractorOptions, type DataGridCopyPreference, type DataGridExtractPreview } from "@/lib/dataGrid/dataGridCopyExtractor";
 
-vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
+vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => (key === "grid.copyExtractorAdvancedOptions" ? "Advanced options" : key) }) }));
 vi.mock("@/components/ui/dialog", () => {
   const passthrough = defineComponent({
     setup:
@@ -115,7 +115,7 @@ describe("extractor draft preview", () => {
     expect(csv.host.textContent).toContain("grid.copyExtractorHeaderPosition");
     expect(csv.host.querySelectorAll("details")).toHaveLength(2);
     expect([...csv.host.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
-    expect(csv.host.querySelector("details summary")?.textContent).toBe("common.advanced");
+    expect(csv.host.querySelector("details summary")?.textContent).toBe("Advanced options");
   });
 
   it.each(["tsv", "tsv-with-headers", "pipe-separated"] as const)("keeps the row-number option available for %s", async (preference) => {

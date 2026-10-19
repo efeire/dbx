@@ -2593,6 +2593,7 @@ export default withEnglishFallback({
     copyExtractorVisibleFormats: "รูปแบบที่แสดงในคัดลอกเป็น",
     copyExtractorRestoreVisibleFormats: "คืนค่าเริ่มต้น",
     copyExtractorConfigure: "กำหนดค่า Data Extractor…",
+    copyExtractorAdvancedOptions: "ตัวเลือกขั้นสูง",
     copyExtractorSaved: "บันทึกการตั้งค่า Data Extractor แล้ว",
     copyExtractorDefaultFormat: "พฤติกรรมการคัดลอกเริ่มต้น",
     copyExtractorFormat: "Extractor",

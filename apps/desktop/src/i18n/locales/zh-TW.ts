@@ -3011,6 +3011,7 @@ export default withEnglishFallback({
     copyExtractorVisibleFormats: "「複製為」中顯示的格式",
     copyExtractorRestoreVisibleFormats: "還原預設值",
     copyExtractorConfigure: "配置資料提取器…",
+    copyExtractorAdvancedOptions: "進階選項",
     copyExtractorSaved: "資料提取器設定已儲存",
     copyExtractorDefaultFormat: "預設複製方式",
     copyExtractorFormat: "提取器",

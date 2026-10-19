@@ -39,5 +39,7 @@ describe("grid copy extractor saved locale parity", () => {
     expect(grid.copyExtractorSaved as string, `${_name}: grid.copyExtractorSaved`).not.toHaveLength(0);
     expect(grid.copyExtractorRawHint, `${_name}: grid.copyExtractorRawHint`).toBeTypeOf("string");
     expect(grid.copyExtractorRawHint as string, `${_name}: grid.copyExtractorRawHint`).not.toHaveLength(0);
+    expect(grid.copyExtractorAdvancedOptions, `${_name}: grid.copyExtractorAdvancedOptions`).toBeTypeOf("string");
+    expect(grid.copyExtractorAdvancedOptions as string, `${_name}: grid.copyExtractorAdvancedOptions`).not.toHaveLength(0);
   });
 });

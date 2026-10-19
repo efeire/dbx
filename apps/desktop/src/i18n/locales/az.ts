@@ -1874,6 +1874,7 @@ export default withEnglishFallback({
     copyExtractorPipeSeparated: "Şaquli xətlə ayrılmış",
     copyExtractorPretty: "Formatlanmış cədvəl",
     copyExtractorConfigure: "Verilənləri çıxarma vasitələrini tənzimlə…",
+    copyExtractorAdvancedOptions: "Ətraflı seçimlər",
     copyExtractorSaved: "Veri çıxarıcı parametrləri yadda saxlanıldı",
     copyExtractorDefaultFormat: "Standart kopyalama davranışı",
     copyExtractorFormat: "Çıxarma vasitəsi",

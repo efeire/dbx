@@ -2636,6 +2636,7 @@ export default {
     copyExtractorVisibleFormats: "Visible Copy as formats",
     copyExtractorRestoreVisibleFormats: "Restore defaults",
     copyExtractorConfigure: "Configure Data Extractors…",
+    copyExtractorAdvancedOptions: "Advanced options",
     copyExtractorSaved: "Data extractor settings saved",
     copyExtractorDefaultFormat: "Default copy behavior",
     copyExtractorFormat: "Extractor",

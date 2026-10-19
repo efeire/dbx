@@ -2393,6 +2393,7 @@ export default withEnglishFallback({
     copyExtractorVisibleFormats: "Форматы в меню «Копировать как»",
     copyExtractorRestoreVisibleFormats: "Восстановить значения по умолчанию",
     copyExtractorConfigure: "Настроить извлечение данных…",
+    copyExtractorAdvancedOptions: "Дополнительные параметры",
     copyExtractorSaved: "Настройки извлечения данных сохранены",
     copyExtractorDefaultFormat: "Поведение копирования по умолчанию",
     copyExtractorFormat: "Извлечение",

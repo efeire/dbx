@@ -2303,6 +2303,7 @@ export default withEnglishFallback({
     copyExtractorVisibleFormats: "복사 형식 메뉴에 표시할 형식",
     copyExtractorRestoreVisibleFormats: "기본값 복원",
     copyExtractorConfigure: "데이터 추출기 설정…",
+    copyExtractorAdvancedOptions: "고급 옵션",
     copyExtractorSaved: "데이터 추출기 설정이 저장되었습니다",
     copyExtractorDefaultFormat: "기본 복사 동작",
     copyExtractorFormat: "추출기",

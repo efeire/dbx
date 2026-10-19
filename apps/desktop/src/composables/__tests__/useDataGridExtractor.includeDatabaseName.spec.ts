@@ -5,6 +5,7 @@ import { DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, type DataGridExtractorOptions } fr
 import type { DataGridTableMeta } from "@/lib/dataGrid/dataGridSql";
 import type { DatabaseType } from "@/types/database";
 import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridDisplayText, mongoDocumentGridEditorText, mongoDocumentGridExternalValue, mongoDocumentGridValue } from "@/lib/mongo/mongoDocumentValues";
+import exactDecimalWire from "@/lib/__tests__/dataGrid/fixtures/exactDecimalQueryResult.json";
 
 const mocks = vi.hoisted(() => ({ extract: vi.fn() }));
 vi.mock("@/lib/backend/api", () => ({ extractDataGridSelection: mocks.extract }));
@@ -128,6 +129,28 @@ describe("useDataGridExtractor includeDatabaseName payload", () => {
     const fullRequest = mocks.extract.mock.calls.at(-1)![0];
     expect(fullRequest.columns.map((column: { dataType: string }) => column.dataType)).toEqual(["DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "VARCHAR2"]);
     expect(fullRequest.rows).toEqual([values]);
+  });
+
+  it("keeps exact-decimal wire strings through native, editor, and raw pasteback paths", async () => {
+    const wire = JSON.parse(JSON.stringify(exactDecimalWire)) as { columns: string[]; column_types: string[]; rows: unknown[][] };
+    const [value] = wire.rows[0]!;
+    expect(value).toBe("9007199254740993.123456789012");
+    for (const [token, expected] of [
+      ["1234567890123456.5", "1234567890123456.5"],
+      ["1.23456789012345678e20", "123456789012345680000"],
+      ["0.10000000000000001", "0.1"],
+      ["1e400", "Infinity"],
+      ["1e-400", "0"],
+    ]) {
+      expect(String(JSON.parse(token))).toBe(expected);
+    }
+    const copyText = vi.fn(async () => true);
+    const state = createState("oceanbase-oracle", undefined, undefined, false, { columns: wire.columns, values: [value], visible: [0], types: wire.column_types }, { copyText });
+
+    await state.extractWithExtractor("php", { ...DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, valueFormat: "native" });
+    expect(mocks.extract.mock.calls.at(-1)![0].rows).toEqual([[value]]);
+    await state.copyWithExtractor("tsv");
+    expect(copyText.mock.calls.at(-1)?.[1]?.rows).toEqual([[value]]);
   });
 
   it("keeps reordered visible types aligned when a legacy caller has no full types", async () => {

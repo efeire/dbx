@@ -3011,6 +3011,7 @@ export default withEnglishFallback({
     copyExtractorVisibleFormats: "Formatos visíveis em Copiar como",
     copyExtractorRestoreVisibleFormats: "Restaurar padrões",
     copyExtractorConfigure: "Configurar extrator de dados…",
+    copyExtractorAdvancedOptions: "Opções avançadas",
     copyExtractorSaved: "Configurações do extrator de dados salvas",
     copyExtractorDefaultFormat: "Comportamento de cópia padrão",
     copyExtractorFormat: "Extrator",

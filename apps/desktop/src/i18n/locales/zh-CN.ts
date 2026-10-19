@@ -2568,6 +2568,7 @@ export default withEnglishFallback({
     copyExtractorVisibleFormats: "可见的复制格式",
     copyExtractorRestoreVisibleFormats: "恢复默认",
     copyExtractorConfigure: "配置数据提取器…",
+    copyExtractorAdvancedOptions: "高级选项",
     copyExtractorSaved: "数据提取器配置已保存",
     copyExtractorDefaultFormat: "默认复制方式",
     copyExtractorFormat: "提取器",

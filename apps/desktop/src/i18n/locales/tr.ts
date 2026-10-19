@@ -1872,6 +1872,7 @@ export default withEnglishFallback({
     copyExtractorPipeSeparated: "Dikey çizgiyle ayrılmış",
     copyExtractorPretty: "Düzenli Tablo",
     copyExtractorConfigure: "Veri Çıkarıcılarını Yapılandır…",
+    copyExtractorAdvancedOptions: "Gelişmiş seçenekler",
     copyExtractorSaved: "Veri çıkarıcı ayarları kaydedildi",
     copyExtractorDefaultFormat: "Varsayılan kopyalama davranışı",
     copyExtractorFormat: "Çıkarıcı",

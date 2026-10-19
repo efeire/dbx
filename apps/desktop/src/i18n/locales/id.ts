@@ -2172,6 +2172,7 @@ export default withEnglishFallback({
     copyExtractorPipeSeparated: "Dipisah Pipe",
     copyExtractorPretty: "Tabel Rapi",
     copyExtractorConfigure: "Konfigurasi Ekstraktor Data…",
+    copyExtractorAdvancedOptions: "Opsi lanjutan",
     copyExtractorSaved: "Pengaturan ekstraktor data disimpan",
     copyExtractorDefaultFormat: "Perilaku salin bawaan",
     copyExtractorFormat: "Ekstraktor",

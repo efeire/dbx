@@ -2253,6 +2253,7 @@ export default withEnglishFallback({
     copyExtractorPipeSeparated: "Rozdzielanie pionową kreską",
     copyExtractorPretty: "Tabela sformatowana",
     copyExtractorConfigure: "Konfiguruj sposoby kopiowania…",
+    copyExtractorAdvancedOptions: "Opcje zaawansowane",
     copyExtractorSaved: "Zapisano ustawienia pobierania danych",
     copyExtractorDefaultFormat: "Domyślny sposób kopiowania",
     copyExtractorFormat: "Sposób kopiowania",

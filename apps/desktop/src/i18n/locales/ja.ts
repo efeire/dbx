@@ -3030,6 +3030,7 @@ export default withEnglishFallback({
     copyExtractorVisibleFormats: "「形式を指定してコピー」に表示する形式",
     copyExtractorRestoreVisibleFormats: "既定値に戻す",
     copyExtractorConfigure: "データ抽出の設定…",
+    copyExtractorAdvancedOptions: "詳細オプション",
     copyExtractorSaved: "データ抽出設定を保存しました",
     copyExtractorDefaultFormat: "デフォルトのコピー動作",
     copyExtractorFormat: "抽出器",
