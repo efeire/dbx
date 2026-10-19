@@ -57,6 +57,7 @@ async function mountHost(dbType: DatabaseType = "firebird", treeNodes: TreeNode[
 
 describe("Table trigger context menu", () => {
   afterEach(() => {
+    vi.clearAllMocks();
     for (const app of mountedApps.splice(0)) app.unmount();
     document.body.innerHTML = "";
   });
@@ -81,6 +82,22 @@ describe("Table trigger context menu", () => {
     const routineNode: TreeNode = { ...node("procedure", "rebuild"), schema: undefined };
     const itemLabels = labels(host.buildContextMenu(routineNode));
     expect(itemLabels).toContain(tr("contextMenu.copyQualifiedName"));
+  });
+
+  it("offers and executes Copy Qualified Name for a column", async () => {
+    const { copyToClipboard } = await import("@/lib/common/clipboard");
+    vi.mocked(copyToClipboard).mockClear();
+    const host = await mountHost("postgres");
+    const column: TreeNode = {
+      ...node("column", "id (bigint)", "users"),
+      schema: "sales",
+      meta: { name: "id" },
+    };
+    const menu = host.buildContextMenu(column);
+    const copyItem = menu.flatMap((item) => item.children ?? []).find((item) => item.label === tr("contextMenu.copyQualifiedName"));
+    expect(copyItem).toBeDefined();
+    await copyItem?.action?.();
+    expect(copyToClipboard).toHaveBeenCalledWith('"sales"."users"."id"');
   });
 
   it("rejects cross-connection qualified-name selections before writing the clipboard", async () => {

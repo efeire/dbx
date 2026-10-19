@@ -143,7 +143,7 @@ fn is_numeric_type(data_type: Option<&str>) -> bool {
     ];
     exact.contains(&first)
         || tokens.contains(&"unsigned")
-        || ["int", "float", "double", "decimal", "numeric", "number", "serial"].iter().any(|prefix| {
+        || ["int", "uint", "float", "double", "decimal", "numeric", "number", "serial"].iter().any(|prefix| {
             first
                 .strip_prefix(prefix)
                 .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit()))
@@ -346,21 +346,24 @@ fn write_dsv_data_field(
 pub(super) fn write_one_row(context: &ExtractContext<'_>, output: &mut dyn Write) -> Result<(), DataGridExtractError> {
     let options = DataGridDsvOptions { column_separator: ",".to_string(), ..context.request.options.dsv.clone() };
     validate_dsv_options(&options, false)?;
-    let values = context
-        .request
-        .rows
-        .iter()
-        .flat_map(|row| context.selected_source_indexes.iter().map(move |source_index| &row[*source_index]));
     let mut first = true;
-    for value in values {
-        if !first {
-            write_bytes(output, options.column_separator.as_bytes())?;
+    for row in &context.request.rows {
+        for (source_index, column) in context.selected_source_indexes.iter().zip(&context.selected_columns) {
+            if !first {
+                write_bytes(output, options.column_separator.as_bytes())?;
+            }
+            let value = &row[*source_index];
+            let cell = if value.is_null() {
+                DsvCell::Null
+            } else {
+                let numeric_string = value.as_str().is_some_and(|text| !text.is_empty() && text.parse::<f64>().is_ok());
+                DsvCell::Text(value_text(value), is_numeric_type(column.data_type.as_deref()), numeric_string)
+            };
+            // A one-row extraction is an RFC4180 CSV record, so embedded quotes must
+            // be escaped.
+            write_dsv_data_field(output, &cell, &options, true)?;
+            first = false;
         }
-        let cell = if value.is_null() { DsvCell::Null } else { DsvCell::Text(value_text(value), false, false) };
-        // A one-row extraction is an RFC4180 CSV record, so embedded quotes must
-        // be escaped.
-        write_dsv_data_field(output, &cell, &options, true)?;
-        first = false;
     }
     Ok(())
 }

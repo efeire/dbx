@@ -89,7 +89,7 @@ export const DATA_GRID_COPY_EXTRACTOR_DESCRIPTORS: Record<DataGridCopyExtractorI
 export type DataGridSelectionKind = "cells" | "rows" | "columns";
 export type DataGridValueFormat = "default" | "legacy" | "display" | "edit" | "native";
 export type DataGridQuotePolicy = "always" | "minimal" | "never" | "strings" | "all-but-numbers" | "all-including-nulls";
-export type DataGridExtractorOptionsError = "column-separator-empty" | "row-separator-empty" | "separator-too-long" | "null-text-too-long" | "separators-overlap" | "invalid-quote" | "quote-conflicts";
+export type DataGridExtractorOptionsError = "column-separator-empty" | "row-separator-empty" | "separator-too-long" | "null-text-too-long" | "separators-overlap" | "invalid-quote" | "quote-conflicts" | "invalid-php-row-delimiter";
 
 /** Extractors that emit relational SQL predicates not supported by some stores.
  * sql-updates has a Mongo-specific updateOne path, so Mongo is NOT disabled;
@@ -304,6 +304,7 @@ export function resolveDataGridCopyPreference(preference: DataGridCopyPreference
 }
 
 export function validateDataGridExtractorOptions(extractor: DataGridCopyExtractorId, options: DataGridExtractorOptions): DataGridExtractorOptionsError | null {
+  if (extractor === "php" && !/^[ \t\r\n\f\v]*$/.test(options.php.rowDelimiter)) return "invalid-php-row-delimiter";
   const usesDsv = DATA_GRID_COPY_EXTRACTOR_DESCRIPTORS[extractor].category === "delimited";
   if (!usesDsv) return null;
   const quoteCodePoint = options.dsv.quote.codePointAt(0);

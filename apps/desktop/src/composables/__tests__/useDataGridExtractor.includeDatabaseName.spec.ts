@@ -268,7 +268,7 @@ describe("useDataGridExtractor includeDatabaseName payload", () => {
     expect(mocks.extract.mock.calls.at(-1)![0].rows).toEqual([["-1 day", "D:10"]]);
   });
 
-  it.each(["DEC", "FIXED", "SMALLMONEY"])("applies numeric display formatting to %s", async (dataType) => {
+  it.each(["DEC", "FIXED", "SMALLMONEY", "UInt8"])("applies numeric display formatting to %s", async (dataType) => {
     const options = { ...DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, dsv: { ...DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.dsv, formatNumbers: "display" as const } };
     const state = createState("postgres", undefined, options, false, { columns: ["amount"], values: [12], visible: [0], types: [dataType] }, { displayValue: (value) => `D:${String(value)}` });
     await state.extractWithExtractor("csv");

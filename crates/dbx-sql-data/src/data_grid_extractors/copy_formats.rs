@@ -88,8 +88,10 @@ pub(super) fn write_php(
             "PHP variable name must start with a letter or underscore and contain only letters, numbers, and underscores.",
         ));
     }
-    if options.row_delimiter.chars().count() > 8 {
-        return Err(invalid_format("PHP row delimiter may contain at most 8 characters."));
+    if options.row_delimiter.chars().count() > 8
+        || !options.row_delimiter.chars().all(|character| character.is_ascii_whitespace())
+    {
+        return Err(invalid_format("PHP row delimiter must contain at most 8 whitespace characters."));
     }
     let short = options.array_syntax == DataGridPhpArraySyntax::Short;
     let (open, close) = if short { ("[", "]") } else { ("array(", ")") };
@@ -102,10 +104,7 @@ pub(super) fn write_php(
             )));
         }
     }
-    write_bytes(
-        output,
-        format!("<?php{}${} = {}{}", options.row_delimiter, variable_name, open, options.row_delimiter).as_bytes(),
-    )?;
+    write_bytes(output, format!("<?php\n${} = {}{}", variable_name, open, options.row_delimiter).as_bytes())?;
     let mut invalid_date = false;
     for (row_index, row) in context.request.rows.iter().enumerate() {
         write_bytes(output, b"    ")?;
@@ -172,6 +171,10 @@ fn write_php_value(
             Ok(false)
         }
         Value::Number(number) if number.as_u64().is_some_and(|value| value <= 9_007_199_254_740_991) => {
+            write_bytes(output, number.to_string().as_bytes())?;
+            Ok(false)
+        }
+        Value::Number(number) if number.is_f64() => {
             write_bytes(output, number.to_string().as_bytes())?;
             Ok(false)
         }
@@ -476,6 +479,45 @@ mod tests {
         let result = extract_data_grid_selection(request).expect("PHP extraction");
         assert!(result.text.contains("'a\\'b\nc'"));
         assert!(!result.text.contains("a\\'b\\nc"));
+    }
+
+    #[test]
+    fn php_preserves_floating_point_json_numbers_as_numbers_and_large_integers_as_strings() {
+        let mut request = request(DataGridExtractorId::Php);
+        request.columns = vec![
+            DataGridExtractColumn {
+                display_name: "float".into(),
+                source_name: None,
+                source_index: 0,
+                data_type: Some("DOUBLE".into()),
+                description: None,
+            },
+            DataGridExtractColumn {
+                display_name: "bigint".into(),
+                source_name: None,
+                source_index: 1,
+                data_type: Some("BIGINT".into()),
+                description: None,
+            },
+        ];
+        request.selected_column_indexes = vec![0, 1];
+        request.rows = vec![vec![json!(1.5), json!(9007199254740993_u64)]];
+        let text = extract_data_grid_selection(request).unwrap().text;
+        assert!(text.contains("\"float\" => 1.5"), "{text}");
+        assert!(text.contains("\"bigint\" => \"9007199254740993\""), "{text}");
+    }
+
+    #[test]
+    fn php_rejects_non_whitespace_row_delimiters() {
+        let mut invalid_request = request(DataGridExtractorId::Php);
+        invalid_request.options.php.row_delimiter = ";".into();
+        assert!(extract_data_grid_selection(invalid_request).unwrap_err().message.contains("whitespace"));
+
+        let mut request = request(DataGridExtractorId::Php);
+        request.options.php.row_delimiter.clear();
+        let text = extract_data_grid_selection(request).unwrap().text;
+        assert!(text.starts_with("<?php\n"));
+        assert!(text.ends_with("?>"));
     }
 
     #[test]

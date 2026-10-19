@@ -32,7 +32,7 @@
 //! statement or a JSON document would corrupt it.
 
 use dbx_formats::csv_export::needs_formula_guard;
-use dbx_sql::data_grid_extractors::{DataGridExtractRequest, DataGridExtractorId};
+use dbx_sql::data_grid_extractors::{DataGridExtractRequest, DataGridExtractorId, DataGridHeaderFormat};
 use serde_json::Value;
 
 /// Extractors whose output is pasted straight into a spreadsheet cell grid.
@@ -100,6 +100,13 @@ pub fn neutralize_spreadsheet_formulas(mut request: DataGridExtractRequest) -> D
     for column in &mut request.columns {
         if needs_formula_guard(&column.display_name) {
             column.display_name.insert(0, '\'');
+        }
+        if request.options.dsv.header_format == DataGridHeaderFormat::Description {
+            if let Some(description) = &mut column.description {
+                if needs_formula_guard(description) {
+                    description.insert(0, '\'');
+                }
+            }
         }
     }
 
@@ -317,6 +324,21 @@ mod tests {
             let guarded = neutralize_spreadsheet_formulas(request);
             assert_eq!(guarded.columns[0].display_name, "'-total", "extractor {extractor:?}");
         }
+    }
+
+    #[test]
+    fn description_headers_are_guarded_only_when_they_are_the_effective_header() {
+        let mut request = request(DataGridExtractorId::CsvWithHeaders, vec![vec![json!(1)]]);
+        request.columns[0].display_name = "value".into();
+        request.columns[0].description = Some("=SUM(A1)".into());
+        request.options.dsv.header_format = DataGridHeaderFormat::Description;
+        let guarded = neutralize_spreadsheet_formulas(request.clone());
+        assert_eq!(guarded.columns[0].description.as_deref(), Some("'=SUM(A1)"));
+        assert_eq!(dbx_sql::data_grid_extractors::extract_data_grid_selection(guarded).unwrap().text, "'=SUM(A1)\n1");
+
+        request.options.dsv.header_format = DataGridHeaderFormat::Both;
+        let guarded = neutralize_spreadsheet_formulas(request);
+        assert_eq!(guarded.columns[0].description.as_deref(), Some("=SUM(A1)"));
     }
 
     #[test]

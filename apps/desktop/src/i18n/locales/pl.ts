@@ -2295,6 +2295,7 @@ export default withEnglishFallback({
       "separators-overlap": "Column and row separators must not overlap.",
       "invalid-quote": "Quote must be exactly one character.",
       "quote-conflicts": "Quote must not be part of a column or row separator.",
+      "invalid-php-row-delimiter": "PHP row delimiter may contain whitespace characters only.",
     },
     mongoJsonPreview: "Podgląd JSON",
     mongoJsonPreviewEmpty: "Wybierz dokument MongoDB do podglądu.",

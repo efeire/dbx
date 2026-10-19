@@ -2668,6 +2668,7 @@ export default withEnglishFallback({
       "separators-overlap": "ตัวคั่นคอลัมน์และแถวต้องไม่ซ้อนกัน",
       "invalid-quote": "Quote ต้องเป็นอักขระเดียวเท่านั้น",
       "quote-conflicts": "Quote ต้องไม่เป็นส่วนหนึ่งของตัวคั่นคอลัมน์หรือแถว",
+      "invalid-php-row-delimiter": "ตัวคั่นแถว PHP ต้องมีเฉพาะช่องว่างเท่านั้น",
     },
     mongoJsonPreview: "ตัวอย่าง JSON",
     mongoJsonPreviewEmpty: "เลือกเอกสาร MongoDB เพื่อดูตัวอย่าง",

@@ -1,7 +1,7 @@
 import type { ColumnInfo, DatabaseType, TreeNode } from "@/types/database";
 import { COLUMN_NAME_COPY_SEPARATOR_VALUES, type ColumnNameCopySeparator, isColumnNameCopySeparator } from "@/lib/dataGrid/dataGridColumnNameCopy";
 import { copyNameForTreeNode } from "@/lib/sidebar/treeNodeClick";
-import { qualifiedTableName, quoteTableIdentifier } from "@/lib/table/tableSelectSql";
+import { qualifiedTableName, quoteTableIdentifier, quoteTableIdentifierIfNeeded } from "@/lib/table/tableSelectSql";
 import { qualifiedRoutineName } from "@/lib/table/routineExecutionSql";
 
 export type SidebarTableCopyTarget = TreeNode & { connectionId: string; database: string };
@@ -113,7 +113,14 @@ export function qualifiedNameForSidebarNode(node: TreeNode, options: Omit<Format
   if (node.type === "procedure" || node.type === "function") {
     const name = node.objectName;
     if (!name) return null;
-    const qualifiedRoutine = (routineName: string) => (dbType === "mysql" ? qualifiedTableName({ ...options, schema, tableName: routineName, database: node.database, includeDatabaseName: true }) : qualifiedRoutineName({ databaseType: dbType, schema, routineName }));
+    const qualifiedRoutine = (routineName: string) => {
+      if (dbType === "mysql") return qualifiedTableName({ ...options, schema, tableName: routineName, database: node.database, includeDatabaseName: true });
+      if (dbType === "jdbc") {
+        const parts = [schema, routineName].filter((part): part is string => !!part);
+        return parts.map((part) => quoteTableIdentifierIfNeeded(dbType, part, options.identifierQuote)).join(".");
+      }
+      return qualifiedRoutineName({ databaseType: dbType, schema, routineName });
+    };
     const routine = qualifiedRoutine(name);
     if (node.parentName && node.parentType === "package") {
       const qualifiedPackage = qualifiedRoutine(node.parentName);

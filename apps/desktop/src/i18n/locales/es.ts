@@ -3208,6 +3208,7 @@ export default withEnglishFallback({
       "separators-overlap": "El separador de columnas y el separador de filas no pueden contenerse entre sí.",
       "invalid-quote": "El carácter de comillas debe ser exactamente un carácter.",
       "quote-conflicts": "El carácter de comillas no puede aparecer en el separador de columnas o de filas.",
+      "invalid-php-row-delimiter": "El separador de filas de PHP solo puede contener espacios en blanco.",
     },
     cachedResultUnavailable: "Resultado en caché faltante o incompatible.",
     reexecuteQuery: "Volver a ejecutar consulta",

@@ -132,6 +132,16 @@ describe("data-grid extractor options", () => {
     expect(validateDataGridExtractorOptions("dsv", options)).toBe("null-text-too-long");
   });
 
+  it("requires PHP row delimiters to be whitespace only", () => {
+    const options = normalizeDataGridExtractorOptions(DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS);
+    options.php.rowDelimiter = ";";
+    expect(validateDataGridExtractorOptions("php", options)).toBe("invalid-php-row-delimiter");
+    options.php.rowDelimiter = "\n\t";
+    expect(validateDataGridExtractorOptions("php", options)).toBeNull();
+    options.php.rowDelimiter = "\u00a0";
+    expect(validateDataGridExtractorOptions("php", options)).toBe("invalid-php-row-delimiter");
+  });
+
   it("handles sql-deletes-inserts copy preference and database availability", () => {
     expect(normalizeDataGridCopyPreference("sql-deletes-inserts")).toBe("sql-deletes-inserts");
     expect(resolveDataGridCopyPreference("sql-deletes-inserts", 1)).toBe("sql-deletes-inserts");

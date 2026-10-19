@@ -1913,6 +1913,7 @@ export default withEnglishFallback({
       "separators-overlap": "Sütun və sətir ayırıcıları üst-üstə düşməməlidir.",
       "invalid-quote": "Dırnaq işarəsi dəqiq bir simvol olmalıdır.",
       "quote-conflicts": "Dırnaq işarəsi sütun və ya sətir ayırıcısının tərkibində olmamalıdır.",
+      "invalid-php-row-delimiter": "PHP sətir ayırıcısı yalnız boşluq simvollarından ibarət ola bilər.",
     },
     mongoJsonPreview: "JSON önbaxışı",
     mongoJsonPreviewEmpty: "Önbaxış üçün MongoDB sənədi seçin.",

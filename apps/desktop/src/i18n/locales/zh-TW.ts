@@ -3086,6 +3086,7 @@ export default withEnglishFallback({
       "separators-overlap": "列分隔符和行分隔符不能相互包含。",
       "invalid-quote": "引用字元必須正好是一個字元。",
       "quote-conflicts": "引用字元不能出現在列分隔符或行分隔符中。",
+      "invalid-php-row-delimiter": "PHP 資料列分隔符號只能包含空白字元。",
     },
     cachedResultUnavailable: "快取結果缺失或不相容。",
     reexecuteQuery: "重新執行查詢",

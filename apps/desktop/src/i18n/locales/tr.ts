@@ -1911,6 +1911,7 @@ export default withEnglishFallback({
       "separators-overlap": "Sütun ve satır ayırıcıları çakışmamalıdır.",
       "invalid-quote": "Tırnak tam olarak bir karakter olmalıdır.",
       "quote-conflicts": "Tırnak, sütun veya satır ayırıcısının parçası olamaz.",
+      "invalid-php-row-delimiter": "PHP satır ayırıcısı yalnızca boşluk karakterleri içerebilir.",
     },
     mongoJsonPreview: "JSON Önizlemesi",
     mongoJsonPreviewEmpty: "Önizlemek için bir MongoDB belgesi seçin.",

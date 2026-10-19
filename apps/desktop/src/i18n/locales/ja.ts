@@ -3100,6 +3100,7 @@ export default withEnglishFallback({
       "separators-overlap": "列区切り文字と行区切り文字は互いに含めることはできません。",
       "invalid-quote": "引用文字は1文字でなければなりません。",
       "quote-conflicts": "引用文字は列区切り文字または行区切り文字に含めることはできません。",
+      "invalid-php-row-delimiter": "PHP の行区切り文字には空白文字のみ指定できます。",
     },
     cachedResultUnavailable: "キャッシュ結果が不足しているか互換性がありません。",
     reexecuteQuery: "クエリを再実行",

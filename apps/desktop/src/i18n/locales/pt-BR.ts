@@ -3081,6 +3081,7 @@ export default withEnglishFallback({
       "separators-overlap": "O separador de coluna e o separador de linha não podem se conter mutuamente.",
       "invalid-quote": "O caractere de aspas deve ter exatamente um caractere.",
       "quote-conflicts": "O caractere de aspas não pode aparecer no separador de coluna ou no separador de linha.",
+      "invalid-php-row-delimiter": "O separador de linhas do PHP pode conter apenas espaços em branco.",
     },
     cachedResultUnavailable: "Resultado em cache ausente ou incompatível.",
     reexecuteQuery: "Reexecutar consulta",

@@ -124,7 +124,7 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
   function isNumericColumnType(columnType: string | undefined): boolean {
     const tokens = columnType?.toLowerCase().match(/[a-z0-9]+/g) ?? [];
     const first = tokens[0];
-    return !!first && (NUMERIC_COLUMN_TYPES.has(first) || /^(?:int|float)\d+$/.test(first));
+    return !!first && (NUMERIC_COLUMN_TYPES.has(first) || /^(?:int|uint|float)\d+$/.test(first));
   }
 
   function shouldApplyColumnFormatter(columnIndex: number): boolean {

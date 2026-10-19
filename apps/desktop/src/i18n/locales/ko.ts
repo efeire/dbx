@@ -2373,6 +2373,7 @@ export default withEnglishFallback({
       "separators-overlap": "열과 행 구분자는 겹칠 수 없습니다.",
       "invalid-quote": "인용 부호는 정확히 한 자여야 합니다.",
       "quote-conflicts": "인용 부호는 열이나 행 구분자의 일부일 수 없습니다.",
+      "invalid-php-row-delimiter": "PHP 행 구분자는 공백 문자만 포함할 수 있습니다.",
     },
     mongoJsonPreview: "JSON 미리보기",
     mongoJsonPreviewEmpty: "미리보려면 MongoDB 문서를 선택하세요.",

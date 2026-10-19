@@ -73,6 +73,11 @@ describe("sidebarTableNameCopy", () => {
     expect(qualifiedNameForSidebarNode(routine, { databaseType: "mysql" })).toBe("`sales`.`rebuild`");
   });
 
+  it("quotes JDBC routine names using the driver's identifier quote", () => {
+    const routine: TreeNode = { id: "f", label: "find user", objectName: "find user", type: "function", connectionId: "c1", database: "db", schema: "app" };
+    expect(qualifiedNameForSidebarNode(routine, { databaseType: "jdbc", identifierQuote: '"' })).toBe('app."find user"');
+  });
+
   it("resolves multi-column drag targets for the same table", () => {
     const first = column("c1", "id (bigint)", "id");
     const second = column("c2", "name (text)", "name");

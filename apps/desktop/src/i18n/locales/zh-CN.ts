@@ -2643,6 +2643,7 @@ export default withEnglishFallback({
       "separators-overlap": "列分隔符和行分隔符不能相互包含。",
       "invalid-quote": "引用字符必须正好是一个字符。",
       "quote-conflicts": "引用字符不能出现在列分隔符或行分隔符中。",
+      "invalid-php-row-delimiter": "PHP 行分隔符只能包含空白字符。",
     },
     mongoJsonPreview: "JSON 预览",
     mongoJsonPreviewEmpty: "选择一条 MongoDB 文档以预览。",

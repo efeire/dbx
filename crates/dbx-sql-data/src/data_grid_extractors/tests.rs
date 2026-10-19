@@ -513,6 +513,34 @@ fn csv_type_quote_policies_still_quote_values_that_contain_delimiters() {
 }
 
 #[test]
+fn one_row_keeps_numeric_types_for_typed_quote_policies_and_quotes_string_columns() {
+    let mut request = request(DataGridExtractorId::OneRow);
+    request.columns = vec![column("amount", 0), column("name", 1), column("code", 2)];
+    request.columns[0].data_type = Some("INTEGER".into());
+    request.columns[1].data_type = Some("VARCHAR".into());
+    request.columns[2].data_type = Some("VARCHAR".into());
+    request.selected_column_indexes = vec![0, 1, 2];
+    request.rows = vec![vec![json!(42), json!("Ada"), json!("001")]];
+    request.options.dsv.quote_policy = DataGridQuotePolicy::Strings;
+    request.options.dsv.quote_numeric_strings = true;
+
+    let result = extract_data_grid_selection(request).expect("one-row extraction");
+    assert_eq!(result.text, "42,\"Ada\",\"001\"");
+    assert_eq!(parse_csv_record(&result.text), vec!["42", "Ada", "001"]);
+}
+
+#[test]
+fn clickhouse_uint_columns_are_treated_as_numeric() {
+    let mut request = request(DataGridExtractorId::Csv);
+    request.columns.truncate(1);
+    request.selected_column_indexes = vec![0];
+    request.columns[0].data_type = Some("UInt8".into());
+    request.rows = vec![vec![json!(255)]];
+    request.options.dsv.quote_policy = DataGridQuotePolicy::AllButNumbers;
+    assert_eq!(extract_data_grid_selection(request).unwrap().text, "255");
+}
+
+#[test]
 fn csv_strings_policy_preserves_formula_tabs_arrays_and_large_numeric_text() {
     let mut request = request(DataGridExtractorId::Csv);
     request.columns = vec![column("formula", 0), column("items", 1), column("id", 2)];

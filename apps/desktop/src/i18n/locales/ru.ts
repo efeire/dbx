@@ -2463,6 +2463,7 @@ export default withEnglishFallback({
       "separators-overlap": "Разделители столбцов и строк не должны совпадать.",
       "invalid-quote": "Кавычка должна состоять ровно из одного символа.",
       "quote-conflicts": "Кавычка не должна входить в разделитель столбцов или строк.",
+      "invalid-php-row-delimiter": "Разделитель строк PHP может содержать только пробельные символы.",
     },
     mongoJsonPreview: "Предпросмотр JSON",
     mongoJsonPreviewEmpty: "Выберите документ MongoDB для предпросмотра.",

@@ -2211,6 +2211,7 @@ export default withEnglishFallback({
       "separators-overlap": "Pemisah kolom dan baris tidak boleh tumpang tindih.",
       "invalid-quote": "Kutip harus tepat satu karakter.",
       "quote-conflicts": "Kutip tidak boleh menjadi bagian dari pemisah kolom atau baris.",
+      "invalid-php-row-delimiter": "Pemisah baris PHP hanya boleh berisi karakter spasi.",
     },
     mongoJsonPreview: "Pratinjau JSON",
     mongoJsonPreviewEmpty: "Pilih dokumen MongoDB untuk melihat pratinjau.",

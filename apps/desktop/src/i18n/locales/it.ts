@@ -3081,6 +3081,7 @@ export default withEnglishFallback({
       "separators-overlap": "Il separatore di colonna e quello di riga non possono contenersi a vicenda.",
       "invalid-quote": "Il carattere di citazione deve essere esattamente un carattere.",
       "quote-conflicts": "Il carattere di citazione non può apparire nel separatore di colonna o di riga.",
+      "invalid-php-row-delimiter": "Il separatore di riga PHP può contenere solo spazi bianchi.",
     },
     cachedResultUnavailable: "Risultato in cache mancante o non compatibile.",
     reexecuteQuery: "Esegui di nuovo la query",
