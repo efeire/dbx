@@ -754,8 +754,8 @@ impl Serialize for JsSafeCell<'_> {
         match self.0 {
             serde_json::Value::Number(number) => {
                 let value = number.as_str();
-                if self.1.is_some_and(is_exact_decimal_type) && !decimal_round_trips_through_f64(&value) {
-                    return serializer.serialize_str(&value);
+                if self.1.is_some_and(is_exact_decimal_type) && !decimal_round_trips_through_f64(value) {
+                    return serializer.serialize_str(value);
                 }
                 if let Some(value) = number.as_i64() {
                     if !(-crate::json::JS_MAX_SAFE_INTEGER..=crate::json::JS_MAX_SAFE_INTEGER).contains(&value) {
