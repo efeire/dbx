@@ -199,6 +199,22 @@ fn write_php_value(
 }
 
 fn write_php_string(output: &mut dyn Write, value: &str, quote: char) -> Result<(), DataGridExtractError> {
+    if quote == '\'' && (value.contains('\r') || value.contains('\n')) {
+        // Clipboard line-ending normalization rewrites literal CR/LF bytes in the
+        // generated source. Keep those value bytes inside PHP escape sequences.
+        let mut start = 0;
+        for (index, character) in value.char_indices().filter(|(_, character)| matches!(character, '\r' | '\n')) {
+            write_php_string_literal(output, &value[start..index], quote)?;
+            let escaped: &[u8] = if character == '\r' { br#" . "\r" . "# } else { br#" . "\n" . "# };
+            write_bytes(output, escaped)?;
+            start = index + character.len_utf8();
+        }
+        return write_php_string_literal(output, &value[start..], quote);
+    }
+    write_php_string_literal(output, value, quote)
+}
+
+fn write_php_string_literal(output: &mut dyn Write, value: &str, quote: char) -> Result<(), DataGridExtractError> {
     let mut encoded = String::with_capacity(value.len() + 2);
     encoded.push(quote);
     for character in value.chars() {
@@ -561,16 +577,23 @@ mod tests {
     }
 
     #[test]
-    fn php_single_quoted_strings_keep_literal_newlines() {
+    fn php_single_quoted_line_breaks_survive_windows_clipboard_normalization() {
         let mut request = request(DataGridExtractorId::Php);
         request.columns.truncate(1);
         request.selected_column_indexes = vec![0];
-        request.rows = vec![vec![json!("a'b\nc")]];
+        request.rows = vec![vec![json!("a'b\nc\rd")]];
         request.options.php.quote_char = '\'';
+        request.options.php.row_delimiter = "\r\n".into();
 
         let result = extract_data_grid_selection(request).expect("PHP extraction");
-        assert!(result.text.contains("'a\\'b\nc'"));
-        assert!(!result.text.contains("a\\'b\\nc"));
+        let value_expression = "'a\\'b' . \"\\n\" . 'c' . \"\\r\" . 'd'";
+        assert!(result.text.contains(value_expression), "{}", result.text);
+
+        // Same transformation as clipboardLineEndings on Windows: PHP code's
+        // physical line endings become CRLF, while value escapes remain intact.
+        let copied_text = result.text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', "\r\n");
+        assert!(copied_text.contains(value_expression), "{copied_text}");
+        assert!(!copied_text.contains("'a\\'b\\r\\nc\\r\\nd'"), "{copied_text}");
     }
 
     #[test]
