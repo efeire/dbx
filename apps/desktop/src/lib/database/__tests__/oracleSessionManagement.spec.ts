@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { buildOceanbaseKillConnectionBlock, buildOceanbaseLockDetailsSql, buildOceanbaseSessionListSql, buildOracleKillSessionBlock, buildOracleLockDetailsSql, buildOracleSessionListSql, mapOceanbaseSessions, mapOracleSessions, oracleMajorVersion } from "../oracleSessionManagement";
+import {
+  buildOceanbaseKillConnectionBlock,
+  buildOceanbaseLockDetailsSql,
+  buildOceanbaseSessionListSql,
+  buildOracleKillSessionBlock,
+  buildOracleLockDetailsSql,
+  buildOracleSessionListSql,
+  mapOceanbaseSessions,
+  mapOracleSessions,
+  oracleMajorVersion,
+  OCEANBASE_OWN_SESSION_SQL,
+} from "../oracleSessionManagement";
 
 describe("Oracle session identity and SQL", () => {
   it("parses the reported Oracle major version and rejects unknown formats", () => {
@@ -46,9 +57,17 @@ describe("OceanBase session identity and SQL", () => {
     expect(buildOceanbaseSessionListSql()).toContain("TENANT = (SELECT TENANT FROM GV$OB_SESSION");
   });
 
+  it("reads the dictionary USER column rather than the login USER function", () => {
+    expect(buildOceanbaseSessionListSql()).toContain('"USER" AS SESSION_USER');
+    expect(buildOceanbaseSessionListSql()).toContain('AND "USER" = SYS_CONTEXT');
+    expect(OCEANBASE_OWN_SESSION_SQL).toContain('SELECT TO_CHAR(ID), "USER", TENANT');
+    expect(OCEANBASE_OWN_SESSION_SQL).toContain('AND "USER" = SYS_CONTEXT');
+  });
+
   it("uses one guarded KILL CONNECTION block with exact user, tenant, node and decimal ID", () => {
     const sql = buildOceanbaseKillConnectionBlock(row);
-    expect(sql).toContain(`ID = ${row.id} AND USER = 'APP''X' AND TENANT = 'tenant_a'`);
+    expect(sql).toContain(`ID = ${row.id} AND "USER" = 'APP''X' AND TENANT = 'tenant_a'`);
+    expect(sql).toContain(`IF TO_NUMBER(SYS_CONTEXT('USERENV','SID')) = ${row.id} AND USER = 'APP''X' THEN`);
     expect(sql).toContain("SVR_IP = '127.0.0.1' AND SVR_PORT = 2882");
     expect(sql).toContain(`EXECUTE IMMEDIATE 'KILL CONNECTION ${row.id}'`);
     expect(sql).toContain("Cannot terminate the executing management session");

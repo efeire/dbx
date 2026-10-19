@@ -152,10 +152,11 @@ export function buildOracleLockDetailsSql(target: OracleSessionTarget, legacy: b
 }
 
 export function buildOceanbaseSessionListSql(): string {
-  return "SELECT TO_CHAR(ID) AS SESSION_ID, USER AS SESSION_USER, TENANT AS TENANT, HOST AS HOST, DB AS DB_NAME, COMMAND AS COMMAND, TIME AS ELAPSED_TIME, STATE AS STATE, INFO AS INFO, PROXY_SESSID AS PROXY_SESSION_ID, SVR_IP AS SERVER_IP, SVR_PORT AS SERVER_PORT FROM GV$OB_PROCESSLIST WHERE TENANT = (SELECT TENANT FROM GV$OB_SESSION WHERE ID = SYS_CONTEXT('USERENV','SID') AND USER = SYS_CONTEXT('USERENV','SESSION_USER') AND ROWNUM = 1) ORDER BY ID";
+  // In Oracle mode bare USER is the login function, not the USER dictionary column.
+  return `SELECT TO_CHAR(ID) AS SESSION_ID, "USER" AS SESSION_USER, TENANT AS TENANT, HOST AS HOST, DB AS DB_NAME, COMMAND AS COMMAND, TIME AS ELAPSED_TIME, STATE AS STATE, INFO AS INFO, PROXY_SESSID AS PROXY_SESSION_ID, SVR_IP AS SERVER_IP, SVR_PORT AS SERVER_PORT FROM GV$OB_PROCESSLIST WHERE TENANT = (SELECT TENANT FROM GV$OB_SESSION WHERE ID = SYS_CONTEXT('USERENV','SID') AND "USER" = SYS_CONTEXT('USERENV','SESSION_USER') AND ROWNUM = 1) ORDER BY ID`;
 }
 
-export const OCEANBASE_OWN_SESSION_SQL = "SELECT TO_CHAR(ID), USER, TENANT FROM GV$OB_SESSION WHERE ID = SYS_CONTEXT('USERENV','SID') AND USER = SYS_CONTEXT('USERENV','SESSION_USER') AND ROWNUM = 1";
+export const OCEANBASE_OWN_SESSION_SQL = `SELECT TO_CHAR(ID), "USER", TENANT FROM GV$OB_SESSION WHERE ID = SYS_CONTEXT('USERENV','SID') AND "USER" = SYS_CONTEXT('USERENV','SESSION_USER') AND ROWNUM = 1`;
 
 export function mapOceanbaseSessions(result: QueryResult | null | undefined): ProcessRow[] {
   return (result?.rows ?? []).flatMap((row) => {
@@ -188,7 +189,7 @@ export function buildOceanbaseKillConnectionBlock(row: ProcessRow): string {
   const serverPort = positiveInteger(String(row.serverPort ?? ""), "server port");
   if (!user || !tenant || !serverIp || (row.proxySessionId !== null && row.proxySessionId !== undefined && String(row.proxySessionId) !== "")) throw new Error("Unsupported or incomplete OceanBase session identity");
   const id = positiveDecimalString(String(row.id), "session id");
-  return `DECLARE n NUMBER; BEGIN SELECT COUNT(*) INTO n FROM GV$OB_SESSION WHERE ID = ${id} AND USER = ${sqlLiteral(user)} AND TENANT = ${sqlLiteral(tenant)} AND SVR_IP = ${sqlLiteral(serverIp)} AND SVR_PORT = ${serverPort} AND PROXY_SESSID IS NULL; IF TO_NUMBER(SYS_CONTEXT('USERENV','SID')) = ${id} AND USER = ${sqlLiteral(user)} THEN RAISE_APPLICATION_ERROR(-20002, 'Cannot terminate the executing management session'); END IF; IF n = 1 THEN EXECUTE IMMEDIATE 'KILL CONNECTION ${id}'; ELSE RAISE_APPLICATION_ERROR(-20001, 'Session identity changed or is not directly addressable'); END IF; END;`;
+  return `DECLARE n NUMBER; BEGIN SELECT COUNT(*) INTO n FROM GV$OB_SESSION WHERE ID = ${id} AND "USER" = ${sqlLiteral(user)} AND TENANT = ${sqlLiteral(tenant)} AND SVR_IP = ${sqlLiteral(serverIp)} AND SVR_PORT = ${serverPort} AND PROXY_SESSID IS NULL; IF TO_NUMBER(SYS_CONTEXT('USERENV','SID')) = ${id} AND USER = ${sqlLiteral(user)} THEN RAISE_APPLICATION_ERROR(-20002, 'Cannot terminate the executing management session'); END IF; IF n = 1 THEN EXECUTE IMMEDIATE 'KILL CONNECTION ${id}'; ELSE RAISE_APPLICATION_ERROR(-20001, 'Session identity changed or is not directly addressable'); END IF; END;`;
 }
 
 export function oceanbaseSessionRowKey(row: ProcessRow): string {

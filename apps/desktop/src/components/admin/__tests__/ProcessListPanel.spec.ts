@@ -562,7 +562,7 @@ describe("ProcessListPanel batch terminate", () => {
     findDialogButton("processList.terminate")?.click();
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("processList.oracleTerminateUnknown", 5000));
     const killCall = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("EXECUTE IMMEDIATE 'KILL CONNECTION"));
-    expect(killCall?.[2]).toContain("ID = 21 AND USER = 'UPDATED' AND TENANT = 'tenant_a'");
+    expect(killCall?.[2]).toContain(`ID = 21 AND "USER" = 'UPDATED' AND TENANT = 'tenant_a'`);
     expect(killCall?.[5]).toMatchObject({ clientSessionId: expect.stringMatching(/^process-list:/) });
     expect(mocks.contextGuard.mock.calls.at(-1)?.[0]).toMatchObject({ scope: "connection", reviewText: expect.stringContaining("KILL CONNECTION") });
     const managementSessionId = sessionIds[0];
@@ -676,7 +676,7 @@ describe("ProcessListPanel batch terminate", () => {
     findDialogButton("processList.terminate")?.click();
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("ORA-20001: Session identity changed"), 5000));
     const sql = mocks.executeQuery.mock.calls.map((call) => String(call[2])).find((statement) => statement.includes("EXECUTE IMMEDIATE 'KILL CONNECTION"));
-    expect(sql).toContain("ID = 21 AND USER = 'OTHER' AND TENANT = 'tenant_a'");
+    expect(sql).toContain(`ID = 21 AND "USER" = 'OTHER' AND TENANT = 'tenant_a'`);
     expect(sql).toContain("SVR_IP = '127.0.0.1' AND SVR_PORT = 2882");
     expect(mocks.oceanbaseTerminated).toBe(false);
     expect(mocks.toast).not.toHaveBeenCalledWith("processList.terminateSuccess:21", 2500);
