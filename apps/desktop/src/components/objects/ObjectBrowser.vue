@@ -252,6 +252,8 @@ const firebirdManagerOpen = ref(false);
 const schemas = ref<string[]>([]);
 const selectedSchema = ref<string | undefined>(props.schema);
 const oracleInvalidObjectsOpen = ref(false);
+let invalidObjectsDialogGeneration = 0;
+let invalidObjectSourceRequestGeneration = 0;
 const rows = ref<ObjectBrowserRow[]>([]);
 const rootRef = ref<HTMLElement>();
 const search = ref(props.initialSearchQuery ?? "");
@@ -352,6 +354,17 @@ const oracleInvalidObjectsSupported = computed(() => effectiveDatabaseType.value
 const usesServerObjectPaging = computed(() => props.connection.db_type === "oceanbase-oracle");
 const objectPageSize = computed(() => Math.max(1, Math.min(10_000, Math.floor(settingsStore.desktopSettings?.sidebar_table_page_size || 500))));
 const isGaussdbM = computed(() => effectiveDatabaseType.value === "gaussdb" && props.connection.driver_profile?.toLowerCase() === "gaussdb-m");
+
+function setOracleInvalidObjectsOpen(open: boolean) {
+  if (oracleInvalidObjectsOpen.value !== open) invalidObjectsDialogGeneration++;
+  oracleInvalidObjectsOpen.value = open;
+}
+
+watch(
+  () => [props.connection.id, JSON.stringify(props.connection), props.database, props.catalog, selectedSchema.value] as const,
+  () => invalidObjectsDialogGeneration++,
+  { flush: "sync" },
+);
 const isVictoriaMetrics = computed(() => effectiveDatabaseType.value === "victoriametrics");
 const isMongodb = computed(() => props.connection.db_type === "mongodb");
 // Neither VictoriaMetrics series nor NebulaGraph tag/edge metadata has table byte-size stats.
@@ -1818,27 +1831,37 @@ async function openSource(row: ObjectBrowserRow) {
 }
 
 async function openInvalidObjectSource(object: { owner: string; name: string; type: string }) {
+  const dialogGeneration = invalidObjectsDialogGeneration;
+  const requestGeneration = ++invalidObjectSourceRequestGeneration;
+  const connection = { ...props.connection };
+  const connectionKey = JSON.stringify(connection);
+  const database = props.database;
+  const catalog = props.catalog;
+  const schema = selectedSchema.value || database;
+  const isCurrentRequest = () =>
+    requestGeneration === invalidObjectSourceRequestGeneration &&
+    dialogGeneration === invalidObjectsDialogGeneration &&
+    oracleInvalidObjectsOpen.value &&
+    props.connection.id === connection.id &&
+    JSON.stringify(props.connection) === connectionKey &&
+    props.database === database &&
+    props.catalog === catalog &&
+    (selectedSchema.value || props.database) === schema;
   const objectType = ({ "MATERIALIZED VIEW": "MATERIALIZED_VIEW", "PACKAGE BODY": "PACKAGE_BODY", "TYPE BODY": "TYPE_BODY" } as Record<string, string>)[object.type] ?? object.type;
   if (objectType === "TYPE" || objectType === "TYPE_BODY" || objectType === "TRIGGER") {
-    const connection = { ...props.connection };
-    const connectionKey = JSON.stringify(connection);
-    const database = props.database;
-    const catalog = props.catalog;
     try {
       const source = await api.getObjectSource(connection.id, database, object.owner, object.name, objectType as ObjectSourceKind);
-      if (props.connection.id !== connection.id || JSON.stringify(props.connection) !== connectionKey || props.database !== database || props.catalog !== catalog) return;
+      if (!isCurrentRequest()) return;
       if (!source.source?.trim()) throw new Error(t("processList.oracleInvalidObjects.sourceUnavailable"));
       const tabId = queryStore.createTab(connection.id, database, `Repair - ${object.name}`, "query", object.owner, undefined, catalog);
       queryStore.updateSql(tabId, source.source);
-      oracleInvalidObjectsOpen.value = false;
+      setOracleInvalidObjectsOpen(false);
     } catch (error) {
-      toast(t("processList.oracleInvalidObjects.sourceLoadFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+      if (isCurrentRequest()) toast(t("processList.oracleInvalidObjects.sourceLoadFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
     }
     return;
   }
-  const connectionId = props.connection.id;
-  const database = props.database;
-  const catalog = props.catalog;
+  const connectionId = connection.id;
   const tabId = queryStore.openObjectSourceTabPending({
     connectionId,
     database,
@@ -1871,13 +1894,13 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
       resolve(initial);
     }
   });
+  if (!isCurrentRequest()) return;
   const tab = queryStore.tabs.find((candidate) => candidate.id === tabId);
   if (sourceLoadResult.error || !tab?.objectSource) {
     toast(t("processList.oracleInvalidObjects.sourceLoadFailed", { message: sourceLoadResult.error || tab?.sourceLoad?.error || t("processList.oracleInvalidObjects.sourceUnavailable") }), 5000);
     return;
   }
-  if (props.connection.id !== connectionId || props.database !== database || props.catalog !== catalog) return;
-  oracleInvalidObjectsOpen.value = false;
+  setOracleInvalidObjectsOpen(false);
 }
 
 let sourceIdentity: SourceIdentitySnapshot | undefined;
@@ -4733,12 +4756,21 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
     @confirm="cloneDialog.confirm"
   />
   <FirebirdObjectManager v-if="effectiveDatabaseType === 'firebird'" v-model:open="firebirdManagerOpen" :connection-id="connection.id" :database="database" />
-  <OracleInvalidObjectsDialog v-if="oracleInvalidObjectsSupported" v-model:open="oracleInvalidObjectsOpen" :connection="connection" :database="database" :schema="selectedSchema || database" @open-source="openInvalidObjectSource" @compile-finished="refreshAfterInvalidObjectCompile" />
+  <OracleInvalidObjectsDialog
+    v-if="oracleInvalidObjectsSupported"
+    :open="oracleInvalidObjectsOpen"
+    :connection="connection"
+    :database="database"
+    :schema="selectedSchema || database"
+    @update:open="setOracleInvalidObjectsOpen"
+    @open-source="openInvalidObjectSource"
+    @compile-finished="refreshAfterInvalidObjectCompile"
+  />
   <div ref="rootRef" data-object-browser-root class="flex h-full min-h-0 min-w-0 flex-col bg-background outline-none" tabindex="0" @keydown="onObjectBrowserKeydown">
     <SidebarMenuPreferencesDialog v-if="sidebarMenuPreferences" v-model:open="sidebarMenuPreferencesOpen" :scope="sidebarMenuPreferences.scope" :items="sidebarMenuPreferences.items" />
     <div v-if="!isEventEditor" ref="toolbarRef" class="flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b px-3">
       <Button v-if="effectiveDatabaseType === 'firebird'" variant="outline" size="sm" @click="firebirdManagerOpen = true">{{ t("tree.firebirdObjectManager") }}</Button>
-      <Button v-if="oracleInvalidObjectsSupported" variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="oracleInvalidObjectsOpen = true">{{ t("processList.oracleInvalidObjects.title") }}</Button>
+      <Button v-if="oracleInvalidObjectsSupported" variant="ghost" size="sm" class="h-7 gap-1.5 px-2 text-xs" @click="setOracleInvalidObjectsOpen(true)">{{ t("processList.oracleInvalidObjects.title") }}</Button>
       <div class="flex min-w-12 items-center gap-2">
         <span class="inline-flex max-w-[14rem] min-w-0 items-center rounded border border-border bg-muted/50 px-2 py-0.5 text-xs font-medium truncate" :title="selectedSchema || props.database">
           {{ selectedSchema || props.database }}

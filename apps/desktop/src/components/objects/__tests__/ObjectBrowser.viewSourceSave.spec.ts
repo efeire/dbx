@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   toast: vi.fn(),
   sourceTabs: [] as Array<{ id: string; sourceLoad?: { error?: string }; objectSource?: unknown }>,
   sourceLoadFailure: "",
+  deferSourceTabLoad: false,
+  finishSourceTabLoad: undefined as (() => void) | undefined,
 }));
 
 vi.mock("@/lib/backend/api", () => ({
@@ -49,13 +51,15 @@ vi.mock("@/stores/queryStore", async () => {
       openObjectSourceTabPending: vi.fn(() => {
         const tab = reactive({ id: "source-1", sourceLoad: {} as { error?: string } | undefined, objectSource: undefined as unknown });
         tabs.push(tab);
-        setTimeout(() => {
+        const finish = () => {
           if (mocks.sourceLoadFailure) tab.sourceLoad!.error = mocks.sourceLoadFailure;
           else {
             tab.sourceLoad = undefined;
             tab.objectSource = { name: "P_BAD", objectType: "PROCEDURE" };
           }
-        }, 0);
+        };
+        mocks.finishSourceTabLoad = finish;
+        if (!mocks.deferSourceTabLoad) setTimeout(finish, 0);
         return tab.id;
       }),
     }),
@@ -68,7 +72,7 @@ vi.mock("@/components/objects/OracleInvalidObjectsDialog.vue", async () => {
       props: { open: Boolean },
       emits: ["update:open", "open-source", "compile-finished"],
       setup(props, { emit }) {
-        return () => (props.open ? h("div", { "data-invalid-object-dialog": "" }, [h("button", { onClick: () => emit("open-source", { owner: "APP", name: "P_BAD", type: "PROCEDURE" }) }, "open-source")]) : null);
+        return () => (props.open ? h("div", { "data-invalid-object-dialog": "" }, [h("button", { onClick: () => emit("open-source", { owner: "APP", name: "P_BAD", type: "PROCEDURE" }) }, "open-source"), h("button", { onClick: () => emit("update:open", false) }, "close-dialog")]) : null);
       },
     }),
   };
@@ -147,6 +151,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.sourceTabs.splice(0);
   mocks.sourceLoadFailure = "";
+  mocks.deferSourceTabLoad = false;
+  mocks.finishSourceTabLoad = undefined;
   mocks.listObjects.mockResolvedValue([{ name: VIEW_NAME, schema: "app", object_type: "VIEW" }]);
   mocks.listSchemas.mockResolvedValue([]);
   mocks.getObjectSource.mockResolvedValue({ source: VIEW_SQL, editable: true });
@@ -174,6 +180,17 @@ async function mountBrowser(browserConnection = connection, database = "app") {
   app.mount(host);
   await vi.waitFor(() => expect(host.textContent).toContain(VIEW_NAME));
   return host;
+}
+
+async function mountOracleBrowserWithSchema() {
+  const schema = ref("APP_A");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection: oracleConnection, database: "ORCL", schema: schema.value }) });
+  mountedApps.push({ app, host });
+  app.mount(host);
+  await vi.waitFor(() => expect(host.textContent).toContain(VIEW_NAME));
+  return { host, schema };
 }
 
 function rowFor(host: HTMLElement, name: string): HTMLElement {
@@ -225,6 +242,41 @@ describe("ObjectBrowser view source save", () => {
     host.querySelector<HTMLButtonElement>("[data-invalid-object-dialog] button")?.click();
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("ORA-00942: source unavailable"), 5000));
     expect(host.querySelector("[data-invalid-object-dialog]")).not.toBeNull();
+  });
+
+  it("does not close or toast into the current dialog when the schema changes during source loading", async () => {
+    mocks.deferSourceTabLoad = true;
+    const { host, schema } = await mountOracleBrowserWithSchema();
+    const opener = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("processList.oracleInvalidObjects.title"));
+    opener?.click();
+    await nextTick();
+    host.querySelector<HTMLButtonElement>("[data-invalid-object-dialog] button")?.click();
+    await vi.waitFor(() => expect(mocks.finishSourceTabLoad).toBeTypeOf("function"));
+    schema.value = "APP_B";
+    await nextTick();
+    mocks.finishSourceTabLoad?.();
+    await nextTick();
+    expect(host.querySelector("[data-invalid-object-dialog]")).not.toBeNull();
+    expect(mocks.toast).not.toHaveBeenCalled();
+  });
+
+  it("does not let a source request from a closed dialog close its reopened replacement", async () => {
+    mocks.deferSourceTabLoad = true;
+    const host = await mountBrowser(oracleConnection, "ORCL");
+    const opener = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("processList.oracleInvalidObjects.title"));
+    opener?.click();
+    await nextTick();
+    host.querySelector<HTMLButtonElement>("[data-invalid-object-dialog] button")?.click();
+    await vi.waitFor(() => expect(mocks.finishSourceTabLoad).toBeTypeOf("function"));
+    host.querySelector<HTMLButtonElement>("[data-invalid-object-dialog] button:last-child")?.click();
+    await nextTick();
+    opener?.click();
+    await nextTick();
+    expect(host.querySelector("[data-invalid-object-dialog]")).not.toBeNull();
+    mocks.finishSourceTabLoad?.();
+    await nextTick();
+    expect(host.querySelector("[data-invalid-object-dialog]")).not.toBeNull();
+    expect(mocks.toast).not.toHaveBeenCalled();
   });
 
   it("does not dispatch a save whose source identity changed during SQL construction", async () => {
