@@ -51,13 +51,15 @@ pub(super) fn write_dbunit(context: &ExtractContext<'_>, output: &mut dyn Write)
     write_bytes(output, b"<dataset>\n")?;
     for row in &context.request.rows {
         write_bytes(output, format!("  <{table_name}").as_bytes())?;
-        for (column, index) in context.selected_columns.iter().zip(&context.selected_source_indexes) {
+        for ((column, name), index) in
+            context.selected_columns.iter().zip(&columns).zip(&context.selected_source_indexes)
+        {
             let value = &row[*index];
             if value.is_null() && !options.include_null_values {
                 continue;
             }
             write_bytes(output, b" ")?;
-            write_bytes(output, column.display_name.as_bytes())?;
+            write_bytes(output, name.as_bytes())?;
             write_bytes(output, b"=\"")?;
             if value.is_null() {
                 write_xml_attribute(output, &options.null_value_string)?;
@@ -389,6 +391,23 @@ mod tests {
         request.options.dbunit.upper_case_column_names = false;
         let text = extract_data_grid_selection(request).unwrap().text;
         assert_eq!(text, "<dataset>\n  <my_table a_b=\"&lt;x&amp;>&#10;&#9;&quot;\" name=\"[NULL]\" />\n</dataset>");
+    }
+
+    #[test]
+    fn dbunit_writes_the_validated_column_names_in_configured_case() {
+        let mut request = request(DataGridExtractorId::Dbunit);
+        request.source_table_name = Some("users".into());
+        request.columns[0].display_name = "user_id".into();
+        request.columns[1].display_name = "displayName".into();
+        request.rows = vec![vec![json!(1), json!("Ada")]];
+
+        let upper = extract_data_grid_selection(request.clone()).unwrap().text;
+        assert!(upper.contains("<USERS USER_ID=\"1\" DISPLAYNAME=\"Ada\" />"));
+
+        request.options.dbunit.upper_case_table_name = false;
+        request.options.dbunit.upper_case_column_names = false;
+        let original_case = extract_data_grid_selection(request).unwrap().text;
+        assert!(original_case.contains("<users user_id=\"1\" displayName=\"Ada\" />"));
     }
 
     #[test]

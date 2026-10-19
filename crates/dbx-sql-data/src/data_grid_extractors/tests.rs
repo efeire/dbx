@@ -495,6 +495,75 @@ fn csv_applies_formula_line_feed_array_and_typed_quote_options() {
 }
 
 #[test]
+fn csv_type_quote_policies_still_quote_values_that_contain_delimiters() {
+    let mut request = request(DataGridExtractorId::Csv);
+    request.columns =
+        vec![column("comma_amount", 0), column("newline_amount", 1), column("quote_amount", 2), column("name", 3)];
+    for column in &mut request.columns[..3] {
+        column.data_type = Some("DECIMAL".into());
+    }
+    request.columns[3].data_type = Some("VARCHAR".into());
+    request.selected_column_indexes = vec![0, 1, 2, 3];
+    request.rows = vec![vec![json!("1,234"), json!("1\n234"), json!("1\"234"), json!("Ada")]];
+    request.options.dsv.quote_policy = DataGridQuotePolicy::AllButNumbers;
+
+    let result = extract_data_grid_selection(request).expect("CSV extraction");
+    assert_eq!(result.text, "\"1,234\",\"1\n234\",\"1\"\"234\",\"Ada\"");
+    assert_eq!(parse_csv_record(&result.text), vec!["1,234", "1\n234", "1\"234", "Ada"]);
+}
+
+#[test]
+fn csv_strings_policy_preserves_formula_tabs_arrays_and_large_numeric_text() {
+    let mut request = request(DataGridExtractorId::Csv);
+    request.columns = vec![column("formula", 0), column("items", 1), column("id", 2)];
+    request.columns[0].data_type = Some("VARCHAR".into());
+    request.columns[1].data_type = Some("JSON_ARRAY".into());
+    request.columns[2].data_type = Some("BIGINT".into());
+    request.selected_column_indexes = vec![0, 1, 2];
+    request.rows = vec![vec![json!("\t=1+1"), json!(["a", "b\"c"]), json!("9007199254740993")]];
+    request.options.dsv.quote_policy = DataGridQuotePolicy::Strings;
+    request.options.dsv.quote_numeric_strings = true;
+    request.options.dsv.escape_formulas = true;
+
+    let result = extract_data_grid_selection(request).expect("CSV extraction");
+    assert_eq!(parse_csv_record(&result.text), vec!["'\t=1+1", r#"["a","b\"c"]"#, "9007199254740993"]);
+}
+
+#[test]
+fn typed_quote_policy_recognizes_decimal_aliases_as_numbers() {
+    for data_type in ["DEC", "FIXED", "SMALLMONEY"] {
+        let mut request = request(DataGridExtractorId::Csv);
+        request.columns = vec![column("amount", 0)];
+        request.columns[0].data_type = Some(data_type.into());
+        request.selected_column_indexes = vec![0];
+        request.rows = vec![vec![json!("1")]];
+        request.options.dsv.quote_policy = DataGridQuotePolicy::Strings;
+
+        assert_eq!(extract_data_grid_selection(request).unwrap().text, "1", "{data_type}");
+    }
+}
+
+fn parse_csv_record(record: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut chars = record.chars().peekable();
+    let mut quoted = false;
+    while let Some(character) = chars.next() {
+        match character {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                field.push('"');
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => fields.push(std::mem::take(&mut field)),
+            _ => field.push(character),
+        }
+    }
+    fields.push(field);
+    fields
+}
+
+#[test]
 fn csv_formula_protection_covers_fullwidth_prefixes_but_not_typed_negative_numbers() {
     let mut request = request(DataGridExtractorId::Csv);
     request.columns = vec![column("amount", 0), column("formula", 1)];

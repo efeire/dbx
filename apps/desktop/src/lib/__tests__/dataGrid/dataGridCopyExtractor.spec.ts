@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DATA_GRID_COPY_EXTRACTOR_IDS,
+  DATA_GRID_DEFAULT_COPY_PREFERENCES,
   DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS,
   extractorUnavailableForDatabase,
   normalizeDataGridCopyPreference,
@@ -150,7 +151,9 @@ describe("data-grid extractor options", () => {
   });
 
   it("normalizes visible copy formats deterministically and preserves an empty selection", () => {
-    expect(normalizeVisibleDataGridCopyExtractors(undefined)).toContain("dbunit");
+    expect(normalizeVisibleDataGridCopyExtractors(undefined)).toEqual(DATA_GRID_COPY_EXTRACTOR_IDS);
+    expect(normalizeVisibleDataGridCopyExtractors(undefined)).toContain("sql-select");
+    expect(DATA_GRID_DEFAULT_COPY_PREFERENCES).not.toContain("sql-select");
     expect(normalizeVisibleDataGridCopyExtractors(["php", "php", "unknown", "csv"])).toEqual(["csv", "php"]);
     expect(normalizeVisibleDataGridCopyExtractors([])).toEqual([]);
   });

@@ -9249,6 +9249,13 @@ const copyPreferenceMenuItems = computed(() =>
     };
   }),
 );
+const visibleCopyExtractorItems = computed(() =>
+  DATA_GRID_COPY_EXTRACTOR_IDS.map((extractor) => ({
+    value: extractor,
+    label: copyExtractorLabel(extractor),
+    disabled: extractorUnavailableForDatabase(extractor, props.databaseType) || ((extractor === "sql-updates" || extractor === "sql-deletes-inserts") && !props.tableMeta?.primaryKeys.length),
+  })),
+);
 function openExtractorConfiguration() {
   extractorConfigOpen.value = true;
 }
@@ -16621,6 +16628,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
       :visible-copy-extractors="settingsStore.editorSettings.dataGridVisibleCopyExtractors"
       :options="settingsStore.editorSettings.dataGridExtractorOptions"
       :items="copyPreferenceMenuItems"
+      :visible-items="visibleCopyExtractorItems"
       :preview="previewWithPreference"
       @save="saveExtractorConfiguration"
     />

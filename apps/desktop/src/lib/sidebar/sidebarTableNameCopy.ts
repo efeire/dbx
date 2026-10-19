@@ -113,9 +113,10 @@ export function qualifiedNameForSidebarNode(node: TreeNode, options: Omit<Format
   if (node.type === "procedure" || node.type === "function") {
     const name = node.objectName;
     if (!name) return null;
-    const routine = qualifiedRoutineName({ databaseType: dbType, schema, routineName: name });
+    const qualifiedRoutine = (routineName: string) => (dbType === "mysql" ? qualifiedTableName({ ...options, schema, tableName: routineName, database: node.database, includeDatabaseName: true }) : qualifiedRoutineName({ databaseType: dbType, schema, routineName }));
+    const routine = qualifiedRoutine(name);
     if (node.parentName && node.parentType === "package") {
-      const qualifiedPackage = qualifiedRoutineName({ databaseType: dbType, schema, routineName: node.parentName });
+      const qualifiedPackage = qualifiedRoutine(node.parentName);
       return `${qualifiedPackage}.${quote(name)}`;
     }
     return routine;

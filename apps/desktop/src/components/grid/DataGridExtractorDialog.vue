@@ -28,6 +28,7 @@ const props = defineProps<{
   visibleCopyExtractors: DataGridCopyExtractorId[];
   options: DataGridExtractorOptions;
   items: Array<{ value: DataGridCopyPreference; label: string; disabled?: boolean }>;
+  visibleItems: Array<{ value: DataGridCopyExtractorId; label: string; disabled?: boolean }>;
   preview: (preference: DataGridCopyPreference, options: DataGridExtractorOptions) => Promise<DataGridExtractPreview>;
 }>();
 
@@ -283,38 +284,39 @@ function save() {
                 >
               </div>
             </div>
-            <label v-if="supportsCsvOptions" class="flex items-center gap-2 text-sm"
-              ><input type="checkbox" :checked="draftOptions.dsv.quoteNumericStrings" @change="updateDsv('quoteNumericStrings', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorQuoteNumericStrings") }}</label
-            >
-            <label v-if="supportsCsvOptions" class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.dsv.escapeFormulas" @change="updateDsv('escapeFormulas', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorEscapeFormulas") }}</label>
-            <div v-if="supportsCsvOptions" class="space-y-1.5">
-              <Label>{{ t("grid.copyExtractorLineFeedEscape") }}</Label
-              ><Input :model-value="visibleSeparator(draftOptions.dsv.lineFeedEscapeString)" @update:model-value="updateDsv('lineFeedEscapeString', separatorValue(String($event)))" />
-            </div>
-            <div v-if="supportsCsvOptions" class="space-y-1.5">
-              <Label>{{ t("grid.copyExtractorArrayFormat") }}</Label
-              ><Select :model-value="draftOptions.dsv.arrayFormat" @update:model-value="updateDsv('arrayFormat', $event as DataGridExtractorOptions['dsv']['arrayFormat'])"
-                ><SelectTrigger><SelectValue /></SelectTrigger
-                ><SelectContent
-                  ><SelectItem value="preserve">{{ t("grid.copyExtractorArrayPreserve") }}</SelectItem
-                  ><SelectItem value="braces">{ }</SelectItem><SelectItem value="brackets">[ ]</SelectItem><SelectItem value="parentheses">( )</SelectItem></SelectContent
-                ></Select
+            <details v-if="supportsCsvOptions" class="space-y-2 rounded-md border p-3">
+              <summary class="cursor-pointer text-sm font-medium">{{ t("common.advanced") }}</summary>
+              <label class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.dsv.quoteNumericStrings" @change="updateDsv('quoteNumericStrings', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorQuoteNumericStrings") }}</label>
+              <label class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.dsv.escapeFormulas" @change="updateDsv('escapeFormulas', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorEscapeFormulas") }}</label>
+              <div class="space-y-1.5">
+                <Label>{{ t("grid.copyExtractorLineFeedEscape") }}</Label
+                ><Input :model-value="visibleSeparator(draftOptions.dsv.lineFeedEscapeString)" @update:model-value="updateDsv('lineFeedEscapeString', separatorValue(String($event)))" />
+              </div>
+              <div class="space-y-1.5">
+                <Label>{{ t("grid.copyExtractorArrayFormat") }}</Label
+                ><Select :model-value="draftOptions.dsv.arrayFormat" @update:model-value="updateDsv('arrayFormat', $event as DataGridExtractorOptions['dsv']['arrayFormat'])"
+                  ><SelectTrigger><SelectValue /></SelectTrigger
+                  ><SelectContent
+                    ><SelectItem value="preserve">{{ t("grid.copyExtractorArrayPreserve") }}</SelectItem
+                    ><SelectItem value="braces">{ }</SelectItem><SelectItem value="brackets">[ ]</SelectItem><SelectItem value="parentheses">( )</SelectItem></SelectContent
+                  ></Select
+                >
+              </div>
+              <div class="space-y-1.5">
+                <Label>{{ t("grid.copyExtractorFormatNumbers") }}</Label
+                ><Select :model-value="draftOptions.dsv.formatNumbers" @update:model-value="updateDsv('formatNumbers', $event as DataGridExtractorOptions['dsv']['formatNumbers'])"
+                  ><SelectTrigger><SelectValue /></SelectTrigger
+                  ><SelectContent
+                    ><SelectItem value="inherit">{{ t("grid.copyExtractorFormatNumbersInherit") }}</SelectItem
+                    ><SelectItem value="native">{{ t("grid.copyExtractorFormatNumbersNative") }}</SelectItem
+                    ><SelectItem value="display">{{ t("grid.copyExtractorFormatNumbersDisplay") }}</SelectItem></SelectContent
+                  ></Select
+                >
+              </div>
+              <label v-if="draftExtractor !== 'one-row'" class="flex items-center gap-2 text-sm"
+                ><input type="checkbox" :checked="draftOptions.dsv.includeRowHeader" @change="updateDsv('includeRowHeader', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorIncludeRowHeader") }}</label
               >
-            </div>
-            <div v-if="supportsCsvOptions" class="space-y-1.5">
-              <Label>{{ t("grid.copyExtractorFormatNumbers") }}</Label
-              ><Select :model-value="draftOptions.dsv.formatNumbers" @update:model-value="updateDsv('formatNumbers', $event as DataGridExtractorOptions['dsv']['formatNumbers'])"
-                ><SelectTrigger><SelectValue /></SelectTrigger
-                ><SelectContent
-                  ><SelectItem value="inherit">{{ t("grid.copyExtractorFormatNumbersInherit") }}</SelectItem
-                  ><SelectItem value="native">{{ t("grid.copyExtractorFormatNumbersNative") }}</SelectItem
-                  ><SelectItem value="display">{{ t("grid.copyExtractorFormatNumbersDisplay") }}</SelectItem></SelectContent
-                ></Select
-              >
-            </div>
-            <label v-if="draftExtractor !== 'one-row'" class="flex items-center gap-2 text-sm"
-              ><input type="checkbox" :checked="draftOptions.dsv.includeRowHeader" @change="updateDsv('includeRowHeader', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyExtractorIncludeRowHeader") }}</label
-            >
+            </details>
           </template>
 
           <template v-if="isSql">
@@ -405,15 +407,15 @@ function save() {
             <label class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.php.formatDateISO" @change="updatePhp('formatDateISO', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyPhpIsoDates") }}</label>
           </template>
 
-          <section class="space-y-2 border-t pt-3">
+          <details class="space-y-2 border-t pt-3">
+            <summary class="cursor-pointer text-sm font-medium">{{ t("grid.copyExtractorVisibleFormats") }}</summary>
             <div class="flex items-center justify-between gap-2">
-              <Label>{{ t("grid.copyExtractorVisibleFormats") }}</Label>
               <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" @click="draftVisibleCopyExtractors = [...DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS]">{{ t("grid.copyExtractorRestoreVisibleFormats") }}</Button>
             </div>
-            <label v-for="item in items.filter((entry) => entry.value !== 'smart')" :key="item.value" class="flex items-center gap-2 text-sm">
+            <label v-for="item in visibleItems" :key="item.value" class="flex items-center gap-2 text-sm">
               <input type="checkbox" :checked="draftVisibleCopyExtractors.includes(item.value as DataGridCopyExtractorId)" @change="toggleVisibleCopyExtractor(item.value as DataGridCopyExtractorId, ($event.target as HTMLInputElement).checked)" />{{ item.label }}
             </label>
-          </section>
+          </details>
         </div>
 
         <div class="min-w-0 space-y-1.5">

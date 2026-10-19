@@ -68,6 +68,11 @@ describe("sidebarTableNameCopy", () => {
     expect(qualifiedNameForSidebarNode(col, { databaseType: "mysql" })).toBe("`db`.`users`.`id`");
   });
 
+  it("uses the MySQL database as the routine namespace when the node has no schema", () => {
+    const routine: TreeNode = { id: "f", label: "rebuild", objectName: "rebuild", type: "procedure", connectionId: "c1", database: "sales" };
+    expect(qualifiedNameForSidebarNode(routine, { databaseType: "mysql" })).toBe("`sales`.`rebuild`");
+  });
+
   it("resolves multi-column drag targets for the same table", () => {
     const first = column("c1", "id (bigint)", "id");
     const second = column("c2", "name (text)", "name");

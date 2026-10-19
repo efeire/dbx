@@ -138,6 +138,8 @@ fn is_numeric_type(data_type: Option<&str>) -> bool {
         "smallserial",
         "money",
         "smallmoney",
+        "dec",
+        "fixed",
     ];
     exact.contains(&first)
         || tokens.iter().any(|token| *token == "unsigned")
@@ -318,8 +320,14 @@ fn write_dsv_data_field(
             let should_quote = match options.quote_policy {
                 DataGridQuotePolicy::Always => true,
                 DataGridQuotePolicy::Never => false,
-                DataGridQuotePolicy::Strings => !numeric_type || (options.quote_numeric_strings && *numeric_string),
-                DataGridQuotePolicy::AllButNumbers => !numeric_type,
+                DataGridQuotePolicy::Strings => {
+                    !numeric_type
+                        || (options.quote_numeric_strings && *numeric_string)
+                        || dsv_needs_quote(value, options, quote_char_triggers_quoting)
+                }
+                DataGridQuotePolicy::AllButNumbers => {
+                    !numeric_type || dsv_needs_quote(value, options, quote_char_triggers_quoting)
+                }
                 DataGridQuotePolicy::AllIncludingNulls => true,
                 DataGridQuotePolicy::Minimal => {
                     dsv_needs_quote(value, options, quote_char_triggers_quoting)

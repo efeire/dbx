@@ -2,7 +2,7 @@
 
 import { createApp, defineComponent, h, nextTick, reactive, type App } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS, normalizeDataGridExtractorOptions, type DataGridCopyPreference, type DataGridExtractPreview } from "@/lib/dataGrid/dataGridCopyExtractor";
+import { DATA_GRID_COPY_EXTRACTOR_IDS, DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS, normalizeDataGridExtractorOptions, type DataGridCopyPreference, type DataGridExtractPreview } from "@/lib/dataGrid/dataGridCopyExtractor";
 
 vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock("@/components/ui/dialog", () => {
@@ -71,7 +71,7 @@ function mountDialog(preview = vi.fn(async () => result("initial")), open = fals
   const save = vi.fn();
   const host = document.createElement("div");
   document.body.appendChild(host);
-  const app = createApp({ render: () => h(DataGridExtractorDialog, { ...props, onSave: save }) });
+  const app = createApp({ render: () => h(DataGridExtractorDialog, { ...props, visibleItems: DATA_GRID_COPY_EXTRACTOR_IDS.map((value) => ({ value, label: value })), onSave: save }) });
   app.mount(host);
   mounted.push({ app, host });
   return { props, host, save, preview };
@@ -113,6 +113,9 @@ describe("extractor draft preview", () => {
     await advancePreview();
     expect(csv.host.textContent).toContain("grid.copyExtractorEscapeFormulas");
     expect(csv.host.textContent).toContain("grid.copyExtractorHeaderPosition");
+    expect(csv.host.querySelectorAll("details")).toHaveLength(2);
+    expect([...csv.host.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
+    expect(csv.host.querySelector("details summary")?.textContent).toBe("common.advanced");
   });
 
   it("previews an initially open dialog", async () => {

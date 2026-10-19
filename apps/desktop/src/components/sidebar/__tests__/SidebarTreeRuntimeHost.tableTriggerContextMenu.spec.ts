@@ -14,6 +14,7 @@ vi.mock("@/lib/backend/api", async (importOriginal) => {
     executeQuery: vi.fn().mockResolvedValue({ success: true, columns: [], rows: [] }),
   };
 });
+vi.mock("@/lib/common/clipboard", () => ({ copyToClipboard: vi.fn().mockResolvedValue(true) }));
 
 import SidebarTreeRuntimeHost from "@/components/sidebar/SidebarTreeRuntimeHost.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -31,10 +32,11 @@ const mountedApps: App<Element>[] = [];
 const labels = (items: ContextMenuItem[]): string[] => items.flatMap((item) => [...(item.label ? [item.label] : []), ...(item.children ? labels(item.children) : [])]);
 const tr = (key: string) => i18n.global.t(key);
 
-async function mountHost(dbType: DatabaseType = "firebird") {
+async function mountHost(dbType: DatabaseType = "firebird", treeNodes: TreeNode[] = []) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useConnectionStore();
+  store.treeNodes = treeNodes;
   store.connections = [{ id: "test-conn", name: "TestDB", db_type: dbType, driver_profile: dbType, host: "localhost", port: 3050, username: "sysdba", password: "masterkey" }];
   vi.spyOn(store, "ensureConnected").mockResolvedValue(undefined as any);
   vi.spyOn(store, "refreshTreeNode").mockResolvedValue(undefined as any);
@@ -72,6 +74,43 @@ describe("Table trigger context menu", () => {
     const items = labels(host.buildContextMenu(node("trigger", "TR_CONN")));
     expect(items).toContain(tr("contextMenu.viewSource"));
     expect(items).toContain(tr("contextMenu.changeOpenMode"));
+  });
+
+  it("offers Copy Qualified Name for MySQL routines without schema metadata", async () => {
+    const host = await mountHost("mysql");
+    const routineNode: TreeNode = { ...node("procedure", "rebuild"), schema: undefined };
+    const itemLabels = labels(host.buildContextMenu(routineNode));
+    expect(itemLabels).toContain(tr("contextMenu.copyQualifiedName"));
+  });
+
+  it("rejects cross-connection qualified-name selections before writing the clipboard", async () => {
+    const { copyToClipboard } = await import("@/lib/common/clipboard");
+    const active = { ...node("table", "orders"), schema: "sales" };
+    const other = { ...node("table", "customers"), id: "other:db:table:customers", connectionId: "other", schema: "crm" };
+    const host = await mountHost("mysql", [active, other]);
+    const store = useConnectionStore();
+    store.selectedTreeNodeId = active.id;
+    store.selectedTreeNodeIds = [active.id, other.id];
+    const menu = host.buildContextMenu(active);
+    const copyItem = menu.flatMap((item) => item.children ?? []).find((item) => item.label === tr("contextMenu.copyQualifiedName"));
+    expect(copyItem).toBeDefined();
+    await copyItem?.action?.();
+    expect(copyToClipboard).not.toHaveBeenCalled();
+  });
+
+  it("rejects a selected object whose SQL namespace is unavailable before writing the clipboard", async () => {
+    const { copyToClipboard } = await import("@/lib/common/clipboard");
+    const active = { ...node("table", "orders"), schema: "sales" };
+    const unqualified = { ...node("procedure", "rebuild"), id: "test-conn:db:procedure:rebuild", schema: undefined };
+    const host = await mountHost("postgres", [active, unqualified]);
+    const store = useConnectionStore();
+    store.selectedTreeNodeId = active.id;
+    store.selectedTreeNodeIds = [active.id, unqualified.id];
+    const menu = host.buildContextMenu(active);
+    const copyItem = menu.flatMap((item) => item.children ?? []).find((item) => item.label === tr("contextMenu.copyQualifiedName"));
+    expect(copyItem).toBeDefined();
+    await copyItem?.action?.();
+    expect(copyToClipboard).not.toHaveBeenCalled();
   });
 
   it("exposes disableTrigger for enabled SQL Server table trigger and executes SQL on action", async () => {

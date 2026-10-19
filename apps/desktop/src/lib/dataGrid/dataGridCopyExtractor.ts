@@ -54,7 +54,7 @@ export const DATA_GRID_DEFAULT_COPY_PREFERENCES: readonly DataGridCopyPreference
   "dbunit",
   "php",
 ];
-export const DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS: readonly DataGridCopyExtractorId[] = DATA_GRID_DEFAULT_COPY_PREFERENCES.filter((item): item is DataGridCopyExtractorId => item !== "smart");
+export const DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS: readonly DataGridCopyExtractorId[] = DATA_GRID_COPY_EXTRACTOR_IDS;
 
 export const DATA_GRID_EXTRACTOR_CONTRACT_VERSION = 1 as const;
 // v2：复制/导出 SQL 的「包含数据库名称」改为由提取器自身的勾选框决定，默认关闭（不带库名/模式名），

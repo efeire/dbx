@@ -56,7 +56,7 @@ interface ResolvedDataGridExtraction {
   result: DataGridExtractResult;
 }
 
-const NUMERIC_COLUMN_TYPES = new Set(["int", "integer", "smallint", "bigint", "tinyint", "mediumint", "decimal", "numeric", "number", "float", "double", "real", "serial", "smallserial", "bigserial", "money", "dec", "fixed"]);
+const NUMERIC_COLUMN_TYPES = new Set(["int", "integer", "smallint", "bigint", "tinyint", "mediumint", "decimal", "numeric", "number", "float", "double", "real", "serial", "smallserial", "bigserial", "money", "smallmoney", "dec", "fixed"]);
 
 interface UseDataGridExtractorOptions {
   columns: ComputedRef<string[]>;

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import type { DatabaseType, QueryResult } from "@/types/database";
 import type { DataGridTableMeta } from "@/lib/dataGrid/dataGridSql";
+import { DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS } from "@/lib/dataGrid/dataGridCopyExtractor";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mocks = vi.hoisted(() => ({
@@ -138,7 +139,7 @@ function pasteGridCell(host: HTMLElement, value: string) {
   gridRoot.dispatchEvent(paste);
 }
 
-function mountGrid(initialResult = largeValueResult(), onReload?: () => void, databaseType: DatabaseType = "mysql", tableMeta?: DataGridTableMeta) {
+function mountGrid(initialResult = largeValueResult(), onReload?: () => void, databaseType: DatabaseType = "mysql", tableMeta?: DataGridTableMeta, columnLayoutScopeKey?: string) {
   const result = shallowRef(markRaw(initialResult));
   const onExecuteSql = vi.fn().mockResolvedValue(undefined);
   const pinia = createPinia();
@@ -161,6 +162,7 @@ function mountGrid(initialResult = largeValueResult(), onReload?: () => void, da
                 databaseType,
                 connectionId: "connection-1",
                 database: "dbx",
+                ...(columnLayoutScopeKey ? { columnLayoutScopeKey } : {}),
                 context: "table-data",
                 editable: true,
                 tableMeta: tableMeta ?? {
@@ -190,6 +192,7 @@ function mountGrid(initialResult = largeValueResult(), onReload?: () => void, da
   mountedApps.push(mounted);
   return {
     host,
+    settingsStore,
     onExecuteSql,
     replaceResult: (nextResult: QueryResult) => (result.value = markRaw(nextResult)),
     unmount: () => {
@@ -539,6 +542,77 @@ describe("DataGrid context menu target lifecycle", () => {
     contextMenuButton("Copy Column Metadata").click();
     await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith("Name\tType\tSource\tNullable\tComment\npayload\ttext\tpayload\t\t"));
     expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+
+  it("copies selected duplicate result aliases from a zero-row query without fetching data", async () => {
+    const layoutScopeKey = "column-metadata-reordered-test";
+    localStorage.setItem(`dbx-data-grid-column-layout:${layoutScopeKey}`, JSON.stringify({ version: 1, orderKeys: ["expression\u00000", "payload\u00001", "payload\u00000"], hiddenKeys: [] }));
+    const result: QueryResult = {
+      columns: ["id", "payload", "payload", "expression"],
+      column_types: ["int", "text", "jsonb"],
+      rows: [],
+      affected_rows: 0,
+      execution_time_ms: 0,
+      hidden_column_indexes: [0],
+    };
+    const { host } = mountGrid(
+      result,
+      undefined,
+      "postgres",
+      {
+        tableName: "events",
+        primaryKeys: [],
+        columns: [{ name: "payload", data_type: "text", is_nullable: true, column_default: null, is_primary_key: false, extra: null, comment: "payload source" }],
+      },
+      layoutScopeKey,
+    );
+    await settle();
+    const headers = [...host.querySelectorAll<HTMLElement>("[data-grid-column-index]")];
+    expect(headers.map((header) => header.dataset.gridColumnIndex)).toEqual(["3", "2", "1"]);
+    headers.forEach((header) => header.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })));
+    openContextMenu(headers.at(-1)!);
+    await settle();
+    contextMenuButton("Copy Column Metadata").click();
+    await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith("Name\tType\tSource\tNullable\tComment\nexpression\t\t\t\t\npayload\tjsonb\tpayload\tYES\tpayload source\npayload\ttext\tpayload\tYES\tpayload source"));
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+
+  it("keeps SQL Select available in Copy as by default and restores it after hiding it", async () => {
+    const { host, settingsStore } = mountGrid(hydratedResult(1, "value"));
+    await settle();
+    openContextMenu(gridCell(host));
+    await settle();
+    contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    await settle();
+    expect(contextMenuLabels()).toContain("SQL Select");
+
+    settingsStore.updateEditorSettings({ dataGridVisibleCopyExtractors: DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS.filter((item) => item !== "sql-select") });
+    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await settle();
+    openContextMenu(gridCell(host));
+    await settle();
+    contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    await settle();
+    expect(contextMenuLabels()).not.toContain("SQL Select");
+
+    contextMenuButton("Configure Data Extractors…").click();
+    await settle();
+    const restore = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Restore defaults");
+    expect(restore).toBeTruthy();
+    restore!.click();
+    await settle();
+    const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Save");
+    expect(save).toBeTruthy();
+    save!.click();
+    await settle();
+    expect(settingsStore.editorSettings.dataGridVisibleCopyExtractors).toContain("sql-select");
+    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await settle();
+    openContextMenu(gridCell(host));
+    await settle();
+    contextMenuButton("Copy").dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    await settle();
+    expect(contextMenuLabels()).toContain("SQL Select");
   });
 
   it("keeps the initial select-all menu on the data selection target", async () => {
