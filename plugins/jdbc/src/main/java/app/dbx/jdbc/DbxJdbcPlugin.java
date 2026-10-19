@@ -2755,8 +2755,20 @@ public final class DbxJdbcPlugin {
         ArrayNode result = MAPPER.createArrayNode();
         Connection conn = openConnection(connection);
         if (driverQuirks(connection).useOracleMetadata()) {
+            result = (ArrayNode) oracleListObjects(conn, oracleEffectiveSchema(conn, schema), schema);
+            Set<String> allowed = normalizedObjectTypes(objectTypes);
+            if (allowed.isEmpty() || allowed.contains("TYPE") || allowed.contains("TYPE_BODY")) {
+                String typeOwner = schema != null ? schema : conn.getMetaData().getUserName();
+                try {
+                    oracleAppendTypeObjects(conn, typeOwner, result);
+                } catch (SQLException error) {
+                    // Preserve the existing best-effort broad catalog/JDBC fallback.
+                    // Explicit type-group requests must report an unreadable catalog.
+                    if (!allowed.isEmpty()) throw error;
+                }
+            }
             return filterMetadataNodes(
-                (ArrayNode) oracleListObjects(conn, oracleEffectiveSchema(conn, schema), schema),
+                result,
                 filter,
                 limit,
                 offset,
@@ -4583,6 +4595,25 @@ public final class DbxJdbcPlugin {
         return result;
     }
 
+    private static void oracleAppendTypeObjects(Connection conn, String owner, ArrayNode result) throws SQLException {
+        String sql =
+            "SELECT object_name AS name, CASE object_type WHEN 'TYPE BODY' THEN 'TYPE_BODY' ELSE object_type END AS object_type " +
+            "FROM all_objects WHERE owner = ? AND object_type IN ('TYPE', 'TYPE BODY') ORDER BY object_type, object_name";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, owner);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ObjectNode item = MAPPER.createObjectNode();
+                    item.put("name", rs.getString("name"));
+                    item.put("object_type", rs.getString("object_type"));
+                    putNullable(item, "schema", owner);
+                    item.putNull("comment");
+                    result.add(item);
+                }
+            }
+        }
+    }
+
     private static JsonNode oracleListIndexes(Connection conn, String owner, String table) throws SQLException {
         String sql =
             "SELECT i.index_name, i.uniqueness, i.index_type, ic.column_name, " +
@@ -4652,8 +4683,12 @@ public final class DbxJdbcPlugin {
         throws SQLException {
         Connection conn = openConnection(connection);
         if (driverQuirks(connection).useOracleMetadata()) {
-            String owner = oracleEffectiveSchema(conn, schema);
             String metadataType = oracleMetadataObjectType(objectType);
+            if ("TYPE".equals(metadataType) || "TYPE_BODY".equals(metadataType)) {
+                String owner = schema != null ? schema : conn.getMetaData().getUserName();
+                return oracleTypeSource(conn, owner, name, metadataType);
+            }
+            String owner = oracleEffectiveSchema(conn, schema);
             String sql = "SELECT DBMS_METADATA.GET_DDL(?, ?, ?) FROM DUAL";
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
                 ps.setString(1, metadataType);
@@ -4739,6 +4774,51 @@ public final class DbxJdbcPlugin {
         }
 
         throw new SQLException("Object source is not supported by this JDBC driver");
+    }
+
+    private static JsonNode oracleTypeSource(Connection conn, String owner, String name, String objectType) throws SQLException {
+        String source = null;
+        SQLException ddlError = null;
+        try (PreparedStatement ps = conn.prepareStatement("SELECT DBMS_METADATA.GET_DDL(?, ?, ?) FROM DUAL")) {
+            ps.setString(1, objectType);
+            ps.setString(2, name);
+            ps.setString(3, owner);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) source = rs.getString(1);
+            }
+        } catch (SQLException error) {
+            ddlError = error;
+        }
+        if (source == null || source.isBlank()) {
+            StringBuilder text = new StringBuilder();
+            try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT text FROM all_source WHERE owner = ? AND name = ? AND type = ? ORDER BY line"
+            )) {
+                ps.setString(1, owner);
+                ps.setString(2, name);
+                ps.setString(3, objectType.replace('_', ' '));
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String line = rs.getString(1);
+                        if (line == null) continue;
+                        if (!text.isEmpty() && text.charAt(text.length() - 1) != '\n' && text.charAt(text.length() - 1) != '\r') text.append('\n');
+                        text.append(line);
+                    }
+                }
+            } catch (SQLException error) {
+                if (ddlError != null) error.addSuppressed(ddlError);
+                throw error;
+            }
+            source = text.toString();
+        }
+        if (source.isBlank()) throw new SQLException("Complete type source is unavailable", ddlError);
+        ObjectNode item = MAPPER.createObjectNode();
+        item.put("name", name);
+        item.put("object_type", objectType);
+        putNullable(item, "schema", owner);
+        item.put("source", source);
+        item.put("editable", false);
+        return item;
     }
 
     /**

@@ -432,16 +432,16 @@ defineExpose({ selectTab, refresh });
                 ><span v-if="method.number != null" class="text-muted-foreground">#{{ method.number }}</span>
               </div>
               <div class="mt-2 grid gap-1" v-if="method.parameters.length || method.results.length || method.parametersRead.state !== 'available' || method.resultsRead.state !== 'available'">
-                <div v-if="method.parametersRead.state === 'available'" v-for="parameter in method.parameters" :key="`p:${parameter.ordinal ?? ''}:${parameter.name ?? ''}`" class="font-mono text-muted-foreground">
+                <div v-for="parameter in method.parameters" :key="`p:${parameter.ordinal ?? ''}:${parameter.name ?? ''}`" class="font-mono text-muted-foreground">
                   {{ parameter.mode || t("oracleType.parameter") }} {{ parameter.name || "—" }}: {{ [parameter.typeOwner, parameter.typeName, parameter.typeModifier].filter(Boolean).join(".") || "—" }}
                 </div>
-                <div v-else class="text-muted-foreground">
+                <div v-if="method.parametersRead.state !== 'available'" class="text-muted-foreground">
                   {{ t("oracleType.parameters") }}: {{ readStateLabel(method.parametersRead) }}<span v-if="readReason(method.parametersRead)"> · {{ readReason(method.parametersRead) }}</span>
                 </div>
-                <div v-if="method.resultsRead.state === 'available'" v-for="result in method.results" :key="`r:${result.ordinal ?? ''}:${result.name ?? ''}`" class="font-mono text-muted-foreground">
+                <div v-for="result in method.results" :key="`r:${result.ordinal ?? ''}:${result.name ?? ''}`" class="font-mono text-muted-foreground">
                   {{ t("oracleType.result") }} {{ result.name || "—" }}: {{ [result.typeOwner, result.typeName, result.typeModifier].filter(Boolean).join(".") || "—" }}
                 </div>
-                <div v-else class="text-muted-foreground">
+                <div v-if="method.resultsRead.state !== 'available'" class="text-muted-foreground">
                   {{ t("oracleType.results") }}: {{ readStateLabel(method.resultsRead) }}<span v-if="readReason(method.resultsRead)"> · {{ readReason(method.resultsRead) }}</span>
                 </div>
               </div>

@@ -1451,9 +1451,10 @@ public final class DamengAgent extends AbstractJdbcAgent {
             try {
                 String source = readDbmsMetadataObjectSource(dbmsType, name, schema);
                 if (isOracleFamilyType(objectType) && !notBlank(source)) {
-                    throw new IllegalStateException("DM8 returned empty type source for " + schema + "." + name);
+                    dbmsError = new IllegalStateException("DM8 returned empty type source for " + schema + "." + name);
+                } else {
+                    return new ObjectSource(name, objectType, schema, source, !isOracleFamilyType(objectType));
                 }
-                return new ObjectSource(name, objectType, schema, source, !isOracleFamilyType(objectType));
             } catch (Exception error) {
                 // 检查型异常（SQLException 等）由 unchecked 透传后在此处统一处理。
                 RuntimeException runtimeError = error instanceof RuntimeException runtime ? runtime : new RuntimeException(error);

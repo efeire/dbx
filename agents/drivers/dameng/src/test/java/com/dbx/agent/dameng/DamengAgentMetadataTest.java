@@ -1403,6 +1403,35 @@ class DamengAgentMetadataTest {
     }
 
     @Test
+    void fallsBackToCompleteCatalogSourceWhenGetDdlReturnsNullOrBlank() {
+        for (String emptyDdl : Arrays.asList(null, "", "   ")) {
+            for (String objectType : List.of("TYPE", "TYPE_BODY")) {
+                String declaration = "TYPE_BODY".equals(objectType) ? "TYPE BODY" : "TYPE";
+                DamengAgent agent = new DamengAgent();
+                List<String> sqls = new ArrayList<>();
+                TestSupport.setPrivateConnection(agent, getDdlResultWithCatalogConnection(
+                    sqls,
+                    emptyDdl,
+                    List.of(List.of("CREATE OR REPLACE " + declaration + " \"APP\".\"T_ADDR\" AS"),
+                        List.of("  CITY VARCHAR2(64)"), List.of("END;"))
+                ));
+
+                ObjectSource source = agent.getObjectSource("APP", "T_ADDR", objectType);
+
+                Assertions.assertTrue(source.getSource().startsWith("CREATE OR REPLACE " + declaration), source.getSource());
+                Assertions.assertFalse(source.isEditable());
+                Assertions.assertTrue(sqls.stream().anyMatch(sql -> sql.contains("FROM ALL_SOURCE")), String.join("\n", sqls));
+            }
+        }
+
+        DamengAgent noCatalogAgent = new DamengAgent();
+        TestSupport.setPrivateConnection(noCatalogAgent,
+            getDdlResultWithCatalogConnection(new ArrayList<>(), "", List.of()));
+        Assertions.assertThrows(RuntimeException.class,
+            () -> noCatalogAgent.getObjectSource("APP", "T_ADDR", "TYPE"));
+    }
+
+    @Test
     void returnsTypeBodySourceOnlyForTypeBodyAndTypeSourceOnlyForType() {
         for (String[] requestedAndDeclaration : List.of(
             new String[] {"TYPE", "CREATE OR REPLACE TYPE \"APP\".\"T_ADDR\" AS OBJECT (CITY VARCHAR2(64));"},
@@ -3015,6 +3044,35 @@ class DamengAgentMetadataTest {
                 return null;
             }
             if ("isClosed".equals(name)) {
+                return false;
+            }
+            return defaultValue(method.getReturnType());
+        });
+    }
+
+    private static Connection getDdlResultWithCatalogConnection(
+        List<String> sqls,
+        String getDdlSource,
+        List<List<Object>> allSourceRows
+    ) {
+        return proxy(Connection.class, (method, args) -> {
+            if ("prepareStatement".equals(method.getName())) {
+                String sql = (String) args[0];
+                sqls.add(sql);
+                if (sql.contains("DBMS_METADATA.GET_DDL")) {
+                    return metadataStatement(List.of(Arrays.asList((Object) getDdlSource)));
+                }
+                if (sql.contains("FROM ALL_SOURCE")) {
+                    return metadataStatement(allSourceRows);
+                }
+                if (sql.contains("SYS.SYSTEXTS")) {
+                    return metadataStatement(List.of());
+                }
+            }
+            if ("close".equals(method.getName())) {
+                return null;
+            }
+            if ("isClosed".equals(method.getName())) {
                 return false;
             }
             return defaultValue(method.getReturnType());

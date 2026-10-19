@@ -199,6 +199,7 @@ export type CustomTypeCapabilities = {
 };
 
 const VERIFIED_CUSTOM_TYPE_DATABASES = new Set<DatabaseType>(["postgres", "opengauss", "gaussdb", "kingbase", "vastbase", "oracle", "oceanbase-oracle", "dameng"]);
+const ORACLE_TYPE_ATTRIBUTE_DATABASES = new Set<DatabaseType>(["oracle", "oceanbase-oracle", "dameng"]);
 const CUSTOM_TYPE_DDL_DATABASES = new Set<DatabaseType>(["postgres", "opengauss", "gaussdb", "kingbase", "vastbase"]);
 
 /**
@@ -210,6 +211,10 @@ export function customTypeCapabilities(dbType?: DatabaseType): CustomTypeCapabil
   const supported = !!dbType && VERIFIED_CUSTOM_TYPE_DATABASES.has(dbType);
   const hasDdl = !!dbType && CUSTOM_TYPE_DDL_DATABASES.has(dbType);
   return { details: supported, members: supported, ddl: hasDdl };
+}
+
+export function supportsOracleTypeAttributeExpansion(dbType?: DatabaseType): boolean {
+  return !!dbType && ORACLE_TYPE_ATTRIBUTE_DATABASES.has(dbType);
 }
 
 export function supportsPackageMemberExpansion(dbType?: DatabaseType, compatibilityMode?: string): boolean {

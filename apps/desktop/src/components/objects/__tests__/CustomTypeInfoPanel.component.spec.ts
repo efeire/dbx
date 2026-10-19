@@ -248,7 +248,15 @@ describe("CustomTypeInfoPanel", () => {
           methodsRead: { state: "incomplete", reason: "Dictionary count is 1 but no method row was returned." },
           collectionRead: { state: "unsupported" },
           attributes: [{ name: "street", ordinal: 1, typeName: "VARCHAR2", length: 80 }],
-          methods: [],
+          methods: [
+            {
+              name: "SET_STREET",
+              parameters: [{ name: "P_STREET", mode: "IN", typeName: "VARCHAR2" }],
+              results: [{ name: "RETURN_VALUE", typeName: "BOOLEAN" }],
+              parametersRead: { state: "incomplete", reason: "One argument row is unavailable." },
+              resultsRead: { state: "incomplete", reason: "Result metadata is partial." },
+            },
+          ],
         },
       }),
     );
@@ -261,6 +269,10 @@ describe("CustomTypeInfoPanel", () => {
     await flush();
     expect(root!.textContent).toContain("Dictionary count is 1 but no method row was returned.");
     expect(root!.textContent).not.toContain("oracleType.emptyMethods");
+    expect(root!.textContent).toContain("P_STREET");
+    expect(root!.textContent).toContain("One argument row is unavailable.");
+    expect(root!.textContent).toContain("RETURN_VALUE");
+    expect(root!.textContent).toContain("Result metadata is partial.");
     clickButton("customType.tabs.properties");
     await flush();
     clickButton("oracleType.viewBody");
