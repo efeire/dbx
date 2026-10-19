@@ -4312,6 +4312,7 @@ export default withEnglishFallback({
     closeAllRegularTabs: "Cerrar todas las pestañas normales",
     closeAllFixedTabs: "Cerrar todas las pestañas fijadas",
     copyName: "Copiar nombre",
+    copyAdvancedInfo: "Copiar información avanzada",
     name: "Nombre",
     fullPath: "Ruta completa",
     copyFinalProxyPort: "Copiar puerto proxy final",

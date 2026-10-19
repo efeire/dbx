@@ -4477,6 +4477,7 @@ export default withEnglishFallback({
     closeAllRegularTabs: "ปิดแท็บปกติทั้งหมด",
     closeAllFixedTabs: "ปิดแท็บถาวรทั้งหมด",
     copyName: "คัดลอกชื่อ",
+    copyAdvancedInfo: "คัดลอกข้อมูลขั้นสูง",
     name: "ชื่อ",
     fullPath: "Path เต็ม",
     copyFinalProxyPort: "คัดลอก Final Proxy Port",
