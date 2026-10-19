@@ -17,6 +17,14 @@ describe("Oracle object dependencies", () => {
     expect(sql).not.toContain("DBA_DEPENDENCIES");
   });
 
+  it("matches local reverse references without hiding remote outbound dependencies", () => {
+    const sql = oracleDependencyProvider.buildQuery(node())!;
+    const [dependsOn, referencedBy] = sql.split("UNION ALL");
+    expect(dependsOn).not.toContain("REFERENCED_LINK_NAME IS NULL");
+    expect(dependsOn).toContain("d.REFERENCED_LINK_NAME");
+    expect(referencedBy).toContain("d.REFERENCED_LINK_NAME IS NULL");
+  });
+
   it("uses the owning package scope for members and exposes it in the title", () => {
     const member = node({ type: "function", objectName: "CALC", parentType: "package", parentName: "PAYROLL", parentSchema: "HR" });
     expect(oracleDependencyProvider.targetLabel?.(member)).toEqual({ name: "HR.PAYROLL", packageScope: true });

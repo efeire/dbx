@@ -2996,7 +2996,7 @@ async function openDatabaseObjectDependencies() {
     await connectionStore.ensureConnected(node.connectionId);
     connectionStore.activeConnectionId = node.connectionId;
     const target = provider.targetLabel?.(node);
-    const objectName = target ? `${target.packageScope ? `${t("tree.package")} ` : ""}${target.name}` : node.objectName || node.label;
+    const objectName = target ? `${target.packageScope ? `${t("common.package")} ` : ""}${target.name}` : node.objectName || node.label;
     const tabId = queryStore.createTab(node.connectionId, node.database, `${t("contextMenu.viewDependencies")} - ${objectName}`, "query", node.schema, undefined, node.catalog, { forceNew: true });
     queryStore.updateSql(tabId, sql);
     await queryStore.executeTabSql(tabId, sql);

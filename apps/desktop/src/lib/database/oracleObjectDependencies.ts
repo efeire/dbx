@@ -44,6 +44,7 @@ FROM ALL_DEPENDENCIES d
 WHERE d.REFERENCED_OWNER = ${owner}
   AND d.REFERENCED_NAME = ${name}
   AND ${referenceTypeFilter}
+  AND d.REFERENCED_LINK_NAME IS NULL
 ORDER BY 1, 5, 6, 7`;
 }
 
