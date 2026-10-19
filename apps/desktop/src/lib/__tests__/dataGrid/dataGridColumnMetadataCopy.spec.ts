@@ -19,4 +19,13 @@ describe("formatDataGridColumnMetadataForCopy", () => {
       ]),
     ).toBe("Name\tType\tSource\tNullable\tComment\n'=1+1\t\t\t\t'  +cmd\n-123.45\t\t\t\t@冯十二");
   });
+
+  it("preserves standalone and non-ASCII at-sign text while guarding ASCII formulas", () => {
+    expect(
+      formatDataGridColumnMetadataForCopy([
+        { name: "@", comment: "  @" },
+        { name: "@ASCII", comment: "@text" },
+      ]),
+    ).toBe("Name\tType\tSource\tNullable\tComment\n@\t\t\t\t  @\n'@ASCII\t\t\t\t'@text");
+  });
 });

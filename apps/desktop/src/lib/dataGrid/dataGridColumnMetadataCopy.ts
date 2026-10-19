@@ -15,7 +15,7 @@ function tsv(value: string | undefined): string {
 function guardSpreadsheetFormula(value: string): string {
   const candidate = value.replace(/^ +/, "");
   if (candidate.startsWith("-") && isExactSpreadsheetDecimal(candidate.slice(1))) return value;
-  if (candidate.startsWith("@") && candidate.charCodeAt(1) > 0x7f) return value;
+  if (candidate.startsWith("@") && (candidate.length === 1 || candidate.charCodeAt(1) > 0x7f)) return value;
   return /^[=+\-@\t\r]/.test(candidate) ? `'${value}` : value;
 }
 
