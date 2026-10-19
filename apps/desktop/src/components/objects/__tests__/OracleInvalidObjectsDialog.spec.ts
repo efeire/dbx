@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   compileGate: null as null | (() => Promise<void>),
   truncatedErrors: false,
   failCompile: false,
+  failInvalidObjectList: false,
 }));
 
 function passthrough(tag: string): Component {
@@ -65,12 +66,16 @@ beforeEach(() => {
   mocks.compileGate = null;
   mocks.truncatedErrors = false;
   mocks.failCompile = false;
+  mocks.failInvalidObjectList = false;
   mocks.executeAllowed = true;
   mocks.guard.mockReset();
   mocks.closeClientConnectionSession.mockReset().mockResolvedValue(undefined);
   mocks.compileFinished.mockReset();
   mocks.executeQuery.mockReset().mockImplementation(async (_connectionId: string, _database: string, sql: string) => {
-    if (sql.includes("FROM (SELECT OWNER")) return { columns: [], rows: !compiled || compileStatus === "INVALID" ? [["APP", "P_BAD", "PROCEDURE", 9, compiled ? "2026-10-20 09:01:00" : "2026-10-20 09:00:00"]] : [] };
+    if (sql.includes("FROM (SELECT OWNER")) {
+      if (mocks.failInvalidObjectList) throw new Error("ORA-01031: insufficient privileges");
+      return { columns: [], rows: !compiled || compileStatus === "INVALID" ? [["APP", "P_BAD", "PROCEDURE", 9, compiled ? "2026-10-20 09:01:00" : "2026-10-20 09:00:00"]] : [] };
+    }
     if (sql.includes("FROM ALL_ERRORS")) {
       if (compiled) errorsReloadedAfterCompile = true;
       return { columns: [], rows: mocks.truncatedErrors ? Array.from({ length: 1000 }, (_, index) => [index + 1, index + 1, 1, "invalid identifier"]) : [[1, 3, 7, compiled ? "still invalid after compile" : "invalid identifier"]] };
@@ -104,7 +109,7 @@ function dialogButtons(): HTMLButtonElement[] {
   return Array.from(root?.querySelectorAll("button") ?? []);
 }
 
-async function mountDialog() {
+async function mountDialog(connectionState = ref(connection)) {
   const open = ref(true);
   const Wrapper = defineComponent({
     setup() {
@@ -132,7 +137,7 @@ async function mountDialog() {
           ),
           h(OracleInvalidObjectsDialog, {
             open: open.value,
-            connection,
+            connection: connectionState.value,
             database: "ORCL",
             schema: "APP",
             onCompileFinished: mocks.compileFinished,
@@ -145,10 +150,35 @@ async function mountDialog() {
   });
   app = createApp(Wrapper);
   app.mount(root!);
-  await vi.waitFor(() => expect(root?.textContent).toContain("P_BAD"));
+  await vi.waitFor(() => expect(root?.textContent).toMatch(/P_BAD|ORA-01031/));
+  return { open, connectionState };
 }
 
 describe("OracleInvalidObjectsDialog production flow", () => {
+  it("shows a dictionary read denial instead of treating it as an empty list", async () => {
+    mocks.failInvalidObjectList = true;
+    await mountDialog();
+    expect(root?.textContent).toContain("ORA-01031: insufficient privileges");
+    expect(root?.textContent).not.toContain("processList.oracleInvalidObjects.empty");
+    expect(dialogButtons().some((button) => button.title === "common.refresh")).toBe(true);
+  });
+
+  it("uses one managed client session, closes it, and rotates it when the dialog reopens", async () => {
+    await mountDialog();
+    const sessionIds = mocks.executeQuery.mock.calls.map((call) => (call[5] as { clientSessionId?: string } | undefined)?.clientSessionId);
+    expect(new Set(sessionIds).size).toBe(1);
+    const sessionId = sessionIds[0];
+    expect(sessionId).toMatch(/^invalid-objects:/);
+    root?.querySelector<HTMLButtonElement>("[data-test-close]")?.click();
+    await nextTick();
+    expect(mocks.closeClientConnectionSession).toHaveBeenCalledWith(connection.id, "ORCL", sessionId);
+    const listCallsBeforeReopen = mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).length;
+    root?.querySelector<HTMLButtonElement>("[data-test-open]")?.click();
+    await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).length).toBeGreaterThan(listCallsBeforeReopen));
+    const reopenedListCall = mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).at(-1);
+    expect((reopenedListCall?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId).not.toBe(sessionId);
+  });
+
   it("loads diagnostics, previews before writing, compiles in its own session, and verifies status", async () => {
     await mountDialog();
     dialogButtons()
@@ -333,7 +363,32 @@ describe("OracleInvalidObjectsDialog production flow", () => {
     expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("ALTER PROCEDURE"))).toBe(false);
   });
 
-  it("allows close and reopen while a submitted compile is pending without leaving the reopened dialog stuck", async () => {
+  it("does not submit compile after the connection configuration changes behind the confirmation", async () => {
+    let release!: () => void;
+    mocks.guardGate = () => new Promise<void>((resolve) => (release = resolve));
+    const connectionState = ref(connection);
+    await mountDialog(connectionState);
+    dialogButtons()
+      .find((button) => button.textContent?.includes("P_BAD"))
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("invalid identifier"));
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.previewCompile")
+      ?.click();
+    await nextTick();
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.confirmCompile")
+      ?.click();
+    await vi.waitFor(() => expect(mocks.guard).toHaveBeenCalled());
+
+    connectionState.value = { ...connection, host: "replacement-host" };
+    await nextTick();
+    release();
+    await nextTick();
+    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).startsWith("ALTER PROCEDURE"))).toBe(false);
+  });
+
+  it("uses a fresh session after close while a submitted compile drains, without leaving the reopened dialog stuck", async () => {
     let release!: () => void;
     mocks.compileGate = () =>
       new Promise<void>((resolve) => {
@@ -352,15 +407,22 @@ describe("OracleInvalidObjectsDialog production flow", () => {
       .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.confirmCompile")
       ?.click();
     await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("ALTER PROCEDURE"))).toBe(true));
+    const compileCall = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("ALTER PROCEDURE"));
+    const compileSessionId = (compileCall?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId;
     dialogButtons()
       .find((button) => button.hasAttribute("data-test-close"))
       ?.click();
     await nextTick();
+    expect(mocks.closeClientConnectionSession).not.toHaveBeenCalled();
     dialogButtons()
       .find((button) => button.hasAttribute("data-test-open"))
       ?.click();
     await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).length).toBeGreaterThan(1));
+    const reopenedListCall = mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).at(-1);
+    const reopenedSessionId = (reopenedListCall?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId;
+    expect(reopenedSessionId).not.toBe(compileSessionId);
     release();
+    await vi.waitFor(() => expect(mocks.closeClientConnectionSession).toHaveBeenCalledWith(connection.id, "ORCL", compileSessionId));
     await vi.waitFor(() => expect(root?.querySelector<HTMLButtonElement>('button[title="common.refresh"]')?.disabled).toBe(false));
     dialogButtons()
       .find((button) => button.textContent?.includes("P_BAD"))

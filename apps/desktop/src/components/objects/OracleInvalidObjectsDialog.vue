@@ -40,9 +40,9 @@ const truncated = ref(false);
 const previewSql = ref("");
 const outcome = ref("");
 const generation = ref(0);
-type ManagedSession = { id: string; connectionId: string; database: string; active: number; closeRequested: boolean };
+type ManagedSession = { id: string; connectionId: string; database: string; active: number; closeRequested: boolean; closed: boolean };
 function newManagedSession(connectionId: string, database: string): ManagedSession {
-  return { id: `invalid-objects:${crypto.randomUUID()}`, connectionId, database, active: 0, closeRequested: false };
+  return { id: `invalid-objects:${crypto.randomUUID()}`, connectionId, database, active: 0, closeRequested: false, closed: false };
 }
 let managedSession = newManagedSession(props.connection.id, props.database);
 const databaseType = computed(() => (effectiveDatabaseTypeForConnection(props.connection) ?? props.connection.db_type) as DatabaseType);
@@ -54,7 +54,7 @@ function isCurrent(token: number): boolean {
 async function query(sql: string, maxRows = 501) {
   const connectionId = props.connection.id;
   const database = props.database;
-  if (managedSession.connectionId !== connectionId || managedSession.database !== database) rotateManagedSession(connectionId, database);
+  if (managedSession.connectionId !== connectionId || managedSession.database !== database || managedSession.closeRequested || managedSession.closed) rotateManagedSession(connectionId, database);
   const session = managedSession;
   session.active++;
   try {
@@ -66,8 +66,9 @@ async function query(sql: string, maxRows = 501) {
 }
 
 function closeManagedSession(session: ManagedSession) {
-  if (!session.closeRequested || session.active > 0) return;
+  if (!session.closeRequested || session.active > 0 || session.closed) return;
   session.closeRequested = false;
+  session.closed = true;
   void api.closeClientConnectionSession(session.connectionId, session.database, session.id).catch(() => undefined);
 }
 

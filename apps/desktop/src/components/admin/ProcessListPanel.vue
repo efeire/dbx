@@ -827,7 +827,7 @@ onBeforeUnmount(() => {
               </span>
             </td>
           </tr>
-          <tr v-if="!loading && filteredRows.length === 0 && (!transactionMode || !loadError)">
+          <tr v-if="!loading && filteredRows.length === 0 && !loadError">
             <td :colspan="columns.length + 1 + (selectionSupported ? 1 : 0)" class="px-3 py-10 text-center text-muted-foreground">
               {{ search ? t("grid.noSearchResults") : t(transactionMode ? "processList.transactionEmpty" : "processList.empty") }}
             </td>

@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
-import { createApp, defineComponent, h, nextTick, type App, type Component } from "vue";
+import { createApp, defineComponent, h, nextTick, reactive, type App, type Component } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionConfig } from "@/types/database";
 import { PG_PROCESS_LIST_SQL } from "@/lib/database/postgresProcessList";
 import { XUGU_OWN_SESSION_SQL, XUGU_TRANSACTION_LIST_SQL } from "@/lib/database/xuguProcessList";
-import { buildOracleOwnSessionSql, buildOracleSessionListSql, ORACLE_SESSION_VERSION_SQL } from "@/lib/database/oracleSessionManagement";
+import { buildOceanbaseSessionListSql, OCEANBASE_OWN_SESSION_SQL, buildOracleOwnSessionSql, buildOracleSessionListSql, ORACLE_SESSION_VERSION_SQL } from "@/lib/database/oracleSessionManagement";
 
 const mocks = vi.hoisted(() => ({
   ensureConnected: vi.fn(),
@@ -14,6 +14,17 @@ const mocks = vi.hoisted(() => ({
   closeClientConnectionSession: vi.fn(),
   contextGuard: vi.fn(),
   toast: vi.fn(),
+  oceanbaseRows: [] as unknown[][],
+  oceanbaseTerminated: false,
+  oceanbaseListFailure: "",
+  oceanbaseListTruncated: false,
+  oceanbaseLockFailure: "",
+  oceanbaseTerminateFailure: "",
+  oceanbaseTargetChanged: false,
+  oracleVersionValue: "19.0.0.0.0",
+  oracleVersionFailure: "",
+  oracleTargetChanged: false,
+  oracleTargetMissing: false,
 }));
 
 // Flipped by the driver mock to simulate engines without a terminate statement.
@@ -149,6 +160,16 @@ const oracleConnection: ConnectionConfig = {
   password: "",
 };
 
+const oceanbaseConnection: ConnectionConfig = {
+  id: "oceanbase-1",
+  name: "OceanBase",
+  db_type: "oceanbase-oracle",
+  host: "localhost",
+  port: 2881,
+  username: "APP",
+  password: "",
+};
+
 let oracleTerminated = false;
 let oracleTerminateError = "";
 function oracleListResult() {
@@ -202,14 +223,37 @@ beforeEach(() => {
     if (sql === PG_PROCESS_LIST_SQL) return postgresListResult();
     if (sql === XUGU_OWN_SESSION_SQL) return { columns: ["NODEID", "SESSION_ID"], rows: [[1, 5]] };
     if (sql === XUGU_TRANSACTION_LIST_SQL) return xuguTransactionResult();
-    if (sql === ORACLE_SESSION_VERSION_SQL) return { columns: ["VERSION"], rows: [["19.0.0.0.0"]] };
+    if (sql === ORACLE_SESSION_VERSION_SQL) {
+      if (mocks.oracleVersionFailure) throw new Error(mocks.oracleVersionFailure);
+      return { columns: ["VERSION"], rows: [[mocks.oracleVersionValue]] };
+    }
     if (sql === buildOracleOwnSessionSql(false)) return { columns: [], rows: [["5", "1", "3"]] };
     if (sql === buildOracleSessionListSql(false)) return oracleListResult();
     if (sql.includes("FROM GV$LOCK l JOIN GV$SESSION s"))
       return { columns: ["CONTAINER_ID", "INSTANCE_ID", "SESSION_ID", "LOCK_TYPE", "ID1", "ID2", "HELD_MODE", "REQUESTED_MODE", "BLOCKING", "SESSION_USER", "SESSION_STATUS", "BLOCKER"], rows: [["3", "2", "21", "TX", "100", "200", "6", "0", "1", "OTHER", "INACTIVE", "—"]] };
     if (sql.includes("ALTER SYSTEM KILL SESSION")) {
       if (oracleTerminateError) throw new Error(oracleTerminateError);
+      if (mocks.oracleTargetMissing) throw new Error("ORA-20002: Session identity changed; target no longer exists");
+      if (mocks.oracleTargetChanged) throw new Error("ORA-20002: Session identity changed; refresh the list");
       oracleTerminated = true;
+      return { columns: [], rows: [] };
+    }
+    if (sql === OCEANBASE_OWN_SESSION_SQL) return { columns: ["ID", "USER", "TENANT"], rows: [["5", "APP", "tenant_a"]] };
+    if (sql === buildOceanbaseSessionListSql()) {
+      if (mocks.oceanbaseListFailure) throw new Error(mocks.oceanbaseListFailure);
+      return { columns: [], rows: mocks.oceanbaseTerminated ? mocks.oceanbaseRows.filter((row) => String(row[0]) !== "21") : mocks.oceanbaseRows, truncated: mocks.oceanbaseListTruncated };
+    }
+    if (sql.includes("FROM GV$OB_LOCKS l")) {
+      if (mocks.oceanbaseLockFailure) throw new Error(mocks.oceanbaseLockFailure);
+      return {
+        columns: ["SERVER_IP", "SERVER_PORT", "TENANT_ID", "TRANS_ID", "SESSION_ID", "TYPE", "ID1", "ID2", "ID3", "LMODE", "REQUEST", "CTIME", "BLOCK", "SESSION_USER", "SESSION_STATE"],
+        rows: [["127.0.0.1", "2882", "7", "900", "21", "TX", "100", "200", "300", "6", "0", "10", "1", "OTHER", "WAITING"]],
+      };
+    }
+    if (sql.includes("EXECUTE IMMEDIATE 'KILL CONNECTION")) {
+      if (mocks.oceanbaseTerminateFailure) throw new Error(mocks.oceanbaseTerminateFailure);
+      if (mocks.oceanbaseTargetChanged) throw new Error("ORA-20001: Session identity changed or is not directly addressable");
+      mocks.oceanbaseTerminated = true;
       return { columns: [], rows: [] };
     }
     return { columns: [], rows: [] };
@@ -220,6 +264,21 @@ beforeEach(() => {
   mocks.toast.mockReset();
   oracleTerminated = false;
   oracleTerminateError = "";
+  mocks.oceanbaseRows = [
+    ["5", "APP", "tenant_a", "localhost", "db", "Query", "0", "active", "SELECT 1", null, "127.0.0.1", "2882"],
+    ["21", "OTHER", "tenant_a", "apphost", "db", "Sleep", "4", "idle", "SELECT 2", null, "127.0.0.1", "2882"],
+    ["22", "PROXY", "tenant_a", "proxyhost", "db", "Query", "5", "active", "SELECT 3", "99", "127.0.0.2", "2882"],
+  ];
+  mocks.oceanbaseTerminated = false;
+  mocks.oceanbaseListFailure = "";
+  mocks.oceanbaseListTruncated = false;
+  mocks.oceanbaseLockFailure = "";
+  mocks.oceanbaseTerminateFailure = "";
+  mocks.oceanbaseTargetChanged = false;
+  mocks.oracleVersionValue = "19.0.0.0.0";
+  mocks.oracleVersionFailure = "";
+  mocks.oracleTargetChanged = false;
+  mocks.oracleTargetMissing = false;
   root = document.createElement("div");
   document.body.appendChild(root);
 });
@@ -260,6 +319,36 @@ async function mountPanel(connection: ConnectionConfig) {
   await nextTick();
 }
 
+async function mountOceanbasePanel() {
+  app = createApp(ProcessListPanel, { connection: oceanbaseConnection });
+  app.mount(root!);
+  await vi.waitFor(() => expect(root?.querySelector("tbody")?.textContent).toContain("21"));
+  await nextTick();
+}
+
+async function mountOraclePanel() {
+  app = createApp(ProcessListPanel, { connection: oracleConnection });
+  app.mount(root!);
+  await vi.waitFor(() => expect(root?.querySelector("tbody")?.textContent).toContain("21"));
+  await nextTick();
+}
+
+async function mountReactivePanel(connection: ConnectionConfig) {
+  const reactiveConnection = reactive({ ...connection });
+  const Wrapper = defineComponent({ setup: () => () => h(ProcessListPanel, { connection: reactiveConnection }) });
+  app = createApp(Wrapper);
+  app.mount(root!);
+  await vi.waitFor(() => expect(root?.textContent).toContain("21"));
+  await nextTick();
+  return reactiveConnection;
+}
+
+function processRow(id: string): HTMLTableRowElement {
+  const row = [...(root?.querySelectorAll<HTMLTableRowElement>("tbody tr") ?? [])].find((candidate) => candidate.querySelector("td")?.textContent?.trim().match(/^\d+/)?.[0] === id);
+  expect(row, `session row ${id}`).toBeDefined();
+  return row!;
+}
+
 async function selectSessions(...ids: number[]) {
   for (const id of ids) {
     sessionCheckbox(id)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -275,6 +364,162 @@ async function mountXuguPanel() {
 }
 
 describe("ProcessListPanel batch terminate", () => {
+  it("does not use a legacy Oracle query when version detection is unknown or denied", async () => {
+    mocks.oracleVersionValue = "Oracle Database 19c";
+    app = createApp(ProcessListPanel, { connection: oracleConnection });
+    app.mount(root!);
+    await vi.waitFor(() => expect(root?.textContent).toContain("processList.oracleVersionUnknown"));
+    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("GV$SESSION"))).toBe(false);
+    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("CON_ID"))).toBe(false);
+
+    app.unmount();
+    app = null;
+    root!.innerHTML = "";
+    mocks.executeQuery.mockClear();
+    mocks.oracleVersionFailure = "ORA-01031: insufficient privileges";
+    app = createApp(ProcessListPanel, { connection: oracleConnection });
+    app.mount(root!);
+    await vi.waitFor(() => expect(root?.textContent).toContain("ORA-01031: insufficient privileges"));
+    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("GV$SESSION"))).toBe(false);
+    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("CON_ID"))).toBe(false);
+  });
+
+  it("rejects a changed Oracle target identity and never reports it as terminated", async () => {
+    await mountOraclePanel();
+    const targetRow = processRow("21");
+    targetRow.querySelector<HTMLButtonElement>('button[title="processList.terminate"]')?.click();
+    await nextTick();
+    mocks.oracleTargetChanged = true;
+    findDialogButton("processList.terminate")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("ORA-20002: Session identity changed"), 5000));
+    const sql = mocks.executeQuery.mock.calls.map((call) => String(call[2])).find((statement) => statement.includes("ALTER SYSTEM KILL SESSION"));
+    expect(sql).toContain("SID = 21 AND SERIAL# = 42 AND INST_ID = 2 AND CON_ID = 3");
+    expect(sql).toContain("AUDSID = 700");
+    expect(oracleTerminated).toBe(false);
+    expect(mocks.toast).not.toHaveBeenCalledWith("processList.terminateSuccess:21", 2500);
+  });
+
+  it("does not report a vanished Oracle session as terminated", async () => {
+    await mountOraclePanel();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.terminate"]')?.click();
+    await nextTick();
+    mocks.oracleTargetMissing = true;
+    findDialogButton("processList.terminate")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("target no longer exists"), 5000));
+    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("ALTER SYSTEM KILL SESSION"))).toBe(true);
+    expect(oracleTerminated).toBe(false);
+    expect(mocks.toast).not.toHaveBeenCalledWith("processList.terminateSuccess:21", 2500);
+  });
+
+  it("does not submit a confirmed Oracle termination after same-ID connection configuration changes", async () => {
+    const liveConnection = await mountReactivePanel(oracleConnection);
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.terminate"]')?.click();
+    await nextTick();
+    liveConnection.host = "replacement-host";
+    await nextTick();
+    expect(findDialogButton("processList.terminate")).toBeUndefined();
+    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("ALTER SYSTEM KILL SESSION"))).toBe(false);
+  });
+
+  it("consumes OceanBase sessions and locks, filters and refreshes rows, and terminates one supported session", async () => {
+    mocks.oceanbaseListTruncated = true;
+    await mountOceanbasePanel();
+    expect(root?.textContent).toContain("processList.sessionCount:3+");
+    const filter = root?.querySelector<HTMLInputElement>('input[placeholder="processList.filter"]');
+    expect(filter).toBeDefined();
+    filter!.value = "OTHER";
+    filter!.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    expect(processRow("21").textContent).toContain("OTHER");
+    expect(root?.querySelectorAll("tbody tr")).toHaveLength(1);
+    filter!.value = "";
+    filter!.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.lockDetails"]')?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("TX"));
+    expect(root?.textContent).toContain("processList.lockTarget");
+    const lockCall = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("FROM GV$OB_LOCKS"));
+    expect(lockCall?.[5]).toMatchObject({ clientSessionId: expect.stringMatching(/^process-list:/) });
+
+    const sessionIds = mocks.executeQuery.mock.calls.map((call) => (call[5] as { clientSessionId?: string } | undefined)?.clientSessionId);
+    expect(new Set(sessionIds).size).toBe(1);
+    const queryCount = mocks.executeQuery.mock.calls.filter((call) => call[2] === buildOceanbaseSessionListSql()).length;
+    mocks.oceanbaseRows[1]![1] = "UPDATED";
+    gridButtons()
+      .find((button) => button.textContent?.trim() === "grid.refresh")
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("UPDATED"));
+    expect(mocks.executeQuery.mock.calls.filter((call) => call[2] === buildOceanbaseSessionListSql()).length).toBeGreaterThan(queryCount);
+
+    const proxyTerminate = processRow("22").querySelector<HTMLButtonElement>('button[title="processList.oracleProxyUnsupported"]');
+    expect(proxyTerminate?.disabled).toBe(true);
+    expect(processRow("5").querySelector<HTMLButtonElement>('button[title="processList.cannotTerminateSelf"]')?.disabled).toBe(true);
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.terminate"]')?.click();
+    await nextTick();
+    expect(root?.textContent).toContain("processList.oracleTenant");
+    expect(root?.textContent).toContain("processList.oracleNode");
+    findDialogButton("processList.terminate")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith("processList.terminateSuccess:21", 2500));
+    const killCall = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("EXECUTE IMMEDIATE 'KILL CONNECTION"));
+    expect(killCall?.[2]).toContain("ID = 21 AND USER = 'UPDATED' AND TENANT = 'tenant_a'");
+    expect(killCall?.[5]).toMatchObject({ clientSessionId: expect.stringMatching(/^process-list:/) });
+    expect(mocks.contextGuard.mock.calls.at(-1)?.[0]).toMatchObject({ scope: "connection", reviewText: expect.stringContaining("KILL CONNECTION") });
+    const managementSessionId = sessionIds[0];
+    app?.unmount();
+    app = null;
+    expect(mocks.closeClientConnectionSession).toHaveBeenCalledWith(oceanbaseConnection.id, "", managementSessionId);
+  });
+
+  it("keeps an OceanBase list permission failure distinct from confirmed empty results", async () => {
+    mocks.oceanbaseListFailure = "ORA-01031: process list denied";
+    app = createApp(ProcessListPanel, { connection: oceanbaseConnection });
+    app.mount(root!);
+    await vi.waitFor(() => expect(root?.textContent).toContain("ORA-01031: process list denied"));
+    expect(root?.textContent).not.toContain("processList.empty");
+  });
+
+  it("preserves the OceanBase session list when lock details are denied", async () => {
+    mocks.oceanbaseLockFailure = "ORA-01031: locks denied";
+    await mountOceanbasePanel();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.lockDetails"]')?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("ORA-01031: locks denied"));
+    expect(root?.textContent).toContain("OTHER");
+    expect(root?.textContent).not.toContain("processList.lockDetailsEmpty");
+  });
+
+  it("shows an empty OceanBase result only when the query completed without an error", async () => {
+    mocks.oceanbaseRows = [];
+    app = createApp(ProcessListPanel, { connection: oceanbaseConnection });
+    app.mount(root!);
+    await vi.waitFor(() => expect(root?.textContent).toContain("processList.empty"));
+    expect(root?.textContent).not.toContain("ORA-01031");
+  });
+
+  it("preserves an OceanBase termination permission denial instead of reporting success", async () => {
+    mocks.oceanbaseTerminateFailure = "ORA-01031: KILL CONNECTION denied";
+    await mountOceanbasePanel();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.terminate"]')?.click();
+    await nextTick();
+    findDialogButton("processList.terminate")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("ORA-01031: KILL CONNECTION denied"), 5000));
+    expect(mocks.toast).not.toHaveBeenCalledWith("processList.terminateSuccess:21", 2500);
+  });
+
+  it("does not report an OceanBase session with changed tenant/node identity as terminated", async () => {
+    await mountOceanbasePanel();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.terminate"]')?.click();
+    await nextTick();
+    mocks.oceanbaseTargetChanged = true;
+    findDialogButton("processList.terminate")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("ORA-20001: Session identity changed"), 5000));
+    const sql = mocks.executeQuery.mock.calls.map((call) => String(call[2])).find((statement) => statement.includes("EXECUTE IMMEDIATE 'KILL CONNECTION"));
+    expect(sql).toContain("ID = 21 AND USER = 'OTHER' AND TENANT = 'tenant_a'");
+    expect(sql).toContain("SVR_IP = '127.0.0.1' AND SVR_PORT = 2882");
+    expect(mocks.oceanbaseTerminated).toBe(false);
+    expect(mocks.toast).not.toHaveBeenCalledWith("processList.terminateSuccess:21", 2500);
+  });
+
   it("terminates one Oracle row through the independent managed session and reads the row back", async () => {
     app = createApp(ProcessListPanel, { connection: oracleConnection });
     app.mount(root!);
@@ -301,8 +546,13 @@ describe("ProcessListPanel batch terminate", () => {
     expect(actionCall?.[2]).toContain("SERIAL# = 42");
     const actionSession = (actionCall?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId;
     expect(actionSession).toBeTruthy();
+    expect(actionSession).toMatch(/^process-list:/);
+    expect(mocks.executeQuery.mock.calls.every((call) => (call[5] as { clientSessionId?: string } | undefined)?.clientSessionId === actionSession)).toBe(true);
     expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("GV$SESSION")).every((call) => (call[5] as { clientSessionId?: string })?.clientSessionId === actionSession)).toBe(true);
     expect(mocks.contextGuard.mock.calls[0]?.[0]).toMatchObject({ scope: "connection", database: "", source: "production.sourceAdmin" });
+    app?.unmount();
+    app = null;
+    expect(mocks.closeClientConnectionSession).toHaveBeenCalledWith(oracleConnection.id, "", actionSession);
   });
 
   it("preserves the database denial when termination outcome is unknown", async () => {
