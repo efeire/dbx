@@ -277,7 +277,11 @@ fn is_floating_type(data_type: Option<&str>, database_type: Option<DatabaseType>
 
 fn is_binary_type(data_type: Option<&str>) -> bool {
     let ty = data_type.unwrap_or_default().trim().to_ascii_lowercase();
-    ["blob", "binary", "varbinary", "bytea", "raw", "image", "bytes"].iter().any(|part| ty.starts_with(part))
+    if ty.starts_with("binary_float") || ty.starts_with("binary_double") {
+        return false;
+    }
+    ["blob", "varbinary", "bytea", "raw", "image", "bytes"].iter().any(|part| ty.starts_with(part))
+        || ty.starts_with("binary")
 }
 
 fn binary_text(value: &Value) -> Result<String, DataGridExtractError> {
@@ -479,6 +483,69 @@ mod tests {
 
         let result = extract_data_grid_selection(request).expect("binary marker text is encoded as bytes");
         assert!(result.text.contains("W05VTExd"));
+    }
+
+    #[test]
+    fn php_and_dbunit_keep_oracle_binary_float_values_numeric_not_binary() {
+        let columns = vec!["BINARY_FLOAT", "BINARY_DOUBLE"]
+            .into_iter()
+            .enumerate()
+            .map(|(source_index, display_name)| DataGridExtractColumn {
+                display_name: display_name.into(),
+                source_name: None,
+                source_index,
+                data_type: Some(display_name.into()),
+                description: None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut php = request(DataGridExtractorId::Php);
+        php.columns = columns.clone();
+        php.selected_column_indexes = vec![0, 1];
+        php.database_type = Some(DatabaseType::Oracle);
+        php.rows = vec![vec![json!(1.5), json!(2.25)]];
+        let php_text = extract_data_grid_selection(php).expect("PHP binary-float extraction").text;
+        assert!(php_text.contains("\"BINARY_FLOAT\" => 1.5"), "{php_text}");
+        assert!(php_text.contains("\"BINARY_DOUBLE\" => 2.25"), "{php_text}");
+
+        let mut dbunit = request(DataGridExtractorId::Dbunit);
+        dbunit.source_table_name = Some("T".into());
+        dbunit.columns = columns;
+        dbunit.selected_column_indexes = vec![0, 1];
+        dbunit.rows = vec![vec![json!(1.5), json!(2.25)]];
+        let dbunit_text = extract_data_grid_selection(dbunit).expect("DbUnit binary-float extraction").text;
+        assert!(dbunit_text.contains("BINARY_FLOAT=\"1.5\""), "{dbunit_text}");
+        assert!(dbunit_text.contains("BINARY_DOUBLE=\"2.25\""), "{dbunit_text}");
+    }
+
+    #[test]
+    fn php_and_dbunit_keep_byte_types_in_binary_encoding_path() {
+        let columns = ["BINARY", "VARBINARY", "RAW", "BLOB"]
+            .into_iter()
+            .enumerate()
+            .map(|(source_index, data_type)| DataGridExtractColumn {
+                display_name: format!("C{source_index}"),
+                source_name: None,
+                source_index,
+                data_type: Some(data_type.into()),
+                description: None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut php = request(DataGridExtractorId::Php);
+        php.columns = columns.clone();
+        php.selected_column_indexes = vec![0, 1, 2, 3];
+        php.rows = vec![vec![json!("0x0102"), json!("0x0102"), json!("0x0102"), json!("0x0102")]];
+        let php_text = extract_data_grid_selection(php).expect("PHP byte extraction").text;
+        assert_eq!(php_text.matches("base64_decode('AQI=', true)").count(), 4, "{php_text}");
+
+        let mut dbunit = request(DataGridExtractorId::Dbunit);
+        dbunit.source_table_name = Some("T".into());
+        dbunit.columns = columns;
+        dbunit.selected_column_indexes = vec![0, 1, 2, 3];
+        dbunit.rows = vec![vec![json!("0x0102"), json!("0x0102"), json!("0x0102"), json!("0x0102")]];
+        let dbunit_text = extract_data_grid_selection(dbunit).expect("DbUnit byte extraction").text;
+        assert_eq!(dbunit_text.matches("AQI=").count(), 4, "{dbunit_text}");
     }
 
     #[test]
