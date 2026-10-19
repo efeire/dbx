@@ -1295,7 +1295,8 @@ function tableInfoColumnContextMenuItems(): ContextMenuItem[] {
 }
 
 function onTableInfoColumnsKeydown(event: KeyboardEvent) {
-  if (event.defaultPrevented || selectedTableInfoColumns.value.length === 0 || !(event.target instanceof Element) || !event.target.closest("[data-table-info-column]") || !(event.ctrlKey || event.metaKey) || event.altKey) return;
+  const target = event.target;
+  if (event.defaultPrevented || selectedTableInfoColumns.value.length === 0 || !(target instanceof Element) || (!target.closest("[data-table-info-column]") && target !== event.currentTarget) || !(event.ctrlKey || event.metaKey) || event.altKey) return;
   const key = event.key.toLowerCase();
   if (key !== "c") return;
   event.preventDefault();

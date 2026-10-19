@@ -149,17 +149,18 @@ describe("ObjectBrowser table copy", () => {
     const columns = [...panel.querySelectorAll<HTMLElement>("[data-table-info-column]")];
     columns[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     columns[1]!.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
-    columns[1]!.focus();
+    const columnsArea = panel.querySelector<HTMLElement>("[data-table-info-columns]")!;
+    columnsArea.focus();
     const search = panel.querySelector<HTMLInputElement>("[data-table-info-search]")!;
     const searchShortcut = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
     search.dispatchEvent(searchShortcut);
     expect(mocks.copyToClipboard).not.toHaveBeenCalled();
     expect(searchShortcut.defaultPrevented).toBe(false);
 
-    columns[1]!.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }));
+    columnsArea.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }));
     await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenLastCalledWith("second\nfirst"));
 
-    columns[1]!.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, shiftKey: true, bubbles: true }));
+    columnsArea.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, shiftKey: true, bubbles: true }));
     await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenLastCalledWith('#\tgrid.columnName\tgrid.columnType\tgrid.tableInfoNullable\tstructureEditor.defaultValue\tgrid.columnComment\n1\tsecond\tVARCHAR(20)\tNO\t"x\ty"\t"line 1\nline 2"\n2\tfirst\tNUMBER\tYES\t—\t"quote ""value"""'));
   });
 
