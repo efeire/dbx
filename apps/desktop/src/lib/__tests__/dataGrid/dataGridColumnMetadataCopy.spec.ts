@@ -12,9 +12,11 @@ describe("formatDataGridColumnMetadataForCopy", () => {
   });
 
   it("neutralizes spreadsheet formulas in copied metadata without changing TSV escaping", () => {
-    expect(formatDataGridColumnMetadataForCopy([
-      { name: "=1+1", comment: "  +cmd" },
-      { name: "-123.45", comment: "@冯十二" },
-    ])).toBe("Name\tType\tSource\tNullable\tComment\n'=1+1\t\t\t\t'  +cmd\n-123.45\t\t\t\t@冯十二");
+    expect(
+      formatDataGridColumnMetadataForCopy([
+        { name: "=1+1", comment: "  +cmd" },
+        { name: "-123.45", comment: "@冯十二" },
+      ]),
+    ).toBe("Name\tType\tSource\tNullable\tComment\n'=1+1\t\t\t\t'  +cmd\n-123.45\t\t\t\t@冯十二");
   });
 });
