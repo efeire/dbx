@@ -1,4 +1,4 @@
-import type { DatabaseType } from "@/types/database";
+import type { DatabaseType, QueryResult } from "@/types/database";
 
 export type OracleInvalidObject = {
   owner: string;
@@ -14,6 +14,10 @@ export type OracleObjectError = {
   position: number;
   text: string;
 };
+
+export const ORACLE_INVALID_OBJECTS_PAGE_SIZE = 500;
+
+export type OracleInvalidObjectsPageQuery = (sql: string, maxRows: number) => Promise<QueryResult>;
 
 const ORACLE_COMPILE_TYPES = new Set(["VIEW", "MATERIALIZED VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "PACKAGE", "PACKAGE BODY", "TYPE", "TYPE BODY", "SYNONYM"]);
 
@@ -34,16 +38,64 @@ export function buildOracleInvalidObjectsSql(owner: string, limit: number): stri
   return `SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS LAST_DDL_TIME\nFROM (SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, OBJECT_ID, LAST_DDL_TIME FROM ALL_OBJECTS WHERE OWNER = ${escapedOwner} AND STATUS = 'INVALID' ORDER BY OBJECT_NAME, OBJECT_TYPE)\nWHERE ROWNUM <= ${limit}`;
 }
 
+export function buildOracleInvalidObjectsPageSql(owner: string, afterObjectId = "0"): string {
+  if (!/^(0|[1-9]\d*)$/.test(afterObjectId)) throw new Error("Invalid Oracle object ID cursor");
+  return `SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, TO_CHAR(OBJECT_ID) AS OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS LAST_DDL_TIME\nFROM (SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, OBJECT_ID, LAST_DDL_TIME FROM ALL_OBJECTS WHERE OWNER = ${quoteOracleLiteral(owner)} AND STATUS = 'INVALID' AND OBJECT_ID > ${afterObjectId} ORDER BY OBJECT_ID)\nWHERE ROWNUM <= ${ORACLE_INVALID_OBJECTS_PAGE_SIZE}`;
+}
+
+function strictInvalidObjectRows(rows: unknown[][], owner: string, previousId: bigint): OracleInvalidObject[] {
+  let lastId = previousId;
+  const result: OracleInvalidObject[] = [];
+  for (const row of rows) {
+    const [rowOwner, name, type, objectId, lastDdlTime] = row;
+    if (typeof rowOwner !== "string" || rowOwner !== owner || typeof name !== "string" || !name || typeof type !== "string" || !type || typeof objectId !== "string" || !/^[1-9]\d*$/.test(objectId) || typeof lastDdlTime !== "string" || !lastDdlTime) {
+      throw new Error("Incomplete Oracle invalid-object row");
+    }
+    const numericId = BigInt(objectId);
+    if (numericId <= lastId) throw new Error("Oracle invalid-object cursor did not advance");
+    lastId = numericId;
+    result.push({ owner: rowOwner, name, type, objectId, lastDdlTime });
+  }
+  return result;
+}
+
+export async function readAllOracleInvalidObjects(query: OracleInvalidObjectsPageQuery, owner: string, options: { onProgress?: (count: number) => void; isCurrent?: () => boolean } = {}): Promise<OracleInvalidObject[]> {
+  const objects: OracleInvalidObject[] = [];
+  let cursor = "0";
+  let previousId = 0n;
+  const seen = new Set<string>();
+  while (true) {
+    if (options.isCurrent && !options.isCurrent()) throw new Error("Oracle invalid-object read is no longer current");
+    const page = await query(buildOracleInvalidObjectsPageSql(owner, cursor), ORACLE_INVALID_OBJECTS_PAGE_SIZE + 1);
+    if (options.isCurrent && !options.isCurrent()) throw new Error("Oracle invalid-object read is no longer current");
+    if (page.execution_error) throw new Error(page.error?.detail ?? String(page.rows[0]?.[0] ?? "Oracle invalid-object page query failed"));
+    if (page.truncated === true || page.rows.length > ORACLE_INVALID_OBJECTS_PAGE_SIZE) throw new Error("Oracle invalid-object page was truncated");
+    const columns = new Set(page.columns.map((column) => column.trim().toUpperCase()));
+    if (["OWNER", "OBJECT_NAME", "OBJECT_TYPE", "OBJECT_ID", "LAST_DDL_TIME"].some((column) => !columns.has(column))) throw new Error("Oracle invalid-object page omitted required columns");
+    const mapped = strictInvalidObjectRows(page.rows, owner, previousId);
+    for (const object of mapped) {
+      if (seen.has(object.objectId)) throw new Error("Duplicate Oracle invalid-object ID");
+      seen.add(object.objectId);
+      previousId = BigInt(object.objectId);
+    }
+    objects.push(...mapped);
+    options.onProgress?.(objects.length);
+    if (page.rows.length < ORACLE_INVALID_OBJECTS_PAGE_SIZE) return objects;
+    cursor = mapped.at(-1)?.objectId ?? cursor;
+    if (!mapped.length) throw new Error("Oracle invalid-object cursor did not advance");
+  }
+}
+
 export function buildOracleObjectErrorsSql(owner: string, object: Pick<OracleInvalidObject, "name" | "type">): string {
   return `SELECT SEQUENCE, LINE, POSITION, TEXT FROM ALL_ERRORS WHERE OWNER = ${quoteOracleLiteral(owner)} AND NAME = ${quoteOracleLiteral(object.name)} AND TYPE = ${quoteOracleLiteral(object.type)} ORDER BY SEQUENCE`;
 }
 
 export function buildOracleObjectIdentitySql(owner: string, object: OracleInvalidObject): string {
-  return `SELECT OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS LAST_DDL_TIME FROM ALL_OBJECTS WHERE OWNER = ${quoteOracleLiteral(owner)} AND OBJECT_NAME = ${quoteOracleLiteral(object.name)} AND OBJECT_TYPE = ${quoteOracleLiteral(object.type)} AND STATUS = 'INVALID'`;
+  return `SELECT TO_CHAR(OBJECT_ID) AS OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS LAST_DDL_TIME FROM ALL_OBJECTS WHERE OWNER = ${quoteOracleLiteral(owner)} AND OBJECT_NAME = ${quoteOracleLiteral(object.name)} AND OBJECT_TYPE = ${quoteOracleLiteral(object.type)} AND STATUS = 'INVALID'`;
 }
 
 export function buildOracleObjectStatusSql(owner: string, object: OracleInvalidObject): string {
-  return `SELECT OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS LAST_DDL_TIME, STATUS FROM ALL_OBJECTS WHERE OWNER = ${quoteOracleLiteral(owner)} AND OBJECT_NAME = ${quoteOracleLiteral(object.name)} AND OBJECT_TYPE = ${quoteOracleLiteral(object.type)}`;
+  return `SELECT TO_CHAR(OBJECT_ID) AS OBJECT_ID, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS LAST_DDL_TIME, STATUS FROM ALL_OBJECTS WHERE OWNER = ${quoteOracleLiteral(owner)} AND OBJECT_NAME = ${quoteOracleLiteral(object.name)} AND OBJECT_TYPE = ${quoteOracleLiteral(object.type)}`;
 }
 
 export function oracleCompileUnsupportedReason(dbType: DatabaseType, objectType: string): "unsupported-type" | "unsupported-on-engine" | null {
