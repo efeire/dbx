@@ -157,7 +157,8 @@ describe("data-grid extractor options", () => {
     expect(DATA_GRID_COPY_EXTRACTOR_IDS).toContain("dbunit");
     expect(DATA_GRID_COPY_EXTRACTOR_IDS).toContain("php");
     expect(DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.dbunit).toMatchObject({ upperCaseTableName: true, upperCaseColumnNames: true, includeNullValues: true, nullValueString: "[NULL]" });
-    expect(DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.php).toMatchObject({ arraySyntax: "short", formatDateISO: true, rowDelimiter: "\n", variableName: "" });
+    expect(DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.php).toMatchObject({ arraySyntax: "short", formatDateIso: true, rowDelimiter: "\n", variableName: "" });
+    expect(normalizeDataGridExtractorOptions({ php: { formatDateISO: false } }).php.formatDateIso).toBe(false);
   });
 
   it("normalizes visible copy formats deterministically and preserves an empty selection", () => {

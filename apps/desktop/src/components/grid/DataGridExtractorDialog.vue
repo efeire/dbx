@@ -405,7 +405,7 @@ function save() {
               <Label>{{ t("grid.copyPhpRowDelimiter") }}</Label>
               <Input :model-value="visibleSeparator(draftOptions.php.rowDelimiter)" @update:model-value="updatePhp('rowDelimiter', separatorValue(String($event)))" />
             </div>
-            <label class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.php.formatDateISO" @change="updatePhp('formatDateISO', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyPhpIsoDates") }}</label>
+            <label class="flex items-center gap-2 text-sm"><input type="checkbox" :checked="draftOptions.php.formatDateIso" @change="updatePhp('formatDateIso', ($event.target as HTMLInputElement).checked)" />{{ t("grid.copyPhpIsoDates") }}</label>
           </template>
 
           <details class="space-y-2 border-t pt-3">
@@ -422,7 +422,8 @@ function save() {
         <div class="min-w-0 space-y-1.5">
           <Label>{{ t("grid.copyExtractorPreview") }}</Label>
           <div class="relative min-h-72 rounded-md border bg-muted/30">
-            <pre class="max-h-[55vh] overflow-auto whitespace-pre p-3 font-mono text-xs">{{ previewError || previewText }}</pre>
+            <pre v-if="previewError" class="max-h-[55vh] overflow-y-auto whitespace-pre-wrap break-words p-3 text-sm">{{ previewError }}</pre>
+            <pre v-else class="max-h-[55vh] overflow-auto whitespace-pre p-3 font-mono text-xs">{{ previewText }}</pre>
             <span v-if="previewLoading" class="absolute right-2 top-2 text-xs text-muted-foreground">{{ t("common.loading") }}</span>
           </div>
           <p v-if="previewTruncatedRows" class="text-xs text-muted-foreground">{{ t("grid.copyExtractorPreviewTruncated", { count: previewTruncatedRows }) }}</p>

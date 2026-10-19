@@ -203,6 +203,8 @@ describe("extractor draft preview", () => {
     props.open = true;
     await advancePreview();
     expect(host.querySelector("pre")?.textContent).toBe("preview failed");
+    expect(host.querySelector("pre")?.classList.contains("break-words")).toBe(true);
+    expect(host.querySelector("pre")?.classList.contains("whitespace-pre-wrap")).toBe(true);
     await toggle(host, "copyExtractorSkipComputed");
     props.open = false;
     await advancePreview();

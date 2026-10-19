@@ -145,7 +145,7 @@ export interface DataGridExtractorOptions {
     valuesOnly: boolean;
   };
   dbunit: { tableName: string; upperCaseTableName: boolean; upperCaseColumnNames: boolean; includeNullValues: boolean; nullValueString: string };
-  php: { arraySyntax: "legacy" | "short"; quoteChar: "'" | '"'; formatDateISO: boolean; rowDelimiter: string; variableName: string };
+  php: { arraySyntax: "legacy" | "short"; quoteChar: "'" | '"'; formatDateIso: boolean; rowDelimiter: string; variableName: string };
   valueFormat: DataGridValueFormat;
 }
 
@@ -219,7 +219,7 @@ export const DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS: DataGridExtractorOptions = {
   },
   json: { pretty: true, camelCaseFieldNames: false, valuesOnly: false },
   dbunit: { tableName: "", upperCaseTableName: true, upperCaseColumnNames: true, includeNullValues: true, nullValueString: "[NULL]" },
-  php: { arraySyntax: "short", quoteChar: '"', formatDateISO: true, rowDelimiter: "\n", variableName: "" },
+  php: { arraySyntax: "short", quoteChar: '"', formatDateIso: true, rowDelimiter: "\n", variableName: "" },
   valueFormat: "default",
 };
 
@@ -234,6 +234,7 @@ export function normalizeDataGridExtractorOptions(value: unknown): DataGridExtra
   const json: Partial<DataGridExtractorOptions["json"]> = typeof source.json === "object" && source.json !== null ? source.json : {};
   const dbunit: Partial<DataGridExtractorOptions["dbunit"]> = typeof source.dbunit === "object" && source.dbunit !== null ? source.dbunit : {};
   const php: Partial<DataGridExtractorOptions["php"]> = typeof source.php === "object" && source.php !== null ? source.php : {};
+  const phpLegacy = php as Record<string, unknown>;
   const separator = (candidate: unknown, fallback: string) => (typeof candidate === "string" && unicodeCodePointLength(candidate) > 0 && unicodeCodePointLength(candidate) <= 8 ? candidate : fallback);
   const quote = typeof dsv.quote === "string" && unicodeCodePointLength(dsv.quote) === 1 ? dsv.quote : DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.dsv.quote;
   return {
@@ -278,7 +279,7 @@ export function normalizeDataGridExtractorOptions(value: unknown): DataGridExtra
     php: {
       arraySyntax: php.arraySyntax === "legacy" ? "legacy" : "short",
       quoteChar: php.quoteChar === "'" ? "'" : '"',
-      formatDateISO: php.formatDateISO !== false,
+      formatDateIso: typeof php.formatDateIso === "boolean" ? php.formatDateIso : phpLegacy.formatDateISO !== false,
       rowDelimiter: typeof php.rowDelimiter === "string" && php.rowDelimiter.length <= 8 ? php.rowDelimiter : "\n",
       variableName: typeof php.variableName === "string" && (php.variableName === "" || /^[A-Za-z_][A-Za-z0-9_]*$/.test(php.variableName)) ? php.variableName : "",
     },

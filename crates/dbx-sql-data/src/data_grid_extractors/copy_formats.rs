@@ -602,4 +602,63 @@ mod tests {
         assert_eq!(result.warnings.len(), 1);
         assert_eq!(result.warnings[0].code, DataGridExtractWarningCode::PhpDateNotIso);
     }
+
+    #[test]
+    fn php_request_accepts_the_frontend_camel_case_date_option() {
+        let request: crate::data_grid_extractors::DataGridExtractRequest = serde_json::from_value(json!({
+            "version": 1,
+            "extractor": "php",
+            "columns": [],
+            "selectedColumnIndexes": [],
+            "rows": [],
+            "selectionKind": "rows",
+            "options": {
+                "dsv": {
+                    "columnSeparator": ",",
+                    "rowSeparator": "\n",
+                    "nullText": "",
+                    "quote": "\"",
+                    "quotePolicy": "minimal",
+                    "quoteNumericStrings": false,
+                    "includeColumnHeader": false,
+                    "includeRowHeader": false,
+                    "headerPosition": "legacy",
+                    "headerFormat": "name",
+                    "headerCase": "preserve",
+                    "escapeFormulas": false,
+                    "lineFeedEscapeString": "",
+                    "arrayFormat": "preserve",
+                    "formatNumbers": "inherit"
+                },
+                "sql": {
+                    "skipComputedColumns": true,
+                    "skipGeneratedColumns": true,
+                    "insertMode": "merged",
+                    "primaryKeyMode": "include",
+                    "includeDatabaseName": false,
+                    "quoteIdentifiers": true,
+                    "temporalFormat": "native"
+                },
+                "json": { "pretty": true, "camelCaseFieldNames": false, "valuesOnly": false },
+                "dbunit": {
+                    "tableName": "",
+                    "upperCaseTableName": true,
+                    "upperCaseColumnNames": true,
+                    "includeNullValues": true,
+                    "nullValueString": "[NULL]"
+                },
+                "php": {
+                    "arraySyntax": "short",
+                    "quoteChar": "\"",
+                    "formatDateIso": true,
+                    "rowDelimiter": "\n",
+                    "variableName": ""
+                },
+                "valueFormat": "default"
+            }
+        }))
+        .expect("frontend PHP options deserialize");
+
+        assert!(request.options.php.format_date_iso);
+    }
 }

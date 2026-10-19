@@ -80,7 +80,10 @@ describe("useDataGridExtractor includeDatabaseName payload", () => {
   it.each(["oracle", "oceanbase-oracle"] as const)("passes %s into PHP extraction for dialect-specific float semantics", async (databaseType) => {
     const state = createState(databaseType, undefined);
     await state.extractWithExtractor("php");
-    expect(mocks.extract.mock.calls.at(-1)![0].databaseType).toBe(databaseType);
+    const request = mocks.extract.mock.calls.at(-1)![0];
+    expect(request.databaseType).toBe(databaseType);
+    expect(request.options.php).toMatchObject({ formatDateIso: true });
+    expect(request.options.php).not.toHaveProperty("formatDateISO");
   });
 
   it.each([
