@@ -16,4 +16,14 @@ describe("custom rule engine recovery", () => {
     expect(result).toBe(base);
     expect(diagnostics).toEqual(["custom-rules-fallback"]);
   });
+
+  it.each(["remove", "single"] as const)("restores original input and base spacing after the engine declines %s rules", async (emptyLineMode) => {
+    const source = "-- heading\n\nselect a,b from t; select 2;";
+    const saved = { layoutStyle: "classic", preserveEmptyLines: true, linesBetweenQueries: 2 } as const;
+    const base = await formatSqlText(source, "oracle", saved);
+    const diagnostics: string[] = [];
+    const result = await formatSqlText(source, "oracle", { ...saved, customRulesEnabled: true, emptyLineMode }, (value) => diagnostics.push(value));
+    expect(result).toBe(base);
+    expect(diagnostics).toEqual(["custom-rules-fallback"]);
+  });
 });

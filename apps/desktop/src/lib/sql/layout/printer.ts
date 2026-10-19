@@ -196,13 +196,16 @@ function printRuleList(writer: Writer, items: AstNode[][], baseColumn: number, c
         itemNodes = item.slice(commentCount);
       }
       const text = renderInline(ctx, itemNodes, Number.MAX_SAFE_INTEGER);
-      const sameLine = mode === "singleLine" || (mode === "wrap" && !!text && writer.column + 1 + text.length + (index < items.length - 1 ? 1 : 0) <= ctx.options.lineWidth);
-      if (sameLine && commentCount === 0) writer.space();
-      else {
+      const separatorWidth = comma === "before" ? 2 : 1;
+      const trailingCommaWidth = comma === "after" && index < items.length - 1 ? 1 : 0;
+      const sameLine = mode === "singleLine" || (mode === "wrap" && !!text && writer.column + separatorWidth + text.length + trailingCommaWidth <= ctx.options.lineWidth);
+      if (sameLine && commentCount === 0) {
+        if (comma === "before") writer.write(", ");
+        else writer.space();
+      } else {
         writer.newline(comma === "before" ? Math.max(baseColumn, continuation - 2) : continuation);
         if (comma === "before") writer.write(", ");
       }
-      if (comma === "before" && sameLine && commentCount === 0) writer.write(", ");
     }
     const alignment = aligned?.[index];
     if (alignment && itemNodes === item) {

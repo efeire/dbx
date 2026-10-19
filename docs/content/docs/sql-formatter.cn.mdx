@@ -79,7 +79,7 @@ DML 选择 `inherit` 时继承通用规则。通用规则也用于函数参数�
 - `whereLogicalOperatorNewline`、`onLogicalOperatorNewline`、`expressionLogicalOperatorNewline` 分别控制 WHERE、JOIN ON 和其他表达式的 AND/OR，接受 `before`、`after`、`none` 或 `inherit`。`newlineBeforeJoinOn` 控制 ON 前换行。BETWEEN 自身的 AND 不会被当作条件分隔符。
 - `collapseShortStatements` 允许短语句合并为单行，但不能覆盖明确要求的换行。`emptyLineMode` 可移除代码空行（`remove`）、将连续空行合并为一行（`single`）、保留空行（`preserve`），或以 `inherit` 沿用原 `preserveEmptyLines`；字符串和注释内部空行不受影响。
 
-`remove` 和 `single` 也将生成的查询间空行分别限制为 `0` 和 `1`；关闭自定义规则后恢复原先保存的查询间隔。
+自定义规则生效时，`remove` 和 `single` 也将生成的查询间空行分别限制为 `0` 和 `1`；关闭规则或降级到基础布局后恢复原先保存的查询间隔。
 
 先在面板内输入 SQL、选择方言并观察即时预览，再应用设置。预览不会执行 SQL，也不会覆盖已打开的查询。用同一方言和设置在编辑器中格式化相同 SQL，结果与预览一致；选区外文本保持原样，可通过编辑器撤销恢复。
 

@@ -174,6 +174,36 @@ describe("configurable SQL formatting rules (issue #8570)", () => {
     expect(await formatSqlText(result, "oracle", options)).toBe(result);
   });
 
+  it("keeps inline commas adjacent to their DML items when leading commas are selected", async () => {
+    const options = rules({ selectListLayout: "singleLine", insertListLayout: "singleLine", updateListLayout: "singleLine", selectCommaPosition: "before", insertCommaPosition: "before", updateCommaPosition: "before", collapseShortStatements: false });
+    const result = await formatSqlText("select a,b from t; insert into t (a,b) values(1,2); update t set a=1,b=2;", "oracle", options);
+    expect(result).toContain("SELECT a, b");
+    expect(result).toContain("t (a, b)");
+    expect(result).toContain("VALUES (1, 2)");
+    expect(result).toContain("SET a = 1, b = 2");
+    expect(await formatSqlText(result, "oracle", options)).toBe(result);
+  });
+
+  it("measures leading commas at the wrap boundary without adding a space before them", async () => {
+    const options = rules({ selectListLayout: "wrap", selectCommaPosition: "before", expressionWidth: 20, collapseShortStatements: false });
+    const result = await formatSqlText("select aaaaa,bbbbbb,ccc from t;", "oracle", options);
+    expect(result).toMatch(/SELECT aaaaa, bbbbbb\n\s*, ccc/);
+    expect(result.split("\n").every((line) => line.length <= 20)).toBe(true);
+    expect(await formatSqlText(result, "oracle", options)).toBe(result);
+  });
+
+  it("keeps VALUES set operands on the existing DML list rules", async () => {
+    const sql = "select 0 union all values (coalesce(1,2),3),(4,5);";
+    const options = rules({ listLayout: "vertical", insertListLayout: "inherit", selectListLayout: "singleLine", commaPosition: "before", collapseShortStatements: false });
+    const diagnostics: string[] = [];
+    const result = await formatSqlText(sql, "postgres", options, (value) => diagnostics.push(value));
+    expect(result).toMatch(/coalesce\(1\n\s*, 2\)\n\s*, 3\)/);
+    expect(result).toMatch(/\(4\n\s*, 5\)/);
+    expect(tokenizeSqlSemantic(result, "postgres").map((token) => token.normalized)).toEqual(tokenizeSqlSemantic(sql, "postgres").map((token) => token.normalized));
+    expect(diagnostics).toEqual([]);
+    expect(await formatSqlText(result, "postgres", options)).toBe(result);
+  });
+
   it.each([
     ["oracle", `select coalesce("a,b", q'[x, AND 'y like z']') as note, :p as p from t where id between 1 and 2 and label='OR'; -- tail`],
     ["mysql", "select coalesce(`a,b`, 'x, AND  y') as note, :p as p from t where id between 1 and 2 and label='OR'; -- tail"],
@@ -199,11 +229,33 @@ describe("configurable SQL formatting rules (issue #8570)", () => {
     expect(result).not.toContain("__DBX_PRESERVE_EMPTY_LINE_");
   });
 
+  it.each(["preserve", "single", "inherit"] as const)("does not mistake quoted or commented marker-like lines for %s empty lines", async (emptyLineMode) => {
+    const sql = "select 'first\n-- __DBX_PRESERVE_EMPTY_LINE_0_0__\nlast' as note from t;\n\nselect 2; /* first\n-- __DBX_PRESERVE_EMPTY_LINE_0_0__\nlast */";
+    const options = rules({ emptyLineMode, preserveEmptyLines: true });
+    const protectedTokens = (value: string) =>
+      tokenizeSqlSemantic(value, "oracle")
+        .filter((token) => ["string", "comment"].includes(token.kind))
+        .map((token) => token.text);
+    const result = await formatSqlText(sql, "oracle", options);
+    expect(protectedTokens(result)).toEqual(protectedTokens(sql));
+    expect(await formatSqlText(result, "oracle", options)).toBe(result);
+  });
+
   it("keeps complete PL/SQL blocks on the established base formatter and reports the fallback", async () => {
     const sql = "begin select a,b into x,y from t; x:=1; end;";
     const base = await formatSqlText(sql, "oracle", { layoutStyle: "classic" });
     const diagnostics: string[] = [];
     const result = await formatSqlText(sql, "oracle", rules({ layoutStyle: "classic" }), (diagnostic) => diagnostics.push(diagnostic));
+    expect(result).toBe(base);
+    expect(diagnostics).toEqual(["custom-rules-fallback"]);
+  });
+
+  it.each(["remove", "single"] as const)("restores saved base spacing when %s rules decline a procedure script", async (emptyLineMode) => {
+    const sql = "-- heading\n\nbegin select 1 into x from dual; x:=1; end; select 2 from dual;";
+    const saved = { layoutStyle: "classic", preserveEmptyLines: true, linesBetweenQueries: 2 } as const;
+    const base = await formatSqlText(sql, "oracle", saved);
+    const diagnostics: string[] = [];
+    const result = await formatSqlText(sql, "oracle", rules({ ...saved, emptyLineMode }), (value) => diagnostics.push(value));
     expect(result).toBe(base);
     expect(diagnostics).toEqual(["custom-rules-fallback"]);
   });

@@ -231,9 +231,9 @@ interface EmptyLineProtection {
  * valid at every SQL code boundary and are restored only after all DBX layout
  * post-processing is complete.
  */
-function protectEmptyLines(sql: string): EmptyLineProtection {
+function protectEmptyLines(sql: string, originalSql = sql): EmptyLineProtection {
   let namespace = 0;
-  while (sql.includes(`__DBX_PRESERVE_EMPTY_LINE_${namespace}_`)) namespace += 1;
+  while (originalSql.includes(`__DBX_PRESERVE_EMPTY_LINE_${namespace}_`)) namespace += 1;
 
   const markers: string[] = [];
   const lineBreakPattern = /\r\n|\r|\n/g;
@@ -500,9 +500,12 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
 
   let appliedCustomRules = false;
   const finalizeFormattedSql = (formatted: string): string => {
+    if (normalizedSettings.customRulesEnabled && !appliedCustomRules) {
+      onDiagnostic?.("custom-rules-fallback");
+      return formatted;
+    }
     const restoredDuckDbAliases = restoreDuckDbPrefixAliasSeparators(formatted, protectedInput.marker);
     const laidOut = appliedCustomRules ? normalizeLikeOperatorCase(restoredDuckDbAliases, normalizedSettings, dialect) : applySqlFormatterLayout(restoredDuckDbAliases, normalizedSettings, dialect);
-    if (normalizedSettings.customRulesEnabled && !appliedCustomRules) onDiagnostic?.("custom-rules-fallback");
     return emptyLineProtection ? restoreProtectedEmptyLines(laidOut, emptyLineProtection.markers) : laidOut;
   };
 
@@ -532,6 +535,9 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
       const customLayout = await formatSqlLayout({ sql: input, language, dialectOptions: resolvedDialect, cfg: formatterOptions, options: { ...layoutOptions, rules: normalizedSettings } });
       appliedCustomRules = customLayout !== null;
       if (customLayout !== null) return customLayout;
+      // Retry the original input through the saved base layout, without rule-only
+      // empty-line markers or spacing overrides. The disabled flag bounds the retry.
+      return formatSqlText(sql, dialect, { ...normalizedSettings, customRulesEnabled: false });
     }
     const laidOut = usesDefaultStyle ? await formatSqlLayout({ sql: input, language, dialectOptions: resolvedDialect, cfg: formatterOptions, options: layoutOptions }) : null;
     return laidOut ?? formatWithFallback(input);
@@ -757,7 +763,7 @@ function maskStringAndCommentSpans(sql: string, dialect: SqlFormatDialect): { ma
 function protectRuleEmptyLines(sql: string, dialect: SqlFormatDialect, single: boolean): EmptyLineProtection {
   const { masked, spans } = maskStringAndCommentSpans(sql, dialect);
   const code = single ? masked.replace(/(?:\r\n|\r|\n)[ \t]*(?:(?:\r\n|\r|\n)[ \t]*){2,}/g, "\n\n") : masked;
-  const protectedLines = protectEmptyLines(code);
+  const protectedLines = protectEmptyLines(code, sql);
   return { sql: restoreSpans(protectedLines.sql, spans), markers: protectedLines.markers };
 }
 
