@@ -29,7 +29,7 @@ describe("custom rule engine recovery", () => {
   });
 
   it("preserves multiline q literals and line comment boundaries when the private engine is unavailable", async () => {
-    const literal = "q'[first 'quoted'\n\nlast]'";
+    const literal = "q'[first 'quoted'\r\n  \t\r\nlast]'";
     const comment = "/* first\r\n\r\nlast */";
     const source = `select ${literal} as note ${comment} from dual where x=1 -- note\nand y=2;`;
     const saved = { layoutStyle: "classic", preserveEmptyLines: true, logicalOperatorNewline: "none" } as const;

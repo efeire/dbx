@@ -476,7 +476,7 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
   // The external formatter reindents multiline block comments and drops CRs.
   // Preserve affected comments until all formatting and layout passes finish.
   const commentProtection = protectBlockCommentLineEndings(sql, dialect);
-  const emptyLineProtection = emptyLineMode === "remove" ? null : normalizedSettings.customRulesEnabled ? protectRuleEmptyLines(commentProtection.sql, dialect, emptyLineMode === "single") : protectEmptyLines(commentProtection.sql);
+  const emptyLineProtection = emptyLineMode === "remove" ? null : protectCodeEmptyLines(commentProtection.sql, dialect, emptyLineMode === "single");
   const sqlWithProtectedEmptyLines = emptyLineProtection?.sql ?? commentProtection.sql;
   const protectedInput = dialect === "duckdb" ? protectDuckDbPrefixAliasSeparators(sqlWithProtectedEmptyLines) : { sql: sqlWithProtectedEmptyLines, marker: null };
   const formatterOptions =
@@ -789,7 +789,7 @@ function maskStringAndCommentSpans(sql: string, dialect: SqlFormatDialect, prote
 }
 
 /** Hide quoted/comment spans before identifying code-only paragraph boundaries. */
-function protectRuleEmptyLines(sql: string, dialect: SqlFormatDialect, single: boolean): EmptyLineProtection {
+function protectCodeEmptyLines(sql: string, dialect: SqlFormatDialect, single: boolean): EmptyLineProtection {
   const { masked, spans } = maskStringAndCommentSpans(sql, dialect);
   const code = single ? masked.replace(/(?:\r\n|\r|\n)[ \t]*(?:(?:\r\n|\r|\n)[ \t]*){2,}/g, "\n\n") : masked;
   const protectedLines = protectEmptyLines(code, sql);

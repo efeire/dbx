@@ -753,6 +753,16 @@ AND owner_id = 42`,
       ).toEqual([literal, "'ordinary'", "q'!single 'quoted'!'"]);
     });
 
+    it.each(["dbx", "classic"] as const)("preserves spaces and tabs on a q literal's blank line in the base layout (%s)", async (layoutStyle) => {
+      const literal = "q'[first 'quoted'\r\n  \t\r\nlast]'";
+      const source = `select ${literal} as note from dual;\n\nselect 2;`;
+      const settings = { layoutStyle, preserveEmptyLines: true } as const;
+      const formatted = await formatSqlText(source, "oracle", settings);
+      expect(formatted).toContain(literal);
+      expect(tokenizeSqlSemantic(formatted, "oracle").map((token) => token.normalized)).toEqual(tokenizeSqlSemantic(source, "oracle").map((token) => token.normalized));
+      expect(await formatSqlText(formatted, "oracle", settings)).toBe(formatted);
+    });
+
     it.each(["dbx", "classic"] as const)("does not apply FROM same-line layout inside protected contents (%s)", async (layoutStyle) => {
       const literal = "q'[first 'quoted'\nFROM\n  literal_source\nlast]'";
       const source = `select ${literal} as note from actual_source;`;
