@@ -183,6 +183,7 @@ public final class DbxJdbcPlugin {
         new JdbcDriverQuirkRule("jdbc:iris:", IRIS_QUIRKS),
         new JdbcDriverQuirkRule("jdbc:oracle:", ORACLE_QUIRKS),
         new JdbcDriverQuirkRule("jdbc:dm:", ORACLE_QUIRKS),
+        new JdbcDriverQuirkRule("jdbc:oceanbase:oracle://", ORACLE_QUIRKS),
         new JdbcDriverQuirkRule("jdbc:taos:", TAOS_QUIRKS),
         new JdbcDriverQuirkRule("jdbc:taos-ws:", TAOS_QUIRKS),
         new JdbcDriverQuirkRule("jdbc:taos-rs:", TAOS_QUIRKS)

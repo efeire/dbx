@@ -28,7 +28,7 @@ final class OracleTypeMetadataTest {
 
     @Test
     void listsTypesAndBodiesThroughTheRpcWithExactOwnerAndPaging() throws Exception {
-        for (String dialect : new String[] { "oracle", "dm" }) {
+        for (String dialect : new String[] { "oracle", "dm", "oceanbase-oracle" }) {
             try (Fixture fixture = new Fixture(dialect)) {
                 fixture.object(OWNER, NAME, "TYPE");
                 fixture.object(OWNER, NAME, "TYPE BODY");
@@ -87,18 +87,20 @@ final class OracleTypeMetadataTest {
 
     @Test
     void readsCompleteTypeAndBodyClobsAsReadonlyWithoutMixingKinds() throws Exception {
-        try (Fixture fixture = new Fixture("oracle")) {
-            String body = "CREATE TYPE BODY \"Mixed Type\" AS\n" + "-- long body\n".repeat(8000) + "END;";
-            fixture.ddl(OWNER, NAME, "TYPE", "CREATE TYPE \"Mixed Type\" AS OBJECT(id NUMBER)");
-            fixture.ddl(OWNER, NAME, "TYPE_BODY", body);
-            JsonNode type = fixture.source(OWNER, NAME, "TYPE");
-            JsonNode result = fixture.source(OWNER, NAME, "TYPE BODY");
-            assertFalse(type.has("error"), type.toString());
-            assertFalse(result.has("error"), result.toString());
-            assertFalse(type.path("result").path("editable").asBoolean(true));
-            assertFalse(result.path("result").path("editable").asBoolean(true));
-            assertEquals(body, result.path("result").path("source").asText());
-            assertFalse(type.path("result").path("source").asText().contains("BODY"));
+        for (String dialect : new String[] { "oracle", "oceanbase-oracle" }) {
+            try (Fixture fixture = new Fixture(dialect)) {
+                String body = "CREATE TYPE BODY \"Mixed Type\" AS\n" + "-- long body\n".repeat(8000) + "END;";
+                fixture.ddl(OWNER, NAME, "TYPE", "CREATE TYPE \"Mixed Type\" AS OBJECT(id NUMBER)");
+                fixture.ddl(OWNER, NAME, "TYPE_BODY", body);
+                JsonNode type = fixture.source(OWNER, NAME, "TYPE");
+                JsonNode result = fixture.source(OWNER, NAME, "TYPE BODY");
+                assertFalse(type.has("error"), type.toString());
+                assertFalse(result.has("error"), result.toString());
+                assertFalse(type.path("result").path("editable").asBoolean(true));
+                assertFalse(result.path("result").path("editable").asBoolean(true));
+                assertEquals(body, result.path("result").path("source").asText());
+                assertFalse(type.path("result").path("source").asText().contains("BODY"));
+            }
         }
     }
 
@@ -106,19 +108,58 @@ final class OracleTypeMetadataTest {
     void fallsBackFromNullEmptyOrBlankDdlToOrderedExactTypeSource() throws Exception {
         for (String ddl : new String[] { null, "", "  \n" }) {
             for (String kind : new String[] { "TYPE", "TYPE_BODY" }) {
-                try (Fixture fixture = new Fixture("dm")) {
-                    String dictionaryKind = kind.replace('_', ' ');
-                    fixture.ddl(OWNER, NAME, kind, ddl);
-                    fixture.line(OWNER, NAME, dictionaryKind, 2, "END;\n");
-                    fixture.line(OWNER, NAME, dictionaryKind, 1, dictionaryKind + " \"Mixed Type\" AS\n");
-                    fixture.line(OWNER, NAME, kind.equals("TYPE") ? "TYPE BODY" : "TYPE", 1, "WRONG KIND");
-                    fixture.line(OWNER.toUpperCase(), NAME, dictionaryKind, 1, "WRONG OWNER");
-                    JsonNode source = fixture.source(OWNER, NAME, kind);
-                    assertFalse(source.has("error"), source.toString());
-                    assertEquals(dictionaryKind + " \"Mixed Type\" AS\nEND;\n", source.path("result").path("source").asText());
-                    assertFalse(source.path("result").path("editable").asBoolean(true));
+                for (String dialect : new String[] { "dm", "oceanbase-oracle" }) {
+                    try (Fixture fixture = new Fixture(dialect)) {
+                        String dictionaryKind = kind.replace('_', ' ');
+                        fixture.ddl(OWNER, NAME, kind, ddl);
+                        fixture.line(OWNER, NAME, dictionaryKind, 2, "END;\n");
+                        fixture.line(OWNER, NAME, dictionaryKind, 1, dictionaryKind + " \"Mixed Type\" AS\n");
+                        fixture.line(OWNER, NAME, kind.equals("TYPE") ? "TYPE BODY" : "TYPE", 1, "WRONG KIND");
+                        fixture.line(OWNER.toUpperCase(), NAME, dictionaryKind, 1, "WRONG OWNER");
+                        JsonNode source = fixture.source(OWNER, NAME, kind);
+                        assertFalse(source.has("error"), source.toString());
+                        assertEquals(dictionaryKind + " \"Mixed Type\" AS\nEND;\n", source.path("result").path("source").asText());
+                        assertFalse(source.path("result").path("editable").asBoolean(true));
+                    }
                 }
             }
+        }
+    }
+
+    @Test
+    void doesNotApplyOracleTypeMetadataToOrdinaryOceanBaseOrMysqlUrls() throws Exception {
+        for (String dialect : new String[] { "oceanbase", "mysql" }) {
+            try (Fixture fixture = new Fixture(dialect)) {
+                fixture.object(OWNER, NAME, "TYPE");
+                fixture.ddl(OWNER, NAME, "TYPE", "CREATE TYPE should_not_be_read");
+                JsonNode listed = fixture.list(OWNER, "TYPE", "TYPE_BODY");
+                assertFalse(listed.has("error"), listed.toString());
+                assertEquals(0, listed.path("result").size());
+                assertTrue(fixture.source(OWNER, NAME, "TYPE").has("error"));
+            }
+        }
+    }
+
+    @Test
+    void explicitOceanbaseOracleModeKeepsSchemaDiscoveryAndSqlPageBoundaries() throws Exception {
+        try (Fixture fixture = new Fixture("oceanbase-oracle")) {
+            JsonNode schemas = fixture.request("listSchemas", fixture.params(null));
+            assertFalse(schemas.has("error"), schemas.toString());
+            assertEquals(OWNER.toUpperCase(), schemas.path("result").path(0).asText());
+            assertEquals(0, fixture.request("listDatabases", fixture.params(null)).path("result").size());
+
+            ObjectNode query = fixture.params(null).put("database", "APP").put("maxRows", 2);
+            query.put("sql", "SELECT X FROM SYSTEM_RANGE(1, 5) ORDER BY X");
+            JsonNode first = fixture.request("executeQuery", query);
+            assertFalse(first.has("error"), first.toString());
+            assertEquals(2, first.path("result").path("rows").size());
+            assertTrue(first.path("result").path("truncated").asBoolean());
+            query.put("sql", "SELECT X FROM (SELECT X, ROWNUM rn FROM (SELECT X FROM SYSTEM_RANGE(1, 5) ORDER BY X)) WHERE rn > 2 AND rn <= 4");
+            JsonNode second = fixture.request("executeQuery", query);
+            assertFalse(second.has("error"), second.toString());
+            assertEquals(3, second.path("result").path("rows").path(0).path(0).asInt());
+            assertEquals(4, second.path("result").path("rows").path(1).path(0).asInt());
+            assertFalse(second.path("result").path("truncated").asBoolean());
         }
     }
 
@@ -156,7 +197,11 @@ final class OracleTypeMetadataTest {
 
         Fixture(String dialect) throws Exception {
             String id = UUID.randomUUID().toString().replace("-", "");
-            url = "jdbc:" + dialect + ":dbx-types:" + id;
+            url = switch (dialect) {
+                case "oceanbase-oracle" -> "jdbc:oceanbase:oracle://localhost/dbx-types-" + id;
+                case "oceanbase" -> "jdbc:oceanbase://localhost/dbx-types-" + id;
+                default -> "jdbc:" + dialect + ":dbx-types:" + id;
+            };
             h2Url = "jdbc:h2:mem:dbx_types_" + id;
             catalog = DriverManager.getConnection(h2Url, "sa", "");
             try (var statement = catalog.createStatement()) {

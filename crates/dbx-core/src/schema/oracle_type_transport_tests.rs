@@ -9,14 +9,17 @@ use std::time::Duration;
 // unsupported getCustomTypeDetails/get_custom_type_details RPC is an error.
 const SCRIPT: &str = r#"#!/usr/bin/env python3
 import json, pathlib, sys
+oceanbase = 'oceanbase' in pathlib.Path(__file__).stem
 if '--agent' in sys.argv or pathlib.Path(__file__).name in ('agent', 'agent.exe'):
     print(json.dumps({'ready': True}), flush=True)
 def query(sql):
     if 'FROM ALL_OBJECTS ' in sql:
         return ['OWNER', 'OBJECT_NAME', 'OBJECT_TYPE', 'STATUS'], [['APP', 'Mixed Type', 'TYPE', 'VALID']]
     if 'FROM ALL_TYPES ' in sql:
-        return ['OWNER', 'TYPE_NAME', 'TYPECODE', 'ATTRIBUTES', 'METHODS', 'FINAL', 'INSTANTIABLE', 'SUPERTYPE_OWNER', 'SUPERTYPE_NAME'], [['APP', 'Mixed Type', 'OBJECT', 0, 0, 'YES', 'YES', None, None]]
+        return ['OWNER', 'TYPE_NAME', 'TYPECODE', 'ATTRIBUTES', 'METHODS', 'FINAL', 'INSTANTIABLE', 'SUPERTYPE_OWNER', 'SUPERTYPE_NAME'], [['APP', 'Mixed Type', 'OBJECT', 2 if oceanbase else 0, 1 if oceanbase else 0, 'YES', 'YES', None, None]]
     if 'FROM ALL_TYPE_ATTRS ' in sql:
+        if oceanbase:
+            return ['OWNER', 'TYPE_NAME', 'ATTR_NAME', 'ATTR_NO', 'ATTR_TYPE_OWNER', 'ATTR_TYPE_NAME', 'LENGTH', 'NUMBER_PRECISION', 'SCALE'], [['APP', 'Mixed Type', 'ID', 1, None, 'NUMBER', -1, -1, -85], ['APP', 'Mixed Type', 'LABEL', 2, None, 'VARCHAR2', 40, 2, -1]]
         return ['OWNER', 'TYPE_NAME', 'ATTR_NAME', 'ATTR_NO', 'ATTR_TYPE_OWNER', 'ATTR_TYPE_NAME', 'LENGTH', 'PRECISION', 'SCALE'], []
     if 'FROM ALL_TYPE_METHODS ' in sql:
         return ['OWNER', 'TYPE_NAME', 'METHOD_NAME', 'METHOD_NO', 'METHOD_TYPE', 'PARAMETERS', 'RESULTS'], []
@@ -210,49 +213,69 @@ async fn external_driver_type_details_return_the_same_dictionary_result_via_exec
         PluginRuntimeEnv,
     };
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
-    let script = dir.path().join("type-plugin.py");
-    std::fs::write(&script, SCRIPT).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let plugin = InstalledPlugin {
-        manifest: PluginManifest {
-            id: "jdbc".into(),
-            name: "JDBC".into(),
-            version: "test".into(),
-            protocol_version: 1,
-            executable: Some("type-plugin.py".into()),
-            drivers: vec![PluginDriverManifest {
+    for oceanbase in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = if oceanbase { "type-plugin-oceanbase.py" } else { "type-plugin.py" };
+        let script = dir.path().join(executable);
+        std::fs::write(&script, SCRIPT).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plugin = InstalledPlugin {
+            manifest: PluginManifest {
                 id: "jdbc".into(),
-                label: "JDBC".into(),
-                kind: "external".into(),
-                database_type: Some("jdbc".into()),
-            }],
-            ..PluginManifest::default()
-        },
-        path: dir.path().to_path_buf(),
-        compatibility: PluginCompatibility {
-            compatible: true,
-            backend_executable: Some(script),
-            ..PluginCompatibility::default()
-        },
-        provenance: None,
-    };
-    let session = Arc::new(
-        PluginDriverSession::start_for_test(plugin, "jdbc".into(), PluginRuntimeEnv::default()).await.unwrap(),
-    );
-    let state = state(dir.path()).await;
-    let config = config(DatabaseType::Jdbc);
-    state.configs.write().await.insert(config.id.clone(), config.clone());
-    state
-        .update_connection_pools(|pools| {
-            pools.insert(
-                config.id.clone(),
-                PoolKind::ExternalDriver { driver_id: "jdbc".into(), config: Arc::new(config), session },
-            );
-        })
-        .await;
-    let details = get_custom_type_details_core(&state, "type-transport", "app", "APP", "Mixed Type").await.unwrap();
-    assert_dictionary_details(details);
-    assert_queries(dir.path(), "executeQuery");
-    state.shutdown(Duration::from_secs(2)).await;
+                name: "JDBC".into(),
+                version: "test".into(),
+                protocol_version: 1,
+                executable: Some(executable.into()),
+                drivers: vec![PluginDriverManifest {
+                    id: "jdbc".into(),
+                    label: "JDBC".into(),
+                    kind: "external".into(),
+                    database_type: Some("jdbc".into()),
+                }],
+                ..PluginManifest::default()
+            },
+            path: dir.path().to_path_buf(),
+            compatibility: PluginCompatibility {
+                compatible: true,
+                backend_executable: Some(script),
+                ..PluginCompatibility::default()
+            },
+            provenance: None,
+        };
+        let session = Arc::new(
+            PluginDriverSession::start_for_test(plugin, "jdbc".into(), PluginRuntimeEnv::default()).await.unwrap(),
+        );
+        let state = state(dir.path()).await;
+        let mut config = config(DatabaseType::Jdbc);
+        if oceanbase {
+            config.connection_string = Some(" JDBC:OceanBase:Oracle://127.0.0.1:2881/app ".into());
+            config.jdbc_driver_class = Some("com.oceanbase.jdbc.Driver".into());
+        }
+        state.configs.write().await.insert(config.id.clone(), config.clone());
+        state
+            .update_connection_pools(|pools| {
+                pools.insert(
+                    config.id.clone(),
+                    PoolKind::ExternalDriver { driver_id: "jdbc".into(), config: Arc::new(config), session },
+                );
+            })
+            .await;
+        let details = get_custom_type_details_core(&state, "type-transport", "app", "APP", "Mixed Type").await.unwrap();
+        if oceanbase {
+            let metadata = details.oracle_metadata.unwrap();
+            assert_eq!(metadata.attribute_count, Some(2));
+            assert_eq!(metadata.attributes.len(), 2);
+            assert_eq!(metadata.attributes[0].length, None);
+            assert_eq!(metadata.attributes[0].precision, None);
+            assert_eq!(metadata.attributes[0].scale, None);
+            assert_eq!(metadata.attributes[1].length, Some(40));
+            assert_eq!(metadata.attributes[1].precision, None);
+            assert_eq!(metadata.attributes[1].scale, None);
+            assert_eq!(metadata.methods_read.state, crate::db::TypeMetadataState::Incomplete);
+        } else {
+            assert_dictionary_details(details);
+        }
+        assert_queries(dir.path(), "executeQuery");
+        state.shutdown(Duration::from_secs(2)).await;
+    }
 }

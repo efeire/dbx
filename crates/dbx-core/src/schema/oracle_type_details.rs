@@ -23,6 +23,14 @@ pub(super) fn dialect(config: &ConnectionConfig) -> Option<Dialect> {
         DatabaseType::Oracle => Some(Dialect::Oracle),
         DatabaseType::OceanbaseOracle => Some(Dialect::OceanBase),
         DatabaseType::Dameng => Some(Dialect::Dameng),
+        DatabaseType::Jdbc
+            if config
+                .connection_string
+                .as_deref()
+                .is_some_and(|url| url.trim().to_ascii_lowercase().starts_with("jdbc:oceanbase:oracle://")) =>
+        {
+            Some(Dialect::OceanBase)
+        }
         DatabaseType::Jdbc if is_oracle_external_driver_config(config) => Some(Dialect::Oracle),
         DatabaseType::Jdbc
             if config
@@ -487,6 +495,25 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn explicit_oceanbase_oracle_jdbc_mode_selects_only_the_oceanbase_type_dialect() {
+        let mut config: ConnectionConfig = serde_json::from_value(json!({
+            "id": "ob-jdbc", "name": "OB JDBC", "db_type": "jdbc", "host": "localhost", "port": 2881,
+            "username": "APP", "password": "", "database": "APP", "jdbc_driver_class": "com.oceanbase.jdbc.Driver"
+        }))
+        .unwrap();
+        for (url, expected) in [
+            (" JDBC:OceanBase:Oracle://localhost:2881/APP ", Some(Dialect::OceanBase)),
+            ("jdbc:oceanbase://localhost:2881/APP", None),
+            ("jdbc:oceanbase:mysql://localhost:2881/APP", None),
+            ("jdbc:mysql://localhost:2881/APP", None),
+        ] {
+            config.connection_string = Some(url.into());
+            assert_eq!(dialect(&config), expected, "{url}");
+            assert!(!is_oracle_external_driver_config(&config), "OB must not change the generic Oracle predicate");
+        }
+    }
 
     fn query_result(columns: &[&str], rows: Vec<Vec<Value>>) -> db::QueryResult {
         serde_json::from_value(json!({

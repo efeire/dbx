@@ -4628,6 +4628,23 @@ done
                 assert_eq!(source.editable, Some(!newly_read_only), "{db_type:?} {kind:?}");
             }
         }
+        let mut config = test_connection_config(DatabaseType::Jdbc);
+        config.connection_string = Some("jdbc:oceanbase:oracle://localhost:2881/APP".into());
+        config.jdbc_driver_class = Some("com.oceanbase.jdbc.Driver".into());
+        for kind in [db::ObjectSourceKind::Type, db::ObjectSourceKind::TypeBody] {
+            let source = finalize_object_source(
+                db::ObjectSource {
+                    name: "Mixed Type".into(),
+                    object_type: kind,
+                    schema: Some("Exact Owner".into()),
+                    source: "CREATE TYPE ...".into(),
+                    editable: Some(true),
+                    routine_parameters: None,
+                },
+                Some(&config),
+            );
+            assert_eq!(source.editable, Some(false));
+        }
     }
 
     #[test]

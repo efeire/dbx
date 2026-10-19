@@ -144,6 +144,7 @@ describe("jdbc dialect inference", () => {
   it.each([
     ["jdbc:oracle:thin:@//localhost:1521/XE", "oracle"],
     ["jdbc:dm://localhost:5236/DAMENG", "dameng"],
+    ["jdbc:oceanbase:oracle://localhost:2881/APP", "oceanbase-oracle"],
   ] as const)("uses connection-root schemas for %s", (connectionString, dialect) => {
     const connection = {
       db_type: "jdbc" as const,
@@ -155,6 +156,25 @@ describe("jdbc dialect inference", () => {
     expect(connectionUsesDatabaseObjectTreeMode(connection)).toBe(false);
     expect(connectionObjectTreeQuerySchema(connection, "DBX_TEST", "DBX_TEST")).toBe("DBX_TEST");
     expect(connectionObjectTreeNodeSchema(connection, "DBX_TEST", "DBX_TEST")).toBe("DBX_TEST");
+  });
+
+  it("prioritizes explicit OceanBase Oracle mode over conflicting JDBC labels", () => {
+    const connection = {
+      db_type: "jdbc" as const,
+      connection_string: " JDBC:OceanBase:Oracle://localhost:2881/APP ",
+      driver_label: "OceanBase MySQL JDBC",
+      jdbc_driver_class: "com.oceanbase.jdbc.Driver",
+    };
+    expect(inferJdbcDialect(connection)).toBe("oceanbase-oracle");
+    expect(effectiveDatabaseTypeForConnection(connection)).toBe("oceanbase-oracle");
+    expect(connectionUsesConnectionRootSchemaMode(connection)).toBe(true);
+  });
+
+  it("does not guess Oracle mode from an ordinary OceanBase URL or change MySQL connections", () => {
+    expect(inferJdbcDialect({ db_type: "jdbc", connection_string: "jdbc:oceanbase://localhost:2881/APP", jdbc_driver_class: "com.oceanbase.jdbc.Driver" })).toBeUndefined();
+    expect(effectiveDatabaseTypeForConnection({ db_type: "jdbc", connection_string: "jdbc:mysql://localhost:2881/APP", driver_label: "OceanBase" })).toBe("mysql");
+    expect(effectiveDatabaseTypeForConnection({ db_type: "mysql", driver_profile: "oceanbase" })).toBe("mysql");
+    expect(effectiveDatabaseTypeForConnection({ db_type: "oceanbase-oracle" })).toBe("oceanbase-oracle");
   });
 
   it("detects GaussDB-compatible JDBC connections as schema-aware", () => {
