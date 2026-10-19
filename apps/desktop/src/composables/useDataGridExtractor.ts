@@ -317,7 +317,7 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
     const request: DataGridExtractRequest = {
       version: DATA_GRID_EXTRACTOR_CONTRACT_VERSION,
       extractor,
-      databaseType: descriptor.category === "sql" ? options.databaseType.value : undefined,
+      databaseType: descriptor.category === "sql" || extractor === "php" ? options.databaseType.value : undefined,
       identifierQuote: descriptor.category === "sql" ? options.identifierQuote?.value : undefined,
       tableMeta,
       sourceTableName: options.tableMeta.value?.tableName,

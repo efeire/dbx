@@ -77,6 +77,12 @@ describe("useDataGridExtractor includeDatabaseName payload", () => {
     mocks.extract.mockResolvedValue({ text: "INSERT INTO users VALUES (1, 'Ada');", rowCount: 1 });
   });
 
+  it("passes the database type to PHP extraction so dialect-specific float semantics survive", async () => {
+    const state = createState("oracle", undefined);
+    await state.extractWithExtractor("php");
+    expect(mocks.extract.mock.calls.at(-1)![0].databaseType).toBe("oracle");
+  });
+
   it.each([
     ["sqlserver", "dbo", "app"],
     ["snowflake", "PUBLIC", undefined],
