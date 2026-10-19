@@ -70,7 +70,7 @@ import { executableStatementRangeAtCursor, executableStatementRangeCacheForDoc, 
 
 import { looksLikeDmlStatement } from "@/lib/sql/dmlChangePreview";
 
-import { canFormatSqlForDatabaseType, formatSqlText, compressSqlText } from "@/lib/sql/sqlFormatter";
+import { canFormatSqlForDatabaseType, formatSqlText, compressSqlText, type SqlFormatterDiagnostic } from "@/lib/sql/sqlFormatter";
 import { applySqlKeywordCase, loadSqlKeywordSpans } from "@/lib/sql/sqlKeywordCase";
 import { detectAndFormatStructured } from "@/lib/sql/autoFormat";
 import { restoreSqlFromSourcePaste } from "@/lib/sql/sqlSourcePaste";
@@ -1732,6 +1732,7 @@ async function formatCurrentSql() {
   try {
     let formatted: string;
     let formattedAsSql = false;
+    let formatDiagnostic: SqlFormatterDiagnostic | undefined;
     if (props.databaseType === "mongodb") {
       formatted = formatMongoShellText(source, settingsStore.editorSettings.sqlFormatter);
     } else {
@@ -1760,13 +1761,16 @@ async function formatCurrentSql() {
           // contract for format-on-save, which must never fail), which turned
           // this command into a silent no-op. A thrown error reaches the
           // `formatError` toast below.
-          formatted = await formatSqlText(source, formatDialect, settingsStore.editorSettings.sqlFormatter);
+          formatted = await formatSqlText(source, formatDialect, settingsStore.editorSettings.sqlFormatter, (diagnostic) => {
+            formatDiagnostic = diagnostic;
+          });
         }
       }
     }
     if (view.value !== currentView || currentView.state !== originalState || currentView.state.sliceDoc(from, to) !== source) {
       return;
     }
+    if (formatDiagnostic === "custom-rules-fallback") toast(t("settings.sqlFormatterFallbackNotice"), 4000);
     if (formatted === source) return;
     // The semantic mapper's contract is SQL-only. Mongo shell, Elasticsearch,
     // JSON, and XML keep the replacement selection behavior used before the
