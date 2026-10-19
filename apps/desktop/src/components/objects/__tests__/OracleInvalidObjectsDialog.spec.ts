@@ -116,8 +116,8 @@ function dialogButtons(): HTMLButtonElement[] {
   return Array.from(root?.querySelectorAll("button") ?? []);
 }
 
-async function mountDialog(connectionState = ref(connection)) {
-  const open = ref(true);
+async function mountDialog(connectionState = ref(connection), databaseState = ref("ORCL"), initiallyOpen = true) {
+  const open = ref(initiallyOpen);
   const Wrapper = defineComponent({
     setup() {
       return () =>
@@ -145,7 +145,7 @@ async function mountDialog(connectionState = ref(connection)) {
           h(OracleInvalidObjectsDialog, {
             open: open.value,
             connection: connectionState.value,
-            database: "ORCL",
+            database: databaseState.value,
             schema: "APP",
             onCompileFinished: mocks.compileFinished,
             "onUpdate:open": (value: boolean) => {
@@ -157,8 +157,8 @@ async function mountDialog(connectionState = ref(connection)) {
   });
   app = createApp(Wrapper);
   app.mount(root!);
-  await vi.waitFor(() => expect(root?.textContent).toMatch(/P_BAD|ORA-01031/));
-  return { open, connectionState };
+  if (initiallyOpen) await vi.waitFor(() => expect(root?.textContent).toMatch(/P_BAD|ORA-01031/));
+  return { open, connectionState, databaseState };
 }
 
 describe("OracleInvalidObjectsDialog production flow", () => {
@@ -184,6 +184,23 @@ describe("OracleInvalidObjectsDialog production flow", () => {
     await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).length).toBeGreaterThan(listCallsBeforeReopen));
     const reopenedListCall = mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("FROM (SELECT OWNER")).at(-1);
     expect((reopenedListCall?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId).not.toBe(sessionId);
+  });
+
+  it("does not create or close a client session when the hidden dialog context changes", async () => {
+    const connectionState = ref({ ...connection });
+    const databaseState = ref("ORCL");
+    const { open } = await mountDialog(connectionState, databaseState, false);
+
+    connectionState.value = { ...connection, host: "replacement-host" };
+    databaseState.value = "ORCL2";
+    await nextTick();
+
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.closeClientConnectionSession).not.toHaveBeenCalled();
+    open.value = true;
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalled());
+    expect(mocks.executeQuery.mock.calls[0]).toEqual(expect.arrayContaining([connection.id, "ORCL2"]));
+    expect(mocks.closeClientConnectionSession).not.toHaveBeenCalled();
   });
 
   it("loads diagnostics, previews before writing, compiles in its own session, and verifies status", async () => {

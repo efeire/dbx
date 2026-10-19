@@ -73,12 +73,17 @@ function closeManagedSession(session: ManagedSession) {
   void api.closeClientConnectionSession(session.connectionId, session.database, session.id).catch(() => undefined);
 }
 
-function rotateManagedSession(connectionId: string, database: string) {
+function retireManagedSession() {
   const previous = managedSession;
-  managedSession = newManagedSession(connectionId, database);
+  managedSession = null;
   if (!previous) return;
   previous.closeRequested = true;
   closeManagedSession(previous);
+}
+
+function rotateManagedSession(connectionId: string, database: string) {
+  retireManagedSession();
+  managedSession = newManagedSession(connectionId, database);
 }
 
 function closeCurrentManagedSession() {
@@ -243,7 +248,7 @@ function close() {
 watch(
   () => [props.open, JSON.stringify(props.connection), props.database, props.schema] as const,
   ([open], previous) => {
-    if (previous && (previous[1] !== JSON.stringify(props.connection) || previous[2] !== props.database)) rotateManagedSession(props.connection.id, props.database);
+    if (previous && (previous[1] !== JSON.stringify(props.connection) || previous[2] !== props.database)) retireManagedSession();
     if (open) void loadList();
     else {
       generation.value++;
