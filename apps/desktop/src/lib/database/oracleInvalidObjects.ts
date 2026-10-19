@@ -81,7 +81,7 @@ export async function readAllOracleInvalidObjects(query: OracleInvalidObjectsPag
     objects.push(...mapped);
     options.onProgress?.(objects.length);
     if (page.rows.length < ORACLE_INVALID_OBJECTS_PAGE_SIZE) return objects;
-    cursor = mapped.at(-1)?.objectId ?? cursor;
+    cursor = mapped[mapped.length - 1]?.objectId ?? cursor;
     if (!mapped.length) throw new Error("Oracle invalid-object cursor did not advance");
   }
 }
