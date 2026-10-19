@@ -212,8 +212,10 @@ describe("ObjectBrowser table copy", () => {
     columnsTab!.click();
     await vi.waitFor(() => expect(panel.querySelectorAll("[data-table-info-column]")).toHaveLength(2));
     const id = panel.querySelector<HTMLElement>('[data-table-info-column="id"]')!;
-    id.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }));
+    const switchShortcut = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true });
+    id.dispatchEvent(switchShortcut);
     expect(mocks.copyToClipboard).not.toHaveBeenCalled();
+    expect(switchShortcut.defaultPrevented).toBe(false);
 
     [...panel.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.classList.contains("h-5"))!.click();
     await vi.waitFor(() => expect(host.querySelector("[data-object-table-info-panel]")).toBeNull());
@@ -241,8 +243,10 @@ describe("ObjectBrowser table copy", () => {
     search.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.waitFor(() => expect(panel.querySelectorAll("[data-table-info-column]")).toHaveLength(2));
     const name = panel.querySelector<HTMLElement>('[data-table-info-column="name"]')!;
-    name.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }));
+    const filterShortcut = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true });
+    name.dispatchEvent(filterShortcut);
     expect(mocks.copyToClipboard).not.toHaveBeenCalled();
+    expect(filterShortcut.defaultPrevented).toBe(false);
   });
 
   it("writes the selected table names to the system clipboard on Ctrl+C", async () => {
