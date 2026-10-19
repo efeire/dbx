@@ -113,6 +113,22 @@ describe("Table trigger context menu", () => {
     expect(copyToClipboard).not.toHaveBeenCalled();
   });
 
+  it("copies fully qualified names for same-connection cross-schema selections in tree order", async () => {
+    const { copyToClipboard } = await import("@/lib/common/clipboard");
+    vi.mocked(copyToClipboard).mockClear();
+    const active = { ...node("table", "orders"), schema: "sales" };
+    const second = { ...node("view", "customer view"), id: "test-conn:db:view:customer-view", schema: "crm" };
+    const host = await mountHost("postgres", [active, second]);
+    const store = useConnectionStore();
+    store.selectedTreeNodeId = active.id;
+    store.selectedTreeNodeIds = [active.id, second.id];
+    const menu = host.buildContextMenu(active);
+    const copyItem = menu.flatMap((item) => item.children ?? []).find((item) => item.label === tr("contextMenu.copyQualifiedName"));
+    expect(copyItem).toBeDefined();
+    await copyItem?.action?.();
+    expect(copyToClipboard).toHaveBeenCalledWith('"sales"."orders"\n"crm"."customer view"');
+  });
+
   it("exposes disableTrigger for enabled SQL Server table trigger and executes SQL on action", async () => {
     const api = await import("@/lib/backend/api");
     const executeQueryMock = vi.fn().mockResolvedValue({ success: true, columns: [], rows: [] });
