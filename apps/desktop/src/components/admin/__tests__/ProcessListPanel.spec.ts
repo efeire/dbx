@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   oceanbaseTargetChanged: false,
   oracleVersionValue: "19.0.0.0.0",
   oracleVersionFailure: "",
+  oracleVersionGate: null as null | (() => Promise<void>),
   oracleListFailure: "",
   oracleTargetChanged: false,
   oracleTargetMissing: false,
@@ -241,8 +242,13 @@ beforeEach(() => {
     if (sql === XUGU_OWN_SESSION_SQL) return { columns: ["NODEID", "SESSION_ID"], rows: [[1, 5]] };
     if (sql === XUGU_TRANSACTION_LIST_SQL) return xuguTransactionResult();
     if (sql === ORACLE_SESSION_VERSION_SQL) {
-      if (mocks.oracleVersionFailure) throw new Error(mocks.oracleVersionFailure);
-      return { columns: ["VERSION"], rows: [[mocks.oracleVersionValue]] };
+      const failure = mocks.oracleVersionFailure;
+      const value = mocks.oracleVersionValue;
+      const gate = mocks.oracleVersionGate;
+      mocks.oracleVersionGate = null;
+      if (gate) await gate();
+      if (failure) throw new Error(failure);
+      return { columns: ["VERSION"], rows: [[value]] };
     }
     if (sql === buildOracleOwnSessionSql(false) || sql === buildOracleOwnSessionSql(true)) return { columns: [], rows: [["5", "1", "3"]] };
     if (sql === buildOracleSessionListSql(false) || sql === buildOracleSessionListSql(true)) {
@@ -307,6 +313,7 @@ beforeEach(() => {
   mocks.oceanbaseTargetChanged = false;
   mocks.oracleVersionValue = "19.0.0.0.0";
   mocks.oracleVersionFailure = "";
+  mocks.oracleVersionGate = null;
   mocks.oracleListFailure = "";
   mocks.oracleTargetChanged = false;
   mocks.oracleTargetMissing = false;
@@ -439,6 +446,33 @@ describe("ProcessListPanel batch terminate", () => {
     expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(true))).toBe(true);
     expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleOwnSessionSql(true))).toBe(true);
     expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(false))).toBe(false);
+  });
+
+  it.each([
+    ["late 11g result", "11.2.0.4.0", ""],
+    ["late probe rejection", "19.0.0.0.0", "ORA-01031: stale probe denied"],
+  ])("discards %s after the Oracle connection changes", async (_label, oldVersion, oldFailure) => {
+    let releaseProbe!: () => void;
+    mocks.oracleVersionValue = oldVersion;
+    mocks.oracleVersionFailure = oldFailure;
+    mocks.oracleVersionGate = () => new Promise<void>((resolve) => (releaseProbe = resolve));
+    const liveConnection = reactive({ ...oracleConnection });
+    const Wrapper = defineComponent({ setup: () => () => h(ProcessListPanel, { connection: liveConnection }) });
+    app = createApp(Wrapper);
+    app.mount(root!);
+    await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.some((call) => call[2] === ORACLE_SESSION_VERSION_SQL)).toBe(true));
+
+    liveConnection.host = "replacement-host";
+    mocks.oracleVersionValue = "19.0.0.0.0";
+    mocks.oracleVersionFailure = "";
+    await nextTick();
+    releaseProbe();
+
+    await vi.waitFor(() => expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(false))).toBe(true));
+    expect(mocks.executeQuery.mock.calls.filter((call) => call[2] === ORACLE_SESSION_VERSION_SQL)).toHaveLength(2);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(true))).toBe(false);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleOwnSessionSql(true))).toBe(false);
+    expect(root?.textContent).not.toContain("ORA-01031: stale probe denied");
   });
 
   it("rejects a changed Oracle target identity and never reports it as terminated", async () => {

@@ -348,12 +348,15 @@ async function load(options: { silent?: boolean } = {}) {
     if (activeDriver.versionSql && versionMajor.value === null) {
       try {
         const versionResult = await executeProcessQuery(connectionId, activeDriver.database ?? "", activeDriver.versionSql, 1, activeDriver);
+        if (!isCurrent()) return;
         const detectedVersion = oracleMajorVersion(String(versionResult.rows?.[0]?.[0] ?? ""));
         if (detectedVersion === null) versionProbeWarning.value = t("processList.oracleVersionUnknown");
         else versionMajor.value = detectedVersion;
       } catch (error) {
+        if (!isCurrent()) return;
         versionProbeWarning.value = error instanceof Error ? error.message : String(error);
       }
+      if (!isCurrent()) return;
     }
     if (ownSessionId.value === null) {
       try {
@@ -658,6 +661,7 @@ watch(
     ownNodeId.value = null;
     ownSessionRow.value = null;
     versionMajor.value = null;
+    versionProbeWarning.value = "";
     lockTarget.value = null;
     lockColumns.value = [];
     lockRows.value = [];
