@@ -9,16 +9,18 @@ fn column(name: &str, source_index: usize) -> DataGridExtractColumn {
         source_name: Some(name.to_string()),
         source_index,
         data_type: None,
+        description: None,
     }
 }
 
-fn request(extractor: DataGridExtractorId) -> DataGridExtractRequest {
+pub(super) fn request(extractor: DataGridExtractorId) -> DataGridExtractRequest {
     DataGridExtractRequest {
         version: DATA_GRID_EXTRACTOR_CONTRACT_VERSION,
         extractor,
         database_type: Some(DatabaseType::Postgres),
         identifier_quote: None,
         table_meta: None,
+        source_table_name: None,
         columns: vec![column("id", 0), column("name", 1)],
         selected_column_indexes: vec![0, 1],
         rows: vec![vec![json!(1), json!("Ada")], vec![json!(2), json!("Grace, Hopper")]],
@@ -110,8 +112,10 @@ fn query_insert_result_types_preserve_metadata_priority_and_unknown_strings() {
 #[test]
 fn sql_insert_temporal_format_contract_and_output() {
     let native = temporal_insert_request();
-    assert_eq!(extract_data_grid_selection(native.clone()).unwrap().text,
-        "INSERT INTO \"APP\".\"EVENTS\" (\"CREATED_AT\", \"NOTE\", \"AMOUNT\") VALUES (TO_DATE('2022-08-25 09:58:43', 'YYYY-MM-DD HH24:MI:SS'), 'it''s text', 42);");
+    assert_eq!(
+        extract_data_grid_selection(native.clone()).unwrap().text,
+        "INSERT INTO \"APP\".\"EVENTS\" (\"CREATED_AT\", \"NOTE\", \"AMOUNT\") VALUES (TO_DATE('2022-08-25 09:58:43', 'YYYY-MM-DD HH24:MI:SS'), 'it''s text', 42);"
+    );
     let mut payload = serde_json::to_value(&native).unwrap();
     payload["options"]["sql"]["quoteIdentifiers"] = json!(false);
     payload["options"]["sql"]["temporalFormat"] = json!("string");
@@ -460,6 +464,78 @@ fn extracts_csv_with_minimal_standard_quoting() {
 }
 
 #[test]
+fn csv_supports_bottom_description_headers_case_and_quote_modes() {
+    let mut request = request(DataGridExtractorId::Csv);
+    request.columns[0].description = Some("identifier".into());
+    request.options.dsv.header_position = DataGridHeaderPosition::Bottom;
+    request.options.dsv.header_format = DataGridHeaderFormat::Both;
+    request.options.dsv.header_case = DataGridHeaderCase::Upper;
+    let result = extract_data_grid_selection(request).expect("CSV extraction");
+    assert_eq!(result.text, "1,Ada\n2,\"Grace, Hopper\"\nID (IDENTIFIER),NAME");
+}
+
+#[test]
+fn csv_applies_formula_line_feed_array_and_typed_quote_options() {
+    let mut request = request(DataGridExtractorId::Csv);
+    request.columns = vec![column("amount", 0), column("text", 1), column("items", 2)];
+    request.columns[0].data_type = Some("INTEGER".into());
+    request.columns[1].data_type = Some("VARCHAR".into());
+    request.columns[2].data_type = Some("JSON_ARRAY".into());
+    request.selected_column_indexes = vec![0, 1, 2];
+    request.rows =
+        vec![vec![json!(-1), json!("=SUM(A1)\r\nnext"), json!(["a", "b"])], vec![json!(2), json!("001"), json!(["c"])]];
+    request.options.dsv.escape_formulas = true;
+    request.options.dsv.line_feed_escape_string = "\\n".into();
+    request.options.dsv.array_format = DataGridArrayFormat::Braces;
+    request.options.dsv.quote_policy = DataGridQuotePolicy::Strings;
+    request.options.dsv.quote_numeric_strings = true;
+
+    let result = extract_data_grid_selection(request).expect("CSV extraction");
+    assert_eq!(result.text, "-1,\"'=SUM(A1)\\nnext\",\"{\"\"a\"\",\"\"b\"\"}\"\n2,\"001\",\"{\"\"c\"\"}\"");
+}
+
+#[test]
+fn csv_formula_protection_covers_fullwidth_prefixes_but_not_typed_negative_numbers() {
+    let mut request = request(DataGridExtractorId::Csv);
+    request.columns = vec![column("amount", 0), column("formula", 1)];
+    request.columns[0].data_type = Some("DECIMAL".into());
+    request.columns[1].data_type = Some("TEXT".into());
+    request.selected_column_indexes = vec![0, 1];
+    request.rows = vec![vec![json!(-123), json!("＝1+1")]];
+    request.options.dsv.escape_formulas = true;
+
+    let result = extract_data_grid_selection(request).expect("CSV extraction");
+    assert_eq!(result.text, "-123,'＝1+1");
+}
+
+#[test]
+fn tsv_keeps_legacy_headers_and_does_not_apply_csv_only_options() {
+    let mut request = request(DataGridExtractorId::TsvWithHeaders);
+    request.columns = vec![column("=header", 0), column("value", 1)];
+    request.selected_column_indexes = vec![0, 1];
+    request.rows = vec![vec![json!("=SUM(A1)"), json!("line1\nline2")]];
+    request.options.dsv.header_position = DataGridHeaderPosition::Bottom;
+    request.options.dsv.escape_formulas = true;
+    request.options.dsv.line_feed_escape_string = "\\n".into();
+
+    let result = extract_data_grid_selection(request).expect("TSV extraction");
+    assert_eq!(result.text, "=header\tvalue\n=SUM(A1)\t\"line1\nline2\"");
+}
+
+#[test]
+fn formula_escape_does_not_misclassify_interval_as_numeric() {
+    let mut request = request(DataGridExtractorId::Csv);
+    request.columns = vec![column("duration", 0)];
+    request.columns[0].data_type = Some("INTERVAL".into());
+    request.selected_column_indexes = vec![0];
+    request.rows = vec![vec![json!("-1 day")]];
+    request.options.dsv.escape_formulas = true;
+
+    let result = extract_data_grid_selection(request).expect("CSV extraction");
+    assert_eq!(result.text, "'-1 day");
+}
+
+#[test]
 fn extracts_raw_values_without_escaping_quotes() {
     let mut request = request(DataGridExtractorId::Raw);
     request.columns = vec![column("payload", 0)];
@@ -608,10 +684,7 @@ fn extracts_all_remaining_text_table_formats() {
         (DataGridExtractorId::TsvWithHeaders, "id\tname\n1\tAda\n2\tGrace, Hopper"),
         (DataGridExtractorId::CsvWithHeaders, "id,name\n1,Ada\n2,\"Grace, Hopper\""),
         (DataGridExtractorId::PipeSeparated, "1|Ada\n2|Grace, Hopper"),
-        (
-            DataGridExtractorId::Markdown,
-            "| id | name |\n| --- | --- |\n| 1 | Ada |\n| 2 | Grace, Hopper |",
-        ),
+        (DataGridExtractorId::Markdown, "| id | name |\n| --- | --- |\n| 1 | Ada |\n| 2 | Grace, Hopper |"),
         (
             DataGridExtractorId::Pretty,
             "+----+---------------+\n| id | name          |\n+----+---------------+\n| 1  | Ada           |\n| 2  | Grace, Hopper |\n+----+---------------+\n",
@@ -1215,7 +1288,10 @@ fn select_cells_joins_multiple_columns_and_rows() {
 
     let result = extract_data_grid_selection(request).expect("multi-cell SELECT extraction");
 
-    assert_eq!(result.text, "SELECT * FROM \"users\" WHERE (\"id\" = 1 AND \"name\" = 'Ada') OR (\"id\" = 2 AND \"name\" = 'Grace, Hopper');");
+    assert_eq!(
+        result.text,
+        "SELECT * FROM \"users\" WHERE (\"id\" = 1 AND \"name\" = 'Ada') OR (\"id\" = 2 AND \"name\" = 'Grace, Hopper');"
+    );
 }
 
 #[test]
@@ -1310,7 +1386,13 @@ fn select_cells_falls_back_to_display_name_like_where_clause() {
         columns: None,
     });
     request.columns = vec![
-        DataGridExtractColumn { display_name: "id".to_string(), source_name: None, source_index: 0, data_type: None },
+        DataGridExtractColumn {
+            display_name: "id".to_string(),
+            source_name: None,
+            source_index: 0,
+            data_type: None,
+            description: None,
+        },
         column("name", 1),
     ];
     let mut where_request = request.clone();

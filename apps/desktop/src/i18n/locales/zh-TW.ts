@@ -3030,6 +3030,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "目前僅預覽所選 {count} 行中的前 100 行。",
     copyExtractorWarningOmittedColumns: "複製結果已忽略以下列：{columns}。",
     copyExtractorWarningDuplicateJsonColumns: "偵測到重複的 JSON 列名，已自動重新命名以避免資料遺失。",
+    copyExtractorWarningPhpDateNotIso: "部分時間值不是有效的 ISO 日期／時間文字，已保留原始文字。",
     copyExtractorValidation: {
       "column-separator-empty": "列分隔符不能為空。",
       "row-separator-empty": "行分隔符不能為空。",

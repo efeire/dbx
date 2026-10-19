@@ -2613,6 +2613,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "กำลังดูตัวอย่าง 100 แถวแรกจากแถวที่เลือก {count} แถว",
     copyExtractorWarningOmittedColumns: "เอาต์พุตที่คัดลอกไม่รวมคอลัมน์เหล่านี้: {columns}",
     copyExtractorWarningDuplicateJsonColumns: "เปลี่ยนชื่อคอลัมน์ JSON ที่ซ้ำกันเพื่อป้องกันข้อมูลสูญหาย",
+    copyExtractorWarningPhpDateNotIso: "ค่าบางรายการไม่ใช่ข้อความวันที่/เวลารูปแบบ ISO ที่ถูกต้อง จึงคงข้อความเดิมไว้",
     copyExtractorValidation: {
       "column-separator-empty": "ตัวคั่นคอลัมน์ต้องไม่ว่าง",
       "row-separator-empty": "ตัวคั่นแถวต้องไม่ว่าง",

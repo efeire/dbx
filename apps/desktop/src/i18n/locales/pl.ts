@@ -2286,6 +2286,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "Podgląd pierwszych 100 spośród {count} zaznaczonych wierszy.",
     copyExtractorWarningOmittedColumns: "Pominięto te kolumny w skopiowanym wyniku: {columns}.",
     copyExtractorWarningDuplicateJsonColumns: "Zmieniono powtarzające się nazwy kolumn JSON, aby zapobiec utracie danych.",
+    copyExtractorWarningPhpDateNotIso: "Niektóre wartości czasu nie były poprawnym tekstem ISO; zachowano oryginalny tekst.",
     copyExtractorValidation: {
       "column-separator-empty": "Column separator must not be empty.",
       "row-separator-empty": "Row separator must not be empty.",

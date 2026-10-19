@@ -2408,6 +2408,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "Показаны первые 100 строк из {count} выбранных.",
     copyExtractorWarningOmittedColumns: "В скопированном результате пропущены столбцы: {columns}.",
     copyExtractorWarningDuplicateJsonColumns: "Повторяющиеся имена столбцов JSON переименованы во избежание потери данных.",
+    copyExtractorWarningPhpDateNotIso: "Некоторые значения времени не являются допустимым текстом даты/времени ISO; исходный текст сохранён.",
     copyExtractorValidation: {
       "column-separator-empty": "Разделитель столбцов не может быть пустым.",
       "row-separator-empty": "Разделитель строк не может быть пустым.",

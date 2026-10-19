@@ -532,6 +532,15 @@ describe("DataGrid context menu target lifecycle", () => {
     await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith("payload"));
   });
 
+  it("copies column metadata from the header without reading row values", async () => {
+    const { host } = mountGrid();
+    openContextMenu(columnHeader(host, 1));
+    await settle();
+    contextMenuButton("Copy Column Metadata").click();
+    await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith("Name\tType\tSource\tNullable\tComment\npayload\ttext\tpayload\t\t"));
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+
   it("keeps the initial select-all menu on the data selection target", async () => {
     const { host } = mountGrid(hydratedResult(1, "value"));
     await settle();

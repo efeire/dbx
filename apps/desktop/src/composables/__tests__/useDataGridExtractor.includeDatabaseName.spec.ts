@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDataGridExtractor } from "@/composables/useDataGridExtractor";
+import type { UseDataGridExtractorOptions } from "@/composables/useDataGridExtractor";
 import { DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, type DataGridExtractorOptions } from "@/lib/dataGrid/dataGridCopyExtractor";
 import type { DataGridTableMeta } from "@/lib/dataGrid/dataGridSql";
 import type { DatabaseType } from "@/types/database";
@@ -10,7 +11,14 @@ vi.mock("@/lib/backend/api", () => ({ extractDataGridSelection: mocks.extract })
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 
-function createState(databaseType: DatabaseType, tableMeta: DataGridTableMeta | undefined, extractorOptions?: DataGridExtractorOptions, includeDatabaseName = false, query?: { columns: string[]; values: unknown[]; visible: number[]; types: string[]; omitFullTypes?: boolean }) {
+function createState(
+  databaseType: DatabaseType,
+  tableMeta: DataGridTableMeta | undefined,
+  extractorOptions?: DataGridExtractorOptions,
+  includeDatabaseName = false,
+  query?: { columns: string[]; values: unknown[]; visible: number[]; types: string[]; omitFullTypes?: boolean },
+  overrides: Partial<UseDataGridExtractorOptions> = {},
+) {
   const allColumns = query?.columns ?? ["id", "name"];
   const visible = query?.visible ?? [0, 1];
   const items = [{ id: 1, data: query?.values ?? [1, "Ada"], isDraft: false }];
@@ -39,6 +47,7 @@ function createState(databaseType: DatabaseType, tableMeta: DataGridTableMeta | 
     copyText: vi.fn(async () => true),
     canCopySqlInsert: () => true,
     buildMongoInsert: vi.fn(async () => undefined),
+    ...overrides,
   });
 }
 
@@ -128,6 +137,34 @@ describe("useDataGridExtractor includeDatabaseName payload", () => {
     ]);
   });
 
+  it("uses display/edit/native value semantics while preserving internal pasteback rows", async () => {
+    const internalNull = "__bson_null__";
+    const internalPrefix = "__dbx_internal__:real-string";
+    const values = [internalNull, "NULL", internalPrefix, "0x00"];
+    const options = { ...DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, valueFormat: "display" as const };
+    const copyText = vi.fn(async () => true);
+    const state = createState(
+      "mongodb",
+      undefined,
+      options,
+      false,
+      { columns: ["null", "text", "prefix", "binary"], values, visible: [0, 1, 2, 3], types: ["json", "text", "text", "varbinary"] },
+      {
+        copyText,
+        externalCellValue: (value) => (value === internalNull ? null : value),
+        displayValue: (value) => `D:${String(value)}`,
+        editValue: (value) => `E:${String(value)}`,
+      },
+    );
+    await state.extractWithExtractor("dbunit");
+    expect(mocks.extract.mock.calls.at(-1)![0].rows).toEqual([[null, "D:NULL", `D:${internalPrefix}`, "D:0x00"]]);
+    await state.copyWithExtractor("tsv", { ...options, valueFormat: "edit" });
+    expect(mocks.extract.mock.calls.at(-1)![0].rows).toEqual([[null, "E:NULL", `E:${internalPrefix}`, "E:0x00"]]);
+    expect(copyText.mock.calls.at(-1)?.[1]?.rows).toEqual([values]);
+    await state.extractWithExtractor("dbunit", { ...options, valueFormat: "native" });
+    expect(mocks.extract.mock.calls.at(-1)![0].rows).toEqual([[null, "NULL", internalPrefix, "0x00"]]);
+  });
+
   it("formats cells with active column formatters for non-SQL extractors and keeps raw values for SQL extractors", async () => {
     const state = useDataGridExtractor({
       columns: computed(() => ["id", "amount"]),
@@ -166,5 +203,12 @@ describe("useDataGridExtractor includeDatabaseName payload", () => {
     await state.extractWithExtractor("sql-inserts");
     const sqlRequest = mocks.extract.mock.calls.at(-1)![0];
     expect(sqlRequest.rows).toEqual([[1, 100]]);
+  });
+
+  it("does not classify INTERVAL as a numeric column when applying CSV number display", async () => {
+    const options = { ...DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, dsv: { ...DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.dsv, formatNumbers: "display" as const } };
+    const state = createState("postgres", undefined, options, false, { columns: ["duration", "amount"], values: ["-1 day", 10], visible: [0, 1], types: ["INTERVAL", "DECIMAL"] }, { displayValue: (value) => `D:${String(value)}` });
+    await state.extractWithExtractor("csv");
+    expect(mocks.extract.mock.calls.at(-1)![0].rows).toEqual([["-1 day", "D:10"]]);
   });
 });

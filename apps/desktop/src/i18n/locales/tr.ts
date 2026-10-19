@@ -1902,6 +1902,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "Seçili {count} satırın ilk 100 satırı önizleniyor.",
     copyExtractorWarningOmittedColumns: "Kopyalanan çıktıda şu sütunlar atlandı: {columns}.",
     copyExtractorWarningDuplicateJsonColumns: "Veri kaybını önlemek için yinelenen JSON sütun adları yeniden adlandırıldı.",
+    copyExtractorWarningPhpDateNotIso: "Bazı zaman değerleri geçerli ISO tarih/saat metni değildi; özgün metin korundu.",
     copyExtractorValidation: {
       "column-separator-empty": "Sütun ayırıcısı boş olamaz.",
       "row-separator-empty": "Satır ayırıcısı boş olamaz.",

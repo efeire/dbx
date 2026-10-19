@@ -2318,6 +2318,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "선택한 {count}행 중 처음 100행을 미리보는 중.",
     copyExtractorWarningOmittedColumns: "복사된 출력에서 다음 컬럼이 생략되었습니다: {columns}.",
     copyExtractorWarningDuplicateJsonColumns: "데이터 손실을 방지하기 위해 중복된 JSON 컬럼 이름이 변경되었습니다.",
+    copyExtractorWarningPhpDateNotIso: "일부 시간 값이 유효한 ISO 날짜/시간 텍스트가 아니어서 원문을 유지했습니다.",
     copyExtractorValidation: {
       "column-separator-empty": "열 구분자는 비워둘 수 없습니다.",
       "row-separator-empty": "행 구분자는 비워둘 수 없습니다.",

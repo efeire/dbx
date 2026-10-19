@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TreeNode } from "@/types/database";
-import { columnNameForSidebarDrag, formatSidebarTableNamesForCopy, normalizeSidebarCopyTableNameSeparator, resolveSidebarColumnDragNames, resolveSidebarColumnDragTargets, resolveSidebarTableCopyTargets } from "@/lib/sidebar/sidebarTableNameCopy";
+import { columnNameForSidebarDrag, formatSidebarTableNamesForCopy, normalizeSidebarCopyTableNameSeparator, qualifiedNameForSidebarNode, resolveSidebarColumnDragNames, resolveSidebarColumnDragTargets, resolveSidebarTableCopyTargets } from "@/lib/sidebar/sidebarTableNameCopy";
 
 describe("sidebarTableNameCopy", () => {
   const table = (id: string, label: string, schema = "public"): TreeNode => ({
@@ -43,6 +43,29 @@ describe("sidebarTableNameCopy", () => {
     expect(formatSidebarTableNamesForCopy(targets, { separator: "newline", includeSchema: true, databaseType: "postgres" })).toBe('"public"."users"\n"sales"."orders"');
     expect(formatSidebarTableNamesForCopy([table("t1", "users")], { separator: "comma", includeSchema: true, databaseType: "mysql" })).toBe("`users`");
     expect(formatSidebarTableNamesForCopy([table("t1", "users", "default")], { separator: "comma", includeSchema: true, databaseType: "hive", schema: "default" })).toBe("`default`.`users`");
+  });
+
+  it("resolves SQL names from object identity and quotes each namespace segment", () => {
+    expect(qualifiedNameForSidebarNode({ ...table("t1", "a.b"), database: "sales db" }, { databaseType: "mysql" })).toBe("`sales db`.`a.b`");
+    const routine: TreeNode = { id: "f", label: "find user", objectName: "find user", type: "function", connectionId: "c1", database: "db", schema: "app" };
+    expect(qualifiedNameForSidebarNode(routine, { databaseType: "postgres" })).toBe('"app"."find user"');
+    const member: TreeNode = { ...routine, id: "m", label: "lookup", objectName: "lookup", parentName: "User API", parentType: "package", type: "function" };
+    expect(qualifiedNameForSidebarNode(member, { databaseType: "oracle" })).toBe('"app"."User API"."lookup"');
+    const packageBody: TreeNode = { ...routine, id: "body", label: "User API body", objectName: "User API", type: "package-body" };
+    expect(qualifiedNameForSidebarNode(packageBody, { databaseType: "oracle" })).toBe('"app"."User API"');
+    const typeMember: TreeNode = { ...routine, id: "attr", label: "address (type)", objectName: "address", parentName: "ADDRESS_T", parentType: "type", type: "type-attribute" };
+    expect(qualifiedNameForSidebarNode(typeMember, { databaseType: "oracle" })).toBe('"app"."ADDRESS_T"."address"');
+    expect(qualifiedNameForSidebarNode({ ...routine, schema: undefined }, { databaseType: "postgres" })).toBeNull();
+    expect(qualifiedNameForSidebarNode({ ...routine, type: "trigger" }, { databaseType: "postgres" })).toBeNull();
+    const trigger: TreeNode = { ...routine, id: "tr", objectName: "audit change", type: "trigger", meta: { name: "audit change" }, tableName: "users" };
+    expect(qualifiedNameForSidebarNode(trigger, { databaseType: "sqlserver" })).toBe("[app].[audit change]");
+    expect(qualifiedNameForSidebarNode(trigger, { databaseType: "oracle" })).toBe('"app"."audit change"');
+    expect(qualifiedNameForSidebarNode({ ...trigger, type: "index", meta: { name: "idx_users" } }, { databaseType: "sqlserver" })).toBeNull();
+    expect(qualifiedNameForSidebarNode({ ...routine, type: "type-attribute", objectName: "street" }, { databaseType: "oracle" })).toBeNull();
+    const event: TreeNode = { ...routine, id: "event", type: "event", objectName: "nightly job" };
+    expect(qualifiedNameForSidebarNode(event, { databaseType: "mysql" })).toBe("`db`.`nightly job`");
+    const col = column("c", "id (bigint)", "id");
+    expect(qualifiedNameForSidebarNode(col, { databaseType: "mysql" })).toBe("`db`.`users`.`id`");
   });
 
   it("resolves multi-column drag targets for the same table", () => {

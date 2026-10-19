@@ -2,7 +2,7 @@
 
 import { createApp, defineComponent, h, nextTick, reactive, type App } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { normalizeDataGridExtractorOptions, type DataGridExtractPreview } from "@/lib/dataGrid/dataGridCopyExtractor";
+import { DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS, normalizeDataGridExtractorOptions, type DataGridCopyPreference, type DataGridExtractPreview } from "@/lib/dataGrid/dataGridCopyExtractor";
 
 vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock("@/components/ui/dialog", () => {
@@ -58,8 +58,16 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function mountDialog(preview = vi.fn(async () => result("initial")), open = false) {
-  const props = reactive({ open, preference: "sql-inserts" as const, options: normalizeDataGridExtractorOptions({}), items: [{ value: "sql-inserts" as const, label: "INSERT" }], preview });
+function mountDialog(preview = vi.fn(async () => result("initial")), open = false, preference: DataGridCopyPreference = "sql-inserts") {
+  const props = reactive({
+    open,
+    preference,
+    sourceTableName: undefined as string | undefined,
+    visibleCopyExtractors: [...DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS],
+    options: normalizeDataGridExtractorOptions({}),
+    items: [{ value: preference, label: preference.toUpperCase() }],
+    preview,
+  });
   const save = vi.fn();
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -96,6 +104,17 @@ afterEach(() => {
 });
 
 describe("extractor draft preview", () => {
+  it("shows CSV-specific settings only for CSV and DSV extractors", async () => {
+    const { host } = mountDialog(undefined, true, "tsv");
+    await advancePreview();
+    expect(host.textContent).not.toContain("grid.copyExtractorEscapeFormulas");
+    expect(host.textContent).not.toContain("grid.copyExtractorHeaderPosition");
+    const csv = mountDialog(undefined, true, "csv");
+    await advancePreview();
+    expect(csv.host.textContent).toContain("grid.copyExtractorEscapeFormulas");
+    expect(csv.host.textContent).toContain("grid.copyExtractorHeaderPosition");
+  });
+
   it("previews an initially open dialog", async () => {
     const { preview, host } = mountDialog(undefined, true);
     await advancePreview();

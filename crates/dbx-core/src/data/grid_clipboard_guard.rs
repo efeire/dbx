@@ -71,7 +71,9 @@ fn is_spreadsheet_extractor(extractor: DataGridExtractorId) -> bool {
         | DataGridExtractorId::Markdown
         | DataGridExtractorId::Html
         | DataGridExtractorId::Xml
-        | DataGridExtractorId::Pretty => false,
+        | DataGridExtractorId::Pretty
+        | DataGridExtractorId::Dbunit
+        | DataGridExtractorId::Php => false,
     }
 }
 
@@ -136,11 +138,13 @@ mod tests {
             database_type: None,
             identifier_quote: None,
             table_meta: None,
+            source_table_name: None,
             columns: vec![DataGridExtractColumn {
                 display_name: "value".to_string(),
                 source_name: Some("value".to_string()),
                 source_index: 0,
                 data_type: None,
+                description: None,
             }],
             selected_column_indexes: vec![0],
             rows,
@@ -338,6 +342,7 @@ mod tests {
                 source_name: Some("formula".to_string()),
                 source_index: 1,
                 data_type: None,
+                description: None,
             });
             let guarded = neutralize_spreadsheet_formulas(request);
             let result = dbx_sql::data_grid_extractors::extract_data_grid_selection(guarded)

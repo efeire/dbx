@@ -3044,6 +3044,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "現在は選択された{count}行のうち最初の100行のみをプレビューしています。",
     copyExtractorWarningOmittedColumns: "コピー結果は以下の列を無視しました：{columns}。",
     copyExtractorWarningDuplicateJsonColumns: "重複したJSON列名が検出されました。データ損失を避けるために自動的に名前を変更しました。",
+    copyExtractorWarningPhpDateNotIso: "一部の日時値が有効なISO形式ではないため、元のテキストを保持しました。",
     copyExtractorValidation: {
       "column-separator-empty": "列区切り文字は空にできません。",
       "row-separator-empty": "行区切り文字は空にできません。",

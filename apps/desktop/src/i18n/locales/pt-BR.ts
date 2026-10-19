@@ -3025,6 +3025,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "Atualmente visualizando apenas as primeiras 100 das {count} linhas selecionadas.",
     copyExtractorWarningOmittedColumns: "O resultado da cópia omitiu as seguintes colunas: {columns}.",
     copyExtractorWarningDuplicateJsonColumns: "Nomes de colunas JSON duplicados detectados, renomeados automaticamente para evitar perda de dados.",
+    copyExtractorWarningPhpDateNotIso: "Alguns valores temporais não eram texto ISO válido de data/hora; o texto original foi preservado.",
     copyExtractorValidation: {
       "column-separator-empty": "O separador de coluna não pode estar vazio.",
       "row-separator-empty": "O separador de linha não pode estar vazio.",

@@ -2202,6 +2202,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "Menampilkan pratinjau 100 baris pertama dari {count} baris terpilih.",
     copyExtractorWarningOmittedColumns: "Hasil salinan tidak menyertakan kolom ini: {columns}.",
     copyExtractorWarningDuplicateJsonColumns: "Nama kolom JSON yang duplikat telah diganti nama untuk mencegah kehilangan data.",
+    copyExtractorWarningPhpDateNotIso: "Beberapa nilai waktu bukan teks tanggal/waktu ISO yang valid; teks aslinya dipertahankan.",
     copyExtractorValidation: {
       "column-separator-empty": "Pemisah kolom tidak boleh kosong.",
       "row-separator-empty": "Pemisah baris tidak boleh kosong.",

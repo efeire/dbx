@@ -1904,6 +1904,7 @@ export default withEnglishFallback({
     copyExtractorPreviewTruncated: "Seçilmiş {count} sətrin ilk 100 sətrinə önbaxış göstərilir.",
     copyExtractorWarningOmittedColumns: "Kopyalanmış nəticəyə bu sütunlar daxil edilmədi: {columns}.",
     copyExtractorWarningDuplicateJsonColumns: "Verilənlərin itirilməsinin qarşısını almaq üçün təkrarlanan JSON sütun adları dəyişdirildi.",
+    copyExtractorWarningPhpDateNotIso: "Bəzi vaxt dəyərləri etibarlı ISO tarix/vaxt mətni deyildi; orijinal mətn saxlanıldı.",
     copyExtractorValidation: {
       "column-separator-empty": "Sütun ayırıcısı boş olmamalıdır.",
       "row-separator-empty": "Sətir ayırıcısı boş olmamalıdır.",
