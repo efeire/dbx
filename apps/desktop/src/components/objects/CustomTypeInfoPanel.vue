@@ -24,6 +24,8 @@ const emit = defineEmits<{ close: []; "open-source": [objectType: "TYPE" | "TYPE
 
 const { t } = useI18n();
 const toast = useToast();
+type CustomTypeTabId = "members" | "properties" | "methods" | "ddl" | "source";
+type CustomTypeTab = { id: CustomTypeTabId; label: string };
 const guard = createSidePanelRequestGuard();
 const sourceGuard = createSidePanelRequestGuard();
 const details = ref<CustomTypeDetails | null>(null);
@@ -40,10 +42,13 @@ const isOracleFamily = computed(() => ["oracle", "oceanbase-oracle", "dameng"].i
 
 const kindLabel = computed(() => (details.value ? t(details.value.oracleMetadata ? `oracleType.kinds.${details.value.kind}` : `customType.kinds.${details.value.kind}`) : ""));
 const hasMemberTab = computed(() => details.value?.kind === "composite" || details.value?.kind === "enum" || !!details.value?.oracleMetadata);
-const tabs = computed(() => {
-  const items: Array<{ id: "members" | "properties" | "methods" | "ddl" | "source"; label: string }> = [];
+const tabs = computed<CustomTypeTab[]>(() => {
+  const items: CustomTypeTab[] = [];
   if (hasMemberTab.value) items.push({ id: "members", label: t("customType.tabs.members") });
-  if (!details.value && isOracleFamily.value) return [{ id: "source", label: t("oracleType.source") }];
+  if (!details.value && isOracleFamily.value) {
+    const sourceTab: CustomTypeTab = { id: "source", label: t("oracleType.source") };
+    return [sourceTab];
+  }
   items.push({ id: "properties", label: t("customType.tabs.properties") });
   if (details.value?.oracleMetadata) {
     items.push({ id: "methods", label: t("oracleType.methods") });
@@ -145,7 +150,7 @@ function isEnumKind(kind: CustomTypeKind | undefined): boolean {
   return kind === "enum";
 }
 
-function selectTab(next: "members" | "properties" | "methods" | "ddl" | "source") {
+function selectTab(next: CustomTypeTabId) {
   userSelectedTab.value = true;
   tab.value = next;
   if (next === "source" && !sourceText.value && !sourceLoading.value && !sourceError.value) {
