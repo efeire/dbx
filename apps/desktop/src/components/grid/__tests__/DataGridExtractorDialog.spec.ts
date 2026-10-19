@@ -350,6 +350,28 @@ describe("extractor draft preview", () => {
     expect(copy).not.toHaveBeenCalled();
   });
 
+  it("does not let a completed copy from a closed dialog session affect a reopened dialog", async () => {
+    let resolveCopy!: (copied: boolean) => void;
+    const { props, host } = mountDialog();
+    props.mode = "copy";
+    props.copy = vi.fn(() => new Promise<boolean>((resolve) => (resolveCopy = resolve)));
+    props.open = true;
+    await nextTick();
+    [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "grid.copy")!.click();
+    await nextTick();
+
+    props.open = false;
+    await nextTick();
+    props.open = true;
+    await nextTick();
+    resolveCopy(true);
+    await nextTick();
+
+    expect(props.open).toBe(true);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect([...host.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.trim() === "grid.copy")).toBe(true);
+  });
+
   it("shows current errors and resets draft options when reopened", async () => {
     const preview = vi.fn(async () => result("reopened")).mockRejectedValueOnce(new Error("preview failed"));
     const { props, host } = mountDialog(preview);

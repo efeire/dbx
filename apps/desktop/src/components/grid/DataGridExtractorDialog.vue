@@ -28,6 +28,7 @@ const props = defineProps<{
   visibleCopyExtractors: DataGridCopyExtractorId[];
   options: DataGridExtractorOptions;
   mode?: "configure" | "copy";
+  previewSessionKey?: number;
   items: Array<{ value: DataGridCopyPreference; label: string; disabled?: boolean }>;
   visibleItems: Array<{ value: DataGridCopyExtractorId; label: string; disabled?: boolean }>;
   preview: (preference: DataGridCopyPreference, options: DataGridExtractorOptions) => Promise<DataGridExtractPreview>;
@@ -203,6 +204,20 @@ watch(previewExpanded, (expanded) => {
   previewWarnings.value = [];
   previewTruncatedRows.value = 0;
 });
+
+watch(
+  () => props.previewSessionKey,
+  () => {
+    if (props.mode !== "copy" || !props.open) return;
+    previewSequence += 1;
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = undefined;
+    previewLoading.value = false;
+    previewText.value = "";
+    previewWarnings.value = [];
+    previewError.value = t("grid.copyExtractorSelectionChanged");
+  },
+);
 
 onBeforeUnmount(() => {
   if (previewTimer) clearTimeout(previewTimer);

@@ -9240,7 +9240,7 @@ const defaultCopyPreferenceLabel = computed(() => copyPreferenceLabel(selectedCo
 const extractorConfigOpen = ref(false);
 const advancedCopyOpen = ref(false);
 let advancedCopySession = 0;
-let advancedCopyGeneration = 0;
+const advancedCopyGeneration = ref(0);
 let advancedCopyBinding: ReturnType<typeof advancedCopySnapshot> | undefined;
 
 const advancedCopySelectionKey = computed(() =>
@@ -9257,7 +9257,7 @@ const advancedCopySelectionKey = computed(() =>
 watch(
   [() => props.result, advancedCopySelectionKey],
   () => {
-    advancedCopyGeneration += 1;
+    advancedCopyGeneration.value += 1;
   },
   { flush: "sync" },
 );
@@ -9268,7 +9268,7 @@ function advancedCopySnapshot() {
     rows: props.result.rows,
     columns: props.result.columns,
     selection: advancedCopySelectionKey.value,
-    generation: advancedCopyGeneration,
+    generation: advancedCopyGeneration.value,
   };
 }
 
@@ -9304,8 +9304,18 @@ async function copyAdvancedFormat(preference: DataGridCopyPreference, extractorO
   const isValid = () => !!binding && isAdvancedCopySessionValid(session, binding);
   if (!isValid()) throw new Error(t("grid.copyExtractorSelectionChanged"));
   const copied = await copyWithPreference(preference, extractorOptions, isValid);
-  if (!isValid()) throw new Error(t("grid.copyExtractorSelectionChanged"));
+  if (!copied && !isValid()) throw new Error(t("grid.copyExtractorSelectionChanged"));
   return copied;
+}
+
+async function previewAdvancedCopy(preference: DataGridCopyPreference, extractorOptions: typeof settingsStore.editorSettings.dataGridExtractorOptions) {
+  const session = advancedCopySession;
+  const binding = advancedCopyBinding;
+  const isValid = () => !!binding && isAdvancedCopySessionValid(session, binding);
+  if (!isValid()) throw new Error(t("grid.copyExtractorSelectionChanged"));
+  const preview = await previewWithPreference(preference, extractorOptions);
+  if (!isValid()) throw new Error(t("grid.copyExtractorSelectionChanged"));
+  return preview;
 }
 
 const copyPreferenceMenuItems = computed(() =>
@@ -16718,7 +16728,8 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
       :options="settingsStore.editorSettings.dataGridExtractorOptions"
       :items="copyPreferenceMenuItems"
       :visible-items="visibleCopyExtractorItems"
-      :preview="previewWithPreference"
+      :preview="previewAdvancedCopy"
+      :preview-session-key="advancedCopyGeneration"
       :can-copy="canCopyAdvancedFormat"
       :copy="copyAdvancedFormat"
     />
