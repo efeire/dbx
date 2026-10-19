@@ -221,6 +221,8 @@ class BatchWriteError extends Error {
   }
 }
 
+class IncompleteObjectStatusError extends Error {}
+
 function writeErrorMessage(value: unknown): string {
   if (value && typeof value === "object" && "execution_error" in value) {
     const result = value as { error?: unknown; rows?: unknown[][] };
@@ -248,8 +250,10 @@ function objectDdlTimeMatches(object: OracleInvalidObject, row: unknown[] | unde
   return !!row && String(row[1] ?? "") === object.lastDdlTime;
 }
 
-function readObjectStatus(scope: ExecutionScope, object: OracleInvalidObject) {
-  return query(buildOracleObjectStatusSql(object.owner, object), 2, scope);
+async function readObjectStatus(scope: ExecutionScope, object: OracleInvalidObject) {
+  const result = await query(buildOracleObjectStatusSql(object.owner, object), 2, scope);
+  if (result.truncated === true) throw new IncompleteObjectStatusError();
+  return result;
 }
 
 async function readObjectErrors(scope: ExecutionScope, object: OracleInvalidObject) {
@@ -310,8 +314,14 @@ async function confirmCompile() {
       execute: async () => {
         if (!scopeIsCurrent(scope)) throw new Error(t("processList.oracleInvalidObjects.targetChanged"));
         const identity = await query(buildOracleObjectIdentitySql(target.owner, target), 2, scope);
-        const row = identity.rows[0];
         if (!scopeIsCurrent(scope)) return undefined;
+        if (identity.truncated === true || identity.rows.length > 1) {
+          previewSql.value = "";
+          singlePlan.value = null;
+          outcome.value = t("processList.oracleInvalidObjects.batchIdentityUnknown");
+          return undefined;
+        }
+        const row = identity.rows[0];
         if (!objectIdentityMatches(target, row)) {
           previewSql.value = "";
           singlePlan.value = null;
@@ -358,7 +368,12 @@ async function confirmCompile() {
         singlePlan.value = null;
         await loadList(token);
         if (!scopeIsCurrent(scope)) return;
-        outcome.value = error instanceof BatchWriteError && !error.unknown ? t("processList.oracleInvalidObjects.compileFailed", { message: writeErrorMessage(error.value) }) : `${t("processList.oracleInvalidObjects.compileUnknown")} ${writeErrorMessage(error)}`;
+        outcome.value =
+          error instanceof BatchWriteError && !error.unknown
+            ? t("processList.oracleInvalidObjects.compileFailed", { message: writeErrorMessage(error.value) })
+            : error instanceof IncompleteObjectStatusError
+              ? t("processList.oracleInvalidObjects.compileUnknown")
+              : `${t("processList.oracleInvalidObjects.compileUnknown")} ${writeErrorMessage(error)}`;
       } else {
         outcome.value = t("processList.oracleInvalidObjects.compileFailed", { message: writeErrorMessage(error instanceof BatchWriteError ? error.value : error) });
       }
@@ -494,8 +509,8 @@ async function executeBatchItem(run: BatchRun, item: BatchItem): Promise<boolean
     before = await readObjectStatus(run.scope, object);
   } catch (error) {
     if (batchIsCurrent(run)) {
-      item.status = "failed";
-      item.message = writeErrorMessage(error);
+      item.status = error instanceof IncompleteObjectStatusError ? "unknown" : "failed";
+      item.message = error instanceof IncompleteObjectStatusError ? t("processList.oracleInvalidObjects.batchIdentityUnknown") : writeErrorMessage(error);
     }
     return true;
   }
@@ -552,7 +567,7 @@ async function executeBatchItem(run: BatchRun, item: BatchItem): Promise<boolean
   } catch (error) {
     if (batchIsCurrent(run)) {
       item.status = "unknown";
-      item.message = `${t("processList.oracleInvalidObjects.compileUnknown")} ${writeErrorMessage(error)}`;
+      item.message = error instanceof IncompleteObjectStatusError ? t("processList.oracleInvalidObjects.compileUnknown") : `${t("processList.oracleInvalidObjects.compileUnknown")} ${writeErrorMessage(error)}`;
     }
     return false;
   }

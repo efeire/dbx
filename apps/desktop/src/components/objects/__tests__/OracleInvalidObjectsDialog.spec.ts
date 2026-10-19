@@ -16,6 +16,10 @@ const mocks = vi.hoisted(() => ({
   failStatusReadback: false,
   statusReadbackErrorMode: "throw" as "throw" | "result",
   statusMissingAfterCompile: false,
+  truncateBatchStatusBefore: false,
+  truncateBatchStatusAfter: false,
+  truncateSingleIdentity: false,
+  truncateSingleStatusAfter: false,
   compileGate: null as null | (() => Promise<void>),
   batchStatusGate: null as null | (() => Promise<void>),
   batchPageGate: null as null | (() => Promise<void>),
@@ -82,6 +86,10 @@ beforeEach(() => {
   mocks.failStatusReadback = false;
   mocks.statusReadbackErrorMode = "throw";
   mocks.statusMissingAfterCompile = false;
+  mocks.truncateBatchStatusBefore = false;
+  mocks.truncateBatchStatusAfter = false;
+  mocks.truncateSingleIdentity = false;
+  mocks.truncateSingleStatusAfter = false;
   mocks.compileGate = null;
   mocks.batchStatusGate = null;
   mocks.batchPageGate = null;
@@ -137,7 +145,7 @@ beforeEach(() => {
       if (compiled) errorsReloadedAfterCompile = true;
       return { columns: [], rows: mocks.truncatedErrors ? Array.from({ length: 1000 }, (_, index) => [index + 1, index + 1, 1, "invalid identifier"]) : [[1, 3, 7, compiled ? "still invalid after compile" : "invalid identifier"]] };
     }
-    if (sql.includes("STATUS = 'INVALID'")) return { columns: [], rows: [[mocks.identityChangedAfterGuard ? 10 : 9, "2026-10-20 09:00:00"]] };
+    if (sql.includes("STATUS = 'INVALID'")) return { columns: [], rows: [[mocks.identityChangedAfterGuard ? 10 : 9, "2026-10-20 09:00:00"]], truncated: mocks.truncateSingleIdentity };
     if (sql.includes("ALTER PROCEDURE") && !mocks.batchMode) {
       if (mocks.failCompile) throw new Error("ORA-01031: insufficient privileges");
       if (mocks.compileGate) await mocks.compileGate();
@@ -177,14 +185,18 @@ beforeEach(() => {
         }
         const item = mocks.batchObjects.find((row) => row[1] === name);
         if (!item || name === mocks.missingBatchStatusName) return { columns: ["OBJECT_ID", "LAST_DDL_TIME", "STATUS"], rows: [] };
-        return { columns: ["OBJECT_ID", "LAST_DDL_TIME", "STATUS"], rows: [[mocks.batchObjectIds[name] ?? item[3], mocks.batchTimes[name] ?? item[4], mocks.batchStatuses[name] ?? "INVALID"]] };
+        return {
+          columns: ["OBJECT_ID", "LAST_DDL_TIME", "STATUS"],
+          rows: [[mocks.batchObjectIds[name] ?? item[3], mocks.batchTimes[name] ?? item[4], mocks.batchStatuses[name] ?? "INVALID"]],
+          truncated: mocks.batchDdlSubmitted ? mocks.truncateBatchStatusAfter : mocks.truncateBatchStatusBefore,
+        };
       }
       if (compiled) {
         if (mocks.failStatusReadback) {
           if (mocks.statusReadbackErrorMode === "result") return { columns: ["Error"], rows: [["ORA-01031: insufficient privileges"]], execution_error: true, error: { detail: "ORA-01031: insufficient privileges" } };
           throw new Error("ORA-01031: insufficient privileges while reading status");
         }
-        return { columns: [], rows: mocks.statusMissingAfterCompile ? [] : [[objectIdAfterCompile, "2026-10-20 09:01:00", compileStatus]] };
+        return { columns: [], rows: mocks.statusMissingAfterCompile ? [] : [[objectIdAfterCompile, "2026-10-20 09:01:00", compileStatus]], truncated: mocks.truncateSingleStatusAfter };
       }
       const name = sql.match(/OBJECT_NAME = '([^']+)'/)?.[1] ?? "";
       const item = mocks.batchObjects.find((row) => row[1] === name);
@@ -339,6 +351,62 @@ describe("OracleInvalidObjectsDialog production flow", () => {
     expect(root?.textContent).not.toContain("batchConfirmTitle");
     expect(mocks.guard).not.toHaveBeenCalled();
     expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).startsWith("ALTER "))).toBe(false);
+  });
+
+  it("does not compile an object when its preflight status result is truncated", async () => {
+    mocks.batchObjects = mocks.batchObjects.slice(0, 1);
+    await mountDialog();
+    dialogButtons()
+      .find((button) => button.textContent?.includes("compileAll"))
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("batchConfirmTitle"));
+    mocks.truncateBatchStatusBefore = true;
+    dialogButtons()
+      .find((button) => button.textContent?.includes("batchConfirm"))
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("batchResults"));
+    expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).startsWith("ALTER "))).toHaveLength(0);
+    expect(root?.textContent).toContain("batchStatus.unknown");
+    expect(root?.textContent).toContain("batchIdentityUnknown");
+    expect(root?.textContent).not.toContain("compileUnknown");
+  });
+
+  it("does not compile a single object when its identity preflight is truncated", async () => {
+    mocks.truncateSingleIdentity = true;
+    await mountDialog();
+    dialogButtons()
+      .find((button) => button.textContent?.includes("P_BAD"))
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("invalid identifier"));
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.compile")
+      ?.click();
+    await nextTick();
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.confirmCompile")
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("processList.oracleInvalidObjects.batchIdentityUnknown"));
+    expect(root?.textContent).not.toContain("processList.oracleInvalidObjects.compileUnknown");
+    expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).startsWith("ALTER "))).toHaveLength(0);
+  });
+
+  it("stops the batch with unknown status when post-compile readback is truncated", async () => {
+    mocks.batchObjects = mocks.batchObjects.slice(0, 2);
+    await mountDialog();
+    dialogButtons()
+      .find((button) => button.textContent?.includes("compileAll"))
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("batchConfirmTitle"));
+    mocks.truncateBatchStatusAfter = true;
+    dialogButtons()
+      .find((button) => button.textContent?.includes("batchConfirm"))
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("batchResults"));
+    expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).startsWith("ALTER "))).toHaveLength(1);
+    expect(root?.textContent).toContain("batchStatus.unknown");
+    expect(root?.textContent).toContain("batchStatus.not-run");
+    expect(root?.textContent).toContain("compileUnknown");
+    expect(root?.textContent).not.toContain("batchIdentityUnknown");
   });
 
   it("cancels batch confirmation without compiling or refreshing the remaining list", async () => {
@@ -905,6 +973,26 @@ describe("OracleInvalidObjectsDialog production flow", () => {
     expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("ALTER PROCEDURE"))).toHaveLength(1);
     expect(mocks.compileFinished).toHaveBeenCalledWith({ connectionId: connection.id, database: "ORCL", schema: "APP" });
     expect(root?.querySelector("button")?.textContent).not.toContain("confirmCompile");
+  });
+
+  it("keeps single compile status unknown when the readback is truncated", async () => {
+    mocks.truncateSingleStatusAfter = true;
+    await mountDialog();
+    dialogButtons()
+      .find((button) => button.textContent?.includes("P_BAD"))
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("invalid identifier"));
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.compile")
+      ?.click();
+    await nextTick();
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === "processList.oracleInvalidObjects.confirmCompile")
+      ?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("processList.oracleInvalidObjects.compileUnknown"));
+    expect(mocks.executeQuery.mock.calls.filter((call) => String(call[2]).includes("ALTER PROCEDURE"))).toHaveLength(1);
+    expect(root?.textContent).not.toContain("processList.oracleInvalidObjects.compileValid");
+    expect(root?.textContent).not.toContain("processList.oracleInvalidObjects.batchIdentityUnknown");
   });
 
   it("preserves a definite compile permission denial", async () => {
