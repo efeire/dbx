@@ -325,6 +325,9 @@ const tablePartitionStatusResolved = ref(false);
 const tableConstraintsForTab = computed(() => constraintsForConstraintsTab(tableConstraints.value, tableMetadataCapabilities.value.foreignKeys));
 const tableInfoSearchQuery = ref("");
 const selectedTableInfoColumns = ref<string[]>([]);
+watch(tableInfoSearchQuery, () => {
+  selectedTableInfoColumns.value = [];
+});
 const tableInfoDdlPreRef = ref<HTMLPreElement | null>(null);
 const activeTableInfoLoading = computed(() => {
   if (tableInfoTab.value === "info") return tableOverviewLoading.value;

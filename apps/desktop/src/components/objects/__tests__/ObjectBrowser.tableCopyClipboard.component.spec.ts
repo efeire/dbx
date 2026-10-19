@@ -224,6 +224,27 @@ describe("ObjectBrowser table copy", () => {
     expect(mocks.copyToClipboard).not.toHaveBeenCalled();
   });
 
+  it("clears hidden column selection when the table-info filter changes", async () => {
+    connection.id = "mysql-copy-columns-filter-reset";
+    mocks.getColumns.mockResolvedValue([
+      { name: "id", data_type: "INT", is_nullable: false, column_default: null, is_primary_key: true, extra: null, comment: null },
+      { name: "name", data_type: "TEXT", is_nullable: true, column_default: null, is_primary_key: false, extra: null, comment: null },
+    ]);
+    const host = await mountBrowser();
+    const panel = await openColumnInfo(host);
+    panel.querySelector<HTMLElement>('[data-table-info-column="id"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    const search = panel.querySelector<HTMLInputElement>("[data-table-info-search]")!;
+    search.value = "name";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(panel.querySelectorAll("[data-table-info-column]")).toHaveLength(1));
+    search.value = "";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(panel.querySelectorAll("[data-table-info-column]")).toHaveLength(2));
+    const name = panel.querySelector<HTMLElement>('[data-table-info-column="name"]')!;
+    name.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }));
+    expect(mocks.copyToClipboard).not.toHaveBeenCalled();
+  });
+
   it("writes the selected table names to the system clipboard on Ctrl+C", async () => {
     const host = await mountBrowser();
     rowFor(host, "orders").dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
