@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   executeQuery: vi.fn(),
   ensureConnected: vi.fn(),
   toast: vi.fn(),
+  sourceTabs: [] as Array<{ id: string; sourceLoad?: { error?: string }; objectSource?: unknown }>,
+  sourceLoadFailure: "",
 }));
 
 vi.mock("@/lib/backend/api", () => ({
@@ -38,9 +40,39 @@ vi.mock("@/stores/connectionStore", () => ({
     orderByPinnedTreeNodes: (rows: unknown[]) => rows,
   }),
 }));
-vi.mock("@/stores/queryStore", () => ({
-  useQueryStore: () => ({ openObjectSourceTabPending: vi.fn() }),
-}));
+vi.mock("@/stores/queryStore", async () => {
+  const { reactive } = await import("vue");
+  const tabs = reactive(mocks.sourceTabs);
+  return {
+    useQueryStore: () => ({
+      tabs,
+      openObjectSourceTabPending: vi.fn(() => {
+        const tab = reactive({ id: "source-1", sourceLoad: {} as { error?: string } | undefined, objectSource: undefined as unknown });
+        tabs.push(tab);
+        setTimeout(() => {
+          if (mocks.sourceLoadFailure) tab.sourceLoad!.error = mocks.sourceLoadFailure;
+          else {
+            tab.sourceLoad = undefined;
+            tab.objectSource = { name: "P_BAD", objectType: "PROCEDURE" };
+          }
+        }, 0);
+        return tab.id;
+      }),
+    }),
+  };
+});
+vi.mock("@/components/objects/OracleInvalidObjectsDialog.vue", async () => {
+  const { defineComponent, h } = await import("vue");
+  return {
+    default: defineComponent({
+      props: { open: Boolean },
+      emits: ["update:open", "open-source", "compile-finished"],
+      setup(props, { emit }) {
+        return () => (props.open ? h("div", { "data-invalid-object-dialog": "" }, [h("button", { onClick: () => emit("open-source", { owner: "APP", name: "P_BAD", type: "PROCEDURE" }) }, "open-source")]) : null);
+      },
+    }),
+  };
+});
 vi.mock("@/stores/settingsStore", () => ({
   useSettingsStore: () => ({
     editorSettings: {
@@ -51,7 +83,7 @@ vi.mock("@/stores/settingsStore", () => ({
     },
   }),
 }));
-vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key, locale: ref("en-US") }) }));
+vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => (values === undefined ? key : `${key}:${Object.values(values).join(",")}`), locale: ref("en-US") }) }));
 vi.mock("@/i18n", async () => {
   const { default: en } = await import("@/i18n/locales/en");
   return { default: { install: () => undefined, global: { t: (key: string) => en.objects[key.split(".")[1] as keyof typeof en.objects] || key } } };
@@ -94,6 +126,15 @@ const connection = {
   url_params: null,
   transport_layers: [],
 } as unknown as ConnectionConfig;
+const oracleConnection = {
+  id: "oracle-source",
+  name: "Oracle",
+  db_type: "oracle",
+  host: "localhost",
+  port: 1521,
+  username: "APP",
+  password: "",
+} as ConnectionConfig;
 
 const VIEW_NAME = "v_demo";
 const VIEW_SQL = "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `v_demo` AS select 1 AS `id`";
@@ -104,6 +145,8 @@ const mountedApps: Array<{ app: App; host: HTMLElement }> = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.sourceTabs.splice(0);
+  mocks.sourceLoadFailure = "";
   mocks.listObjects.mockResolvedValue([{ name: VIEW_NAME, schema: "app", object_type: "VIEW" }]);
   mocks.listSchemas.mockResolvedValue([]);
   mocks.getObjectSource.mockResolvedValue({ source: VIEW_SQL, editable: true });
@@ -123,10 +166,10 @@ afterEach(() => {
   invalidateObjectBrowserRowsCache({});
 });
 
-async function mountBrowser() {
+async function mountBrowser(browserConnection = connection, database = "app") {
   const host = document.createElement("div");
   document.body.append(host);
-  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection, database: "app" }) });
+  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection: browserConnection, database }) });
   mountedApps.push({ app, host });
   app.mount(host);
   await vi.waitFor(() => expect(host.textContent).toContain(VIEW_NAME));
@@ -163,6 +206,27 @@ async function clickRow(host: HTMLElement, name: string) {
 }
 
 describe("ObjectBrowser view source save", () => {
+  it("closes the invalid-object dialog after its source tab loads", async () => {
+    const host = await mountBrowser(oracleConnection, "ORCL");
+    const opener = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("processList.oracleInvalidObjects.title"));
+    opener?.click();
+    await nextTick();
+    expect(host.querySelector("[data-invalid-object-dialog]")).not.toBeNull();
+    host.querySelector<HTMLButtonElement>("[data-invalid-object-dialog] button")?.click();
+    await vi.waitFor(() => expect(host.querySelector("[data-invalid-object-dialog]")).toBeNull());
+  });
+
+  it("keeps invalid-object diagnostics open and reports source-load failure", async () => {
+    mocks.sourceLoadFailure = "ORA-00942: source unavailable";
+    const host = await mountBrowser(oracleConnection, "ORCL");
+    const opener = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("processList.oracleInvalidObjects.title"));
+    opener?.click();
+    await nextTick();
+    host.querySelector<HTMLButtonElement>("[data-invalid-object-dialog] button")?.click();
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining("ORA-00942: source unavailable"), 5000));
+    expect(host.querySelector("[data-invalid-object-dialog]")).not.toBeNull();
+  });
+
   it("does not dispatch a save whose source identity changed during SQL construction", async () => {
     const host = await mountBrowser();
     vi.useFakeTimers();

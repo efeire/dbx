@@ -1830,20 +1830,54 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
       if (!source.source?.trim()) throw new Error(t("processList.oracleInvalidObjects.sourceUnavailable"));
       const tabId = queryStore.createTab(connection.id, database, `Repair - ${object.name}`, "query", object.owner, undefined, catalog);
       queryStore.updateSql(tabId, source.source);
+      oracleInvalidObjectsOpen.value = false;
     } catch (error) {
       toast(t("processList.oracleInvalidObjects.sourceLoadFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
     }
     return;
   }
-  queryStore.openObjectSourceTabPending({
-    connectionId: props.connection.id,
-    database: props.database,
+  const connectionId = props.connection.id;
+  const database = props.database;
+  const catalog = props.catalog;
+  const tabId = queryStore.openObjectSourceTabPending({
+    connectionId,
+    database,
     title: `Source - ${object.name}`,
     schema: object.owner,
-    catalog: props.catalog,
+    catalog,
     initialEditing: true,
     request: { name: object.name, objectType: objectType as ObjectSourceKind },
   });
+  const sourceLoadResult = await new Promise<{ error?: string }>((resolve) => {
+    const getResult = () => {
+      const tab = queryStore.tabs.find((candidate) => candidate.id === tabId);
+      if (!tab) return { error: t("processList.oracleInvalidObjects.sourceUnavailable") };
+      if (tab.sourceLoad?.error) return { error: tab.sourceLoad.error };
+      if (!tab.sourceLoad && tab.objectSource) return {};
+      return null;
+    };
+    const stop = watch(
+      getResult,
+      (result) => {
+        if (!result) return;
+        stop();
+        resolve(result);
+      },
+      { flush: "sync" },
+    );
+    const initial = getResult();
+    if (initial) {
+      stop();
+      resolve(initial);
+    }
+  });
+  const tab = queryStore.tabs.find((candidate) => candidate.id === tabId);
+  if (sourceLoadResult.error || !tab?.objectSource) {
+    toast(t("processList.oracleInvalidObjects.sourceLoadFailed", { message: sourceLoadResult.error || tab?.sourceLoad?.error || t("processList.oracleInvalidObjects.sourceUnavailable") }), 5000);
+    return;
+  }
+  if (props.connection.id !== connectionId || props.database !== database || props.catalog !== catalog) return;
+  oracleInvalidObjectsOpen.value = false;
 }
 
 let sourceIdentity: SourceIdentitySnapshot | undefined;
