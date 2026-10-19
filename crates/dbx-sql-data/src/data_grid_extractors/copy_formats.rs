@@ -2,6 +2,7 @@ use super::{
     write_bytes, DataGridExtractError, DataGridExtractErrorCode, DataGridExtractWarning, DataGridExtractWarningCode,
     DataGridPhpArraySyntax, ExtractContext,
 };
+use crate::models::connection::DatabaseType;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use serde_json::Value;
 use std::io::Write;
@@ -125,6 +126,7 @@ pub(super) fn write_php(
                     output,
                     value,
                     column.data_type.as_deref(),
+                    context.request.database_type,
                     options.quote_char,
                     options.format_date_iso,
                 )?;
@@ -154,6 +156,7 @@ fn write_php_value(
     output: &mut dyn Write,
     value: &Value,
     data_type: Option<&str>,
+    database_type: Option<DatabaseType>,
     quote: char,
     format_date_iso: bool,
 ) -> Result<bool, DataGridExtractError> {
@@ -174,7 +177,7 @@ fn write_php_value(
             write_bytes(output, number.to_string().as_bytes())?;
             Ok(false)
         }
-        Value::Number(number) if number.is_f64() => {
+        Value::Number(number) if number.is_f64() && is_floating_type(data_type, database_type) => {
             write_bytes(output, number.to_string().as_bytes())?;
             Ok(false)
         }
@@ -249,6 +252,26 @@ fn iso_date(value: &str) -> Option<String> {
 fn is_temporal_type(data_type: Option<&str>) -> bool {
     let ty = data_type.unwrap_or_default().to_ascii_lowercase();
     ["date", "time", "timestamp", "datetime"].iter().any(|part| ty.contains(part))
+}
+
+fn is_floating_type(data_type: Option<&str>, database_type: Option<DatabaseType>) -> bool {
+    let ty = data_type.unwrap_or_default().trim().to_ascii_lowercase();
+    if ty.starts_with("binary_float") || ty.starts_with("binary_double") {
+        return true;
+    }
+    if matches!(database_type, Some(DatabaseType::Oracle | DatabaseType::OceanbaseOracle)) {
+        return false;
+    }
+    let first = ty
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .find(|token| !token.is_empty())
+        .unwrap_or_default();
+    matches!(first, "float" | "double" | "real")
+        || ["float", "double"].iter().any(|prefix| {
+            first
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit()))
+        })
 }
 
 fn is_binary_type(data_type: Option<&str>) -> bool {
@@ -381,6 +404,7 @@ mod tests {
     use crate::data_grid_extractors::{
         extract_data_grid_selection, DataGridExtractColumn, DataGridExtractWarningCode, DataGridExtractorId,
     };
+    use crate::models::connection::DatabaseType;
     use serde_json::json;
 
     #[test]
@@ -505,6 +529,29 @@ mod tests {
         let text = extract_data_grid_selection(request).unwrap().text;
         assert!(text.contains("\"float\" => 1.5"), "{text}");
         assert!(text.contains("\"bigint\" => \"9007199254740993\""), "{text}");
+    }
+
+    #[test]
+    fn php_keeps_arbitrary_precision_decimal_numbers_as_strings() {
+        let mut request = request(DataGridExtractorId::Php);
+        request.columns.truncate(1);
+        request.selected_column_indexes = vec![0];
+        request.columns[0].data_type = Some("DECIMAL".into());
+        request.rows = vec![vec![serde_json::from_str("0.1234567890123456789").unwrap()]];
+        let text = extract_data_grid_selection(request).unwrap().text;
+        assert!(text.contains("\"0.1234567890123456789\""), "{text}");
+    }
+
+    #[test]
+    fn php_preserves_oracle_float_numeric_precision_as_text() {
+        let mut request = request(DataGridExtractorId::Php);
+        request.columns.truncate(1);
+        request.selected_column_indexes = vec![0];
+        request.columns[0].data_type = Some("FLOAT".into());
+        request.database_type = Some(DatabaseType::Oracle);
+        request.rows = vec![vec![serde_json::from_str("0.1234567890123456789").unwrap()]];
+        let text = extract_data_grid_selection(request).unwrap().text;
+        assert!(text.contains("\"0.1234567890123456789\""), "{text}");
     }
 
     #[test]
