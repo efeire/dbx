@@ -19,7 +19,7 @@ export interface DatabaseDependencyProvider {
   readonly databaseType: DatabaseType;
   supports(node: DependencyTreeNode): boolean;
   buildQuery(node: DependencyTreeNode): string | null;
-  targetLabel?(node: DependencyTreeNode): string | null;
+  targetLabel?(node: DependencyTreeNode): { name: string; packageScope?: boolean } | null;
 }
 
 const PROVIDERS: Partial<Record<DatabaseType, DatabaseDependencyProvider>> = {

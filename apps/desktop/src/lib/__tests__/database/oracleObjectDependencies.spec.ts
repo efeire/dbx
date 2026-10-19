@@ -19,7 +19,7 @@ describe("Oracle object dependencies", () => {
 
   it("uses the owning package scope for members and exposes it in the title", () => {
     const member = node({ type: "function", objectName: "CALC", parentType: "package", parentName: "PAYROLL", parentSchema: "HR" });
-    expect(oracleDependencyProvider.targetLabel?.(member)).toBe("HR.PAYROLL (package-level)");
+    expect(oracleDependencyProvider.targetLabel?.(member)).toEqual({ name: "HR.PAYROLL", packageScope: true });
     const sql = oracleDependencyProvider.buildQuery(member)!;
     expect(sql).toContain("'PAYROLL' AS TARGET_NAME");
     expect(sql).toContain("d.TYPE IN ('PACKAGE', 'PACKAGE BODY')");
