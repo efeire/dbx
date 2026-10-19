@@ -475,12 +475,10 @@ function writeParenthesis(writer: Writer, nodes: AstNode[], index: number, ctx: 
 /**
  * Emits one set operation (`UNION ALL`, `INTERSECT`, ...).
  *
- * The parser only promotes a *bare* `SELECT` after the operator to a sibling
- * clause of its own; every other branch — a parenthesized subquery, a `VALUES`
- * list — stays in this node's `children`. Printing the keyword alone would
- * therefore delete every branch after the first one (#10472), so the operand is
- * written on the next line at the operator's column, which is where the
- * sibling-clause form (`SELECT ... UNION ALL SELECT ...`) puts it as well.
+ * Bare `SELECT` and `VALUES` operands become sibling clauses. Operands retained
+ * in this node's `children`, such as a parenthesized subquery or a `TABLE`
+ * reference, must also be printed to avoid dropping a branch (#10472). They go
+ * on the next line at the operator's column, just like the sibling-clause form.
  */
 function printSetOperation(writer: Writer, node: SetOperationNode, baseColumn: number, ctx: SqlLayoutContext): void {
   if (ctx.options.rules) writeRuleKeyword(writer, keywordText(node.nameKw, ctx), ctx);
@@ -496,9 +494,7 @@ function printSetOperationOperand(writer: Writer, nodes: AstNode[], ctx: SqlLayo
     writeParenthesis(writer, nodes, 0, ctx);
     return;
   }
-  // Anything the grammar did not turn into a clause of its own (a `VALUES`
-  // list, a dialect-specific operand): let sql-formatter lay it out, re-based
-  // on this column.
+  // Keep other dialect-specific operands, such as TABLE references, at this column.
   emitText(writer, ctx.renderers.block(nodes).trim(), writer.column, endsWithLineComment(nodes));
 }
 
