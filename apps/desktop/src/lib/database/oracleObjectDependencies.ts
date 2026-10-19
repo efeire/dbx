@@ -1,7 +1,7 @@
 import type { TreeNodeType } from "@/types/database";
 import type { DatabaseDependencyProvider, DependencyTreeNode } from "@/lib/database/databaseObjectDependencies";
 
-type OracleDependencyObjectType = "PROCEDURE" | "FUNCTION" | "PACKAGE";
+export type OracleDependencyObjectType = "PROCEDURE" | "FUNCTION" | "PACKAGE";
 
 /** Direct Oracle dictionary dependency rows, visible to the current account. */
 export function oracleObjectDependenciesSql(options: { schema: string; objectName: string; objectType: OracleDependencyObjectType }): string {
@@ -48,7 +48,7 @@ WHERE d.REFERENCED_OWNER = ${owner}
 ORDER BY 1, 5, 6, 7`;
 }
 
-function oracleTarget(node: DependencyTreeNode): { schema: string; name: string; type: OracleDependencyObjectType; packaged: boolean } | null {
+export function oracleTarget(node: DependencyTreeNode): { schema: string; name: string; type: OracleDependencyObjectType; packaged: boolean } | null {
   const member = node.parentType === "package" && (node.type === "procedure" || node.type === "function");
   const type = member || node.type === "package" ? "PACKAGE" : oracleTypeForTreeNode(node.type);
   const schema = member ? node.parentSchema : node.schema;
