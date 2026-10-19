@@ -515,8 +515,11 @@ mod tests {
         request.rows = vec![vec![json!(1)]];
         request.options.dbunit.null_value_string = "1".into();
 
-        let error = extract_data_grid_selection(request).unwrap_err();
+        let error = extract_data_grid_selection(request.clone()).unwrap_err();
         assert!(error.message.contains("matches the DbUnit NULL marker"));
+        request.options.dbunit.null_value_string = "[NULL]".into();
+        let result = extract_data_grid_selection(request).expect("a different NULL marker permits the value");
+        assert!(result.text.contains("ID=\"1\""), "{}", result.text);
     }
 
     #[test]
@@ -556,7 +559,7 @@ mod tests {
         request.selected_column_indexes = vec![0, 1];
         request.rows = vec![vec![json!(1), json!("[NULL]")]];
         request.options.dbunit.include_null_values = false;
-        request.options.dbunit.null_value_string = "[NULL]".into();
+        request.options.dbunit.null_value_string = "1".into();
 
         let result = extract_data_grid_selection(request).expect("non-NULL values do not collide after serialization");
         assert!(result.text.contains("ID=\"1\""), "{}", result.text);
