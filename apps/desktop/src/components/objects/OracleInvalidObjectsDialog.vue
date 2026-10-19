@@ -333,7 +333,7 @@ onBeforeUnmount(() => {
                 <p class="mt-2 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.ddlWarning") }}</p>
               </div>
             </div>
-            <DialogFooter class="border-t px-4 py-3">
+            <DialogFooter class="mx-0 mb-0 shrink-0 border-t px-4 py-3">
               <Button variant="outline" :disabled="compiling" @click="close">{{ t("common.close") }}</Button>
               <Button v-if="!previewSql" variant="destructive" :disabled="!!unsupportedReason || compiling || !!loadError" @click="previewCompile">{{ t("processList.oracleInvalidObjects.previewCompile") }}</Button>
               <Button v-else variant="destructive" :disabled="compiling" @click="confirmCompile"><Loader2 v-if="compiling" class="mr-1.5 h-3.5 w-3.5 animate-spin" />{{ t("processList.oracleInvalidObjects.confirmCompile") }}</Button>
