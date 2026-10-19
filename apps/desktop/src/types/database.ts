@@ -139,6 +139,8 @@ export interface CompletionAssistantResponse {
 export interface ConnectionConfig {
   id: string;
   name: string;
+  /** Read-only response identity retained when a saved JDBC URL is protected. */
+  readonly jdbc_dialect?: "oceanbase-oracle";
   note?: string;
   db_type: DatabaseType;
   driver_profile?: string;

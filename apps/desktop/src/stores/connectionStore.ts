@@ -9782,7 +9782,12 @@ export const useConnectionStore = defineStore("connection", () => {
   }
 
   async function persistConnections(nextConnections: ConnectionConfig[] = connections.value, removedIds: string[] = []) {
-    const configs = nextConnections.filter((connection) => connection.one_time !== true);
+    const configs = nextConnections
+      .filter((connection) => connection.one_time !== true)
+      .map((connection) => {
+        const { jdbc_dialect: _jdbcDialect, ...persistedConfig } = connection;
+        return persistedConfig;
+      });
     if (removedIds.length) {
       await api.saveConnections(configs, removedIds);
       return;
@@ -10577,13 +10582,21 @@ export const useConnectionStore = defineStore("connection", () => {
     await settingsStore.initEditorSettings();
     if (!initFromDiskPromise) {
       initFromDiskPromise = (async () => {
+        const startingConfigFingerprints = new Map(connections.value.map((connection) => [connection.id, connectionConfigFingerprint(connection)]));
         // 整体覆盖内存布局前，先落盘窗口内未写盘的分组编辑（防止 300ms 防抖窗口
         // 内的编辑被备份轮询/重载带回的旧快照静默回滚）。
         await flushTableVGroupPersist();
         const [pinnedOrder, saved, , loadedTableVGroups] = await Promise.all([loadPinnedTreeNodeOrder(), api.loadConnections(), tunnelProfileStore.init(), api.loadTableVGroups()]);
         setPinnedTreeNodeOrder(pinnedOrder);
         await migrateTimeoutInheritance(saved);
-        const loadedConnections = saved.map(normalizeConnection);
+        const loadedConnections = saved.map(normalizeConnection).map((loadedConfig) => {
+          const currentConfig = connections.value.find((connection) => connection.id === loadedConfig.id);
+          const startingFingerprint = startingConfigFingerprints.get(loadedConfig.id);
+          if (currentConfig && (startingFingerprint === undefined || connectionConfigFingerprint(currentConfig) !== startingFingerprint)) {
+            return currentConfig;
+          }
+          return loadedConfig;
+        });
         const loadedIds = new Set(loadedConnections.map((connection) => connection.id));
         // One-time deep-link connections are intentionally filtered from disk
         // persistence. Keep them in the live list when an unrelated disk reload
