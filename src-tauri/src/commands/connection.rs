@@ -246,7 +246,7 @@ mod tests {
             "connection_string": "jdbc:oceanbase:oracle://host/service", "jdbc_dialect": "oceanbase-oracle"
         });
         let config: ConnectionConfig = serde_json::from_value(input.clone()).unwrap();
-        save_connection_configs(&state, &[config.clone()], Vec::new()).await.unwrap();
+        save_connection_configs(&state, std::slice::from_ref(&config), Vec::new()).await.unwrap();
 
         let responses = load_connection_responses(&state).await.unwrap();
         let output = serde_json::to_value(&responses[0]).unwrap();
