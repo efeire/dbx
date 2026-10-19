@@ -198,8 +198,9 @@ import { metadataLoadBudgetMs } from "@/lib/metadata/metadataLoadBudget";
 import { loadObjectDdl, type ObjectDdlRequest } from "@/lib/metadata/objectDdlCache";
 import { loadObjectMetadataFacet } from "@/lib/metadata/objectMetadataCache";
 import { invalidateObjectMetadataCache } from "@/lib/metadata/objectMetadataCache";
-import { invalidateObjectDdl } from "@/lib/metadata/objectDdlCache";
+import { invalidateObjectDdl, invalidateObjectDdlCache } from "@/lib/metadata/objectDdlCache";
 import { invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
+import { completeOracleInvalidObjectCompile, type OracleInvalidObjectCompileScope } from "@/lib/database/oracleInvalidObjectCacheRefresh";
 import { eventEditorInstanceKey, resolveInitialEventEditorRequest } from "@/lib/table/eventEditorRequest";
 import { createLocateTabMenuItem } from "@/lib/tabs/tabMenu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -3645,12 +3646,18 @@ async function compileXuguObject(row: ObjectBrowserRow) {
   }
 }
 
-async function refreshAfterInvalidObjectCompile(object: { owner: string; name: string }) {
-  const schema = object.owner || selectedSchema.value || props.database;
-  const scope = { connectionId: props.connection.id, database: props.database, schema, tableName: object.name };
-  await Promise.all([invalidateObjectMetadataCache(scope), invalidateObjectDdl(scope)]);
-  invalidateObjectBrowserRowsCache({ connectionId: props.connection.id, database: props.database, schema });
-  await Promise.all([reload(), connectionStore.refreshObjectListTreeNode(props.connection.id, props.database, schema)]);
+async function refreshAfterInvalidObjectCompile(scope: OracleInvalidObjectCompileScope) {
+  await completeOracleInvalidObjectCompile(
+    scope,
+    () => ({ connectionId: props.connection.id, database: props.database, schema: selectedSchema.value || props.database }),
+    async (completed) => {
+      await invalidateObjectDdlCache(completed);
+      invalidateObjectBrowserRowsCache(completed);
+    },
+    async (current) => {
+      await Promise.all([reload(), connectionStore.refreshObjectListTreeNode(current.connectionId, current.database, current.schema)]);
+    },
+  );
 }
 
 async function compileDamengView(row: ObjectBrowserRow) {

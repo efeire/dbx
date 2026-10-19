@@ -167,7 +167,7 @@ describe("OracleInvalidObjectsDialog production flow", () => {
     confirm?.click();
     await vi.waitFor(() => expect(root?.textContent).toContain("processList.oracleInvalidObjects.compileValid"));
     expect(compiled).toBe(true);
-    expect(mocks.compileFinished).toHaveBeenCalledWith(expect.objectContaining({ owner: "APP", name: "P_BAD", objectId: "9" }));
+    expect(mocks.compileFinished).toHaveBeenCalledWith({ connectionId: connection.id, database: "ORCL", schema: "APP" });
     expect(mocks.guard).toHaveBeenCalledWith(expect.objectContaining({ database: "APP", sql: 'ALTER PROCEDURE "APP"."P_BAD" COMPILE REUSE SETTINGS' }));
     const compileCall = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("ALTER PROCEDURE"));
     const clientSessionId = (compileCall?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId;

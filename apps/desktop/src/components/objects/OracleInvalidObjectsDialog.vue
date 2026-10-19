@@ -22,7 +22,11 @@ import {
 } from "@/lib/database/oracleInvalidObjects";
 
 const props = defineProps<{ open: boolean; connection: ConnectionConfig; database: string; schema: string }>();
-const emit = defineEmits<{ "update:open": [open: boolean]; "open-source": [object: OracleInvalidObject]; "compile-finished": [object: OracleInvalidObject] }>();
+const emit = defineEmits<{
+  "update:open": [open: boolean];
+  "open-source": [object: OracleInvalidObject];
+  "compile-finished": [scope: { connectionId: string; database: string; schema: string }];
+}>();
 const { t } = useI18n();
 const objects = ref<OracleInvalidObject[]>([]);
 const selected = ref<OracleInvalidObject | null>(null);
@@ -163,6 +167,7 @@ async function confirmCompile() {
   const token = generation.value;
   const connection = { ...props.connection };
   const database = props.database;
+  const schema = target.owner || props.schema;
   let actionSubmitted = false;
   compiling.value = true;
   outcome.value = "";
@@ -218,7 +223,7 @@ async function confirmCompile() {
       }
     }
   } finally {
-    if (actionSubmitted) emit("compile-finished", target);
+    if (actionSubmitted) emit("compile-finished", { connectionId: connection.id, database, schema });
     compiling.value = false;
   }
 }
