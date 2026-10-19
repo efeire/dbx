@@ -84,7 +84,6 @@ let disposed = false;
 const fallbackListSql = ref<string | null>(null);
 type ManagedClientSession = { id: string; connectionId: string; database: string; active: number; closeRequested: boolean };
 let managedClientSession: ManagedClientSession | null = null;
-let connectionSnapshot = JSON.stringify(props.connection);
 
 // Full-text preview for long cells (SQL statement / info), opened by clicking them.
 const previewText = ref<string | null>(null);
