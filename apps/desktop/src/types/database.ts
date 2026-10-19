@@ -1152,7 +1152,7 @@ export interface MysqlEventInfo {
   source?: string | null;
 }
 
-export type CustomTypeKind = "base" | "composite" | "domain" | "enum" | "range" | "multirange";
+export type CustomTypeKind = "base" | "composite" | "domain" | "enum" | "range" | "multirange" | "object" | "collection" | "other";
 
 export interface CustomTypeMember {
   name: string;
@@ -1197,6 +1197,75 @@ export interface CustomTypeDdl {
   warnings?: string[];
 }
 
+export interface TypeMetadataRead {
+  state: "available" | "incomplete" | "unavailable" | "unsupported";
+  reason?: string | null;
+}
+
+export interface OracleTypeAttribute {
+  name: string;
+  ordinal?: number | null;
+  typeOwner?: string | null;
+  typeName?: string | null;
+  typeModifier?: string | null;
+  length?: number | null;
+  precision?: number | null;
+  scale?: number | null;
+}
+
+export interface OracleTypeMethodParameter {
+  name?: string | null;
+  ordinal?: number | null;
+  mode?: string | null;
+  typeOwner?: string | null;
+  typeName?: string | null;
+  typeModifier?: string | null;
+}
+
+export interface OracleTypeMethod {
+  name: string;
+  number?: number | null;
+  kind?: string | null;
+  parameterCount?: number | null;
+  resultCount?: number | null;
+  parameters: OracleTypeMethodParameter[];
+  results: OracleTypeMethodParameter[];
+  parametersRead: TypeMetadataRead;
+  resultsRead: TypeMetadataRead;
+}
+
+export interface OracleTypeCollection {
+  kind?: string | null;
+  upperBound?: number | null;
+  elementOwner?: string | null;
+  elementName?: string | null;
+  elementModifier?: string | null;
+  length?: number | null;
+  precision?: number | null;
+  scale?: number | null;
+}
+
+export interface OracleTypeMetadata {
+  status?: string | null;
+  typeCode?: string | null;
+  isFinal?: boolean | null;
+  instantiable?: boolean | null;
+  supertypeOwner?: string | null;
+  supertypeName?: string | null;
+  attributeCount?: number | null;
+  methodCount?: number | null;
+  bodyVisible?: boolean | null;
+  bodyStatus?: string | null;
+  propertiesRead: TypeMetadataRead;
+  bodyRead: TypeMetadataRead;
+  attributesRead: TypeMetadataRead;
+  methodsRead: TypeMetadataRead;
+  collectionRead: TypeMetadataRead;
+  attributes: OracleTypeAttribute[];
+  methods: OracleTypeMethod[];
+  collection?: OracleTypeCollection | null;
+}
+
 export interface CustomTypeDetails {
   name: string;
   schema: string;
@@ -1205,6 +1274,7 @@ export interface CustomTypeDetails {
   members: CustomTypeMember[];
   properties: CustomTypeProperties;
   ddl?: CustomTypeDdl | null;
+  oracleMetadata?: OracleTypeMetadata | null;
 }
 
 export interface ColumnInfo {

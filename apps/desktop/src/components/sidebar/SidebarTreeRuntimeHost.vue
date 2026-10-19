@@ -2953,8 +2953,8 @@ function openObjectSourceDialog(initialEditing: boolean, viewPackageBody = false
   if (!node.connectionId || !node.database) return;
   if (viewPackageBody && (node.type !== "package" || node.xuguPackageBodyAvailable !== true || currentDatabaseType() !== "xugu")) return;
   const sourceNode: TreeNode = viewPackageBody ? { ...node, type: "package-body" } : node;
-  // TYPE/TYPE_BODY only have a source implementation on Xugu; PostgreSQL-family
-  // connections list user-defined types without a CREATE TYPE getter this cycle.
+  // TYPE/TYPE_BODY source is available for Oracle-family databases and Xugu;
+  // PostgreSQL-family connections list user-defined types without a getter.
   if ((sourceNode.type === "type" || sourceNode.type === "type-body") && !supportsTypeObjectSource(currentDatabaseType())) return;
   const connectionId = node.connectionId;
   const database = node.database;
@@ -2964,7 +2964,9 @@ function openObjectSourceDialog(initialEditing: boolean, viewPackageBody = false
   // issue #9035：两个分支都不再 await 连接与取源。先把容器挂出来（源码 tab /
   // 源码弹窗），ensureConnected 与 getObjectSource 都发生在已挂载的 UI 之内，
   // 加载中有状态、失败就地重试，而不是点击后一段时间毫无反应。
-  if (settingsStore.editorSettings.routineSourceOpenMode === "query-tab") {
+  const dbType = currentDatabaseType();
+  const oracleFamilyTypeSource = (sourceNode.type === "type" || sourceNode.type === "type-body") && (dbType === "oracle" || dbType === "oceanbase-oracle" || dbType === "dameng");
+  if (settingsStore.editorSettings.routineSourceOpenMode === "query-tab" && !oracleFamilyTypeSource) {
     queryStore.openObjectSourceTabPending({
       connectionId,
       database,
@@ -7730,16 +7732,18 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     return true;
   }
 
-  // PostgreSQL-family types expand in the tree and expose DDL as a lightweight
-  // copy action. Xugu keeps its source/change-open-mode entries.
+  // Oracle-family and Xugu types expose their source; PostgreSQL-family types
+  // keep the existing DDL copy action.
   if (node.type === "type" || node.type === "type-body") {
     if (supportsTypeObjectSource(currentDatabaseType())) {
       items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
       items.push(copyNameMenuItem());
-      items.push({ label: t("contextMenu.changeOpenMode"), action: () => emit("open-settings", "navigation"), icon: Settings2 });
+      if (currentDatabaseType() === "xugu") {
+        items.push({ label: t("contextMenu.changeOpenMode"), action: () => emit("open-settings", "navigation"), icon: Settings2 });
+      }
       return true;
     }
-    if (customTypeCapabilities(currentDatabaseType()).details) {
+    if (customTypeCapabilities(currentDatabaseType()).ddl) {
       items.push({ label: t("contextMenu.copyDdl"), action: copyCustomTypeDdl, icon: Copy });
       items.push({ label: "", separator: true });
     }

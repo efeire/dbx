@@ -1634,6 +1634,10 @@ async function refreshActiveTableInfo() {
     await refreshActiveSource();
     return;
   }
+  if (sidePanelMode.value === "type-info") {
+    await sidePanelRef.value?.refresh();
+    return;
+  }
   if (sidePanelMode.value !== "table-info" || !sidePanelRow.value) return;
   sidePanelGuard.bump();
 
@@ -4587,12 +4591,12 @@ function getPackageMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
 function getTypeMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
   const items: ContextMenuItem[] = [];
   const capabilities = customTypeCapabilities(effectiveDatabaseType.value);
-  // Verified PG-family types open the read-only details panel; Xugu keeps its
-  // “view source” entry for TYPE/TYPE_BODY rows.
+  // Oracle-family types expose source alongside read-only TYPE details; Xugu
+  // keeps its source entry for TYPE/TYPE_BODY rows.
   if (supportsTypeObjectSource(effectiveDatabaseType.value)) {
     items.push({ label: t("contextMenu.viewSource"), action: () => openSource(item), icon: Code2 });
   }
-  if (capabilities.details) {
+  if (capabilities.details && item.type === "TYPE") {
     items.push({ label: t("contextMenu.viewDetails"), action: () => void openTypeInfo(item), icon: Info });
     if (capabilities.ddl) {
       items.push({ label: t("contextMenu.viewDdl"), action: () => openTypeDdl(item), icon: FileCode });
@@ -5350,7 +5354,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
         </template>
         <!-- Type info mode (read-only user-defined type details) -->
         <template v-else-if="sidePanelMode === 'type-info'">
-          <CustomTypeInfoPanel ref="sidePanelRef" :connection="props.connection" :database="props.database" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name || ''" :catalog="props.catalog" @close="closeSidePanel" />
+          <CustomTypeInfoPanel ref="sidePanelRef" :connection="props.connection" :database="props.database" :database-type="effectiveDatabaseType" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name || ''" :catalog="props.catalog" @close="closeSidePanel" />
         </template>
         <template v-else-if="sidePanelMode === 'event-editor'">
           <MySqlEventEditor :key="eventEditorKey" :connection="props.connection" :database="props.database" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name" :read-only="props.initialEventReadOnly" @saved="onEventSaved" @close="closeSidePanel" />

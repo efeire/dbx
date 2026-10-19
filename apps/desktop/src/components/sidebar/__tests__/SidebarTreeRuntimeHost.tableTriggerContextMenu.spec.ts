@@ -17,6 +17,8 @@ vi.mock("@/lib/backend/api", async (importOriginal) => {
 
 import SidebarTreeRuntimeHost from "@/components/sidebar/SidebarTreeRuntimeHost.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { useQueryStore } from "@/stores/queryStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 
 const node = (type: TreeNode["type"], label: string, tableName?: string): TreeNode => ({
   id: `test-conn:db:${type}:${label}`,
@@ -28,6 +30,7 @@ const node = (type: TreeNode["type"], label: string, tableName?: string): TreeNo
   database: "testdb",
 });
 const mountedApps: App<Element>[] = [];
+const sourceEvents: Array<{ node: TreeNode; initialEditing: boolean }> = [];
 const labels = (items: ContextMenuItem[]): string[] => items.flatMap((item) => [...(item.label ? [item.label] : []), ...(item.children ? labels(item.children) : [])]);
 const tr = (key: string) => i18n.global.t(key);
 
@@ -39,7 +42,7 @@ async function mountHost(dbType: DatabaseType = "firebird") {
   vi.spyOn(store, "ensureConnected").mockResolvedValue(undefined as any);
   vi.spyOn(store, "refreshTreeNode").mockResolvedValue(undefined as any);
   const host = ref<InstanceType<typeof SidebarTreeRuntimeHost> | null>(null);
-  const root = defineComponent({ setup: () => () => h(SidebarTreeRuntimeHost, { ref: host, node: node("connection", "TestDB"), depth: 0 }) });
+  const root = defineComponent({ setup: () => () => h(SidebarTreeRuntimeHost, { ref: host, node: node("connection", "TestDB"), depth: 0, "onOpen-object-source": (sourceNode: TreeNode, initialEditing: boolean) => sourceEvents.push({ node: sourceNode, initialEditing }) }) });
   const container = document.createElement("div");
   document.body.appendChild(container);
   const app = createApp(root);
@@ -57,6 +60,50 @@ describe("Table trigger context menu", () => {
   afterEach(() => {
     for (const app of mountedApps.splice(0)) app.unmount();
     document.body.innerHTML = "";
+    sourceEvents.length = 0;
+  });
+
+  it("keeps Oracle-family TYPE and TYPE_BODY sources in the read-only dialog when query-tab is selected", async () => {
+    for (const dbType of ["oracle", "oceanbase-oracle", "dameng"] as const) {
+      const host = await mountHost(dbType);
+      useSettingsStore().updateEditorSettings({ routineSourceOpenMode: "query-tab" });
+      const pendingSourceTab = vi.spyOn(useQueryStore(), "openObjectSourceTabPending").mockImplementation(() => undefined);
+
+      for (const type of ["type", "type-body"] as const) {
+        const typeNode = node(type, type === "type" ? "TYPE_OBJ" : "TYPE_OBJ_BODY");
+        const menu = host.buildContextMenu(typeNode);
+        expect(labels(menu)).not.toContain(tr("contextMenu.changeOpenMode"));
+        const sourceAction = menu.find((item) => item.label === tr("contextMenu.viewSource"));
+        await sourceAction?.action?.();
+      }
+      expect(pendingSourceTab).not.toHaveBeenCalled();
+    }
+
+    expect(sourceEvents.map(({ node: sourceNode, initialEditing }) => [sourceNode.type, initialEditing])).toEqual([
+      ["type", false],
+      ["type-body", false],
+      ["type", false],
+      ["type-body", false],
+      ["type", false],
+      ["type-body", false],
+    ]);
+  });
+
+  it("preserves query-tab source routing for Xugu types and routines", async () => {
+    const host = await mountHost("xugu");
+    useSettingsStore().updateEditorSettings({ routineSourceOpenMode: "query-tab" });
+    const queryStore = useQueryStore();
+    const pendingSourceTab = vi.spyOn(queryStore, "openObjectSourceTabPending").mockImplementation(() => undefined);
+
+    const xuguTypeMenu = host.buildContextMenu(node("type", "T_XUGU"));
+    expect(labels(xuguTypeMenu)).toContain(tr("contextMenu.changeOpenMode"));
+    for (const sourceNode of [node("type", "T_XUGU"), node("procedure", "P_XUGU")]) {
+      const sourceAction = host.buildContextMenu(sourceNode).find((item) => item.label === tr("contextMenu.viewSource"));
+      await sourceAction?.action?.();
+    }
+
+    expect(pendingSourceTab).toHaveBeenCalledTimes(2);
+    expect(sourceEvents).toHaveLength(0);
   });
 
   it("exposes view source and change open mode for table triggers", async () => {

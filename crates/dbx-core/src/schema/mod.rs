@@ -24,6 +24,9 @@ mod agent_pg_sequences;
 mod external_table_filter_tests;
 mod kingbase;
 mod mongodb_columns;
+mod oracle_type_details;
+#[cfg(test)]
+mod oracle_type_transport_tests;
 pub mod plugin_metadata;
 #[cfg(test)]
 mod plugin_metadata_tests;
@@ -3532,13 +3535,16 @@ mod tests {
     }
 
     #[test]
-    fn supports_custom_type_details_covers_five_verified_families() {
+    fn supports_custom_type_details_preserves_pg_and_adds_oracle_families() {
         for db_type in [
             DatabaseType::Postgres,
             DatabaseType::OpenGauss,
             DatabaseType::Gaussdb,
             DatabaseType::Kingbase,
             DatabaseType::Vastbase,
+            DatabaseType::Oracle,
+            DatabaseType::OceanbaseOracle,
+            DatabaseType::Dameng,
         ] {
             assert!(supports_custom_type_details(&test_connection_config(db_type)), "{db_type:?}");
         }
@@ -4587,16 +4593,41 @@ done
 
     #[test]
     fn mysql_event_object_source_is_read_only() {
-        let source = finalize_object_source(db::ObjectSource {
-            name: "event_daily_sync".to_string(),
-            object_type: db::ObjectSourceKind::Event,
-            schema: None,
-            source: "CREATE EVENT event_daily_sync ON SCHEDULE EVERY 1 DAY DO SELECT 1".to_string(),
-            editable: None,
-            routine_parameters: None,
-        });
+        let source = finalize_object_source(
+            db::ObjectSource {
+                name: "event_daily_sync".to_string(),
+                object_type: db::ObjectSourceKind::Event,
+                schema: None,
+                source: "CREATE EVENT event_daily_sync ON SCHEDULE EVERY 1 DAY DO SELECT 1".to_string(),
+                editable: None,
+                routine_parameters: None,
+            },
+            None,
+        );
 
         assert_eq!(source.editable, Some(false));
+    }
+
+    #[test]
+    fn oracle_type_source_boundary_is_read_only_without_changing_xugu_or_routines() {
+        for db_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle, DatabaseType::Dameng, DatabaseType::Xugu] {
+            let config = test_connection_config(db_type);
+            for kind in [db::ObjectSourceKind::Type, db::ObjectSourceKind::TypeBody, db::ObjectSourceKind::Function] {
+                let source = finalize_object_source(
+                    db::ObjectSource {
+                        name: "Mixed Type".to_string(),
+                        object_type: kind.clone(),
+                        schema: Some("Exact Owner".to_string()),
+                        source: "CREATE TYPE ...".to_string(),
+                        editable: Some(true),
+                        routine_parameters: None,
+                    },
+                    Some(&config),
+                );
+                let newly_read_only = db_type != DatabaseType::Xugu && !matches!(kind, db::ObjectSourceKind::Function);
+                assert_eq!(source.editable, Some(!newly_read_only), "{db_type:?} {kind:?}");
+            }
+        }
     }
 
     #[test]
@@ -6771,7 +6802,9 @@ pub async fn list_objects_core(
         }
     }
     let filter_locally_after_oracle_comments = db_config.as_ref().is_some_and(|config| {
-        config.db_type == DatabaseType::Oracle && filter.is_some_and(|filter| !filter.trim().is_empty())
+        config.db_type == DatabaseType::Oracle
+            && !object_types_only_custom_types(object_types)
+            && filter.is_some_and(|filter| !filter.trim().is_empty())
     });
     let force_local_table_name_filter = table_name_filter.is_some_and(|filter| !filter.is_empty());
     let use_oracle_agent_paging = db_config.as_ref().is_some_and(is_default_oracle_agent_config)
@@ -7470,10 +7503,14 @@ async fn list_objects_once(
         if let Some(agent_client) = extract_pool!(pool_handle.as_ref(), Agent) {
             let is_oracle = db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::Oracle);
             let is_oceanbase = db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::OceanbaseOracle);
-            let use_oracle_agent_paging = db_config.as_ref().is_some_and(is_default_oracle_agent_config);
+            // Type requests can use the shared Go handler's ROWNUM paging on
+            // legacy/OCI profiles too; retain the old fallback for other kinds.
+            let use_oracle_agent_paging = db_config.as_ref().is_some_and(is_default_oracle_agent_config)
+                || (is_oracle && object_types_only_custom_types(object_types));
             let use_agent_paging = use_oracle_agent_paging || is_oceanbase;
-            let filter_locally_after_oracle_comments =
-                is_oracle && filter.is_some_and(|filter| !filter.trim().is_empty());
+            let filter_locally_after_oracle_comments = is_oracle
+                && !object_types_only_custom_types(object_types)
+                && filter.is_some_and(|filter| !filter.trim().is_empty());
             let timeout_duration = agent_metadata_timeout(db_config.as_ref());
             let fallback_config = db_config.clone();
             if is_oracle && !use_oracle_agent_paging {
@@ -7532,6 +7569,9 @@ async fn list_objects_once(
                             timeout_duration,
                         )
                         .await?;
+                    }
+                    if is_oracle && object_types_only_custom_types(object_types) {
+                        return Ok(ObjectListOutcome { objects, paging_applied: !force_local_table_name_filter });
                     }
                     return Ok(unpaged_object_list(with_agent_pg_sequence_objects(objects, &sequence_objects)));
                 }
@@ -11206,14 +11246,15 @@ async fn read_mysql_object_source_row(
 /// separate from listing support so a future per-kind DDL capability can be
 /// toggled independently.
 fn supports_custom_type_details(config: &ConnectionConfig) -> bool {
-    matches!(
-        config.db_type,
-        DatabaseType::Postgres
-            | DatabaseType::OpenGauss
-            | DatabaseType::Gaussdb
-            | DatabaseType::Kingbase
-            | DatabaseType::Vastbase
-    )
+    oracle_type_details::dialect(config).is_some()
+        || matches!(
+            config.db_type,
+            DatabaseType::Postgres
+                | DatabaseType::OpenGauss
+                | DatabaseType::Gaussdb
+                | DatabaseType::Kingbase
+                | DatabaseType::Vastbase
+        )
 }
 
 pub async fn get_custom_type_details_core(
@@ -11244,6 +11285,54 @@ async fn get_custom_type_details_once(
     if !supports_custom_type_details(config) {
         return Err(format!("custom type details are not supported for {:?} connections", config.db_type));
     }
+    if let Some(dialect) = oracle_type_details::dialect(config) {
+        let pool = clone_metadata_pool(state, &pool_key).await.ok_or("Pool not found")?;
+        let timeout = agent_metadata_timeout(Some(config));
+        return match pool {
+            PoolKind::Agent(client) => {
+                oracle_type_details::read(dialect, schema, name, |sql| {
+                    let client = client.clone();
+                    async move {
+                        let mut client = client.lock().await;
+                        client
+                            .execute_query_with_timeout(
+                                agent_execute_query_params(
+                                    &sql,
+                                    if database.is_empty() { None } else { Some(database) },
+                                    // Dictionaries use an explicit OWNER predicate;
+                                    // do not switch the borrowed session's schema.
+                                    None,
+                                    QueryExecutionOptions { max_rows: Some(10_000), ..Default::default() },
+                                ),
+                                timeout,
+                            )
+                            .await
+                    }
+                })
+                .await
+            }
+            PoolKind::ExternalDriver { config, session, .. } => {
+                oracle_type_details::read(dialect, schema, name, |sql| {
+                    let session = session.clone();
+                    let config = config.clone();
+                    async move {
+                        session
+                            .invoke_with_timeout(
+                                "executeQuery",
+                                serde_json::json!({
+                                    "connection": config.as_ref(), "database": database,
+                                    "sql": sql, "maxRows": 10_000, "fetchSize": 1000,
+                                }),
+                                timeout,
+                            )
+                            .await
+                    }
+                })
+                .await
+            }
+            _ => Err("Oracle-family type details require an Agent or JDBC query transport".to_string()),
+        };
+    }
     {
         let pool_handle = state.pool_handle(&pool_key).await;
         if let Some(client) = extract_pool!(pool_handle.as_ref(), Agent) {
@@ -11271,6 +11360,7 @@ pub async fn get_object_source_core(
     signature: Option<&str>,
     relation_name: Option<&str>,
 ) -> Result<db::ObjectSource, String> {
+    let config = connection_config(state, connection_id).await;
     let source = retry_metadata_connection(state, connection_id, Some(database), || {
         get_object_source_once(
             state,
@@ -11284,7 +11374,7 @@ pub async fn get_object_source_core(
         )
     })
     .await?;
-    Ok(finalize_object_source(source))
+    Ok(finalize_object_source(source, config.as_ref()))
 }
 
 pub async fn get_event_info_core(
@@ -11340,11 +11430,14 @@ pub async fn get_event_info_core(
     }
 }
 
-fn finalize_object_source(mut source: db::ObjectSource) -> db::ObjectSource {
+fn finalize_object_source(mut source: db::ObjectSource, config: Option<&ConnectionConfig>) -> db::ObjectSource {
     if matches!(source.object_type, db::ObjectSourceKind::Procedure | db::ObjectSourceKind::Function) {
         source.source = normalize_routine_object_source(source.source);
     }
-    if matches!(source.object_type, db::ObjectSourceKind::Event) {
+    if matches!(source.object_type, db::ObjectSourceKind::Event)
+        || (matches!(source.object_type, db::ObjectSourceKind::Type | db::ObjectSourceKind::TypeBody)
+            && config.and_then(oracle_type_details::dialect).is_some())
+    {
         source.editable = Some(false);
     }
     source
@@ -11587,11 +11680,13 @@ fn oracle_owner_filter(schema: &str) -> String {
 }
 
 pub fn oracle_list_objects_sql(schema: &str) -> String {
+    let type_owner = if schema.is_empty() { "USER".to_string() } else { sql_string(schema) };
     format!(
-        "SELECT object_name, CASE object_type WHEN 'PACKAGE BODY' THEN 'PACKAGE_BODY' ELSE object_type END AS object_type, owner \
+        "SELECT object_name, CASE object_type WHEN 'PACKAGE BODY' THEN 'PACKAGE_BODY' WHEN 'TYPE BODY' THEN 'TYPE_BODY' ELSE object_type END AS object_type, owner \
          FROM all_objects \
-         WHERE owner = {} AND object_type IN ('TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION', 'SEQUENCE', 'PACKAGE', 'PACKAGE BODY') \
-         ORDER BY CASE object_type WHEN 'TABLE' THEN 0 WHEN 'VIEW' THEN 1 WHEN 'PROCEDURE' THEN 2 WHEN 'FUNCTION' THEN 3 WHEN 'SEQUENCE' THEN 4 WHEN 'PACKAGE' THEN 5 ELSE 6 END, object_name",
+         WHERE (owner = {} AND object_type IN ('TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION', 'SEQUENCE', 'PACKAGE', 'PACKAGE BODY')) \
+            OR (owner = {type_owner} AND object_type IN ('TYPE', 'TYPE BODY')) \
+         ORDER BY CASE object_type WHEN 'TABLE' THEN 0 WHEN 'VIEW' THEN 1 WHEN 'PROCEDURE' THEN 2 WHEN 'FUNCTION' THEN 3 WHEN 'SEQUENCE' THEN 4 WHEN 'PACKAGE' THEN 5 ELSE 6 END, object_name, object_type",
         oracle_owner_filter(schema)
     )
 }
@@ -11653,16 +11748,26 @@ async fn oracle_agent_list_objects(
     timeout_duration: Option<Duration>,
 ) -> Result<Vec<db::ObjectInfo>, String> {
     let sql = oracle_list_objects_sql(schema);
-    let params = agent_execute_query_params(
-        &sql,
-        if database.is_empty() { None } else { Some(database) },
-        if schema.is_empty() { None } else { Some(schema) },
-        QueryExecutionOptions { max_rows: Some(10_000), ..Default::default() },
-    );
     let mut client = client.lock().await;
-    let result: db::QueryResult = client.execute_query_with_timeout(params, timeout_duration).await?;
-    let mut objects: Vec<db::ObjectInfo> = result
-        .rows
+    let mut rows = Vec::new();
+    loop {
+        let params = agent_execute_query_params(
+            &sql,
+            if database.is_empty() { None } else { Some(database) },
+            if schema.is_empty() { None } else { Some(schema) },
+            QueryExecutionOptions { max_rows: Some(10_000), row_offset: Some(rows.len()), ..Default::default() },
+        );
+        let result: db::QueryResult = client.execute_query_with_timeout(params, timeout_duration).await?;
+        let more = result.truncated || result.has_more;
+        if more && result.rows.is_empty() {
+            return Err("Oracle object list was truncated without returning a page".to_string());
+        }
+        rows.extend(result.rows);
+        if !more {
+            break;
+        }
+    }
+    let mut objects: Vec<db::ObjectInfo> = rows
         .into_iter()
         .filter_map(|row| {
             let name = row.first()?.as_str()?.to_string();
