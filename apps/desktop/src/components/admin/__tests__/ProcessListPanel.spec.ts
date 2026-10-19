@@ -3,6 +3,7 @@
 import { createApp, defineComponent, h, nextTick, reactive, type App, type Component } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionConfig } from "@/types/database";
+import zhCN from "@/i18n/locales/zh-CN";
 import { PG_PROCESS_LIST_SQL } from "@/lib/database/postgresProcessList";
 import { XUGU_OWN_SESSION_SQL, XUGU_TRANSACTION_LIST_SQL } from "@/lib/database/xuguProcessList";
 import { buildOceanbaseSessionListSql, OCEANBASE_OWN_SESSION_SQL, buildOracleOwnSessionSql, buildOracleSessionListSql, ORACLE_SESSION_VERSION_SQL } from "@/lib/database/oracleSessionManagement";
@@ -19,12 +20,15 @@ const mocks = vi.hoisted(() => ({
   oceanbaseListFailure: "",
   oceanbaseListTruncated: false,
   oceanbaseLockFailure: "",
+  oceanbaseLockRows: [] as unknown[][],
+  oceanbaseLockTruncated: false,
   oceanbaseTerminateFailure: "",
   oceanbaseTargetChanged: false,
   oracleVersionValue: "19.0.0.0.0",
   oracleVersionFailure: "",
   oracleTargetChanged: false,
   oracleTargetMissing: false,
+  localeMessages: null as Record<string, unknown> | null,
 }));
 
 // Flipped by the driver mock to simulate engines without a terminate statement.
@@ -74,7 +78,15 @@ function dialogSurface(): Component {
 
 vi.mock("vue-i18n", () => ({
   useI18n: () => ({
-    t: (key: string, values?: Record<string, unknown>) => (values === undefined ? key : `${key}:${Object.values(values).join(",")}`),
+    t: (key: string, values?: Record<string, unknown>) => {
+      const message = mocks.localeMessages?.[key.split(".")[0]!] as Record<string, unknown> | undefined;
+      const resolved = key
+        .split(".")
+        .slice(1)
+        .reduce<unknown>((current, part) => (current && typeof current === "object" ? (current as Record<string, unknown>)[part] : undefined), message);
+      if (typeof resolved !== "string") return values === undefined ? key : `${key}:${Object.values(values).join(",")}`;
+      return Object.entries(values ?? {}).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), resolved);
+    },
   }),
 }));
 vi.mock("@lucide/vue", () => {
@@ -247,7 +259,8 @@ beforeEach(() => {
       if (mocks.oceanbaseLockFailure) throw new Error(mocks.oceanbaseLockFailure);
       return {
         columns: ["SERVER_IP", "SERVER_PORT", "TENANT_ID", "TRANS_ID", "SESSION_ID", "TYPE", "ID1", "ID2", "ID3", "LMODE", "REQUEST", "CTIME", "BLOCK", "SESSION_USER", "SESSION_STATE"],
-        rows: [["127.0.0.1", "2882", "7", "900", "21", "TX", "100", "200", "300", "6", "0", "10", "1", "OTHER", "WAITING"]],
+        rows: mocks.oceanbaseLockRows,
+        truncated: mocks.oceanbaseLockTruncated,
       };
     }
     if (sql.includes("EXECUTE IMMEDIATE 'KILL CONNECTION")) {
@@ -273,12 +286,15 @@ beforeEach(() => {
   mocks.oceanbaseListFailure = "";
   mocks.oceanbaseListTruncated = false;
   mocks.oceanbaseLockFailure = "";
+  mocks.oceanbaseLockRows = [["127.0.0.1", "2882", "7", "900", "21", "TX", "100", "200", "300", "6", "0", "10", "1", "OTHER", "WAITING"]];
+  mocks.oceanbaseLockTruncated = false;
   mocks.oceanbaseTerminateFailure = "";
   mocks.oceanbaseTargetChanged = false;
   mocks.oracleVersionValue = "19.0.0.0.0";
   mocks.oracleVersionFailure = "";
   mocks.oracleTargetChanged = false;
   mocks.oracleTargetMissing = false;
+  mocks.localeMessages = null;
   root = document.createElement("div");
   document.body.appendChild(root);
 });
@@ -436,9 +452,9 @@ describe("ProcessListPanel batch terminate", () => {
     filter!.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
 
-    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.lockDetails"]')?.click();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.oracleLockDetails"]')?.click();
     await vi.waitFor(() => expect(root?.textContent).toContain("TX"));
-    expect(root?.textContent).toContain("processList.lockTarget");
+    expect(root?.textContent).toContain("processList.oracleLockTarget");
     const lockCall = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("FROM GV$OB_LOCKS"));
     expect(lockCall?.[5]).toMatchObject({ clientSessionId: expect.stringMatching(/^process-list:/) });
 
@@ -471,6 +487,26 @@ describe("ProcessListPanel batch terminate", () => {
     expect(mocks.closeClientConnectionSession).toHaveBeenCalledWith(oceanbaseConnection.id, "", managementSessionId);
   });
 
+  it("renders OceanBase lock labels from the actual zh-CN message table", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    mocks.oceanbaseLockTruncated = true;
+    await mountOceanbasePanel();
+    const lockButton = processRow("21").querySelector<HTMLButtonElement>('button[title="锁详情"]');
+    expect(lockButton?.textContent).toContain("锁详情");
+    lockButton?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("目标会话：OTHER ·"));
+    expect(root?.textContent).toContain("锁记录已截断；显示结果可能不完整。");
+    expect(root?.textContent).not.toContain("processList.oracleLockDetails");
+  });
+
+  it("renders the OceanBase empty lock message from the actual zh-CN table", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    mocks.oceanbaseLockRows = [];
+    await mountOceanbasePanel();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="锁详情"]')?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("此会话没有可见的锁记录。"));
+  });
+
   it("keeps an OceanBase list permission failure distinct from confirmed empty results", async () => {
     mocks.oceanbaseListFailure = "ORA-01031: process list denied";
     app = createApp(ProcessListPanel, { connection: oceanbaseConnection });
@@ -482,10 +518,10 @@ describe("ProcessListPanel batch terminate", () => {
   it("preserves the OceanBase session list when lock details are denied", async () => {
     mocks.oceanbaseLockFailure = "ORA-01031: locks denied";
     await mountOceanbasePanel();
-    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.lockDetails"]')?.click();
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.oracleLockDetails"]')?.click();
     await vi.waitFor(() => expect(root?.textContent).toContain("ORA-01031: locks denied"));
     expect(root?.textContent).toContain("OTHER");
-    expect(root?.textContent).not.toContain("processList.lockDetailsEmpty");
+    expect(root?.textContent).not.toContain("processList.oracleLockDetailsEmpty");
   });
 
   it("shows an empty OceanBase result only when the query completed without an error", async () => {
@@ -574,12 +610,12 @@ describe("ProcessListPanel batch terminate", () => {
     app.mount(root!);
     await vi.waitFor(() => expect(root?.textContent).toContain("21"));
 
-    const lockButtons = gridButtons().filter((button) => button.textContent?.trim() === "processList.lockDetails");
+    const lockButtons = gridButtons().filter((button) => button.textContent?.trim() === "processList.oracleLockDetails");
     expect(lockButtons).toHaveLength(2);
     lockButtons[1]?.click();
 
     await vi.waitFor(() => expect(root?.textContent).toContain("TX"));
-    expect(root?.textContent).toContain("processList.lockTarget");
+    expect(root?.textContent).toContain("processList.oracleLockTarget");
     const lockQuery = mocks.executeQuery.mock.calls.find((call) => String(call[2]).includes("FROM GV$LOCK l JOIN GV$SESSION s"));
     expect(lockQuery?.[2]).toContain("l.CON_ID = 3");
     const managedSession = (lockQuery?.[5] as { clientSessionId?: string } | undefined)?.clientSessionId;

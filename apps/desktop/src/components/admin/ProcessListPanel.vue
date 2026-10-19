@@ -795,9 +795,9 @@ onBeforeUnmount(() => {
             </td>
             <td class="px-3 py-1.5 text-right">
               <span class="inline-flex items-center justify-end gap-1">
-                <Button v-if="driver?.buildLockDetailsSql" variant="ghost" size="sm" class="h-6 gap-1 px-1.5 text-[11px]" :disabled="actionsLocked || refreshing || loadingLocks" :title="t('processList.lockDetails')" @click="showLocks(row)">
+                <Button v-if="driver?.buildLockDetailsSql" variant="ghost" size="sm" class="h-6 gap-1 px-1.5 text-[11px]" :disabled="actionsLocked || refreshing || loadingLocks" :title="t('processList.oracleLockDetails')" @click="showLocks(row)">
                   <Search class="h-3.5 w-3.5" />
-                  {{ t("processList.lockDetails") }}
+                  {{ t("processList.oracleLockDetails") }}
                 </Button>
                 <Button
                   v-if="cancelSupported"
@@ -908,14 +908,14 @@ onBeforeUnmount(() => {
     <Dialog :open="lockTarget !== null" @update:open="(open) => !open && (lockTarget = null)">
       <DialogContent class="max-h-[min(80vh,700px)] max-w-5xl overflow-hidden">
         <DialogHeader
-          ><DialogTitle>{{ t("processList.lockDetails") }} · {{ lockTarget?.id }}</DialogTitle></DialogHeader
+          ><DialogTitle>{{ t("processList.oracleLockDetails") }} · {{ lockTarget?.id }}</DialogTitle></DialogHeader
         >
-        <p v-if="lockTarget" class="text-xs text-muted-foreground">{{ t("processList.lockTarget", { user: lockTarget.user, identity: driver?.rowKey?.(lockTarget) ?? lockTarget.id }) }}</p>
+        <p v-if="lockTarget" class="text-xs text-muted-foreground">{{ t("processList.oracleLockTarget", { user: lockTarget.user, identity: driver?.rowKey?.(lockTarget) ?? lockTarget.id }) }}</p>
         <div v-if="loadingLocks" class="flex items-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 class="h-4 w-4 animate-spin" />{{ t("common.loading") }}</div>
         <p v-else-if="lockError" class="rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{{ lockError }}</p>
-        <p v-else-if="lockRows.length === 0" class="py-8 text-center text-sm text-muted-foreground">{{ t("processList.lockDetailsEmpty") }}</p>
+        <p v-else-if="lockRows.length === 0" class="py-8 text-center text-sm text-muted-foreground">{{ t("processList.oracleLockDetailsEmpty") }}</p>
         <div v-else class="max-h-[55vh] overflow-auto rounded border">
-          <p v-if="lockTruncated" class="border-b bg-muted/30 p-2 text-xs text-muted-foreground">{{ t("processList.lockDetailsTruncated") }}</p>
+          <p v-if="lockTruncated" class="border-b bg-muted/30 p-2 text-xs text-muted-foreground">{{ t("processList.oracleLockDetailsTruncated") }}</p>
           <table class="w-full border-collapse text-xs">
             <thead class="sticky top-0 bg-muted/60">
               <tr>
