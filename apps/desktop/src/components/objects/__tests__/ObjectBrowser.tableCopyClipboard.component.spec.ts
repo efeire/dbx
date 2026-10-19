@@ -171,6 +171,21 @@ describe("ObjectBrowser table copy", () => {
     await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenLastCalledWith('#\tgrid.columnName\tgrid.columnType\tgrid.tableInfoNullable\tstructureEditor.defaultValue\tgrid.columnComment\n1\tsecond\tVARCHAR(20)\tNO\t"x\ty"\t"line 1\nline 2"\n2\tfirst\tNUMBER\tYES\t—\t"quote ""value"""'));
   });
 
+  it("neutralizes spreadsheet formulas only in advanced metadata TSV", async () => {
+    connection.id = "mysql-copy-columns-formula-guard";
+    mocks.getColumns.mockResolvedValue([{ name: "=1+1", data_type: "VARCHAR(20)", is_nullable: false, column_default: " +SUM(1,1)", is_primary_key: false, extra: null, comment: "\tCMD" }]);
+    const host = await mountBrowser();
+    const panel = await openColumnInfo(host, 1);
+    const column = panel.querySelector<HTMLElement>("[data-table-info-column]")!;
+    column.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    column.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }));
+    await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenLastCalledWith("=1+1"));
+
+    column.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, shiftKey: true, bubbles: true }));
+    await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenLastCalledWith("#\tgrid.columnName\tgrid.columnType\tgrid.tableInfoNullable\tstructureEditor.defaultValue\tgrid.columnComment\n1\t'=1+1\tVARCHAR(20)\tNO\t' +SUM(1,1)\t" + '"\'\tCMD"'));
+  });
+
   it("opens the advanced-copy context menu and copies only after its action is chosen", async () => {
     connection.id = "mysql-copy-columns-context";
     mocks.getColumns.mockResolvedValue([

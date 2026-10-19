@@ -125,6 +125,7 @@ import { buildXlsxHeaderOverrides, hasXlsxHeaderComments, xlsxHeaderUsesCommentR
 import { showSqlInsertModeDialog, type SqlInsertDialect, type SqlInsertMode } from "@/lib/export/sqlInsertMode";
 import { csvNullLiteralForMode } from "@/lib/export/csvNullMode";
 import { copyToClipboard, eventTargetAllowsAppClipboardShortcut } from "@/lib/common/clipboard";
+import { encodeSpreadsheetTsvCell } from "@/lib/common/spreadsheetTsv";
 import {
   defaultPasteTableMode,
   pasteTableModeCopiesData,
@@ -1284,7 +1285,7 @@ function copyTableInfoColumnDetails() {
   const headers = ["#", t("grid.columnName"), t("grid.columnType"), t("grid.tableInfoNullable"), t("structureEditor.defaultValue"), t("grid.columnComment")];
   const rows = ordered.map((column) => [String(filteredTableColumns.value.findIndex((item) => item.name === column.name) + 1), column.name, gaussdbMColumnType(column.data_type), column.is_nullable ? "YES" : "NO", tableColumnDefaultDisplayValue(column.column_default), column.comment ?? ""]);
   const escapeCell = (value: string) => (/[\t\n\r"]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value);
-  const text = [headers, ...rows].map((row) => row.map(escapeCell).join("\t")).join("\n");
+  const text = [headers, ...rows].map((row) => row.map(encodeSpreadsheetTsvCell).join("\t")).join("\n");
   void copyToClipboard(text)
     .then(() => toast(t("contextMenu.copyAdvancedInfo"), 2000))
     .catch((error) => toast(t("grid.copyFailed", { message: error?.message || String(error) }), 5000));
