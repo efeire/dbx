@@ -5031,7 +5031,7 @@ export default withEnglishFallback({
     oracleProxySession: "代理会话 ID",
     oracleProxyUnsupported: "代理会话暂不支持终止",
     oracleIdentityUnavailable: "会话身份信息不完整或已变化，已禁用终止；请刷新列表。",
-    oracleVersionUnknown: "无法确认 Oracle 主版本；为避免扩大会话范围，已停止读取。",
+    oracleVersionUnknown: "无法确认 Oracle 主版本；仍使用限定当前容器的会话查询。",
     oracleConnectionChanged: "连接配置已更改；未向新连接发送此操作。",
     oracleTerminateUnknown: "终止请求结果不明。请刷新会话列表确认状态，不要重复提交。",
     oracleTerminatePending: "终止请求已接受，会话仍在回滚或尚未退出。刷新以查看状态。",

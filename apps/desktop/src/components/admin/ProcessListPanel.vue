@@ -52,6 +52,7 @@ const transactionIdentityUnavailable = computed(() => transactionMode.value && (
 const loading = ref(false);
 const loadCoordinator = createProcessListLoadCoordinator();
 const loadError = ref("");
+const versionProbeWarning = ref("");
 const search = ref(restoredUiState.search ?? "");
 const restoredSortKey = columns.value.some((column) => column.key === restoredUiState.sortKey) ? restoredUiState.sortKey : undefined;
 const sortKey = ref<string>(restoredSortKey ?? driver.value?.defaultSortKey ?? "time");
@@ -340,14 +341,19 @@ async function load(options: { silent?: boolean } = {}) {
   refreshing.value = true;
   if (!options.silent) loading.value = true;
   loadError.value = "";
+  versionProbeWarning.value = "";
   try {
     await connectionStore.ensureConnected(connectionId, { skipIfClosedByUser: true });
     if (!isCurrent()) return;
     if (activeDriver.versionSql && versionMajor.value === null) {
-      const versionResult = await executeProcessQuery(connectionId, activeDriver.database ?? "", activeDriver.versionSql, 1, activeDriver);
-      const detectedVersion = oracleMajorVersion(String(versionResult.rows?.[0]?.[0] ?? ""));
-      if (detectedVersion === null) throw new Error(t("processList.oracleVersionUnknown"));
-      versionMajor.value = detectedVersion;
+      try {
+        const versionResult = await executeProcessQuery(connectionId, activeDriver.database ?? "", activeDriver.versionSql, 1, activeDriver);
+        const detectedVersion = oracleMajorVersion(String(versionResult.rows?.[0]?.[0] ?? ""));
+        if (detectedVersion === null) versionProbeWarning.value = t("processList.oracleVersionUnknown");
+        else versionMajor.value = detectedVersion;
+      } catch (error) {
+        versionProbeWarning.value = error instanceof Error ? error.message : String(error);
+      }
     }
     if (ownSessionId.value === null) {
       try {
@@ -749,6 +755,7 @@ onBeforeUnmount(() => {
     <div v-else-if="rowAwareTerminate && ownSessionId === null && !refreshing" class="border-b px-3 py-2 text-xs text-muted-foreground">{{ t("processList.batchNeedsSession") }}</div>
     <div v-if="transactionIdentityUnavailable && !refreshing && !loadError" class="border-b px-3 py-2 text-xs text-muted-foreground">{{ t("processList.transactionNeedsSession") }}</div>
 
+    <div v-if="versionProbeWarning" class="border-b bg-muted/50 px-3 py-2 text-xs text-muted-foreground">{{ versionProbeWarning }}</div>
     <div v-if="loadError" class="border-b bg-destructive/10 px-3 py-2 text-xs text-destructive">{{ loadError }}</div>
 
     <div class="min-h-0 flex-1 overflow-auto">

@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   oceanbaseTargetChanged: false,
   oracleVersionValue: "19.0.0.0.0",
   oracleVersionFailure: "",
+  oracleListFailure: "",
   oracleTargetChanged: false,
   oracleTargetMissing: false,
   localeMessages: null as Record<string, unknown> | null,
@@ -243,8 +244,11 @@ beforeEach(() => {
       if (mocks.oracleVersionFailure) throw new Error(mocks.oracleVersionFailure);
       return { columns: ["VERSION"], rows: [[mocks.oracleVersionValue]] };
     }
-    if (sql === buildOracleOwnSessionSql(false)) return { columns: [], rows: [["5", "1", "3"]] };
-    if (sql === buildOracleSessionListSql(false)) return oracleListResult();
+    if (sql === buildOracleOwnSessionSql(false) || sql === buildOracleOwnSessionSql(true)) return { columns: [], rows: [["5", "1", "3"]] };
+    if (sql === buildOracleSessionListSql(false) || sql === buildOracleSessionListSql(true)) {
+      if (mocks.oracleListFailure) throw new Error(mocks.oracleListFailure);
+      return oracleListResult();
+    }
     if (sql.includes("FROM GV$LOCK l JOIN GV$SESSION s"))
       return { columns: ["CONTAINER_ID", "INSTANCE_ID", "SESSION_ID", "LOCK_TYPE", "ID1", "ID2", "HELD_MODE", "REQUESTED_MODE", "BLOCKING", "SESSION_USER", "SESSION_STATUS", "BLOCKER"], rows: [["3", "2", "21", "TX", "100", "200", "6", "0", "1", "OTHER", "INACTIVE", "—"]] };
     if (sql.includes("ALTER SYSTEM KILL SESSION")) {
@@ -303,6 +307,7 @@ beforeEach(() => {
   mocks.oceanbaseTargetChanged = false;
   mocks.oracleVersionValue = "19.0.0.0.0";
   mocks.oracleVersionFailure = "";
+  mocks.oracleListFailure = "";
   mocks.oracleTargetChanged = false;
   mocks.oracleTargetMissing = false;
   mocks.localeMessages = null;
@@ -391,24 +396,49 @@ async function mountXuguPanel() {
 }
 
 describe("ProcessListPanel batch terminate", () => {
-  it("does not use a legacy Oracle query when version detection is unknown or denied", async () => {
+  it("uses the CON_ID-scoped Oracle query when version detection is unknown or denied", async () => {
     mocks.oracleVersionValue = "Oracle Database 19c";
     app = createApp(ProcessListPanel, { connection: oracleConnection });
     app.mount(root!);
-    await vi.waitFor(() => expect(root?.textContent).toContain("processList.oracleVersionUnknown"));
-    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("GV$SESSION"))).toBe(false);
-    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("CON_ID"))).toBe(false);
+    await vi.waitFor(() => expect(root?.querySelector("tbody")?.textContent).toContain("21"));
+    expect(root?.textContent).toContain("processList.oracleVersionUnknown");
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(false))).toBe(true);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleOwnSessionSql(false))).toBe(true);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(true))).toBe(false);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleOwnSessionSql(true))).toBe(false);
 
     app.unmount();
     app = null;
     root!.innerHTML = "";
     mocks.executeQuery.mockClear();
     mocks.oracleVersionFailure = "ORA-01031: insufficient privileges";
+    await mountOraclePanel();
+    expect(root?.textContent).toContain("ORA-01031: insufficient privileges");
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(false))).toBe(true);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleOwnSessionSql(false))).toBe(true);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(true))).toBe(false);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleOwnSessionSql(true))).toBe(false);
+
+    app?.unmount();
+    app = null;
+    root!.innerHTML = "";
+    mocks.executeQuery.mockClear();
+    mocks.oracleListFailure = "ORA-00904: CON_ID invalid identifier";
     app = createApp(ProcessListPanel, { connection: oracleConnection });
     app.mount(root!);
-    await vi.waitFor(() => expect(root?.textContent).toContain("ORA-01031: insufficient privileges"));
-    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("GV$SESSION"))).toBe(false);
-    expect(mocks.executeQuery.mock.calls.some((call) => String(call[2]).includes("CON_ID"))).toBe(false);
+    await vi.waitFor(() => expect(root?.textContent).toContain("ORA-00904: CON_ID invalid identifier"));
+    expect(root?.textContent).toContain("ORA-01031: insufficient privileges");
+    expect(root?.textContent).not.toContain("processList.empty");
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(false))).toBe(true);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(true))).toBe(false);
+  });
+
+  it("uses the legacy Oracle query only after explicitly detecting a pre-12c version", async () => {
+    mocks.oracleVersionValue = "11.2.0.4.0";
+    await mountOraclePanel();
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(true))).toBe(true);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleOwnSessionSql(true))).toBe(true);
+    expect(mocks.executeQuery.mock.calls.some((call) => call[2] === buildOracleSessionListSql(false))).toBe(false);
   });
 
   it("rejects a changed Oracle target identity and never reports it as terminated", async () => {

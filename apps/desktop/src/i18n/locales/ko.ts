@@ -4618,7 +4618,7 @@ export default withEnglishFallback({
     oracleProxySession: "프록시 세션 ID",
     oracleProxyUnsupported: "프록시 세션은 여기서 종료할 수 없습니다.",
     oracleIdentityUnavailable: "세션 식별 정보가 불완전하거나 변경되어 종료할 수 없습니다. 목록을 새로 고치세요.",
-    oracleVersionUnknown: "Oracle 주 버전을 확인할 수 없습니다. 범위가 넓어지는 것을 방지하기 위해 세션 목록 조회를 중단했습니다.",
+    oracleVersionUnknown: "Oracle 주 버전을 확인할 수 없습니다. CON_ID로 범위를 제한한 세션 조회를 사용합니다.",
     oracleConnectionChanged: "연결 구성이 변경되어 이 작업을 새 연결로 보내지 않았습니다.",
     oracleTerminateUnknown: "종료 결과를 확인할 수 없습니다. 다음 작업을 결정하기 전에 목록을 새로 고치세요. 아직 다시 보내지 마세요.",
     oracleTerminatePending: "종료 요청이 수락되었습니다. 세션이 롤백 중이거나 연결을 끊는 중일 수 있습니다. 새로 고쳐 상태를 확인하세요.",

@@ -10916,7 +10916,7 @@ export default withEnglishFallback({
     oracleProxySession: "ID sessione proxy",
     oracleProxyUnsupported: "Le sessioni proxy non possono essere terminate qui.",
     oracleIdentityUnavailable: "L'identità della sessione è incompleta o cambiata; terminazione disabilitata. Aggiornare l'elenco.",
-    oracleVersionUnknown: "Impossibile verificare la versione principale di Oracle. L'elenco è stato interrotto per non ampliarne l'ambito.",
+    oracleVersionUnknown: "Impossibile verificare la versione principale di Oracle; verrà usata la query di sessione limitata da CON_ID.",
     oracleConnectionChanged: "La configurazione della connessione è cambiata; l'operazione non è stata inviata alla nuova connessione.",
     oracleTerminateUnknown: "Esito della terminazione sconosciuto. Aggiornare l'elenco prima di decidere il passaggio successivo; non inviare di nuovo l'operazione.",
     oracleTerminatePending: "Richiesta di terminazione accettata; la sessione potrebbe essere ancora in rollback o in disconnessione. Aggiornare per verificarne lo stato.",

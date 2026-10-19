@@ -5024,7 +5024,7 @@ export default withEnglishFallback({
     oracleProxyUnsupported: "ไม่สามารถยุติเซสชันพร็อกซีจากที่นี่ได้",
     oracleIdentityUnavailable: "ข้อมูลระบุตัวเซสชันไม่ครบถ้วนหรือเปลี่ยนไป จึงปิดใช้การยุติ โปรดรีเฟรชรายการ",
 
-    oracleVersionUnknown: "ยืนยัน Oracle major version ไม่ได้ จึงหยุดแสดงรายการเพื่อไม่ขยายขอบเขต",
+    oracleVersionUnknown: "ยืนยัน Oracle major version ไม่ได้ โดยยังใช้คำสั่งรายการเซสชันที่จำกัดด้วย CON_ID",
     oracleConnectionChanged: "การตั้งค่าการเชื่อมต่อเปลี่ยนไป จึงไม่ได้ส่งการดำเนินการนี้ไปยังการเชื่อมต่อใหม่",
     oracleTerminateUnknown: "ไม่ทราบผลการยุติเซสชัน โปรดรีเฟรชรายการก่อนตัดสินใจขั้นต่อไป และอย่าส่งคำขอซ้ำในตอนนี้",
     oracleTerminatePending: "ยอมรับคำขอยุติแล้ว เซสชันอาจกำลัง rollback หรือกำลังตัดการเชื่อมต่อ รีเฟรชเพื่อตรวจสอบสถานะ",

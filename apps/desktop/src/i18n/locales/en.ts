@@ -5102,7 +5102,7 @@ export default {
     oracleProxySession: "Proxy session ID",
     oracleProxyUnsupported: "Proxy sessions cannot be terminated here.",
     oracleIdentityUnavailable: "Session identity is incomplete or changed; termination is disabled. Refresh the list.",
-    oracleVersionUnknown: "The Oracle major version could not be verified. Session listing stopped to avoid widening its scope.",
+    oracleVersionUnknown: "The Oracle major version could not be verified; using the session query scoped by CON_ID.",
     oracleConnectionChanged: "The connection configuration changed; this operation was not sent to the new connection.",
     oracleTerminateUnknown: "The termination result is unknown. Refresh the session list before deciding what to do next; do not resubmit yet.",
     oracleTerminatePending: "The termination request was accepted; the session may still be rolling back or disconnecting. Refresh to check its state.",

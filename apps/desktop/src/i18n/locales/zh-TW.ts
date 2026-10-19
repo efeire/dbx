@@ -10922,7 +10922,7 @@ export default withEnglishFallback({
     oracleProxySession: "代理工作階段 ID",
     oracleProxyUnsupported: "目前不支援終止代理工作階段。",
     oracleIdentityUnavailable: "工作階段識別資訊不完整或已變更，已停用終止操作。請重新整理清單。",
-    oracleVersionUnknown: "無法確認 Oracle 主版本。為避免擴大範圍，已停止讀取工作階段。",
+    oracleVersionUnknown: "無法確認 Oracle 主版本；仍使用限定目前容器的工作階段查詢。",
     oracleConnectionChanged: "連線設定已變更；此操作不會送往新連線。",
     oracleTerminateUnknown: "無法確認終止結果。請先重新整理工作階段清單，再決定下一步；請勿立即重送。",
     oracleTerminatePending: "已接受終止要求；工作階段可能仍在復原交易或中斷連線。請重新整理確認狀態。",

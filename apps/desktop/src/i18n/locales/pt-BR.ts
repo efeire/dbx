@@ -10912,7 +10912,7 @@ export default withEnglishFallback({
     oracleProxySession: "ID da sessão proxy",
     oracleProxyUnsupported: "Sessões proxy não podem ser encerradas aqui.",
     oracleIdentityUnavailable: "A identidade da sessão está incompleta ou mudou; o encerramento foi desativado. Atualize a lista.",
-    oracleVersionUnknown: "Não foi possível verificar a versão principal do Oracle. A listagem foi interrompida para não ampliar o escopo.",
+    oracleVersionUnknown: "Não foi possível verificar a versão principal do Oracle; será usada a consulta de sessões limitada por CON_ID.",
     oracleConnectionChanged: "A configuração da conexão mudou; esta operação não foi enviada à nova conexão.",
     oracleTerminateUnknown: "O resultado do encerramento é desconhecido. Atualize a lista antes de decidir o próximo passo; não reenvie ainda.",
     oracleTerminatePending: "A solicitação de encerramento foi aceita; a sessão ainda pode estar revertendo ou desconectando. Atualize para verificar o estado.",

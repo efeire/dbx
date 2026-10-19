@@ -10952,7 +10952,7 @@ export default withEnglishFallback({
     oracleProxySession: "プロキシセッション ID",
     oracleProxyUnsupported: "プロキシセッションはここから終了できません。",
     oracleIdentityUnavailable: "セッション識別情報が不完全または変更されたため、終了は無効です。一覧を更新してください。",
-    oracleVersionUnknown: "Oracle のメジャーバージョンを確認できませんでした。対象範囲を広げないため、一覧の取得を停止しました。",
+    oracleVersionUnknown: "Oracle のメジャーバージョンを確認できません。CON_ID で範囲を限定したセッション検索を使用します。",
     oracleConnectionChanged: "接続設定が変更されたため、この操作は新しい接続には送信されませんでした。",
     oracleTerminateUnknown: "終了結果を確認できません。次の操作を決める前に一覧を更新してください。まだ再送信しないでください。",
     oracleTerminatePending: "終了要求は受理されました。セッションはロールバック中または切断処理中の可能性があります。更新して状態を確認してください。",
