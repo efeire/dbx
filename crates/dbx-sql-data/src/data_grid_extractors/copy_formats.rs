@@ -259,7 +259,8 @@ fn is_floating_type(data_type: Option<&str>, database_type: Option<DatabaseType>
     if ty.starts_with("binary_float") || ty.starts_with("binary_double") {
         return true;
     }
-    if matches!(database_type, Some(DatabaseType::Oracle | DatabaseType::OceanbaseOracle)) {
+    let Some(database_type) = database_type else { return false };
+    if matches!(database_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle) {
         return false;
     }
     let first = ty
@@ -552,6 +553,18 @@ mod tests {
         request.rows = vec![vec![serde_json::from_str("0.1234567890123456789").unwrap()]];
         let text = extract_data_grid_selection(request).unwrap().text;
         assert!(text.contains("\"0.1234567890123456789\""), "{text}");
+    }
+
+    #[test]
+    fn php_keeps_float_values_as_strings_when_database_type_is_unknown() {
+        let mut request = request(DataGridExtractorId::Php);
+        request.columns.truncate(1);
+        request.selected_column_indexes = vec![0];
+        request.columns[0].data_type = Some("FLOAT".into());
+        request.database_type = None;
+        request.rows = vec![vec![serde_json::from_str("1.5").unwrap()]];
+        let text = extract_data_grid_selection(request).unwrap().text;
+        assert!(text.contains("\"1.5\""), "{text}");
     }
 
     #[test]
