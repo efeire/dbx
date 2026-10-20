@@ -93,7 +93,7 @@ pub(super) fn build_index_sql(options: &TableStructureSqlOptions, warnings: &mut
             }
             let or_replace =
                 options.database_type == Some(DatabaseType::Dameng) && index_name_for_sql(index, true) == original.name;
-            if dialect == StructureDialect::Oracle {
+            if matches!(dialect, StructureDialect::Oracle | StructureDialect::Dameng) {
                 // Oracle-family index edits may require DROP/CREATE. Validate that the
                 // complete replacement plan can be built before exposing its destructive
                 // first step; an empty/invalid target must never become a DROP-only plan.
@@ -212,7 +212,7 @@ fn build_dameng_constraint_index_edit(
     warnings: &mut Vec<String>,
 ) -> Vec<String> {
     let name = index_name_for_sql(index, true);
-    let columns: Vec<String> = index.columns.iter().filter(|column| !column.is_empty()).cloned().collect();
+    let columns: Vec<String> = index.columns.iter().filter(|column| !column.trim().is_empty()).cloned().collect();
     // Same guard as `build_create_index_statements`: an empty name or an empty column list
     // cannot produce a valid replacement (`validate_draft` already reports it as a warning).
     // Emitting only the DROP would silently delete the constraint, so skip the edit entirely.
@@ -595,7 +595,7 @@ pub(super) fn build_create_index_statements(
         .columns
         .iter()
         .map(|column| if exact_keys { column.clone() } else { clean(column) })
-        .filter(|column| !column.is_empty())
+        .filter(|column| !column.trim().is_empty())
         .collect();
     if name.is_empty() || columns.is_empty() {
         return Vec::new();

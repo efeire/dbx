@@ -219,7 +219,9 @@ describe("schema index browsing and draft navigation", () => {
     expect(mocks.executeBatch).not.toHaveBeenCalled();
   });
 
-  it("a direct cross-owner view request reads the parent even outside the loaded page and never edits", async () => {
+  it.each(["empty", "loading", "failed"])("a direct cross-owner view request reads the parent with a %s list and never edits", async (state) => {
+    if (state === "loading") mocks.listObjects.mockReturnValue(new Promise(() => {}));
+    if (state === "failed") mocks.listObjects.mockRejectedValue(new Error("central list unavailable"));
     const target = { schema: " Mixed ", name: " Ix(a) ", parentSchema: " Other Owner ", parentName: ' T(a)" ' };
     const { host } = await mountBrowser({ initialViewTarget: target, initialViewRequestId: 1 });
     await vi.waitFor(() => expect(mocks.listIndexes).toHaveBeenCalledExactlyOnceWith(connection.id, "service", " Other Owner ", ' T(a)" ', undefined, true));

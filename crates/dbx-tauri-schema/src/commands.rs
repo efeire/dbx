@@ -176,6 +176,7 @@ pub async fn list_data_types(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn list_tables(
     state: State<'_, Arc<AppState>>,
     connection_id: String,

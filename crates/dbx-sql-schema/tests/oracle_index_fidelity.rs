@@ -173,6 +173,37 @@ fn oracle_invalid_rebuild_does_not_drop_without_a_complete_create() {
 }
 
 #[test]
+fn oracle_family_blank_only_keys_cannot_create_or_replace_an_index() {
+    for database_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle, DatabaseType::Dameng] {
+        for existing in [false, true] {
+            let mut index = existing_index(vec!["  "]);
+            if !existing {
+                index.as_object_mut().unwrap().remove("original");
+            }
+            let mut request = options(index);
+            request.database_type = Some(database_type);
+            let result = build_table_structure_change_sql(request);
+            assert!(result.statements.is_empty(), "{database_type:?}, existing={existing}: {result:?}");
+            assert!(!result.warnings.is_empty(), "{result:?}");
+        }
+    }
+}
+
+#[test]
+fn dameng_constraint_replacement_preserves_nonblank_raw_column_names() {
+    let mut index = existing_index(vec![" Id(a) "]);
+    index["isUnique"] = json!(true);
+    index["original"]["is_unique"] = json!(true);
+    index["original"]["constraint_backed"] = json!(true);
+    let mut request = options(index);
+    request.database_type = Some(DatabaseType::Dameng);
+    let result = build_table_structure_change_sql(request);
+    assert_eq!(result.warnings, Vec::<String>::new(), "{result:?}");
+    assert_eq!(result.statements.len(), 2, "{result:?}");
+    assert!(result.statements[1].contains("UNIQUE (\" Id(a) \")"), "{result:?}");
+}
+
+#[test]
 fn indexes_on_other_oracle_dialect_engines_keep_existing_rebuild_behavior() {
     for database_type in [DatabaseType::Iris, DatabaseType::Yashandb, DatabaseType::Xugu] {
         let mut options = options(existing_index(vec!["LOWER(EVENT_NAME)", "EVENT_TS"]));

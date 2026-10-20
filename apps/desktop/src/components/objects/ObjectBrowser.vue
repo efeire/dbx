@@ -295,6 +295,7 @@ const openedInitialEvent = ref("");
 const isEventEditor = computed(() => sidePanelMode.value === "event-editor");
 const isSidePanelOpen = computed(() => !!sidePanelRow.value || isEventEditor.value);
 const sidePanelMode = ref<"table-info" | "source" | "type-info" | "event-editor">("source");
+const isSchemaIndexInfo = computed(() => sidePanelMode.value === "table-info" && sidePanelRow.value?.type === "INDEX");
 const eventEditorKey = computed(() =>
   eventEditorInstanceKey({
     createRequestId: props.initialEventCreateRequestId,
@@ -5310,14 +5311,14 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       <RefreshCw class="h-3 w-3 shrink-0" />
       <span class="min-w-0 truncate">{{ scaffoldRefreshError }}</span>
     </div>
-    <div v-if="loadingObjects && !isSidePanelOpen" class="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+    <div v-if="loadingObjects && !isSchemaIndexInfo" class="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
       <Loader2 class="h-4 w-4 animate-spin" />
       {{ t("objects.loading") }}
     </div>
-    <div v-else-if="error && !isSidePanelOpen" class="flex flex-1 items-center justify-center px-6 text-center text-sm text-destructive">
+    <div v-else-if="error && !isSchemaIndexInfo" class="flex flex-1 items-center justify-center px-6 text-center text-sm text-destructive">
       {{ error }}
     </div>
-    <div v-else-if="filteredRows.length === 0 && !isSidePanelOpen" class="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+    <div v-else-if="filteredRows.length === 0 && !isEventEditor && !isSchemaIndexInfo" class="flex flex-1 items-center justify-center text-sm text-muted-foreground">
       {{ t("objects.empty") }}
     </div>
     <div v-else class="flex min-h-0 min-w-0 flex-1" :class="{ 'event-editor-layout': isEventEditor }">
@@ -5989,7 +5990,16 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       >
       <label class="grid gap-2 text-sm">
         {{ t("structureEditor.tableName") }}
-        <SearchableSelect data-index-parent-table v-model="indexParentTable" :options="indexParentTables" :loading="indexParentLoading" :disabled="indexParentLoading" :placeholder="t('schemaDiff.selectTable')" :search-placeholder="t('common.search')" :empty-text="t('grid.noSearchResults')" />
+        <SearchableSelect
+          data-index-parent-table
+          v-model="indexParentTable"
+          :options="indexParentTables"
+          :loading="indexParentLoading"
+          :disabled="indexParentLoading"
+          :placeholder="t('dataCompare.selectTable')"
+          :search-placeholder="t('dataCompare.searchTable')"
+          :empty-text="t('grid.noSearchResults')"
+        />
       </label>
       <div v-if="indexParentError" role="alert" class="flex items-center gap-2 text-sm text-destructive">
         <span class="min-w-0 flex-1 break-words">{{ indexParentError }}</span>

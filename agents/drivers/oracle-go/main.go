@@ -2053,8 +2053,12 @@ func (s *server) listObjects(schema string, constraints metadataListConstraints)
 }
 
 func metadataIncludesIndexes(objectTypes []string) bool {
-	types := normalizedMetadataObjectTypes(objectTypes)
-	return contains(types, "INDEX")
+	for _, objectType := range normalizedMetadataObjectTypes(objectTypes) {
+		if objectType == "INDEX" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *server) completionAssistantSearch(request completionAssistantRequest) (completionAssistantResponse, error) {
