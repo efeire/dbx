@@ -170,8 +170,8 @@ import {
   Trash2,
 } from "@lucide/vue";
 import { buildDraftVisibleDatabasesConnectionId, connectionCanChooseVisibleDatabases, initialVisibleDatabaseSelection, visibleObjectFiltersNeedReset } from "@/lib/connection/connectionVisibleDatabases";
-import { resolveVisibleDatabaseSaveAction } from "@/components/sidebar/visibleDatabasesDialogState";
-import { canSaveVisibleDatabaseSelection, connectionUsesVisibleSchemaFilter, filterDatabaseNamesForVisiblePicker, filterSchemaNamesForVisiblePicker, buildDraftVisibleSchemasConnectionId, normalizeVisibleSchemaSelection } from "@/lib/database/visibleDatabases";
+import { resolveVisibleDatabaseSaveAction, visibleDatabasePatternsWithoutMatchAll } from "@/components/sidebar/visibleDatabasesDialogState";
+import { MATCH_ALL_VISIBLE_DATABASE_PATTERN, canSaveVisibleDatabaseSelection, connectionUsesVisibleSchemaFilter, filterDatabaseNamesForVisiblePicker, filterSchemaNamesForVisiblePicker, buildDraftVisibleSchemasConnectionId, normalizeVisibleSchemaSelection } from "@/lib/database/visibleDatabases";
 import { isSchemaAware, isSingleDatabase, supportsDataDictionary, supportsTransaction } from "@/lib/database/databaseFeatureSupport";
 import { normalizeConnectionScope, normalizeConnectionTimeouts } from "@/lib/connection/connectionSubmitNormalization";
 import { databaseConnectionFormKind, databaseManifestEntry } from "@/lib/database/databaseDriverManifest";
@@ -581,6 +581,7 @@ function defaultHttpTunnel(): HttpTunnelConfig {
     enabled: true,
     url: "",
     token: "",
+    protocol: "dbx_tcp",
     connect_timeout_secs: 10,
   };
 }
@@ -606,6 +607,7 @@ function normalizeHttpTunnel(layer: Partial<HttpTunnelConfig>): HttpTunnelConfig
     enabled: layer.enabled !== false,
     url: layer.url || "",
     token: layer.token || "",
+    protocol: layer.protocol === "navicat_mysql" ? "navicat_mysql" : "dbx_tcp",
     connect_timeout_secs: Number(layer.connect_timeout_secs) || 10,
     profile_id: layer.profile_id || undefined,
   };
@@ -3193,6 +3195,9 @@ watch(
         production_databases: config.production_databases || [],
         production_badge_scope: sidebarProductionBadgeScope(config),
         visible_databases: config.visible_databases,
+        // 通配符筛选由侧栏弹窗维护；编辑连接时也要带上，否则保存会把它清掉，
+        // “显示全部（含系统库）”的 `%` 也会在下次打开编辑器时丢失。
+        visible_database_patterns: config.visible_database_patterns,
         visible_schemas: config.visible_schemas,
         save_password: config.save_password !== false,
       };
@@ -3844,7 +3849,12 @@ const isH2FileMode = computed(() => form.value.db_type === "h2" && h2ConnectionM
 const isH2CustomDriver = computed(() => form.value.db_type === "h2" && form.value.driver_profile === "h2-custom");
 const usesLocalFilePathInput = computed(() => isLocalFileTypeDb(form.value.db_type) && (form.value.db_type !== "h2" || isH2FileMode.value));
 
-const connectionUrlPlaceholder = computed(() => getUrlPlaceholder(form.value.db_type, form.value.driver_profile));
+const connectionUrlPlaceholder = computed(() => {
+  if (form.value.db_type === "h2") {
+    return isH2FileMode.value ? getUrlPlaceholder("h2", "file") : getUrlPlaceholder("h2", form.value.driver_profile);
+  }
+  return getUrlPlaceholder(form.value.db_type, form.value.driver_profile);
+});
 const jdbcUsernamePlaceholder = computed(() => (form.value.driver_profile === "dremio" || isJdbcProductConnection.value ? "" : "sa"));
 const filePathPlaceholder = computed(() => {
   if (form.value.db_type === "duckdb") return "/path/to/database.duckdb or :memory:";
@@ -6106,8 +6116,13 @@ function showAllVisibleDatabases() {
   if (visibleFilterUsesSchemas.value) {
     handleDraftSchemasShowAll();
     form.value.visible_databases = undefined;
+    // schema 模式下的兜底通配符同样会重新隐藏对象；"显示全部"要一并清掉。
+    form.value.visible_database_patterns = undefined;
   } else {
     form.value.visible_databases = undefined;
+    // 未筛选时系统库默认隐藏。用户展开系统库后点“显示全部”，说明全选范围包含系统库：
+    // 用全匹配通配符记住这一意图，既不冻结当前库名，之后新建的库也仍然自动可见。
+    form.value.visible_database_patterns = visibleDatabaseShowSystem.value && visibleDatabaseHasSystemObjects.value ? [MATCH_ALL_VISIBLE_DATABASE_PATTERN] : undefined;
   }
   visibleDatabaseSelection.value = new Set();
   visibleDatabaseNames.value = [];
@@ -6131,12 +6146,14 @@ function saveVisibleDatabaseSelection() {
       defaultVisibleNames: defaultListedVisibleDatabaseNames.value,
       configured: form.value.visible_databases,
       configuredPatterns: form.value.visible_database_patterns,
-      patterns: form.value.visible_database_patterns ?? [],
+      patterns: visibleDatabasePatternsWithoutMatchAll(form.value.visible_database_patterns),
     });
     if (action.type === "clear") {
       form.value.visible_databases = undefined;
+      form.value.visible_database_patterns = undefined;
     } else if (action.type === "set") {
       form.value.visible_databases = action.databaseNames;
+      form.value.visible_database_patterns = action.patterns.length > 0 ? action.patterns : undefined;
     }
   }
   showVisibleDatabasesDialog.value = false;
@@ -6613,6 +6630,32 @@ function updateSelectedProxyType(value: unknown) {
   layer.proxy_type = value === "http" ? "http" : "socks5";
   resetTestState();
 }
+
+function updateSelectedHttpTunnelProtocol(value: unknown) {
+  const layer = selectedHttpTunnelLayer.value;
+  if (!layer) return;
+  layer.protocol = String(value) === "navicat_mysql" ? "navicat_mysql" : "dbx_tcp";
+  if (layer.protocol === "navicat_mysql") layer.token = "";
+  if (layer.protocol === "navicat_mysql" && layer.url.trim()) {
+    try {
+      const url = new URL(layer.url.trim());
+      if (url.pathname.endsWith("/")) {
+        url.pathname += "ntunnel_mysql.php";
+        layer.url = url.toString();
+      } else {
+        layer.url = url.toString();
+      }
+    } catch {
+      // Keep invalid input unchanged so the submit validation can report it.
+    }
+  }
+  resetTestState();
+}
+
+const selectedHttpTunnelProtocol = computed({
+  get: () => selectedHttpTunnelLayer.value?.protocol || "dbx_tcp",
+  set: (value: string) => updateSelectedHttpTunnelProtocol(value),
+});
 
 function updateSelectedSshAuthMethod(value: unknown) {
   const layer = selectedSshLayer.value;
@@ -7882,7 +7925,7 @@ function openExternalUrl(url: string) {
                       <div class="grid grid-cols-4 items-center gap-4">
                         <Label :class="connectionLabelClass">{{ t("connection.rocketmqConnectionMode") }}</Label>
                         <Select v-model="mqRocketmqConnectionMode">
-                          <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
+                          <SelectTrigger class="col-span-3 h-9"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="remoting">Remoting</SelectItem>
                             <SelectItem value="proxy">Proxy (gRPC)</SelectItem>
@@ -7967,7 +8010,7 @@ function openExternalUrl(url: string) {
                       <div v-if="mqSystemKind === 'kafka'" class="grid grid-cols-4 items-center gap-4">
                         <Label :class="connectionLabelClass">{{ t("connection.mqSaslMechanism") }}</Label>
                         <Select v-model="mqKafkaSaslMechanism">
-                          <SelectTrigger class="col-span-3 h-9">
+                          <SelectTrigger class="col-span-3 h-9 w-full min-w-0">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -10656,10 +10699,10 @@ function openExternalUrl(url: string) {
             </TabsContent>
 
             <TabsContent v-if="canUseTransportLayers" value="transport" class="m-0 flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div class="connection-form-body grid min-h-0 flex-1 scroll-pb-6 gap-4 overflow-y-auto overflow-x-hidden pt-4 pr-2 pb-6">
-                <div class="connection-label-wide-grid grid min-w-0 grid-cols-4 items-start gap-4">
+              <div class="connection-form-body connection-transport-form-body grid min-h-0 w-full flex-1 scroll-pb-6 gap-4 overflow-y-auto overflow-x-hidden pt-4 pr-2 pb-6">
+                <div class="connection-label-wide-grid grid w-full min-w-0 grid-cols-4 items-start gap-4">
                   <Label :class="connectionLabelSmallPaddedClass">{{ t("connection.sshHops") }}</Label>
-                  <div class="col-span-3 grid min-w-0 gap-3">
+                  <div class="col-span-3 grid w-full min-w-0 gap-3">
                     <div class="flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                       <template v-for="(segment, index) in transportPathSegments" :key="`${segment}-${index}`">
                         <span class="inline-block max-w-full truncate rounded border bg-muted/40 px-2 py-1">{{ segment }}</span>
@@ -10672,7 +10715,7 @@ function openExternalUrl(url: string) {
                         :key="hop.id"
                         type="button"
                         draggable="true"
-                        class="connection-transport-layer-option flex min-h-10 items-center gap-2 rounded-md border px-2 text-left text-xs transition-colors"
+                        class="connection-transport-layer-option flex min-h-10 w-full min-w-0 items-center gap-2 rounded-md border px-2 text-left text-xs transition-colors"
                         :class="hop.id === selectedTransportLayer?.id ? 'connection-transport-layer-option--selected border-primary bg-primary/5' : 'hover:bg-muted/50'"
                         @click="selectedTransportLayerId = hop.id"
                         @dragstart="draggedTransportLayerId = hop.id"
@@ -10761,18 +10804,20 @@ function openExternalUrl(url: string) {
                       <span v-else class="text-red-500">{{ t("connection.tunnelProfileMissing") }}</span>
                     </div>
                   </div>
-                  <div v-if="!selectedLayerProfileId" class="grid grid-cols-4 items-center gap-4">
+                  <div v-if="!selectedLayerProfileId" class="grid min-w-0 grid-cols-4 items-center gap-4">
                     <Label :class="connectionLabelSmallClass">Type</Label>
-                    <Select :model-value="selectedTransportLayer.type" @update:model-value="(value: any) => changeSelectedTransportLayerType(value)">
-                      <SelectTrigger class="col-span-3 h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ssh">SSH</SelectItem>
-                        <SelectItem value="proxy">Proxy</SelectItem>
-                        <SelectItem v-if="!sqliteRemoteTransportRestricted" value="http_tunnel">{{ t("connection.httpTunnel") }}</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div class="col-span-3 min-w-0">
+                      <Select :model-value="selectedTransportLayer.type" @update:model-value="(value: any) => changeSelectedTransportLayerType(value)">
+                        <SelectTrigger class="h-9 w-full min-w-0">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ssh">SSH</SelectItem>
+                          <SelectItem value="proxy">Proxy</SelectItem>
+                          <SelectItem v-if="!sqliteRemoteTransportRestricted" value="http_tunnel">{{ t("connection.httpTunnel") }}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                   <template v-if="selectedSshLayer && !selectedLayerProfileId">
                     <div class="grid grid-cols-4 items-center gap-4">
@@ -10787,20 +10832,22 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelSmallClass">{{ t("connection.sshUser") }}</Label>
                       <Input v-model="selectedSshLayer.user" class="col-span-3" placeholder="root" :disabled="selectedSshLayer.enabled === false" />
                     </div>
-                    <div class="grid grid-cols-4 items-center gap-4">
+                    <div class="grid min-w-0 grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.sshAuthMethod") }}</Label>
-                      <Select :model-value="selectedSshLayer.auth_method || 'password'" :disabled="selectedSshLayer.enabled === false" @update:model-value="updateSelectedSshAuthMethod">
-                        <SelectTrigger class="col-span-3 h-9">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="password">{{ t("connection.sshAuthMethodPassword") }}</SelectItem>
-                          <SelectItem value="key">{{ t("connection.sshAuthMethodKey") }}</SelectItem>
-                          <SelectItem value="key+password">{{ t("connection.sshAuthMethodKeyPassword") }}</SelectItem>
-                          <SelectItem value="agent">{{ t("connection.sshUseAgent") }}</SelectItem>
-                          <SelectItem value="none">{{ t("connection.sshAuthMethodNone") }}</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <div class="col-span-3 min-w-0">
+                        <Select :model-value="selectedSshLayer.auth_method || 'password'" :disabled="selectedSshLayer.enabled === false" @update:model-value="updateSelectedSshAuthMethod">
+                          <SelectTrigger class="h-9 w-full min-w-0">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="password">{{ t("connection.sshAuthMethodPassword") }}</SelectItem>
+                            <SelectItem value="key">{{ t("connection.sshAuthMethodKey") }}</SelectItem>
+                            <SelectItem value="key+password">{{ t("connection.sshAuthMethodKeyPassword") }}</SelectItem>
+                            <SelectItem value="agent">{{ t("connection.sshUseAgent") }}</SelectItem>
+                            <SelectItem value="none">{{ t("connection.sshAuthMethodNone") }}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                     <div v-if="selectedSshLayer.auth_method === 'key' || selectedSshLayer.auth_method === 'key+password'" class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.sshKeyPath") }}</Label>
@@ -10859,17 +10906,19 @@ function openExternalUrl(url: string) {
                     </div>
                   </template>
                   <template v-else-if="selectedProxyLayer && !selectedLayerProfileId">
-                    <div class="grid grid-cols-4 items-center gap-4">
+                    <div class="grid min-w-0 grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.proxyType") }}</Label>
-                      <Select :model-value="selectedProxyLayer.proxy_type || 'socks5'" :disabled="selectedProxyLayer.enabled === false" @update:model-value="updateSelectedProxyType">
-                        <SelectTrigger class="col-span-3 h-9">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="socks5">SOCKS5</SelectItem>
-                          <SelectItem value="http">HTTP CONNECT</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <div class="col-span-3 min-w-0">
+                        <Select :model-value="selectedProxyLayer.proxy_type || 'socks5'" :disabled="selectedProxyLayer.enabled === false" @update:model-value="updateSelectedProxyType">
+                          <SelectTrigger class="h-9 w-full min-w-0">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="socks5">SOCKS5</SelectItem>
+                            <SelectItem value="http">HTTP CONNECT</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.proxyHost") }}</Label>
@@ -10886,17 +10935,43 @@ function openExternalUrl(url: string) {
                     </div>
                   </template>
                   <template v-else-if="selectedHttpTunnelLayer && !selectedLayerProfileId">
-                    <div class="grid grid-cols-4 items-center gap-4">
+                    <div class="grid min-w-0 grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelSmallClass">{{ t("connection.httpTunnelProtocol") }}</Label>
+                      <div class="col-span-3 min-w-0">
+                        <Select v-model="selectedHttpTunnelProtocol" :disabled="selectedHttpTunnelLayer!.enabled === false">
+                          <SelectTrigger class="w-full min-w-0"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="dbx_tcp">{{ t("connection.httpTunnelProtocolDbx") }}</SelectItem>
+                            <SelectItem v-if="form.db_type === 'mysql'" value="navicat_mysql">{{ t("connection.httpTunnelProtocolNavicat") }}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div class="grid min-w-0 grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.httpTunnelUrl") }}</Label>
-                      <Input v-model="selectedHttpTunnelLayer!.url" class="col-span-3" placeholder="https://dbx.example.com/dbx_tunnel.php" :disabled="selectedHttpTunnelLayer!.enabled === false" />
+                      <div class="col-span-3 min-w-0">
+                        <Input
+                          v-model="selectedHttpTunnelLayer!.url"
+                          class="w-full min-w-0"
+                          :placeholder="selectedHttpTunnelLayer!.protocol === 'navicat_mysql' ? 'https://example.com/ntunnel_mysql.php' : 'https://dbx.example.com/dbx_tunnel.php'"
+                          :disabled="selectedHttpTunnelLayer!.enabled === false"
+                        />
+                      </div>
                     </div>
-                    <div class="grid grid-cols-4 items-center gap-4">
+                    <div v-if="selectedHttpTunnelLayer!.protocol === 'navicat_mysql'" class="col-span-4 min-w-0 text-xs text-muted-foreground">
+                      {{ t("connection.httpTunnelNavicatHint") }}
+                    </div>
+                    <div v-if="selectedHttpTunnelLayer!.protocol !== 'navicat_mysql'" class="grid min-w-0 grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.httpTunnelToken") }}</Label>
-                      <PasswordInput v-model="selectedHttpTunnelLayer!.token" class="col-span-3" :placeholder="t('connection.httpTunnelTokenPlaceholder')" :disabled="selectedHttpTunnelLayer!.enabled === false" />
+                      <div class="col-span-3 min-w-0">
+                        <PasswordInput v-model="selectedHttpTunnelLayer!.token" class="w-full min-w-0" :placeholder="t('connection.httpTunnelTokenPlaceholder')" :disabled="selectedHttpTunnelLayer!.enabled === false" />
+                      </div>
                     </div>
-                    <div class="grid grid-cols-4 items-center gap-4">
+                    <div class="grid min-w-0 grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.httpTunnelConnectTimeout") }}</Label>
-                      <Input v-model.number="selectedHttpTunnelLayer!.connect_timeout_secs" type="number" min="1" max="300" step="1" class="col-span-3" :disabled="selectedHttpTunnelLayer!.enabled === false" />
+                      <div class="col-span-3 min-w-0">
+                        <Input v-model.number="selectedHttpTunnelLayer!.connect_timeout_secs" type="number" min="1" max="300" step="1" class="w-full min-w-0" :disabled="selectedHttpTunnelLayer!.enabled === false" />
+                      </div>
                     </div>
                   </template>
                 </template>
@@ -11334,6 +11409,34 @@ function openExternalUrl(url: string) {
   /* Authentication fields are conditional. Keep every Nacos card at its
    * max-content height when they appear, and scroll the form as a whole. */
   grid-auto-rows: max-content;
+}
+
+/* The transport editor contains nested four-column rows. Keep the outer
+ * scrolling container strictly vertical so legacy WebViews cannot auto-place
+ * the rows beside each other when a tunnel protocol changes its fields. */
+.connection-transport-form-body {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  align-content: stretch !important;
+}
+
+.connection-transport-form-body > .connection-label-wide-grid,
+.connection-transport-form-body > .grid {
+  width: 100% !important;
+  min-width: 0 !important;
+  flex: 0 0 auto !important;
+}
+
+.connection-transport-form-body > .grid.grid-cols-4,
+.connection-transport-form-body > .connection-label-wide-grid.grid-cols-4 {
+  grid-template-columns: minmax(7rem, 0.8fr) repeat(3, minmax(0, 1fr)) !important;
+}
+
+.connection-transport-form-body > .grid.grid-cols-4 > .col-span-3,
+.connection-transport-form-body > .connection-label-wide-grid.grid-cols-4 > .col-span-3 {
+  grid-column: 2 / -1 !important;
+  min-width: 0 !important;
 }
 
 @media (max-height: 720px) {
