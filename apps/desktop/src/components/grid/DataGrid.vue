@@ -113,6 +113,7 @@ import { findTableStatistics } from "@/lib/dataGrid/tableInfoOverview";
 import * as api from "@/lib/backend/api";
 import type { SqlInsertMode } from "@/lib/export/sqlInsertMode";
 import { dataGridCellDisplayText, dataGridCellEditorText } from "@/lib/dataGrid/dataGridCellCoercion";
+import { resolveDataGridBusyStartedAt } from "@/lib/dataGrid/dataGridBusyElapsed";
 import { createColumnDrafts } from "@/lib/table/tableStructureEditorState";
 import type { BuildSingleColumnAlterSqlOptions } from "@/lib/table/tableStructureEditorSql";
 import { buildTableSelectSql, qualifyTableReferencesInSql, quoteTableDataIdentifier } from "@/lib/table/tableSelectSql";
@@ -659,6 +660,13 @@ interface DataGridProps {
   cancelling?: boolean;
   cancelDisabled?: boolean;
   revealColumnRequest?: { id: number; columnName: string };
+  /**
+   * Start of the query execution behind the busy overlay, when the busy surface
+   * is driven by one. Switching the result view unmounts this grid, so the
+   * elapsed pill must read the execution start from the tab instead of the
+   * mount time (issue #12821).
+   */
+  busyStartedAt?: number;
 }
 
 const props = withDefaults(defineProps<DataGridProps>(), {
@@ -9722,6 +9730,12 @@ function clipboardShortcut(event: KeyboardEvent, key: string): boolean {
   return isPlainClipboardShortcut(event, key);
 }
 
+// The copy/extract "NULL text" a copy writes for a NULL cell, so a paste can
+// turn the very same text back into NULL instead of the literal string
+// (issue #12727). Empty means "no configured sentinel": empty clipboard fields
+// then stay empty strings, which is what the DBX grid copies for both.
+const clipboardNullText = computed(() => settingsStore.editorSettings.dataGridExtractorOptions.dsv.nullText);
+
 async function pasteClipboardIntoSelection() {
   if (!props.editable) return;
   const operation = dataGridResultLifecycle.beginOperation();
@@ -9746,7 +9760,7 @@ async function pasteClipboardAsNewRows() {
     const result = await prepareGridRows(async (options) => {
       const insertPaste = await parseInsertStatementPasteInBatches(text, options, limits);
       if (options.signal?.aborted || options.isCurrent?.() === false) return undefined;
-      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits));
+      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits, clipboardNullText.value));
       if (!rows) return undefined;
       return appendPastedRowsAsNewRowsInBatches(rows, columnIndexes, insertPaste?.columnNames, options);
     });
@@ -9848,7 +9862,7 @@ function pasteTextIntoGrid(text: string): boolean | Promise<boolean> {
     return prepareGridRows(async (options) => {
       const insertPaste = await parseInsertStatementPasteInBatches(text, options, limits);
       if (options.signal?.aborted || options.isCurrent?.() === false) return false;
-      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits));
+      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits, clipboardNullText.value));
       if (!rows || options.signal?.aborted || options.isCurrent?.() === false) return false;
       return applyParsedGridPaste(rows, insertPaste?.columnNames, options);
     })
@@ -9860,7 +9874,7 @@ function pasteTextIntoGrid(text: string): boolean | Promise<boolean> {
   }
   try {
     const insertPaste = parseInsertStatementPaste(text, limits);
-    return applyParsedGridPaste(insertPaste?.rows ?? parseDataGridClipboard(text, limits), insertPaste?.columnNames);
+    return applyParsedGridPaste(insertPaste?.rows ?? parseDataGridClipboard(text, limits, clipboardNullText.value), insertPaste?.columnNames);
   } catch (error) {
     reportGridPasteError(error);
     return false;
@@ -9884,7 +9898,7 @@ function applyParsedGridPaste(rows: readonly (readonly (string | null)[])[], col
 function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): boolean {
   const allowDraftSelectionValue = selectedRangeTargetsOnlyDraftRow();
 
-  if (rows.length === 1 && rows[0]?.length === 1 && fillSelectionWithValue(rows[0][0])) {
+  if (rows.length === 1 && rows[0]?.length === 1 && fillSelectionWithValue(rows[0][0], { preserveEmptyString: true })) {
     toast(t("grid.pasted"));
     return true;
   }
@@ -9902,7 +9916,9 @@ function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): 
       const item = displayItemAt(rowIndex);
       if (!item) continue;
       const visibleCol = start.colIndex + cell.columnOffset;
-      applied = applyVisibleSelectedCellValue(item, visibleCol, cell.value, allowDraftSelectionValue) || applied;
+      // Pasting is a literal value transfer, so an empty field stays an empty
+      // string instead of clearing the cell to NULL (issue #12727).
+      applied = applyVisibleSelectedCellValue(item, visibleCol, cell.value, allowDraftSelectionValue, { preserveEmptyString: true }) || applied;
     }
   } finally {
     commitBatch();
@@ -13441,8 +13457,8 @@ function startLoadingElapsedTimer(reset = false) {
     return;
   }
   if (reset || !_loadingStart) {
-    _loadingStart = Date.now();
-    loadingElapsed.value = 0;
+    _loadingStart = resolveDataGridBusyStartedAt({ now: Date.now(), reset, currentStartedAt: _loadingStart, executionStartedAt: props.busyStartedAt });
+    loadingElapsed.value = Math.max(0, Date.now() - _loadingStart);
   } else {
     loadingElapsed.value = Date.now() - _loadingStart;
   }
@@ -13477,6 +13493,16 @@ watch(gridSurfaceBusy, (isLoading) => {
     });
   }
 });
+
+// A second execution can start while the surface is already busy (a refresh, or
+// a remount that lands after the query started). Re-base the pill on the new
+// execution start instead of keeping the previous baseline.
+watch(
+  () => props.busyStartedAt,
+  () => {
+    if (gridSurfaceBusy.value) startLoadingElapsedTimer(true);
+  },
+);
 
 onActivated(() => {
   gridClipboardActive = true;
@@ -13696,6 +13722,7 @@ defineExpose({
   onToolbarRefresh,
   onToolbarCommit,
   onToolbarRollback,
+  prepareFullReload,
   resetInfiniteScrollState,
   showDdl: showTableInfo,
   toggleDdl: toggleTableInfo,

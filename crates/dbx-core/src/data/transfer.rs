@@ -2290,11 +2290,6 @@ fn transfer_column_names_match(
 /// column exists. Reusing the catalog's declared name keeps the statement on a
 /// column that really exists; an exact match still wins so case-sensitive
 /// targets that do have the source-cased column keep addressing it.
-#[cfg(test)]
-fn resolve_transfer_target_column_names(col_names: &[String], target_columns: &[db::ColumnInfo]) -> Vec<String> {
-    resolve_transfer_target_column_names_or(col_names, target_columns, col_names)
-}
-
 /// Maps source names to target names; a name the target does not declare
 /// falls back to the matching entry of `fallbacks` (the requested target column case).
 fn resolve_transfer_target_column_names_or(
@@ -4435,6 +4430,35 @@ fn target_text_type(target_db: &DatabaseType) -> &'static str {
     }
 }
 
+/// DuckDB reads a bare `NUMERIC`/`DECIMAL` as DECIMAL(18, 3), which keeps only
+/// 15 integer digits, so a transferred NUMBER(18) key failed every insert with
+/// "Could not convert string ... to DECIMAL(18,3)" (#12846). A precision/scale
+/// pair DuckDB accepts (precision 1..=38, scale 0..=precision) is kept as is.
+/// Anything else, including an unconstrained Oracle `NUMBER` or PostgreSQL
+/// `numeric`, has no exact DuckDB equivalent and becomes DECIMAL(38, 10): the
+/// widest width DuckDB supports, with room for both 28 integer digits and a
+/// fractional part.
+fn duckdb_decimal_type(lowered_source_type: &str) -> String {
+    const FALLBACK: &str = "DECIMAL(38,10)";
+    let Some(params) =
+        lowered_source_type.split_once('(').and_then(|(_, rest)| rest.split_once(')')).map(|(params, _)| params)
+    else {
+        return FALLBACK.into();
+    };
+    let mut parts = params.split(',').map(str::trim);
+    let precision = parts.next().and_then(|value| value.parse::<u32>().ok());
+    let scale = match parts.next() {
+        Some(value) => value.parse::<u32>().ok(),
+        None => Some(0),
+    };
+    match (precision, scale, parts.next()) {
+        (Some(precision), Some(scale), None) if (1..=38).contains(&precision) && scale <= precision => {
+            format!("DECIMAL({precision},{scale})")
+        }
+        _ => FALLBACK.into(),
+    }
+}
+
 pub fn map_column_type(source_type: &str, source_db: &DatabaseType, target_db: &DatabaseType) -> String {
     if source_db == target_db {
         return source_type.to_string();
@@ -4556,6 +4580,7 @@ pub fn map_column_type(source_type: &str, source_db: &DatabaseType, target_db: &
             DatabaseType::Oracle | DatabaseType::OceanbaseOracle => "DOUBLE PRECISION".into(),
             _ => "DOUBLE".into(),
         },
+        "decimal" | "numeric" | "number" if *target_db == DatabaseType::DuckDb => duckdb_decimal_type(&t),
         "decimal" | "numeric" | "number" => {
             if t.contains('(') {
                 let params = &t[t.find('(').unwrap()..];
@@ -17051,7 +17076,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
             resolve_transfer_target_column_names_or(&names, &target, &upper),
             vec!["ID".to_string(), "Name".to_string(), "EXTRA".to_string()]
         );
-        assert_eq!(resolve_transfer_target_column_names(&names, &target)[2], "extra");
+        assert_eq!(resolve_transfer_target_column_names_or(&names, &target, &names)[2], "extra");
     }
 
     #[test]
@@ -17433,7 +17458,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
         let col_names = vec!["id".to_string(), "name".to_string()];
 
         assert_eq!(
-            resolve_transfer_target_column_names(&col_names, &target_columns),
+            resolve_transfer_target_column_names_or(&col_names, &target_columns, &col_names),
             vec!["ID".to_string(), "NAME".to_string()]
         );
     }
@@ -17446,7 +17471,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
         let col_names = vec!["id".to_string(), "ID".to_string()];
 
         assert_eq!(
-            resolve_transfer_target_column_names(&col_names, &target_columns),
+            resolve_transfer_target_column_names_or(&col_names, &target_columns, &col_names),
             vec!["id".to_string(), "ID".to_string()]
         );
     }
@@ -17457,7 +17482,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
         let col_names = vec!["id".to_string(), "missing".to_string()];
 
         assert_eq!(
-            resolve_transfer_target_column_names(&col_names, &target_columns),
+            resolve_transfer_target_column_names_or(&col_names, &target_columns, &col_names),
             vec!["ID".to_string(), "missing".to_string()]
         );
     }
@@ -23262,6 +23287,35 @@ SELECT 1 FROM dual"#
         // mappings must not change.
         assert_eq!(map_column_type("int", &DatabaseType::Mysql, &DatabaseType::SqlServer), "INT");
         assert_eq!(map_column_type("INTEGER", &DatabaseType::DuckDb, &DatabaseType::SqlServer), "INT");
+    }
+
+    #[test]
+    fn map_column_type_keeps_decimal_precision_for_duckdb_target() {
+        // DuckDB reads a bare `NUMERIC` as DECIMAL(18, 3), which holds only 15
+        // integer digits: an Oracle NUMBER(18) value such as 490230030329188353
+        // failed the insert with a conversion error (#12846).
+        assert_eq!(map_column_type("NUMBER(18)", &DatabaseType::Oracle, &DatabaseType::DuckDb), "DECIMAL(18,0)");
+        assert_eq!(map_column_type("NUMBER(14,2)", &DatabaseType::Oracle, &DatabaseType::DuckDb), "DECIMAL(14,2)");
+        assert_eq!(map_column_type("decimal(10, 4)", &DatabaseType::Mysql, &DatabaseType::DuckDb), "DECIMAL(10,4)");
+        assert_eq!(map_column_type("numeric(38,38)", &DatabaseType::Postgres, &DatabaseType::DuckDb), "DECIMAL(38,38)");
+    }
+
+    #[test]
+    fn map_column_type_widens_unrepresentable_decimals_for_duckdb_target() {
+        // An unconstrained NUMBER/numeric, and any precision/scale DuckDB rejects
+        // (width above 38, scale above width), fall back to the widest decimal.
+        for (source_type, source_db) in [
+            ("NUMBER", DatabaseType::Oracle),
+            ("numeric", DatabaseType::Postgres),
+            ("numeric(50,2)", DatabaseType::Postgres),
+            ("NUMBER(3,5)", DatabaseType::Oracle),
+        ] {
+            assert_eq!(
+                map_column_type(source_type, &source_db, &DatabaseType::DuckDb),
+                "DECIMAL(38,10)",
+                "{source_type}"
+            );
+        }
     }
 
     #[test]
