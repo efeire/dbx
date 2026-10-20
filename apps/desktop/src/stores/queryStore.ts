@@ -3541,12 +3541,14 @@ export const useQueryStore = defineStore("query", () => {
         };
       }
       if (initialObjectFilter === "indexes" || indexRequest) {
+        const requestId = Math.max(existing.objectBrowser?.indexRequestSequence ?? 0, existing.objectBrowser?.indexCreateRequestId ?? 0, existing.objectBrowser?.initialViewRequestId ?? 0) + 1;
         existing.objectBrowser = {
           ...existing.objectBrowser,
           initialObjectFilter: "indexes",
           filter: "indexes",
-          ...(indexRequest?.create ? { indexCreateRequestId: (existing.objectBrowser?.indexCreateRequestId ?? 0) + 1 } : {}),
-          ...(indexRequest?.view ? { initialViewTarget: indexRequest.view, initialViewRequestId: (existing.objectBrowser?.initialViewRequestId ?? 0) + 1 } : {}),
+          ...(indexRequest?.create || indexRequest?.view ? { indexRequestSequence: requestId } : {}),
+          ...(indexRequest?.create ? { indexCreateRequestId: requestId } : {}),
+          ...(indexRequest?.view ? { initialViewTarget: indexRequest.view, initialViewRequestId: requestId } : {}),
         };
       }
       switchTab(existing.id);
@@ -3574,6 +3576,7 @@ export const useQueryStore = defineStore("query", () => {
         initialObjectFilter: initialObjectFilter ?? (eventName || eventCreateRequestId !== undefined ? "events" : undefined),
         eventOpenRequestId: eventName ? 1 : undefined,
         eventCreateRequestId,
+        ...(indexRequest?.create || indexRequest?.view ? { indexRequestSequence: 1 } : {}),
         ...(indexRequest?.create ? { indexCreateRequestId: 1 } : {}),
         ...(indexRequest?.view ? { initialViewTarget: indexRequest.view, initialViewRequestId: 1 } : {}),
       },

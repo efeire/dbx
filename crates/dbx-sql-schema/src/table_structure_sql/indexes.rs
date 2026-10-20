@@ -51,7 +51,7 @@ pub(super) fn build_index_sql(options: &TableStructureSqlOptions, warnings: &mut
         }
 
         if let Some(original) = &index.original {
-            if !has_existing_index_change(index) {
+            if !has_existing_index_change_for_database(index, options.database_type) {
                 continue;
             }
             if !capabilities.rebuild_index || !capabilities.drop_index || !capabilities.create_index {
@@ -255,9 +255,7 @@ pub fn has_existing_index_change(index: &EditableStructureIndex) -> bool {
         return false;
     };
     index.oracle_original_missing
-        || (index.name != original.name
-            && (original.name != clean(&original.name) || clean(&index.name) != clean(&original.name)))
-        || (original.columns.iter().any(|column| column != &clean(column)) && index.columns != original.columns)
+        || clean(&index.name) != clean(&original.name)
         || index_list_changed(&index.columns, Some(&original.columns))
         || index.is_unique != original.is_unique
         || normalized_index_type(index) != clean(original.index_type.as_deref().unwrap_or("")).to_ascii_uppercase()
@@ -270,6 +268,18 @@ pub fn has_existing_index_change(index: &EditableStructureIndex) -> bool {
             &index.columns,
             &original.columns,
         )
+}
+
+pub(super) fn has_existing_index_change_for_database(
+    index: &EditableStructureIndex,
+    database_type: Option<DatabaseType>,
+) -> bool {
+    has_existing_index_change(index)
+        || (matches!(database_type, Some(DatabaseType::Oracle | DatabaseType::OceanbaseOracle | DatabaseType::Dameng))
+            && index.original.as_ref().is_some_and(|original| {
+                index.columns != original.columns
+                    || (original.name != clean(&original.name) && index.name != original.name)
+            }))
 }
 
 /// Compare opclass arrays positionally, skipping expression columns.

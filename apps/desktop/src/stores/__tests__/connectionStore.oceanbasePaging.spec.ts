@@ -18,6 +18,7 @@ async function setup(listObjects: ReturnType<typeof vi.fn>, listTables?: ReturnT
   vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
   vi.doMock("@/lib/backend/api", () => ({
     checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
+    disconnectDb: vi.fn().mockResolvedValue(undefined),
     deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
     listObjects,
     listTables: listTables ?? vi.fn().mockResolvedValue([]),
@@ -137,6 +138,35 @@ describe("OceanBase Oracle sidebar paging (#11418)", () => {
     await expect(store.loadObjectGroupChildren(group)).rejects.toThrow("exact_metadata_identity_v1");
     expect(group.children?.some((node) => node.id === "legacy-index")).toBe(false);
     expect(listObjects).toHaveBeenCalledOnce();
+  });
+
+  it("does not reuse a late exact index page after the connection lifetime ends", async () => {
+    let release!: (objects: ObjectInfo[]) => void;
+    const listObjects = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise<ObjectInfo[]>((resolve) => {
+          release = resolve;
+        }),
+      )
+      .mockRejectedValueOnce(new Error("new process lacks exact_metadata_identity_v1"));
+    const { store, group } = await setup(listObjects);
+    group.type = "group-database-indexes";
+    group.id = group.id.replace("__procedures", "__indexes");
+    const schema = store.treeNodes[0].children![0].children![0];
+    const database = store.treeNodes[0].children![0];
+    const pending = store.loadObjectGroupChildren(group);
+    await vi.waitFor(() => expect(listObjects).toHaveBeenCalledOnce());
+    await store.disconnect(connection.id, { skipTabHandling: true, markClosedByUser: false });
+    release([{ name: "OLD_CAPABLE_PROCESS", object_type: "INDEX", schema: "APP", parent_schema: "APP", parent_name: "T" }]);
+    await pending;
+    store.connectedIds.add(connection.id);
+    store.treeNodes[0].children = [database];
+    database.children = [schema];
+    schema.children = [group];
+    await expect(store.loadObjectGroupChildren(group)).rejects.toThrow("new process lacks exact_metadata_identity_v1");
+    expect(listObjects).toHaveBeenCalledTimes(2);
+    expect(group.children?.some((node) => node.objectName === "OLD_CAPABLE_PROCESS")).toBe(false);
   });
 
   it("uses one bounded object stream in simple mode, retaining a package and its body across pages", async () => {

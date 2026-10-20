@@ -168,6 +168,37 @@ describe("schema index browsing and draft navigation", () => {
     expect(host.querySelector("[data-object-load-more]")).not.toBeNull();
   });
 
+  it.each(["insert", "delete"] as const)("refreshes the displayed exact index range after a concurrent %s moves its page anchor", async (change) => {
+    const first = [index("I1"), index("I2"), index("I3")];
+    const shifted = change === "insert" ? [index("I2"), index("I3"), index("I4")] : [index("I4")];
+    const refreshed = change === "insert" ? [index("I0"), ...first, index("I4")] : [index("I2"), index("I3"), index("I4")];
+    mocks.listObjects.mockResolvedValueOnce(first).mockResolvedValueOnce(shifted).mockResolvedValueOnce(refreshed);
+    const { host } = await mountBrowser();
+    await vi.waitFor(() => expect(host.querySelector('[title="I2"]')).not.toBeNull());
+    host.querySelector<HTMLButtonElement>("[data-object-load-more]")!.click();
+    await vi.waitFor(() => expect(mocks.listObjects).toHaveBeenCalledTimes(3));
+    expect(mocks.listObjects.mock.calls[2]?.slice(5, 7)).toEqual([5, 0]);
+    const visible = refreshed.slice(0, 4).map((object) => object.name);
+    await vi.waitFor(() => expect(Array.from(host.querySelectorAll('[title^="I"]')).map((element) => element.getAttribute("title"))).toEqual(visible));
+    expect(host.querySelector("[data-object-load-more]") !== null).toBe(change === "insert");
+  });
+
+  it("retains the applicable index list after a failed manual refresh and permits retry", async () => {
+    mocks.listObjects
+      .mockResolvedValueOnce([index("KEPT")])
+      .mockRejectedValueOnce(new Error("index dictionary denied"))
+      .mockResolvedValueOnce([index("FRESH")]);
+    const { host } = await mountBrowser();
+    await vi.waitFor(() => expect(host.querySelector('[title="KEPT"]')).not.toBeNull());
+    host.querySelector<HTMLButtonElement>('[title^="grid.refresh"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[role="status"]')?.textContent).toContain("index dictionary denied"));
+    expect(host.querySelector('[title="KEPT"]')).not.toBeNull();
+    host.querySelector<HTMLButtonElement>('[title^="grid.refresh"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[title="FRESH"]')).not.toBeNull());
+    expect(host.querySelector('[title="KEPT"]')).toBeNull();
+    expect(host.textContent).not.toContain("index dictionary denied");
+  });
+
   it("creates from an empty index list by choosing an exact visible TABLE, with no DDL", async () => {
     const { host } = await mountBrowser();
     const create = await vi.waitFor(() => {

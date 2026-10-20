@@ -54,6 +54,21 @@ describe("queryStore database open state", () => {
     expect(store.tabs.find((tab) => tab.id === firstId)).toMatchObject({ connectionId: "pg-1", database: "", mode: "databases" });
   });
 
+  it.each(["create", "view"] as const)("does not reuse a consumed Schema index %s navigation request id", async (kind) => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const request = kind === "create" ? { create: true } : { view: { schema: "APP", name: "IX_A", parentSchema: "OTHER", parentName: "T" } };
+    const id = store.openObjectBrowser("ob", "service", "APP", undefined, undefined, false, "indexes", undefined, request);
+    const state = store.tabs.find((tab) => tab.id === id)!.objectBrowser!;
+    const firstRequest = kind === "create" ? state.indexCreateRequestId : state.initialViewRequestId;
+    state.indexCreateRequestId = undefined;
+    state.initialViewRequestId = undefined;
+    state.initialViewTarget = undefined;
+    expect(store.openObjectBrowser("ob", "service", "APP", undefined, undefined, false, "indexes", undefined, request)).toBe(id);
+    const next = store.tabs.find((tab) => tab.id === id)!.objectBrowser!;
+    expect(kind === "create" ? next.indexCreateRequestId : next.initialViewRequestId).toBeGreaterThan(firstRequest!);
+  });
+
   it("retargets a connection-scoped driver workspace to a database branch", async () => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();

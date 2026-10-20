@@ -268,6 +268,7 @@ const loadingObjects = ref(false);
 const loadingMoreObjects = ref(false);
 const hasMoreObjects = ref(false);
 let objectPageOffset = 0;
+let indexNextPageAnchor: string | undefined;
 let objectSearchTimer: ReturnType<typeof setTimeout> | undefined;
 const refreshingObjects = ref(false);
 const scaffoldRefreshError = ref("");
@@ -4233,7 +4234,7 @@ watch([() => props.initialEventName, () => props.initialEventOpenRequestId, () =
 // 达梦；oracle/oceanbase-oracle 维持空 schema 由后端解析当前 schema。
 async function loadObjects(options?: { allowCached?: boolean; preserveExistingRows?: boolean }) {
   clearTimeout(objectSearchTimer);
-  if (usesServerObjectPaging.value) return loadObjectPage(false);
+  if (usesServerObjectPaging.value) return loadObjectPage(false, options);
   error.value = "";
   // A new load supersedes any in-flight one, so reset the transient refresh flags
   // on entry. A superseded request's finally() can no longer run (the guard's
@@ -4312,8 +4313,12 @@ async function loadObjects(options?: { allowCached?: boolean; preserveExistingRo
   }
 }
 
-async function loadObjectPage(append: boolean) {
-  if (append && (loadingObjects.value || loadingMoreObjects.value || !hasMoreObjects.value)) return;
+function exactIndexPageAnchor(object: ObjectInfo | undefined): string | undefined {
+  return object ? JSON.stringify([object.schema, object.name, object.parent_schema, object.parent_name]) : undefined;
+}
+
+async function loadObjectPage(append: boolean, options?: { preserveExistingRows?: boolean }) {
+  if (append && (loadingObjects.value || refreshingObjects.value || loadingMoreObjects.value || !hasMoreObjects.value)) return;
   const schema = exactIndexList.value ? indexParentSchema() : needsSchema.value ? objectListSchemaForConnection(props.connection, selectedSchema.value) : props.database;
   const request = objectBrowserRowsLoadGuard.start(objectBrowserRowsCacheScope(schema));
   const offset = append ? objectPageOffset : 0;
@@ -4321,6 +4326,8 @@ async function loadObjectPage(append: boolean) {
   const filter = search.value.trim();
   const typeFilter = objectFilter.value;
   const exactIdentity = exactIndexList.value;
+  const keepExisting = exactIdentity && !append && options?.preserveExistingRows === true && rows.value.length > 0;
+  const expectedAnchor = append ? indexNextPageAnchor : undefined;
   const includeIndexSubset = supportsSchemaIndexes.value && typeFilter === "all";
   const queryTypes = includeIndexSubset ? sidebarObjectKindsForDatabase(effectiveDatabaseType.value).filter((type) => type !== "INDEX") : undefined;
   const rawIndexSchema = indexParentSchema();
@@ -4340,27 +4347,41 @@ async function loadObjectPage(append: boolean) {
   const isCurrent = () => objectBrowserRowsLoadGuard.isCurrent(request) && search.value.trim() === filter && objectFilter.value === typeFilter;
   error.value = "";
   scaffoldRefreshError.value = "";
-  loadingObjects.value = !append;
+  loadingObjects.value = !append && !keepExisting;
+  refreshingObjects.value = keepExisting;
   loadingMoreObjects.value = append;
-  if (!append) {
+  if (!append && !keepExisting) {
     rows.value = [];
     hasMoreObjects.value = false;
     objectPageOffset = 0;
+    indexNextPageAnchor = undefined;
   }
   try {
     if (parseSlashDelimitedRegexQuery(filter)) {
       error.value = t("objects.pagedRegexUnsupported");
       return;
     }
-    const objects = await objectBrowserRowsLoadGuard.wait(
-      request.epoch,
-      exactIdentity
-        ? api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, objectTypes[typeFilter], filter || undefined, pageSize + 1, offset, request.scope.catalog, undefined, undefined, true)
-        : api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, queryTypes ?? objectTypes[typeFilter], filter || undefined, pageSize + 1, offset, request.scope.catalog),
-      metadataLoadBudgetMs(props.connection.query_timeout_secs),
-    );
+    const fetchPage = (pageOffset: number, size: number) =>
+      objectBrowserRowsLoadGuard.wait(
+        request.epoch,
+        exactIdentity
+          ? api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, objectTypes[typeFilter], filter || undefined, size + 1, pageOffset, request.scope.catalog, undefined, undefined, true)
+          : api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, queryTypes ?? objectTypes[typeFilter], filter || undefined, size + 1, pageOffset, request.scope.catalog),
+        metadataLoadBudgetMs(props.connection.query_timeout_secs),
+      );
+    let objects = await fetchPage(offset, pageSize);
     if (!isCurrent()) return;
-    const page = objects.slice(0, pageSize);
+    let pageOffset = offset;
+    let size = pageSize;
+    // Match the sidebar's peek-row contract: a moved offset replaces the whole
+    // displayed window instead of appending an overlapping or incomplete page.
+    if (exactIdentity && append && expectedAnchor && exactIndexPageAnchor(objects[0]) !== expectedAnchor) {
+      pageOffset = 0;
+      size = offset + pageSize;
+      objects = await fetchPage(pageOffset, size);
+      if (!isCurrent()) return;
+    }
+    const page = objects.slice(0, size);
     const indexes = includeIndexSubset && !append ? await loadMixedSchemaIndexes(request, rawIndexSchema, filter) : [];
     if (!isCurrent()) return;
     const pageRows = buildObjectBrowserRows({
@@ -4369,17 +4390,19 @@ async function loadObjectPage(append: boolean) {
       fallbackSchema: request.scope.schema,
       rowSchema: connectionObjectTreeNodeSchema(props.connection, props.database, selectedSchema.value),
     });
-    applyObjectBrowserRows(append ? [...rows.value, ...pageRows] : pageRows);
-    objectPageOffset = offset + page.length;
-    hasMoreObjects.value = objects.length > pageSize;
+    applyObjectBrowserRows(append && pageOffset > 0 ? [...rows.value, ...pageRows] : pageRows);
+    objectPageOffset = pageOffset + page.length;
+    hasMoreObjects.value = objects.length > size;
+    indexNextPageAnchor = exactIdentity && hasMoreObjects.value ? exactIndexPageAnchor(objects[size]) : undefined;
   } catch (e: unknown) {
     if (!isCurrent()) return;
-    if (append) scaffoldRefreshError.value = translateBackendError(t, e);
+    if (append || keepExisting) scaffoldRefreshError.value = translateBackendError(t, e);
     else error.value = translateBackendError(t, e);
   } finally {
     if (isCurrent()) {
       loadingObjects.value = false;
       loadingMoreObjects.value = false;
+      refreshingObjects.value = false;
       if (!append) finishObjectBrowserRowsLoad();
     }
   }

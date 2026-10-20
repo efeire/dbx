@@ -758,7 +758,7 @@ export const useConnectionStore = defineStore("connection", () => {
     return metadataLoadCoordinator.run(scope, task, { force: options?.force, kind: scope.kind });
   }
 
-  async function loadCachedMetadataListPage<T extends MetadataListPageResult>(scope: MetadataScopeInput, load: () => Promise<T>, options?: { force?: boolean }): Promise<T> {
+  async function loadCachedMetadataListPage<T extends MetadataListPageResult>(scope: MetadataScopeInput, load: () => Promise<T>, options?: { force?: boolean; isCurrent?: () => boolean }): Promise<T> {
     const trace = createMetadataLoadTrace(scope);
     if (!options?.force) {
       const cached = metadataListPageCache.get(scope);
@@ -774,7 +774,20 @@ export const useConnectionStore = defineStore("connection", () => {
 
     logMetadataLoadTrace(metadataTraceLogger, trace, "cache-miss", { cacheStatus: options?.force ? "refresh" : "miss", force: options?.force === true });
     const errorRevision = connectionErrorRevision(scope.connectionId);
+    const exactConfig = scope.extra?.exactIdentity === true && scope.connectionId ? getConfig(scope.connectionId) : undefined;
+    const exactFingerprint = exactConfig ? connectionConfigFingerprint(exactConfig) : undefined;
     const result = await load();
+    if (scope.extra?.exactIdentity === true && scope.connectionId) {
+      const currentConfig = getConfig(scope.connectionId);
+      if (
+        scope.extra.connectionRevision !== connectionStateRevision(scope.connectionId) ||
+        scope.extra.metadataGeneration !== metadataGenerationFor(scope.connectionId, scope.database ?? undefined) ||
+        !currentConfig ||
+        exactFingerprint !== connectionConfigFingerprint(currentConfig) ||
+        options?.isCurrent?.() === false
+      )
+        return result;
+    }
     clearConnectionErrorIfUnchanged(scope.connectionId, errorRevision);
     metadataListPageCache.set(scope, result);
     logMetadataLoadTrace(metadataTraceLogger, trace, "done", {
@@ -2607,7 +2620,7 @@ export const useConnectionStore = defineStore("connection", () => {
       offset: options.offset,
       sidebarDisplayMode: options.sidebarDisplayMode,
       driverProfile: metadataListDriverProfile(options.connectionId || undefined),
-      extra: options.extra,
+      extra: options.extra?.exactIdentity === true && options.connectionId ? { ...options.extra, connectionRevision: connectionStateRevision(options.connectionId), metadataGeneration: metadataGenerationFor(options.connectionId, options.database ?? undefined) } : options.extra,
     };
   }
 
@@ -2981,6 +2994,7 @@ export const useConnectionStore = defineStore("connection", () => {
     const paginate = exactIdentity || !searchFilter || getConfig(options.node.connectionId)?.db_type === "oceanbase-oracle";
     const fetchLimit = paginate ? options.pageSize + 1 : undefined;
     const fetchOffset = paginate ? options.offset : undefined;
+    const cacheOwner = exactIdentity ? treeNodeLoads.observe(options.node.id) : undefined;
     const objects = await loadCachedMetadataListPage<ObjectInfo[]>(
       metadataListCacheScope({
         kind: "object-list-page",
@@ -3001,7 +3015,7 @@ export const useConnectionStore = defineStore("connection", () => {
           : tableNameFilter || options.node.catalog
             ? api.listObjects(options.node.connectionId!, options.node.database!, options.querySchema, options.objectTypes, searchFilter, fetchLimit, fetchOffset, options.node.catalog, tableNameFilter)
             : api.listObjects(options.node.connectionId!, options.node.database!, options.querySchema, options.objectTypes, searchFilter, fetchLimit, fetchOffset),
-      { force: options.force },
+      { force: options.force, isCurrent: cacheOwner ? () => cacheOwner.isCurrent() : undefined },
     );
     const hasMore = paginate && objects.length > options.pageSize;
     const pageObjects = hasMore ? objects.slice(0, options.pageSize) : objects;
@@ -3154,7 +3168,7 @@ export const useConnectionStore = defineStore("connection", () => {
           }),
           () =>
             query.exactIdentity ? api.listObjects(options.connectionId, options.database, querySchema, query.objectTypes, searchFilter || undefined, undefined, undefined, undefined, undefined, undefined, true) : api.listObjects(options.connectionId, options.database, querySchema, query.objectTypes),
-          { force: options.loadOptions?.force },
+          { force: options.loadOptions?.force, isCurrent: query.exactIdentity ? () => options.load.isCurrent() : undefined },
         );
         const supplementalObjects = filterSimpleSidebarSupplementalObjects(objects);
         if (supplementalObjects.length === 0) continue;
@@ -4332,6 +4346,10 @@ export const useConnectionStore = defineStore("connection", () => {
     const idx = connections.value.findIndex((c) => c.id === config.id);
     if (idx < 0) return;
     const previousConfig = normalizeConnection(connections.value[idx]);
+    const keepsSavedJdbcTarget = previousConfig.db_type === "jdbc" && config.db_type === "jdbc" && previousConfig.driver_profile === config.driver_profile && previousConfig.connection_string === config.connection_string && isSavedCredential(config.connection_string);
+    // Edit forms do not own server-derived hints. Retain the previous hint only
+    // while its protected URL still refers to the same saved JDBC target.
+    config = { ...config, jdbc_dialect: keepsSavedJdbcTarget ? previousConfig.jdbc_dialect : undefined };
     const previousDatabase = previousConfig.database ?? "";
     const runtimeConfigChanged = connectionConfigFingerprint(previousConfig) !== connectionConfigFingerprint(config);
     const shouldReconnectPlugin = runtimeConfigChanged && previousConfig.db_type === "plugin" && config.db_type === "plugin" && connectedIds.value.has(config.id);

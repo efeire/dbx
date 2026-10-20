@@ -96,6 +96,7 @@ const databaseChildGroupNodeTypes = new Set<TreeNodeType>([
   "group-triggers",
   "group-events",
   "group-sequences",
+  "group-database-indexes",
   "group-synonyms",
   "group-jobs",
   "group-packages",

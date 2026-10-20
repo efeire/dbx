@@ -94,6 +94,38 @@ fn oracle_reordered_keys_keep_their_individual_directions() {
 }
 
 #[test]
+fn oracle_family_switching_to_a_whitespace_distinct_column_rebuilds_the_index() {
+    for database in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle, DatabaseType::Dameng] {
+        for (old, new) in [("k", " k "), (" k ", "k")] {
+            let mut index = existing_index(vec![new]);
+            index["name"] = json!("IX_EVENT");
+            index["original"]["columns"] = json!([old]);
+            index["original"]["key_is_expression"] = json!([false]);
+            index["original"]["key_directions"] = json!(["ASC"]);
+            index["original"]["visibility"] = json!("VISIBLE");
+            let mut input = options(index);
+            input.database_type = Some(database);
+            let result = build_table_structure_change_sql(input);
+            let expected_count = if database == DatabaseType::Dameng { 1 } else { 2 };
+            assert_eq!(result.statements.len(), expected_count, "{database:?}: {old:?} -> {new:?}: {result:?}");
+            assert!(result.statements.last().unwrap().contains(&format!("\"{new}\"")), "{result:?}");
+        }
+    }
+}
+
+#[test]
+fn other_dialects_keep_the_existing_trimmed_index_key_comparison() {
+    for (old, new) in [("k", " k "), (" k ", "k")] {
+        let mut index = existing_index(vec![new]);
+        index["name"] = json!("IX_EVENT");
+        index["original"]["columns"] = json!([old]);
+        let mut input = options(index);
+        input.database_type = Some(DatabaseType::Postgres);
+        assert!(build_table_structure_change_sql(input).statements.is_empty());
+    }
+}
+
+#[test]
 fn oceanbase_descending_rebuild_is_rejected_before_drop() {
     let mut input = existing_index(vec!["LOWER(EVENT_NAME)", "EVENT_TS"]);
     input["original"]["key_directions"] = json!(["DESC", "ASC"]);
