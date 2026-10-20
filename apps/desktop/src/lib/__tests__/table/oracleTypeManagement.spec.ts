@@ -307,6 +307,33 @@ describe("controlled TYPE plans", () => {
 });
 
 describe("TYPE execution, persistence and recovery", () => {
+  it.each(["reject", "invalid"] as const)("keeps the %s attempt and diagnostic when reopening an unchanged failed draft", async (failure) => {
+    isolateRoot();
+    fault = () => failure;
+    const plan = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", body.replace("RETURN SELF.ID", "RETURN SELF.ID + 4"), "TYPE BODY")]);
+    await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow();
+    const failed = json(plan.steps[0]);
+    expect(failed.state).toBe("failed");
+    expect(failed.message).toBeTruthy();
+    const reopened = await prepareOracleTypeManagement(target, "save-body", plan.drafts, restoreOracleTypeManagementDraft(json(plan)));
+    expect(reopened.history).toEqual([failed]);
+    expect(reopened.steps[0].state).toBe("not-sent");
+    expect(api.executeQuery).toHaveBeenCalledOnce();
+    const rechecked = await prepareOracleTypeManagement(target, "save-body", reopened.drafts, restoreOracleTypeManagementDraft(json(reopened)));
+    expect(rechecked.history).toEqual([failed]);
+    expect(api.executeQuery).toHaveBeenCalledOnce();
+    fault = () => (failure === "reject" ? "invalid" : "reject");
+    await expect(executeOracleTypeManagement(rechecked, { persist: async () => {} })).rejects.toThrow();
+    const secondFailure = json(rechecked.steps[0]);
+    expect(secondFailure.id).toBe(failed.id);
+    expect(secondFailure.message).not.toBe(failed.message);
+    const retried = await prepareOracleTypeManagement(target, "save-body", rechecked.drafts, restoreOracleTypeManagementDraft(json(rechecked)));
+    expect(retried.history).toEqual([failed, secondFailure]);
+    const validatedAgain = await prepareOracleTypeManagement(target, "save-body", retried.drafts, restoreOracleTypeManagementDraft(json(retried)));
+    expect(validatedAgain.history).toEqual(retried.history);
+    expect(api.executeQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("can revalidate a rejected grant with no effect and resume without dropping rebuilt types again", async () => {
     fault = (input) => (input.operation === "grant_privilege" ? "reject" : undefined);
     const plan = await prepareOracleTypeManagement(target, "save-spec", [draft()]);

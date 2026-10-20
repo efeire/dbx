@@ -373,6 +373,27 @@ describe("TYPE preview using the real component, planner and stores", () => {
     expect(queryStore.tabs[0].typeManagementDraft?.history[0].state).toBe("failed");
   });
 
+  it("renders separate diagnostics for actual retries of the same SQL without adding attempts for validation alone", async () => {
+    failure = "invalid";
+    const { queryStore, outcome, i18n } = await mount();
+    confirm();
+    await vi.waitFor(() => expect(queryStore.tabs[0].typeManagementDraft?.steps[0].state).toBe("failed"));
+    document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
+    await vi.waitFor(() => expect(queryStore.tabs[0].typeManagementDraft?.history).toHaveLength(1));
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(false));
+    confirm();
+    await vi.waitFor(() => expect(queryStore.tabs[0].typeManagementDraft?.steps[0].state).toBe("failed"));
+    document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
+    await vi.waitFor(() => expect(queryStore.tabs[0].typeManagementDraft?.history).toHaveLength(2));
+    expect(document.querySelectorAll("[data-type-execution-history] > div")).toHaveLength(2);
+    document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(false));
+    expect(queryStore.tabs[0].typeManagementDraft?.history).toHaveLength(2);
+    expect(mocks.executeQuery).toHaveBeenCalledTimes(2);
+    button(i18n.global.t("objects.typeManagementKeepDraft")).click();
+    expect((await outcome).complete).toBe(false);
+  });
+
   it("offers readback after an unknown result without replaying the statement", async () => {
     failure = "unknown";
     const { queryStore, outcome, i18n } = await mount();

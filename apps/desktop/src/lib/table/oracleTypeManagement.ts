@@ -389,12 +389,11 @@ export async function prepareOracleTypeManagement(target: TypeManagementTarget, 
     if (isDelete(operation)) push(await buildStep(plan, selected, "delete", { operation: "drop_spec" }));
   }
 
-  // Preserve the sent history if a draft changed. It is not a license to replay it.
+  // Keep failed diagnostics before revalidation resets the step, and sent history when drafts change.
   for (const step of priorSteps.filter((step) => step.state !== "not-sent")) {
-    if (!generated.some((candidate) => candidate.id === step.id)) {
-      if (!plan.history.some((attempt) => attempt.id === step.id)) plan.history.push(clone(step));
-      if (step.state !== "failed") addIssue(plan, "changed-sent-step", "A sent definition changed. Verify the original step before replacing its draft.", step.object);
-    }
+    const changed = !generated.some((candidate) => candidate.id === step.id);
+    if (step.state === "failed" || (changed && !plan.history.some((attempt) => attempt.id === step.id))) plan.history.push(clone(step));
+    if (changed && step.state !== "failed") addIssue(plan, "changed-sent-step", "A sent definition changed. Verify the original step before replacing its draft.", step.object);
   }
   plan.steps = generated;
   for (const step of plan.steps) {

@@ -289,7 +289,7 @@ onBeforeUnmount(() => {
         <p class="text-sm leading-relaxed text-muted-foreground">{{ t("objects.typeManagementNonAtomic") }}</p>
         <p class="text-sm text-muted-foreground">{{ t("objects.typeManagementScope") }}</p>
         <p v-if="notice" role="status" class="text-sm">{{ notice }}</p>
-        <p v-if="deleting" class="rounded border border-destructive/40 bg-destructive/5 p-3 text-sm">{{ t(plan?.operation === "delete-body" ? "objects.typeManagementDeleteBody" : "objects.typeManagementDeleteSpec") }}</p>
+        <p v-if="deleting" class="rounded border border-destructive/40 bg-destructive/5 p-3 text-sm">{{ t((plan?.operation ?? oracleTypeManagementRequest?.operation) === "delete-body" ? "objects.typeManagementDeleteBody" : "objects.typeManagementDeleteSpec") }}</p>
         <p v-if="error" ref="errorRef" role="alert" tabindex="-1" class="whitespace-pre-wrap break-words rounded border border-destructive/40 p-3 text-sm text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{{ error }}</p>
         <SourceMigrationPreview
           :entries="entries"
@@ -331,7 +331,7 @@ onBeforeUnmount(() => {
         </ol>
         <details v-if="plan?.history.length" class="space-y-2 border-t pt-3 text-sm" data-type-execution-history>
           <summary class="cursor-pointer">{{ t("objects.typeManagementPreviousAttempts") }}</summary>
-          <div v-for="step in plan.history" :key="step.id" class="space-y-1 pt-2">
+          <div v-for="(step, index) in plan.history" :key="`${step.id}:${index}`" class="space-y-1 pt-2">
             <p>{{ t(`objects.typeManagementState.${step.state}`) }} · {{ step.object.objectType }} · {{ step.object.owner }}.{{ step.object.name }}</p>
             <p v-if="step.message" class="whitespace-pre-wrap text-muted-foreground">{{ step.message }}</p>
             <pre class="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-xs">{{ step.sql }}</pre>

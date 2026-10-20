@@ -3602,7 +3602,7 @@ function requestDropSelectedNode(): boolean {
     dropTable();
     return true;
   }
-  if (activeNode.value.type === "view" || activeNode.value.type === "procedure" || activeNode.value.type === "function") {
+  if (isManagedTypeNode(activeNode.value) || activeNode.value.type === "view" || activeNode.value.type === "procedure" || activeNode.value.type === "function") {
     requestDropObject();
     return true;
   }
