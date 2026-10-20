@@ -71,6 +71,23 @@ describe("routine dependency context-menu action", () => {
     setActivePinia(undefined);
   });
 
+  it.each(["oracle", "oceanbase-oracle"] as const)("opens table relations in existing properties without executing table data in %s", async (databaseType) => {
+    const { host, queries, onOpenObjectSource } = await mountContextMenu(databaseType);
+    const node: TreeNode = { id: "T", type: "table", label: "Mixed.Table", objectName: "Mixed.Table", schema: "Other.Owner", connectionId: "dependency-test", database: "APP", catalog: "Captured.Catalog" };
+    const action = host.buildContextMenu(node).find((item) => item.label === i18n.global.t("contextMenu.viewDependencies"))?.action;
+    expect(action).toBeDefined();
+    await action?.();
+    const tab = queries.tabs[0]!;
+    expect(tab.mode).toBe("objects");
+    expect(tab.objectPropertiesRequest).toMatchObject({ connectionId: "dependency-test", database: "APP", schema: "Other.Owner", name: "Mixed.Table", objectType: "TABLE", catalog: "Captured.Catalog", initialTab: "relations" });
+    const request = tab.objectPropertiesRequest!.requestId;
+    await action?.();
+    expect(queries.tabs).toHaveLength(1);
+    expect(tab.objectPropertiesRequest!.requestId).not.toBe(request);
+    expect(backend.executeMulti).not.toHaveBeenCalled();
+    expect(onOpenObjectSource).not.toHaveBeenCalled();
+  });
+
   it.each(["oracle", "oceanbase-oracle"] as const)("opens object dependencies from an Oracle package member in %s", async (databaseType) => {
     const { host, queries } = await mountContextMenu(databaseType);
     const member: TreeNode = {

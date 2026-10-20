@@ -7,7 +7,7 @@ import { invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsC
 import { invalidateMetadataRuntimeCachePrefix } from "@/lib/metadata/metadataRuntimeCache";
 import type { ConnectionConfig } from "@/types/database";
 
-const mocks = vi.hoisted(() => ({ listConstraints: vi.fn(), getTableComment: vi.fn(), getTablePartitionStatus: vi.fn(), getTablePartitioning: vi.fn(), toast: vi.fn() }));
+const mocks = vi.hoisted(() => ({ listConstraints: vi.fn(), getTableComment: vi.fn(), getTablePartitionStatus: vi.fn(), getTablePartitioning: vi.fn(), toast: vi.fn(), executeQuery: vi.fn(), cancelQuery: vi.fn(async () => true) }));
 vi.mock("@/lib/backend/api", () => ({
   listObjects: vi.fn().mockResolvedValue([{ name: "O01_CONSTRAINTS", object_type: "TABLE", schema: "TESTER" }]),
   listSchemas: vi.fn().mockResolvedValue(["TESTER"]),
@@ -20,6 +20,8 @@ vi.mock("@/lib/backend/api", () => ({
   getTableComment: (...args: unknown[]) => mocks.getTableComment(...args),
   getTablePartitionStatus: (...args: unknown[]) => mocks.getTablePartitionStatus(...args),
   getTablePartitioning: (...args: unknown[]) => mocks.getTablePartitioning(...args),
+  executeQuery: (...args: unknown[]) => mocks.executeQuery(...args),
+  cancelQuery: (...args: unknown[]) => mocks.cancelQuery(...args),
 }));
 vi.mock("@/stores/connectionStore", () => ({
   useConnectionStore: () => ({
@@ -111,6 +113,39 @@ async function openConstraints() {
 }
 
 describe("OceanBase Oracle constraint information", () => {
+  it("consumes a captured relation-property request without fetching table data or entering a source editor", async () => {
+    mocks.executeQuery.mockResolvedValue({
+      columns: ["DIRECTION", "OBJECT_OWNER", "OBJECT_NAME", "OBJECT_TYPE", "REFERENCED_OWNER", "REFERENCED_NAME", "REFERENCED_TYPE", "DEPENDENCY_TYPE", "REFERENCED_LINK_NAME"],
+      rows: [["REFERENCED_BY", "Other.Owner", "Uses.Table", "FUNCTION", "TESTER", "Mixed.Table", "TABLE", "HARD", null]],
+      affected_rows: 0,
+      execution_time_ms: 1,
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const consumed = vi.fn(),
+      onOpenDependencyObject = vi.fn();
+    const app = createApp(ObjectBrowser, {
+      connection,
+      database: "TESTER",
+      schema: "TESTER",
+      propertyRequest: { requestId: "request-1", connectionId: connection.id, database: "TESTER", schema: "TESTER", name: "Mixed.Table", objectType: "TABLE", initialTab: "relations" },
+      onPropertyRequestConsumed: consumed,
+      onOpenDependencyObject,
+    });
+    mountedApps.push({ app, host });
+    app.mount(host);
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(1));
+    expect(mocks.executeQuery.mock.calls[0]).toEqual([connection.id, "TESTER", expect.stringContaining("ALL_DEPENDENCIES"), "TESTER", expect.any(String), { catalog: undefined }]);
+    expect(consumed).toHaveBeenCalledWith("request-1");
+    expect(host.querySelector("[data-object-source-editor]")).toBeNull();
+    expect(host.querySelector('[data-object-section="source"]')).toBeNull();
+    expect(mocks.getTablePartitionStatus).not.toHaveBeenCalled();
+    host.querySelector<HTMLButtonElement>('[data-object-section="dependents"]')!.click();
+    await vi.waitFor(() => expect([...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Uses.Table")).toBeDefined());
+    [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Uses.Table")!.click();
+    expect(onOpenDependencyObject).toHaveBeenCalledWith(expect.objectContaining({ connectionId: connection.id, database: "TESTER", schema: "TESTER", name: "Mixed.Table" }), { name: "Uses.Table", schema: "Other.Owner", type: "function", nameQuoted: true, schemaQuoted: true });
+  });
+
   it.each([120, 0])("keeps a constraint request alive beyond 35 seconds with timeout %s", async (timeout) => {
     vi.useFakeTimers();
     connection.query_timeout_secs = timeout;

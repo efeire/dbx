@@ -61,6 +61,14 @@ afterEach(() => {
 });
 
 describe("independent object dependency lifecycle", () => {
+  it("does not report a managed execution error as confirmed empty relations", async () => {
+    backend.executeQuery.mockResolvedValue({ ...result(), rows: [], execution_error: true });
+    const { loader } = mountLoader();
+    await vi.waitFor(() => expect(loader.loading.value).toBe(false));
+    expect(loader.loaded.value).toBe(false);
+    expect(loader.error.value).not.toBe("");
+  });
+
   it("loads lazily without a query session and keeps previous rows on refresh failure", async () => {
     backend.executeQuery.mockResolvedValue(result());
     const { loader, active } = mountLoader(false);
@@ -129,5 +137,24 @@ describe("independent object dependency lifecycle", () => {
     expect(loader.loaded.value).toBe(false);
     expect(loader.loading.value).toBe(false);
     expect(backend.cancelQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a hidden pending query and reloads on return without accepting the old result", async () => {
+    const first = deferred<QueryResult>(),
+      second = deferred<QueryResult>();
+    backend.executeQuery.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const { loader, active } = mountLoader();
+    await vi.waitFor(() => expect(backend.executeQuery).toHaveBeenCalledTimes(1));
+    active.value = false;
+    await nextTick();
+    expect(backend.cancelQuery).toHaveBeenCalledWith(backend.executeQuery.mock.calls[0]![4]);
+    expect(loader.loading.value).toBe(false);
+    active.value = true;
+    await vi.waitFor(() => expect(backend.executeQuery).toHaveBeenCalledTimes(2));
+    first.resolve(result("HIDDEN"));
+    await nextTick();
+    expect(loader.rows.value).toEqual([]);
+    second.resolve(result("CURRENT"));
+    await vi.waitFor(() => expect(loader.rows.value[0]?.name).toBe("CURRENT"));
   });
 });

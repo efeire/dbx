@@ -1955,7 +1955,7 @@ export interface TableNameFilter {
   excludePatterns: string[];
 }
 
-export type TableInfoTab = "info" | "columns" | "indexes" | "foreignKeys" | "constraints" | "triggers" | "partitions" | "ddl";
+export type TableInfoTab = "info" | "columns" | "indexes" | "foreignKeys" | "constraints" | "triggers" | "partitions" | "ddl" | "relations";
 
 /** PostgreSQL declarative partitioning strategy (`pg_partitioned_table.partstrat`). */
 export type PgPartitionKind = "range" | "list" | "hash";
@@ -2369,6 +2369,18 @@ export interface QueryTab {
   structureInitialTab?: TableInfoTab;
   structureInitialTabRequestId?: number;
   structureInitialTarget?: TableStructureEditorTarget;
+  /** Runtime-only request to locate an object in the existing read-only properties. */
+  objectPropertiesRequest?: {
+    requestId: string;
+    connectionId: string;
+    database: string;
+    schema: string;
+    catalog?: string;
+    name: string;
+    objectType: "TABLE" | "VIEW" | "MATERIALIZED_VIEW";
+    initialTab: TableInfoTab;
+    focusObject?: { owner: string; name: string; type: "INDEX" };
+  };
   structureDraft?: TableStructureEditorDraft;
   databaseSearchState?: DatabaseSearchTabState;
   objectBrowser?: {
@@ -2395,7 +2407,7 @@ export interface QueryTab {
     catalog?: string;
     name: string;
     objectType: ObjectSourceKind;
-    section: "source" | "dependencies" | "dependents";
+    section: "source" | "dependencies" | "dependents" | "foreignKeys" | "ownership";
   };
   ddlViewer?: {
     schema?: string;
