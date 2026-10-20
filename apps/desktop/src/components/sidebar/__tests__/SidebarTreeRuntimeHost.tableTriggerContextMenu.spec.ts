@@ -63,7 +63,7 @@ describe("Table trigger context menu", () => {
     sourceEvents.length = 0;
   });
 
-  it("keeps Oracle-family TYPE and TYPE_BODY sources in the read-only dialog when query-tab is selected", async () => {
+  it("opens Oracle-family TYPE and TYPE_BODY query tabs in viewing mode before explicit editing", async () => {
     for (const dbType of ["oracle", "oceanbase-oracle", "dameng"] as const) {
       const host = await mountHost(dbType);
       useSettingsStore().updateEditorSettings({ routineSourceOpenMode: "query-tab" });
@@ -75,18 +75,11 @@ describe("Table trigger context menu", () => {
         expect(labels(menu)).not.toContain(tr("contextMenu.changeOpenMode"));
         const sourceAction = menu.find((item) => item.label === tr("contextMenu.viewSource"));
         await sourceAction?.action?.();
+        expect(pendingSourceTab).toHaveBeenLastCalledWith(expect.objectContaining({ connectionId: "test-conn", database: "testdb", request: expect.objectContaining({ name: typeNode.label, objectType: type === "type" ? "TYPE" : "TYPE_BODY" }), initialEditing: false }));
       }
-      expect(pendingSourceTab).not.toHaveBeenCalled();
+      expect(pendingSourceTab).toHaveBeenCalledTimes(2);
     }
-
-    expect(sourceEvents.map(({ node: sourceNode, initialEditing }) => [sourceNode.type, initialEditing])).toEqual([
-      ["type", false],
-      ["type-body", false],
-      ["type", false],
-      ["type-body", false],
-      ["type", false],
-      ["type-body", false],
-    ]);
+    expect(sourceEvents).toEqual([]);
   });
 
   it("preserves query-tab source routing for Xugu types and routines", async () => {

@@ -699,9 +699,10 @@ fn validate_oracle_object_source(
     let first_significant = initial_tokens.iter().find(|token| !matches!(token.token, Token::Whitespace(_)));
     let source = if first_significant.is_some_and(|token| keyword_is(&token.token, "CREATE")) {
         source.to_string()
-    } else if matches!(object_type, ObjectSourceKind::Procedure | ObjectSourceKind::Function) {
-        format!("CREATE OR REPLACE {}", source.trim())
-    } else if matches!(object_type, ObjectSourceKind::Type | ObjectSourceKind::TypeBody) {
+    } else if matches!(
+        object_type,
+        ObjectSourceKind::Procedure | ObjectSourceKind::Function | ObjectSourceKind::Type | ObjectSourceKind::TypeBody
+    ) {
         format!("CREATE OR REPLACE {}", source.trim())
     } else {
         format!("CREATE {}", source.trim())
@@ -803,10 +804,8 @@ fn validate_oracle_object_source(
             match &tokens[*index].token {
                 Token::LParen => brackets.push(Token::RParen),
                 Token::LBracket => brackets.push(Token::RBracket),
-                Token::RParen | Token::RBracket => {
-                    if brackets.pop().as_ref() != Some(&tokens[*index].token) {
-                        return Err("TYPE source contains an unmatched closing bracket.".into());
-                    }
+                Token::RParen | Token::RBracket if brackets.pop().as_ref() != Some(&tokens[*index].token) => {
+                    return Err("TYPE source contains an unmatched closing bracket.".into());
                 }
                 _ => {}
             }

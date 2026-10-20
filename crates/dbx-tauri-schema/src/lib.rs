@@ -89,9 +89,17 @@ mod tests {
 
     #[test]
     fn handles_only_schema_commands() {
-        assert_eq!(COMMANDS.len(), 49);
+        assert_eq!(COMMANDS.len(), 53);
         assert!(handles("list_databases"));
         assert!(handles("list_event_triggers"));
+        for command in [
+            "get_oracle_type_management_snapshot",
+            "build_oracle_type_management_sql",
+            "verify_oracle_type_data",
+            "prepare_oracle_type_evolution",
+        ] {
+            assert!(handles(command), "{command}");
+        }
         assert!(!handles("prepare_schema_diff"));
         assert!(!handles("load_connections"));
     }

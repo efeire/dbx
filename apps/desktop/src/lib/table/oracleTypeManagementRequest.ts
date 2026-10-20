@@ -1,4 +1,5 @@
 import { readonly, shallowRef } from "vue";
+import { uuid } from "@/lib/common/utils";
 import type { OracleTypeManagementSnapshot } from "@/types/database";
 import type { TypeManagementOperation, TypeManagementTarget } from "@/lib/table/oracleTypeManagement";
 
@@ -27,7 +28,7 @@ export function requestOracleTypeManagement(input: Omit<TypeManagementRequest, "
   if (current.value) return Promise.reject(new Error("Finish or close the current TYPE preview before starting another."));
   return new Promise((resolve) => {
     resolveCurrent = resolve;
-    current.value = { ...input, target: { ...input.target }, id: crypto.randomUUID() };
+    current.value = { ...input, target: { ...input.target }, id: uuid() };
   });
 }
 

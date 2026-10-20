@@ -6,7 +6,10 @@ use crate::db::{
     self, OracleTypeDataBaseline, OracleTypeDataManifest, OracleTypeDataMappingInput, OracleTypeDataProjection,
     OracleTypeDataRelation, OracleTypeDataRelationKey, OracleTypeDataRequest, OracleTypeDataResult, TypeMetadataState,
 };
-use dbx_sql::oracle_type_migration_sql::{validate_scalar_insert, ScalarColumn, ScalarType};
+use dbx_sql::oracle_type_migration_sql::{
+    oceanbase_scalar_insert_columns, oceanbase_table_read_only_from_ddl, validate_scalar_insert, ScalarColumn,
+    ScalarType,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashSet, VecDeque};
@@ -72,9 +75,35 @@ fn scalar_type(rows: &Rows, row: &[Value], prefix: &str) -> Result<ScalarType, S
     ScalarType::parse(&declaration)
 }
 
+async fn oceanbase_table_definition<F, Fut>(key: &OracleTypeDataRelationKey, run: &mut F) -> Result<String, String>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<db::QueryResult, String>>,
+{
+    let definition = Rows::new(
+        run(format!(
+            "SELECT DBMS_METADATA.GET_DDL('TABLE', {}, {}) AS TABLE_DDL FROM DUAL",
+            sql_string(&key.name),
+            sql_string(&key.owner)
+        ))
+        .await,
+        &["TABLE_DDL"],
+    );
+    checked(&definition)?;
+    if definition.rows.len() != 1 {
+        return Err("The complete exact native table definition is unavailable".into());
+    }
+    definition
+        .value(&definition.rows[0], "TABLE_DDL")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or_else(|| "The complete native table definition must be a string".into())
+}
+
 /// Full user-visible projection, including invisible user columns and an atomic
 /// null flag for each object value (an all-null object is not an atomic NULL).
 pub(super) async fn describe<F, Fut>(
+    dialect: Dialect,
     key: &OracleTypeDataRelationKey,
     run: &mut F,
 ) -> Result<OracleTypeDataRelation, String>
@@ -113,19 +142,36 @@ where
     {
         return Err("Temporary, nested, clustered, index-organized or unusable tables need external preparation".into());
     }
-    let external = Rows::new(
-        run(format!("SELECT TABLE_NAME FROM ALL_EXTERNAL_TABLES WHERE {}", predicate(key))).await,
-        &["TABLE_NAME"],
-    );
-    checked(&external)?;
-    let object_tables = Rows::new(
-        run(format!("SELECT TABLE_NAME FROM ALL_OBJECT_TABLES WHERE {}", predicate(key))).await,
-        &["TABLE_NAME"],
-    );
-    checked(&object_tables)?;
-    if !external.rows.is_empty() || !object_tables.rows.is_empty() {
-        return Err("External and object tables need a supported ordinary-table projection".into());
-    }
+    let mut read_only = tables.yes_no(table, "READ_ONLY");
+    let native_definition = if dialect == Dialect::OceanBase {
+        if tables.yes_no(table, "EXTERNAL") != Some(false) {
+            return Err("The native table must have a verified non-external state".into());
+        }
+        // OB does not expose ALL_EXTERNAL_TABLES/ALL_OBJECT_TABLES. Its exact
+        // ordinary CREATE TABLE definition, not a failed/empty catalogue read,
+        // supplies the second proof and the compatibility READ_ONLY value.
+        let ddl = oceanbase_table_definition(key, run).await?;
+        let native_read_only = oceanbase_table_read_only_from_ddl(&key.owner, &key.name, &ddl)?;
+        if read_only.is_some_and(|known| known != native_read_only)
+            || read_only.is_none() && tables.value(table, "READ_ONLY").is_some()
+        {
+            return Err("The native and dictionary read-only states are inconsistent".into());
+        }
+        read_only = Some(native_read_only);
+        Some(ddl)
+    } else {
+        for catalogue in ["ALL_EXTERNAL_TABLES", "ALL_OBJECT_TABLES"] {
+            let rows = Rows::new(
+                run(format!("SELECT TABLE_NAME FROM {catalogue} WHERE {}", predicate(key))).await,
+                &["TABLE_NAME"],
+            );
+            checked(&rows)?;
+            if !rows.rows.is_empty() {
+                return Err("External and object tables need a supported ordinary-table projection".into());
+            }
+        }
+        None
+    };
     let columns = Rows::new(
         run(format!("SELECT * FROM ALL_TAB_COLS WHERE {} ORDER BY COLUMN_ID", predicate(key))).await,
         &[
@@ -277,16 +323,13 @@ where
             .map(|name| (name, columns.value(row, name).cloned()))
         })
         .collect();
-    let structure =
-        serde_json::to_string(&json!([table_identity, column_identity, raw_metadata(&grants), type_metadata]))
-            .map_err(|e| e.to_string())?;
-    Ok(OracleTypeDataRelation {
-        relation: key.clone(),
-        object_id,
-        read_only: tables.yes_no(table, "READ_ONLY"),
-        structure,
-        projection,
-    })
+    let mut structure =
+        vec![json!(table_identity), json!(column_identity), raw_metadata(&grants), json!(type_metadata)];
+    if let Some(ddl) = native_definition {
+        structure.push(json!(["oceanbase_native_table_definition", ddl]));
+    }
+    let structure = serde_json::to_string(&structure).map_err(|e| e.to_string())?;
+    Ok(OracleTypeDataRelation { relation: key.clone(), object_id, read_only, structure, projection })
 }
 
 struct DataSet {
@@ -370,6 +413,9 @@ where
             return format!("CASE WHEN {path} IS NULL THEN 1 ELSE 0 END");
         }
         match ty.family() {
+            "decimal" if dialect == Dialect::OceanBase => {
+                format!("TO_CHAR({path}, 'TM9', 'NLS_NUMERIC_CHARACTERS=.,')")
+            }
             "decimal" if dialect != Dialect::Dameng => {
                 format!("TO_CHAR({path}, 'TM9', 'NLS_NUMERIC_CHARACTERS=''.,''')")
             }
@@ -465,7 +511,7 @@ where
     }
     let encoded: Vec<_> = values.iter().map(|row| encode_row(row, &types)).collect();
     let fingerprint = digest(encoded, &types, true);
-    if describe(&relation.relation, run).await? != relation {
+    if describe(dialect, &relation.relation, run).await? != relation {
         return Err(
             "The relation identity, definition, grants or read-only state changed during the complete read".into()
         );
@@ -552,7 +598,7 @@ where
     validate_mapping(mapping)?;
     let mut read = Vec::new();
     for key in [&mapping.old, &mapping.expected] {
-        let relation = describe(key, run).await?;
+        let relation = describe(dialect, key, run).await?;
         scalar_relation(&relation)?;
         if relation.read_only != Some(true) {
             return Err(format!("{} must have a verified native READ ONLY state. Commit and protect it in the SQL editor, then reread; an unknown adapter state is not read-only", qualified(key)));
@@ -595,13 +641,14 @@ where
 {
     let mut result = OracleTypeDataResult { relation: None, manifest: None, insert_sql: None };
     if input.action == "describe" {
-        result.relation = Some(describe(&input.relation.ok_or("Relation identity is required")?, &mut run).await?);
+        result.relation =
+            Some(describe(dialect, &input.relation.ok_or("Relation identity is required")?, &mut run).await?);
         return Ok(result);
     }
     if input.action == "register" {
         let mapping = input.mapping.ok_or("The permanent mapping is required")?;
         let (old, expected) = baselines(dialect, &mapping, &mut run).await?;
-        let relation = describe(&mapping.source, &mut run).await?;
+        let relation = describe(dialect, &mapping.source, &mut run).await?;
         let original = read_data(dialect, relation, &mut run).await?;
         let source_indexes = projection_indexes(
             &original,
@@ -632,7 +679,7 @@ where
     if manifest.original.row_count != old.baseline.row_count {
         return Err("The original baseline count is inconsistent".into());
     }
-    let relation = describe(&mapping.target, &mut run).await?;
+    let relation = describe(dialect, &mapping.target, &mut run).await?;
     if input.action == "validate_insert" {
         scalar_relation(&relation)?;
         let actual = read_data(dialect, relation.clone(), &mut run).await?;
@@ -645,7 +692,7 @@ where
         if let Some(prepared) = &manifest.prepared_target {
             same_baseline(prepared, &actual.baseline)?;
         }
-        validate_insert_target(&relation, &mut run).await?;
+        validate_insert_target(dialect, &relation, &mut run).await?;
         let columns = |relation: &OracleTypeDataRelation| -> Result<Vec<ScalarColumn>, String> {
             relation
                 .projection
@@ -692,7 +739,11 @@ where
     Ok(result)
 }
 
-async fn validate_insert_target<F, Fut>(relation: &OracleTypeDataRelation, run: &mut F) -> Result<(), String>
+async fn validate_insert_target<F, Fut>(
+    dialect: Dialect,
+    relation: &OracleTypeDataRelation,
+    run: &mut F,
+) -> Result<(), String>
 where
     F: FnMut(String) -> Fut,
     Fut: Future<Output = Result<db::QueryResult, String>>,
@@ -701,14 +752,27 @@ where
         return Err("The scalar INSERT target must have a verified READ WRITE state".into());
     }
     let key = &relation.relation;
+    let native_plain_columns = if dialect == Dialect::OceanBase {
+        let ddl = oceanbase_table_definition(key, run).await?;
+        let columns = oceanbase_scalar_insert_columns(&key.owner, &key.name, &ddl)?;
+        if columns != relation.projection.iter().map(|field| field.path[0].clone()).collect::<Vec<_>>() {
+            return Err("The complete native scalar columns differ from the registered projection".into());
+        }
+        true
+    } else {
+        false
+    };
     let columns = Rows::new(run(format!("SELECT COLUMN_NAME, DATA_DEFAULT, VIRTUAL_COLUMN, HIDDEN_COLUMN, IDENTITY_COLUMN, DEFAULT_ON_NULL FROM ALL_TAB_COLS WHERE {}", predicate(key))).await, &["COLUMN_NAME", "DATA_DEFAULT", "VIRTUAL_COLUMN", "HIDDEN_COLUMN", "IDENTITY_COLUMN", "DEFAULT_ON_NULL"]);
     checked(&columns)?;
     if columns.rows.len() != relation.projection.len()
         || columns.rows.iter().any(|row| {
             columns.value(row, "DATA_DEFAULT").is_some()
-                || ["VIRTUAL_COLUMN", "HIDDEN_COLUMN", "IDENTITY_COLUMN", "DEFAULT_ON_NULL"]
-                    .iter()
-                    .any(|flag| columns.yes_no(row, flag) != Some(false))
+                || ["VIRTUAL_COLUMN", "HIDDEN_COLUMN"].iter().any(|flag| columns.yes_no(row, flag) != Some(false))
+                || ["IDENTITY_COLUMN", "DEFAULT_ON_NULL"].iter().any(|flag| match columns.yes_no(row, flag) {
+                    Some(false) => false,
+                    None if native_plain_columns && columns.value(row, flag).is_none() => false,
+                    _ => true,
+                })
         })
     {
         return Err("The target has default, virtual, hidden or identity execution semantics; prepare it in the SQL editor instead".into());
@@ -756,8 +820,10 @@ where
     {
         return Err("The target has an unknown, function-based or domain index".into());
     }
+    let condition =
+        if dialect == Dialect::OceanBase { "SEARCH_CONDITION AS SEARCH_CONDITION_VC" } else { "SEARCH_CONDITION_VC" };
     let constraints = Rows::new(
-        run(format!("SELECT CONSTRAINT_TYPE, SEARCH_CONDITION_VC FROM ALL_CONSTRAINTS WHERE {}", predicate(key))).await,
+        run(format!("SELECT CONSTRAINT_TYPE, {condition} FROM ALL_CONSTRAINTS WHERE {}", predicate(key))).await,
         &["CONSTRAINT_TYPE", "SEARCH_CONDITION_VC"],
     );
     checked(&constraints)?;
@@ -847,6 +913,7 @@ mod tests {
                         "READ_ONLY",
                         "PARTITIONED",
                         "TABLESPACE_NAME",
+                        "EXTERNAL",
                     ],
                     vec![vec![
                         json!("APP"),
@@ -859,6 +926,7 @@ mod tests {
                         table.readonly.map(|b| json!(if b { "YES" } else { "NO" })).unwrap_or(Value::Null),
                         json!("NO"),
                         json!("USERS"),
+                        json!("NO"),
                     ]],
                 ));
             }
@@ -1023,6 +1091,260 @@ mod tests {
         }
     }
 
+    fn oceanbase_query(fixture: &Fixture, sql: String) -> Result<db::QueryResult, String> {
+        if sql.contains("NLS_NUMERIC_CHARACTERS=''.,''") {
+            return Err("OB 4.2.5.7: invalid NLS parameter string (12702)".into());
+        }
+        if sql.contains("ALL_EXTERNAL_TABLES") || sql.contains("ALL_OBJECT_TABLES") {
+            return Err("OB 4.2.5.7: catalogue does not exist (942)".into());
+        }
+        if sql.contains("FROM ALL_CONSTRAINTS") && !sql.contains("SEARCH_CONDITION AS SEARCH_CONDITION_VC") {
+            return Err("OB 4.2.5.7: SEARCH_CONDITION_VC does not exist (904)".into());
+        }
+        if sql.contains("DBMS_METADATA.GET_DDL") {
+            let name = ["SRC", "OLD", "EXPECTED", "RESULT"]
+                .into_iter()
+                .find(|name| sql.contains(&format!("'{name}'")))
+                .unwrap();
+            assert_eq!(sql, format!("SELECT DBMS_METADATA.GET_DDL('TABLE', '{name}', 'APP') AS TABLE_DDL FROM DUAL"));
+            let read_only = fixture.tables[name].readonly.unwrap_or(name == "OLD" || name == "EXPECTED");
+            return Ok(answer(&["TABLE_DDL"], vec![vec![json!(format!("CREATE TABLE \"{name}\" (\"ID\" NUMBER(38,4), \"LABEL\" VARCHAR2(80 BYTE), PRIMARY KEY (\"ID\")) COMPRESS FOR ARCHIVE REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0{}", if read_only { " READ ONLY" } else { "" }))]]));
+        }
+        let mut response = fixture.query(sql.clone())?;
+        if sql.contains("FROM ALL_TAB_COLS") {
+            for flag in ["IDENTITY_COLUMN", "DEFAULT_ON_NULL"] {
+                let index = response.columns.iter().position(|name| name == flag).unwrap();
+                for row in &mut response.rows {
+                    row[index] = Value::Null;
+                }
+            }
+        }
+        Ok(response)
+    }
+
+    #[tokio::test]
+    async fn oceanbase_null_dictionary_readonly_uses_complete_bound_native_ddl() {
+        let mut fixture = Fixture::new();
+        for table in fixture.tables.values_mut() {
+            table.readonly = None;
+        }
+        let input = OracleTypeDataRequest {
+            target: db::OracleTypeManagementTarget {
+                connection_id: "test".into(),
+                database: "db".into(),
+                owner: "APP".into(),
+                name: "ROOT".into(),
+            },
+            action: "register".into(),
+            relation: None,
+            mapping: Some(mapping()),
+            manifest: None,
+            sql: None,
+        };
+        let run = |sql: String| oceanbase_query(&fixture, sql);
+        let result = read(Dialect::OceanBase, input, |sql| std::future::ready(run(sql))).await;
+        assert!(result.is_ok(), "The bound native READ ONLY definition must be usable: {result:?}");
+        let manifest = result.unwrap().manifest.unwrap();
+        assert_eq!(manifest.old.relation.read_only, Some(true));
+        assert_eq!(manifest.expected.relation.read_only, Some(true));
+        assert_eq!(manifest.original.relation.read_only, Some(false));
+        let insert = OracleTypeDataRequest {
+            target: db::OracleTypeManagementTarget {
+                connection_id: "test".into(),
+                database: "db".into(),
+                owner: "APP".into(),
+                name: "ROOT".into(),
+            },
+            action: "validate_insert".into(),
+            relation: None,
+            mapping: None,
+            manifest: Some(manifest.clone()),
+            sql: Some("INSERT INTO APP.RESULT(ID,LABEL) SELECT ID,LABEL FROM APP.EXPECTED".into()),
+        };
+        let result = read(Dialect::OceanBase, insert, |sql| std::future::ready(run(sql))).await.unwrap();
+        assert!(result.insert_sql.unwrap().starts_with("INSERT INTO \"APP\".\"RESULT\""));
+        let mut blocked = fixture.clone();
+        blocked.tables.get_mut("RESULT").unwrap().readonly = Some(true);
+        let relation = describe(Dialect::OceanBase, &manifest.mapping.target, &mut |sql| {
+            std::future::ready(oceanbase_query(&blocked, sql))
+        })
+        .await
+        .unwrap();
+        let error = validate_insert_target(Dialect::OceanBase, &relation, &mut |sql| {
+            std::future::ready(oceanbase_query(&blocked, sql))
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("READ WRITE"));
+    }
+
+    #[tokio::test]
+    async fn oceanbase_readonly_fallback_rejects_incomplete_or_unbound_ddl() {
+        let mut fixture = Fixture::new();
+        fixture.tables.get_mut("OLD").unwrap().readonly = None;
+        let key = OracleTypeDataRelationKey { owner: "APP".into(), name: "OLD".into() };
+        for fault in [
+            "truncated",
+            "has-more",
+            "large-cell",
+            "missing",
+            "multirow",
+            "wrong-name",
+            "wrong-owner",
+            "partial",
+            "denied",
+        ] {
+            let mut run = |sql: String| {
+                let result = if sql.contains("DBMS_METADATA.GET_DDL") {
+                    if fault == "denied" {
+                        Err("Metadata permission denied".into())
+                    } else {
+                        oceanbase_query(&fixture, sql).map(|mut result| {
+                            match fault {
+                                "truncated" => result.truncated = true,
+                                "has-more" => result.has_more = true,
+                                "large-cell" => {
+                                    result.rows[0][0] = json!({"preview":"CREATE TABLE OLD", "truncated":true})
+                                }
+                                "missing" => result.rows.clear(),
+                                "multirow" => result.rows.push(result.rows[0].clone()),
+                                "wrong-name" => {
+                                    result.rows[0][0] =
+                                        json!(result.rows[0][0].as_str().unwrap().replace("\"OLD\"", "\"OTHER\""))
+                                }
+                                "wrong-owner" => {
+                                    result.rows[0][0] = json!(result.rows[0][0]
+                                        .as_str()
+                                        .unwrap()
+                                        .replace("\"OLD\"", "\"OTHER\".\"OLD\""))
+                                }
+                                "partial" => result.rows[0][0] = json!("CREATE TABLE OLD (ID NUMBER) READ ONLY"),
+                                _ => unreachable!(),
+                            }
+                            result
+                        })
+                    }
+                } else {
+                    fixture.query(sql)
+                };
+                std::future::ready(result)
+            };
+            assert!(describe(Dialect::OceanBase, &key, &mut run).await.is_err(), "{fault}");
+        }
+        for dialect in [Dialect::Oracle, Dialect::Dameng] {
+            let relation = describe(dialect, &key, &mut |sql| std::future::ready(fixture.query(sql))).await.unwrap();
+            assert_eq!(relation.read_only, None);
+        }
+        fixture.tables.get_mut("OLD").unwrap().readonly = Some(true);
+        let relation =
+            describe(Dialect::OceanBase, &key, &mut |sql| std::future::ready(oceanbase_query(&fixture, sql)))
+                .await
+                .unwrap();
+        assert_eq!(relation.read_only, Some(true));
+    }
+
+    #[tokio::test]
+    async fn oceanbase_native_definition_cannot_hide_implicit_insert_execution() {
+        let mut fixture = Fixture::new();
+        fixture.tables.get_mut("RESULT").unwrap().readonly = None;
+        let key = OracleTypeDataRelationKey { owner: "APP".into(), name: "RESULT".into() };
+        let relation =
+            describe(Dialect::OceanBase, &key, &mut |sql| std::future::ready(oceanbase_query(&fixture, sql)))
+                .await
+                .unwrap();
+        for fault in [
+            "default",
+            "identity",
+            "generated",
+            "inline-check",
+            "wrong-column",
+            "metadata-identity",
+            "metadata-on-null",
+            "metadata-unknown",
+            "hidden",
+            "virtual",
+        ] {
+            let mut run = |sql: String| {
+                let result = oceanbase_query(&fixture, sql.clone()).map(|mut response| {
+                    if sql.contains("DBMS_METADATA.GET_DDL") {
+                        let ddl = response.rows[0][0].as_str().unwrap();
+                        response.rows[0][0] = json!(match fault {
+                            "default" => ddl.replace("NUMBER(38,4)", "NUMBER(38,4) DEFAULT APP.F()"),
+                            "identity" => ddl.replace("NUMBER(38,4)", "NUMBER(38,4) GENERATED BY DEFAULT AS IDENTITY"),
+                            "generated" => ddl.replace("NUMBER(38,4)", "NUMBER(38,4) GENERATED ALWAYS AS (1) VIRTUAL"),
+                            "inline-check" => ddl.replace("NUMBER(38,4)", "NUMBER(38,4) CHECK (APP.F(ID)=1)"),
+                            "wrong-column" => ddl.replace("\"LABEL\"", "\"OTHER\""),
+                            _ => ddl.into(),
+                        });
+                    }
+                    if sql.contains("FROM ALL_TAB_COLS") {
+                        let flag = match fault {
+                            "metadata-identity" | "metadata-unknown" => Some("IDENTITY_COLUMN"),
+                            "metadata-on-null" => Some("DEFAULT_ON_NULL"),
+                            "hidden" => Some("HIDDEN_COLUMN"),
+                            "virtual" => Some("VIRTUAL_COLUMN"),
+                            _ => None,
+                        };
+                        if let Some(flag) = flag {
+                            let index = response.columns.iter().position(|name| name == flag).unwrap();
+                            response.rows[0][index] =
+                                json!(if fault == "metadata-unknown" { "UNKNOWN" } else { "YES" });
+                        }
+                    }
+                    response
+                });
+                std::future::ready(result)
+            };
+            assert!(validate_insert_target(Dialect::OceanBase, &relation, &mut run).await.is_err(), "{fault}");
+        }
+        for fault in ["external", "unknown-external", "object-table"] {
+            let mut run = |sql: String| {
+                let result = oceanbase_query(&fixture, sql.clone()).map(|mut response| {
+                    if sql.contains("FROM ALL_TABLES") {
+                        let external = response.columns.iter().position(|name| name == "EXTERNAL").unwrap();
+                        response.rows[0][external] = match fault {
+                            "external" => json!("YES"),
+                            "unknown-external" => Value::Null,
+                            _ => json!("NO"),
+                        };
+                    }
+                    if fault == "object-table" && sql.contains("DBMS_METADATA.GET_DDL") {
+                        response.rows[0][0] = json!("CREATE TABLE RESULT OF APP.OBJECT_TYPE");
+                    }
+                    response
+                });
+                std::future::ready(result)
+            };
+            assert!(describe(Dialect::OceanBase, &key, &mut run).await.is_err(), "{fault}");
+        }
+    }
+
+    #[tokio::test]
+    async fn oceanbase_native_readonly_change_during_full_read_is_rejected() {
+        let mut fixture = Fixture::new();
+        fixture.tables.get_mut("OLD").unwrap().readonly = None;
+        let calls = std::cell::Cell::new(0);
+        let mut run = |sql: String| {
+            let is_ddl = sql.contains("DBMS_METADATA.GET_DDL");
+            let result = oceanbase_query(&fixture, sql).map(|mut response| {
+                if is_ddl {
+                    calls.set(calls.get() + 1);
+                    if calls.get() > 1 {
+                        response.rows[0][0] = json!(response.rows[0][0].as_str().unwrap().replace(" READ ONLY", ""));
+                    }
+                }
+                response
+            });
+            std::future::ready(result)
+        };
+        let key = OracleTypeDataRelationKey { owner: "APP".into(), name: "OLD".into() };
+        let relation = describe(Dialect::OceanBase, &key, &mut run).await.unwrap();
+        let error = match read_data(Dialect::OceanBase, relation, &mut run).await {
+            Err(error) => error,
+            Ok(_) => panic!("A READ ONLY baseline that changed must not be accepted"),
+        };
+        assert!(error.contains("read-only state changed"), "{error}");
+    }
     #[tokio::test]
     async fn full_temporal_values_keep_bc_and_ad_distinct_in_the_actual_reader() {
         let fixture = Fixture::new();
@@ -1043,7 +1365,11 @@ mod tests {
                         ],
                     ));
                 }
-                let mut response = fixture.query(sql.clone())?;
+                let mut response = if dialect == Dialect::OceanBase {
+                    oceanbase_query(&fixture, sql.clone())?
+                } else {
+                    fixture.query(sql.clone())?
+                };
                 if sql.contains("FROM ALL_TAB_COLS") {
                     let kind = response.columns.iter().position(|name| name == "DATA_TYPE").unwrap();
                     response.rows[0][kind] = json!("DATE");
@@ -1055,7 +1381,7 @@ mod tests {
             };
             let key = OracleTypeDataRelationKey { owner: "APP".into(), name: "OLD".into() };
             let mut run = |sql| std::future::ready(query(sql, false));
-            let relation = describe(&key, &mut run).await.unwrap();
+            let relation = describe(dialect, &key, &mut run).await.unwrap();
             let ad = read_data(dialect, relation.clone(), &mut run).await.unwrap();
             let bc = read_data(dialect, relation, &mut |sql| std::future::ready(query(sql, true))).await.unwrap();
             assert_ne!(ad.baseline.fingerprint, bc.baseline.fingerprint, "{dialect:?}");
@@ -1084,7 +1410,7 @@ mod tests {
             std::future::ready(result)
         };
         let key = OracleTypeDataRelationKey { owner: "APP".into(), name: "OLD".into() };
-        let relation = describe(&key, &mut run).await.unwrap();
+        let relation = describe(Dialect::Oracle, &key, &mut run).await.unwrap();
         let error = match read_data(Dialect::Oracle, relation, &mut run).await {
             Ok(_) => panic!("Oversized metadata must not be fetched"),
             Err(error) => error,
@@ -1150,7 +1476,7 @@ mod tests {
         };
         let key = OracleTypeDataRelationKey { owner: "APP".into(), name: "SRC".into() };
         let mut run = |sql| std::future::ready(query(sql, false));
-        let relation = describe(&key, &mut run).await.unwrap();
+        let relation = describe(Dialect::Oracle, &key, &mut run).await.unwrap();
         assert_eq!(
             relation.projection.iter().map(|p| (p.path.clone(), p.object_null)).collect::<Vec<_>>(),
             vec![(vec!["ID".into()], false), (vec!["VALUE".into()], true), (vec!["VALUE".into(), "ID".into()], false)]

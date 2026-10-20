@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import * as api from "@/lib/backend/api";
+import { uuid } from "@/lib/common/utils";
 import { executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
 import { executeOracleTypeDataInsert, prepareOracleTypeDataInsert, verifyOracleTypeDataMappings } from "@/lib/table/oracleTypeDataMapping";
 import { registerOracleTypeDataMapping, type OracleTypeManagementDraft } from "@/lib/table/oracleTypeManagement";
@@ -103,7 +104,7 @@ async function describe() {
     if (!result.relation) throw new Error("The complete source projection could not be read.");
     const next = clone(props.plan);
     next.dataPreparation = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       source,
       old: { owner: source.owner, name: "" },
       expected: { owner: source.owner, name: "" },

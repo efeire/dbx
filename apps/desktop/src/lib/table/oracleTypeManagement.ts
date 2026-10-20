@@ -1,4 +1,5 @@
 import * as api from "@/lib/backend/api";
+import { uuid } from "@/lib/common/utils";
 import { BackendErrorException, normalizeBackendError } from "@/lib/backend/errorUtils";
 import { invalidateObjectDdlCache } from "@/lib/metadata/objectDdlCache";
 import { invalidateObjectMetadataCache } from "@/lib/metadata/objectMetadataCache";
@@ -224,7 +225,7 @@ export async function prepareOracleTypeManagement(target: TypeManagementTarget, 
   const started = previous?.steps.some((step) => step.state !== "not-sent") === true || !!previous?.dataMappings?.length;
   const plan: OracleTypeManagementDraft = {
     version: 1,
-    planId: previous?.planId ?? crypto.randomUUID(),
+    planId: previous?.planId ?? uuid(),
     revision: (previous?.revision ?? 0) + 1,
     target: clone(target),
     operation,

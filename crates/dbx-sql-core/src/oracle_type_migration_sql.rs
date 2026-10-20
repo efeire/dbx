@@ -97,6 +97,144 @@ impl Cursor {
     }
 }
 
+fn oceanbase_table_header(owner: &str, name: &str, ddl: &str) -> Result<Cursor, String> {
+    let mut cursor = Cursor::new(ddl)?;
+    cursor.expect_keyword("CREATE")?;
+    cursor.expect_keyword("TABLE")?;
+    let first = cursor.ident()?;
+    let identity_matches =
+        if cursor.take(Token::Period) { first == owner && cursor.ident()? == name } else { first == name };
+    if !identity_matches {
+        return Err("The native table definition does not match the exact requested relation".into());
+    }
+    cursor.expect(Token::LParen)?;
+    Ok(cursor)
+}
+
+/// OceanBase can return NULL for ALL_TABLES.READ_ONLY even after ALTER TABLE
+/// READ ONLY. Only its complete, exact native simple-table definition supplies
+/// the fallback; an unfamiliar or partial suffix must remain unverifiable.
+pub fn oceanbase_table_read_only_from_ddl(owner: &str, name: &str, ddl: &str) -> Result<bool, String> {
+    let mut cursor = oceanbase_table_header(owner, name, ddl)?;
+    let start = cursor.at;
+    let mut depth = 1;
+    while depth > 0 {
+        match cursor.tokens.get(cursor.at) {
+            Some(Token::LParen) => depth += 1,
+            Some(Token::RParen) => depth -= 1,
+            None | Some(Token::SemiColon) => return Err("The native table definition is incomplete".into()),
+            _ => (),
+        }
+        cursor.at += 1;
+    }
+    if cursor.at == start + 1 {
+        return Err("The native table definition has no columns".into());
+    }
+    let mut options = std::collections::HashSet::new();
+    loop {
+        if cursor.keyword("COMPRESS") {
+            if !options.insert("COMPRESS") {
+                return Err("Duplicate native table option".into());
+            }
+            cursor.expect_keyword("FOR")?;
+            cursor.expect_keyword("ARCHIVE")?;
+        } else if cursor.keyword("USE_BLOOM_FILTER") {
+            if !options.insert("USE_BLOOM_FILTER") {
+                return Err("Duplicate native table option".into());
+            }
+            cursor.expect(Token::Eq)?;
+            if !cursor.keyword("TRUE") && !cursor.keyword("FALSE") {
+                return Err("Unknown native bloom-filter state".into());
+            }
+        } else if let Some(option) =
+            ["REPLICA_NUM", "BLOCK_SIZE", "TABLET_SIZE", "PCTFREE"].into_iter().find(|option| cursor.keyword(option))
+        {
+            if !options.insert(option) {
+                return Err("Duplicate native table option".into());
+            }
+            cursor.expect(Token::Eq)?;
+            if cursor.number()? < 0 {
+                return Err("Invalid native table option".into());
+            }
+        } else {
+            break;
+        }
+    }
+    if options.len() != 6 {
+        return Err("The complete supported OceanBase native table suffix is required".into());
+    }
+    let read_only = if cursor.keyword("READ") {
+        if cursor.keyword("ONLY") {
+            true
+        } else {
+            cursor.expect_keyword("WRITE")?;
+            false
+        }
+    } else {
+        false
+    };
+    cursor.end()?;
+    Ok(read_only)
+}
+
+/// Prove the native INSERT target has only explicit scalar columns and simple
+/// keys. In particular, NULL compatibility flags cannot hide a default, identity
+/// or generated expression. Unfamiliar definitions need external preparation.
+pub fn oceanbase_scalar_insert_columns(owner: &str, name: &str, ddl: &str) -> Result<Vec<String>, String> {
+    if oceanbase_table_read_only_from_ddl(owner, name, ddl)? {
+        return Err("The native scalar INSERT target must be READ WRITE".into());
+    }
+    let mut cursor = oceanbase_table_header(owner, name, ddl)?;
+    let mut columns = Vec::new();
+    let mut keys = Vec::new();
+    loop {
+        let named_constraint = cursor.keyword("CONSTRAINT");
+        if named_constraint {
+            cursor.ident()?;
+        }
+        let primary = cursor.keyword("PRIMARY");
+        if primary || cursor.keyword("UNIQUE") {
+            if primary {
+                cursor.expect_keyword("KEY")?;
+            }
+            cursor.expect(Token::LParen)?;
+            let mut key = vec![cursor.ident()?];
+            while cursor.take(Token::Comma) {
+                key.push(cursor.ident()?);
+            }
+            cursor.expect(Token::RParen)?;
+            keys.push(key);
+        } else if named_constraint {
+            return Err("Only simple PRIMARY/UNIQUE constraints are supported in the native INSERT definition".into());
+        } else {
+            let column = cursor.ident()?;
+            ScalarType::read(&mut cursor)?;
+            if cursor.keyword("NOT") {
+                cursor.expect_keyword("NULL")?;
+            } else {
+                cursor.keyword("NULL");
+            }
+            if columns.contains(&column) {
+                return Err("Duplicate native scalar column".into());
+            }
+            columns.push(column);
+        }
+        if !cursor.take(Token::Comma) {
+            cursor.expect(Token::RParen)?;
+            break;
+        }
+    }
+    if columns.is_empty()
+        || keys.iter().any(|key| {
+            key.iter().any(|column| !columns.contains(column))
+                || key.iter().collect::<std::collections::HashSet<_>>().len() != key.len()
+        })
+    {
+        return Err("The complete native scalar columns and key references could not be verified".into());
+    }
+    Ok(columns)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScalarType {
     pub name: String,
@@ -701,6 +839,63 @@ pub fn validate_scalar_insert(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const OB_TABLE_SUFFIX: &str = "COMPRESS FOR ARCHIVE REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0";
+    #[test]
+    fn oceanbase_native_insert_definition_proves_simple_scalar_columns_and_keys() {
+        for body in [
+            "\"ID\" NUMBER, \"LABEL\" VARCHAR2(40), PRIMARY KEY (\"ID\")",
+            "\"ID\" NUMBER(38,4) NOT NULL, \"LABEL\" VARCHAR2(80 BYTE) NULL, CONSTRAINT PK_ID PRIMARY KEY (\"ID\"), UNIQUE (\"ID\", \"LABEL\")",
+        ] {
+            let ddl = format!("CREATE TABLE APP.RESULT ({body}) {OB_TABLE_SUFFIX}");
+            assert_eq!(oceanbase_scalar_insert_columns("APP", "RESULT", &ddl), Ok(vec!["ID".into(), "LABEL".into()]));
+        }
+    }
+    #[test]
+    fn oceanbase_native_insert_definition_rejects_unverified_execution_or_columns() {
+        for body in [
+            "ID NUMBER DEFAULT APP.F()",
+            "ID NUMBER GENERATED BY DEFAULT AS IDENTITY",
+            "ID NUMBER GENERATED ALWAYS AS (1) VIRTUAL",
+            "ID NUMBER CHECK (APP.F(ID)=1)",
+            "ID APP.OBJECT_TYPE",
+            "ID NUMBER, ID NUMBER",
+            "ID NUMBER, PRIMARY KEY (MISSING)",
+            "ID NUMBER, UNIQUE (ID,ID)",
+            "ID NUMBER, CONSTRAINT FK FOREIGN KEY (ID) REFERENCES OTHER(ID)",
+            "ID NUMBER, CONSTRAINT C CHECK (ID>0)",
+            "ID NUMBER,",
+            "",
+        ] {
+            let ddl = format!("CREATE TABLE APP.RESULT ({body}) {OB_TABLE_SUFFIX}");
+            assert!(oceanbase_scalar_insert_columns("APP", "RESULT", &ddl).is_err(), "{ddl}");
+        }
+        let readonly = format!("CREATE TABLE APP.RESULT (ID NUMBER) {OB_TABLE_SUFFIX} READ ONLY");
+        assert!(oceanbase_scalar_insert_columns("APP", "RESULT", &readonly).is_err());
+    }
+    #[test]
+    fn oceanbase_native_readonly_requires_complete_exact_definition() {
+        for (declaration, state) in [("", false), (" READ WRITE;", false), (" READ ONLY", true)] {
+            for relation in ["\"APP\".\"Old table\"", "\"Old table\""] {
+                let ddl = format!("CREATE TABLE {relation} (\"ID\" NUMBER(38,4), \"READ ONLY\" VARCHAR2(80) DEFAULT 'READ ONLY') {OB_TABLE_SUFFIX}{declaration}");
+                assert_eq!(oceanbase_table_read_only_from_ddl("APP", "Old table", &ddl), Ok(state));
+            }
+        }
+        for ddl in [
+            format!("CREATE TABLE APP.OLD (ID NUMBER) {OB_TABLE_SUFFIX} READ ONLY"),
+            format!("CREATE TABLE OTHER.\"Old table\" (ID NUMBER) {OB_TABLE_SUFFIX} READ ONLY"),
+            format!("CREATE TABLE \"Old table\" (ID NUMBER {OB_TABLE_SUFFIX} READ ONLY"),
+            format!("CREATE TABLE \"Old table\" () {OB_TABLE_SUFFIX} READ ONLY"),
+            format!("CREATE TABLE \"Old table\" (ID NUMBER) {OB_TABLE_SUFFIX} READ ONLY; DROP TABLE APP.X"),
+            format!("CREATE TABLE \"Old table\" (ID NUMBER) {OB_TABLE_SUFFIX} READ ONLY READ WRITE"),
+            format!("CREATE TABLE \"Old table\" (ID NUMBER) {OB_TABLE_SUFFIX} PCTFREE=0 READ ONLY"),
+            format!("CREATE TABLE \"Old table\" (ID NUMBER) {OB_TABLE_SUFFIX} /* READ ONLY */"),
+            format!("CREATE TABLE \"Old table\" (ID NUMBER) {OB_TABLE_SUFFIX} UNKNOWN_OPTION=1 READ ONLY"),
+            "CREATE TABLE \"Old table\" (ID NUMBER) READ ONLY".into(),
+            "CREATE TABLE \"Old table\" (ID NUMBER)".into(),
+        ] {
+            assert!(oceanbase_table_read_only_from_ddl("APP", "Old table", &ddl).is_err(), "{ddl}");
+        }
+    }
     fn columns() -> Vec<ScalarColumn> {
         vec![
             ScalarColumn { name: "ID".into(), data_type: ScalarType::parse("NUMBER(30,0)").unwrap() },
@@ -713,7 +908,7 @@ mod tests {
             "INSERT INTO APP.RESULT(ID,LABEL) SELECT CAST(ID AS NUMBER(32,0)), LABEL FROM APP.EXPECTED",
             ("APP", "RESULT"),
             ("APP", "EXPECTED"),
-            &vec![
+            &[
                 ScalarColumn { name: "ID".into(), data_type: ScalarType::parse("NUMBER(38,0)").unwrap() },
                 columns().remove(1),
             ],
