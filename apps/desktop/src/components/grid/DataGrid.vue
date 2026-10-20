@@ -4477,7 +4477,7 @@ async function refreshSavedRows(request: { dirtyRows: ReadonlyMap<number, Readon
   const planResult = buildDataGridSavedRowRefreshPlan({
     context: props.context,
     infiniteScroll: infiniteScrollEnabled.value,
-    filterActive: !!currentWhereInput() || hasLocalColumnFilters.value || (dataGridSearchMode.value === "filter" && !!deferredClientSearchText.value),
+    filterActive: !!currentWhereInput() || hasLocalColumnFilters.value,
     orderActive: !!effectiveOrderBy(),
     columns: request.columns,
     sourceColumns: props.sourceColumns,
@@ -6675,6 +6675,7 @@ function selectionFrameKindForCell(rowIndex: number, visibleColIdx: number): "si
 // 行号的选区覆盖指示（Navicat 风格），但行选中（--selected）和行状态色（新增/编辑/删除）优先，
 // 与 canvas 渲染器的 rowNumberFill 优先级顺序保持一致
 function rowNumberShowsSelectionTint(item: RowItem): boolean {
+  if (isSelectingAll.value) return false;
   if (isRowSelected(item.id)) return false;
   if (item.status !== "clean") return false;
   const frames = selectionFramesData.value.frames;
@@ -8789,6 +8790,7 @@ function drawCanvasGrid() {
     rowCellsUseSelectionVisual,
     cellIsSelected,
     selectionFrames: selectionFramesData.value.frames,
+    selectingAll: isSelectingAll.value,
     cellCanHover: canEditCellItem,
     infiniteScrollEnabled: infiniteScrollEnabled.value,
     pageOffset: rowNumberPageOffset(),
@@ -9142,7 +9144,16 @@ const {
   sql: computed(() => props.sql),
   exportSql: computed(() => props.exportSql),
   pageSql: computed(() => props.pageSql),
-  tableMeta: computed(() => (props.tableMeta ? { ...props.tableMeta } : undefined)),
+  tableMeta: computed(() => {
+    if (!props.tableMeta) return undefined;
+    const database = props.tableMeta.database ?? props.executionDatabase ?? props.database;
+    const schema = props.tableMeta.schema ?? props.schema;
+    return {
+      ...props.tableMeta,
+      ...(database && !props.tableMeta.database ? { database } : {}),
+      ...(schema && !props.tableMeta.schema ? { schema } : {}),
+    };
+  }),
   includeDatabaseName: computed(() => settingsStore.editorSettings.generateSqlIncludeDatabaseName),
   hasUniqueQueryInsertTarget: computed(() => props.hasUniqueQueryInsertTarget === true),
   copyInsertTargetLabel: computed(() => props.tableMeta?.tableName ?? props.customSaveHandler?.targetLabel),
@@ -15194,9 +15205,6 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 <div class="data-grid-header-row flex w-(--header-total-w) font-semibold text-foreground">
                   <div
                     class="data-grid-header-cell shrink-0 px-2 py-1.5 border-r w-(--row-num-w) border-border text-center text-muted-foreground select-none cursor-default hover:bg-gray-200 dark:hover:bg-gray-800 sticky left-0 z-20"
-                    :class="{
-                      'data-grid-header-cell--selected': isSelectingAll,
-                    }"
                     @click="selectAllCells"
                     @contextmenu="invalidateContextMenuTarget"
                   >

@@ -1039,6 +1039,8 @@ const blockDangerousRedisCommands = computed({
 });
 const databaseRequiredSignal = ref(0);
 const databaseRequiredTabId = ref<string | null>(null);
+const connectionRequiredSignal = ref(0);
+const connectionRequiredTabId = ref<string | null>(null);
 const pendingToolbarExecutionSnapshot = ref<SqlExecutionSnapshot & { tabId?: string }>();
 const sqlExecutionDangerStore = useSqlExecutionDangerStore();
 const productionSafetyStore = useProductionSafetyStore();
@@ -1049,6 +1051,14 @@ function promptActiveDatabaseSelection(tabId?: string) {
   databaseRequiredTabId.value = tab.id;
   databaseRequiredSignal.value += 1;
   toast(t("editor.selectDatabaseRequired"), 2500);
+}
+
+function promptActiveConnectionSelection(tabId?: string) {
+  const tab = tabId ? queryStore.tabs.find((candidate) => candidate.id === tabId) : activeTab.value;
+  if (!tab) return;
+  connectionRequiredTabId.value = tab.id;
+  connectionRequiredSignal.value += 1;
+  toast(t("editor.selectConnectionRequired"), 2500);
 }
 
 const {
@@ -1079,6 +1089,7 @@ const {
   activeOutputView,
   blockDangerousRedisCommands,
   onMissingDatabase: promptActiveDatabaseSelection,
+  onMissingConnection: promptActiveConnectionSelection,
   requestDangerConfirmation: (request) => sqlExecutionDangerStore.requestConfirmation(request),
   onExecutionStarted: (editorViewportRequestId) => contentAreaRef.value?.acceptQueryEditorExecutionViewport(editorViewportRequestId),
   onExecutionCancelled: (editorViewportRequestId) => contentAreaRef.value?.cancelQueryEditorExecutionViewport(editorViewportRequestId),
@@ -1161,6 +1172,7 @@ provide(EDITOR_TOOLBAR_ACTIONS, {
   explainMode,
   blockDangerousRedisCommands,
   databaseRequiredSignalFor: (tabId: string) => (databaseRequiredTabId.value === tabId ? databaseRequiredSignal.value : 0),
+  connectionRequiredSignalFor: (tabId: string) => (connectionRequiredTabId.value === tabId ? connectionRequiredSignal.value : 0),
   captureExecutionSnapshot: captureActiveEditorExecutionSnapshot,
   toolbarExecute: requestActiveEditorExecute,
   toolbarExecuteInNewResultTab: requestActiveEditorExecuteInNewResultTab,
@@ -3590,6 +3602,9 @@ async function changeActiveConnection(tabId: string, connectionId: string) {
   if (!tab) return;
   const connection = connectionStore.getConfig(connectionId);
   if (!connection) return;
+  if (connectionRequiredTabId.value === tab.id) {
+    connectionRequiredTabId.value = null;
+  }
   const initialDatabase = resolveDefaultDatabase(connection, []);
   queryStore.updateConnection(tab.id, connectionId, initialDatabase);
   let isCurrentTarget = queryStore.createExecutionTargetGuard(tab.id);
