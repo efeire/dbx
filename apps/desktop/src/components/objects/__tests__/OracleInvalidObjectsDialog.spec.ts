@@ -385,6 +385,25 @@ async function mountDialog(connectionState = ref(connection), databaseState = re
 }
 
 describe("OracleInvalidObjectsDialog production flow", () => {
+  it.each(["INDEX", "JAVA CLASS"])("keeps %s diagnostics but does not offer an unsupported source editor", async (type) => {
+    mocks.batchObjects = [["APP", "UNSUPPORTED_OBJECT", type, "11", "time"]];
+    await mountDialog();
+    await openDetails("UNSUPPORTED_OBJECT", type);
+    await vi.waitFor(() => expect(root?.textContent).toContain("invalid identifier"));
+    expect(dialogButtons().find((button) => button.textContent?.includes("oracleInvalidObjects.openSource"))).toBeUndefined();
+    expect(root?.textContent).toContain("processList.oracleInvalidObjects.unsupportedType");
+  });
+
+  it("keeps a supported source action independent of engine compile support", async () => {
+    mocks.batchObjects = [["APP", "V_ONLY", "VIEW", "11", "time"]];
+    await mountDialog(ref({ ...connection, db_type: "oceanbase-oracle" }));
+    await openDetails("V_ONLY", "VIEW");
+    const source = dialogButtons().find((button) => button.textContent?.includes("oracleInvalidObjects.openSource"));
+    expect(source).toBeDefined();
+    expect(source?.disabled).toBe(false);
+    expect(root?.textContent).toContain("processList.oracleInvalidObjects.unsupportedOnEngine");
+  });
+
   it("filters names without case sensitivity and compiles only the complete matching scope", async () => {
     mocks.batchObjects = [
       ["APP", "P_KEEP_FIRST", "PROCEDURE", "11", "time"],

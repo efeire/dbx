@@ -17,6 +17,7 @@ import { formatError, normalizeBackendError } from "@/lib/backend/errorUtils";
 import { oracleWriteRejected } from "@/lib/database/oracleSecurity";
 import {
   oracleCompileUnsupportedReason,
+  oracleInvalidObjectSourceKind,
   buildOracleCompileSql,
   buildOracleInvalidObjectsSql,
   buildOracleObjectErrorsSql,
@@ -1211,7 +1212,7 @@ onBeforeUnmount(() => {
             <div class="break-all text-sm font-semibold">{{ selected.owner }}.{{ selected.name }}</div>
             <div class="mt-1 text-xs text-muted-foreground">{{ selected.type }} · {{ t("processList.oracleInvalidObjects.objectId", { id: selected.objectId }) }}</div>
           </div>
-          <Button variant="outline" size="sm" class="h-7 shrink-0 gap-1.5 text-xs" :disabled="compiling" @click="emit('open-source', selected)"><Wrench class="h-3.5 w-3.5" />{{ t("processList.oracleInvalidObjects.openSource") }}</Button>
+          <Button v-if="oracleInvalidObjectSourceKind(selected.type)" variant="outline" size="sm" class="h-7 shrink-0 gap-1.5 text-xs" :disabled="compiling" @click="emit('open-source', selected)"><Wrench class="h-3.5 w-3.5" />{{ t("processList.oracleInvalidObjects.openSource") }}</Button>
         </div>
         <div class="min-h-0 flex-1 overflow-auto px-4 py-3">
           <div class="mb-2 text-xs font-medium">{{ t("processList.oracleInvalidObjects.errorsTitle") }}</div>

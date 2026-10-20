@@ -201,6 +201,7 @@ import { invalidateObjectMetadataCache } from "@/lib/metadata/objectMetadataCach
 import { invalidateObjectDdl, invalidateObjectDdlCache } from "@/lib/metadata/objectDdlCache";
 import { invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
 import { completeOracleInvalidObjectCompile, type OracleInvalidObjectCompileScope } from "@/lib/database/oracleInvalidObjectCacheRefresh";
+import { oracleInvalidObjectSourceKind } from "@/lib/database/oracleInvalidObjects";
 import { eventEditorInstanceKey, resolveInitialEventEditorRequest } from "@/lib/table/eventEditorRequest";
 import { createLocateTabMenuItem } from "@/lib/tabs/tabMenu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -1832,6 +1833,8 @@ async function openSource(row: ObjectBrowserRow) {
 }
 
 async function openInvalidObjectSource(object: { owner: string; name: string; type: string }) {
+  const objectType = oracleInvalidObjectSourceKind(object.type);
+  if (!objectType) return;
   const dialogGeneration = invalidObjectsDialogGeneration;
   const requestGeneration = ++invalidObjectSourceRequestGeneration;
   const connection = { ...props.connection };
@@ -1849,10 +1852,9 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
     props.database === database &&
     props.catalog === catalog &&
     (selectedSchema.value || props.database) === schema;
-  const objectType = ({ "MATERIALIZED VIEW": "MATERIALIZED_VIEW", "PACKAGE BODY": "PACKAGE_BODY", "TYPE BODY": "TYPE_BODY" } as Record<string, string>)[object.type] ?? object.type;
   if (objectType === "TYPE" || objectType === "TYPE_BODY" || objectType === "TRIGGER") {
     try {
-      const source = await api.getObjectSource(connection.id, database, object.owner, object.name, objectType as ObjectSourceKind);
+      const source = await api.getObjectSource(connection.id, database, object.owner, object.name, objectType);
       if (!isCurrentRequest()) return;
       if (!source.source?.trim()) throw new Error(t("processList.oracleInvalidObjects.sourceUnavailable"));
       const tabId = queryStore.createTab(connection.id, database, `Repair - ${object.name}`, "query", object.owner, undefined, catalog);
@@ -1871,7 +1873,7 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
     schema: object.owner,
     catalog,
     initialEditing: true,
-    request: { name: object.name, objectType: objectType as ObjectSourceKind },
+    request: { name: object.name, objectType },
   });
   const sourceLoadResult = await new Promise<{ error?: string }>((resolve) => {
     const getResult = () => {
@@ -3714,6 +3716,7 @@ async function refreshAfterInvalidObjectCompile(scope: OracleInvalidObjectCompil
       invalidateObjectBrowserRowsCache(completed);
     },
     async (current) => {
+      if (objectBrowserUnmounted) return;
       await Promise.all([reload(), connectionStore.refreshObjectListTreeNode(current.connectionId, current.database, current.schema)]);
     },
   );

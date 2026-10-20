@@ -1,4 +1,4 @@
-import type { DatabaseType, QueryResult } from "@/types/database";
+import type { DatabaseType, ObjectSourceKind, QueryResult } from "@/types/database";
 
 export type OracleInvalidObject = {
   owner: string;
@@ -22,6 +22,26 @@ export type OracleInvalidObjectsPageQuery = (sql: string, maxRows: number) => Pr
 const ORACLE_COMPILE_TYPES = new Set(["VIEW", "MATERIALIZED VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "PACKAGE", "PACKAGE BODY", "TYPE", "TYPE BODY", "SYNONYM"]);
 
 const OCEANBASE_COMPILE_TYPES = new Set(["PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE BODY"]);
+
+export function oracleInvalidObjectSourceKind(objectType: string): ObjectSourceKind | null {
+  const kind = objectType.trim().toUpperCase().replaceAll(" ", "_");
+  switch (kind) {
+    case "VIEW":
+    case "MATERIALIZED_VIEW":
+    case "PROCEDURE":
+    case "FUNCTION":
+    case "TRIGGER":
+    case "SEQUENCE":
+    case "SYNONYM":
+    case "PACKAGE":
+    case "PACKAGE_BODY":
+    case "TYPE":
+    case "TYPE_BODY":
+      return kind;
+    default:
+      return null;
+  }
+}
 
 export function quoteOracleLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;

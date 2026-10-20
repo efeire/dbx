@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   oracleTargetChanged: false,
   oracleTargetMissing: false,
   localeMessages: null as Record<string, unknown> | null,
+  executionErrorSql: "",
 }));
 
 // Flipped by the driver mock to simulate engines without a terminate statement.
@@ -235,6 +236,7 @@ beforeEach(() => {
   driverState.stripTerminate = false;
   mocks.ensureConnected.mockReset().mockResolvedValue(undefined);
   mocks.executeQuery.mockReset().mockImplementation(async (_connectionId: string, _database: string, sql: string) => {
+    if (mocks.executionErrorSql && sql.includes(mocks.executionErrorSql)) return { columns: ["Error"], rows: [["legacy error row"]], execution_error: true, error: { detail: "ORA-01031: managed read denied" } };
     if (sql === "SELECT CONNECTION_ID()") return { columns: ["CONNECTION_ID()"], rows: [[5]] };
     if (sql === "SHOW FULL PROCESSLIST") return mysqlListResult();
     if (sql === "SELECT pg_backend_pid()") return { columns: ["pg_backend_pid"], rows: [[5]] };
@@ -318,6 +320,7 @@ beforeEach(() => {
   mocks.oracleTargetChanged = false;
   mocks.oracleTargetMissing = false;
   mocks.localeMessages = null;
+  mocks.executionErrorSql = "";
   root = document.createElement("div");
   document.body.appendChild(root);
 });
@@ -403,6 +406,32 @@ async function mountXuguPanel() {
 }
 
 describe("ProcessListPanel batch terminate", () => {
+  it.each([
+    ["Oracle", oracleConnection, buildOracleSessionListSql(false)],
+    ["OceanBase Oracle", oceanbaseConnection, buildOceanbaseSessionListSql()],
+  ])("reports a resolved execution error from the %s session list instead of an empty result", async (_label, connection, sql) => {
+    mocks.executionErrorSql = sql;
+    app = createApp(ProcessListPanel, { connection });
+    app.mount(root!);
+    await vi.waitFor(() => expect(root?.textContent).toContain("ORA-01031: managed read denied"));
+    expect(root?.textContent).not.toContain("processList.empty");
+    expect(root?.querySelector("tbody")?.textContent).not.toContain("legacy error row");
+  });
+
+  it.each([
+    ["Oracle", oracleConnection, "FROM GV$LOCK l JOIN GV$SESSION s"],
+    ["OceanBase Oracle", oceanbaseConnection, "FROM GV$OB_LOCKS l"],
+  ])("reports a resolved execution error from %s lock details without rendering it as a lock", async (_label, connection, sql) => {
+    if (connection.db_type === "oracle") await mountOraclePanel();
+    else await mountOceanbasePanel();
+    mocks.executionErrorSql = sql;
+    processRow("21").querySelector<HTMLButtonElement>('button[title="processList.oracleLockDetails"]')?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("ORA-01031: managed read denied"));
+    expect(root?.textContent).not.toContain("processList.oracleLockDetailsEmpty");
+    expect(root?.querySelector("[data-dialog]")?.textContent).not.toContain("legacy error row");
+    expect(processRow("21").textContent).toContain("OTHER");
+  });
+
   it("uses the CON_ID-scoped Oracle query when version detection is unknown or denied", async () => {
     mocks.oracleVersionValue = "Oracle Database 19c";
     app = createApp(ProcessListPanel, { connection: oracleConnection });

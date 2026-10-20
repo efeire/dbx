@@ -10,6 +10,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useToast } from "@/composables/useToast";
 import type { ConnectionConfig } from "@/types/database";
 import * as api from "@/lib/backend/api";
+import { formatError } from "@/lib/backend/errorUtils";
 import { executeWithProductionContextGuard, executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
 import { uuid } from "@/lib/common/utils";
 import { clampInterval, createProcessListLoadCoordinator, DEFAULT_REFRESH_SECONDS, processListExecutionError, processListSessionCount } from "@/lib/database/mysqlProcessList";
@@ -128,7 +129,9 @@ async function executeProcessQuery(connectionId: string, database: string, sql: 
   const session = managedSessionFor(connection, database);
   session.active++;
   try {
-    return await api.executeQuery(connectionId, database, sql, undefined, undefined, { maxRows, clientSessionId: session.id });
+    const result = await api.executeQuery(connectionId, database, sql, undefined, undefined, { maxRows, clientSessionId: session.id });
+    if (result.execution_error) throw new Error(result.error ? formatError(result.error) : String(result.rows[0]?.[0] ?? "Query execution failed"));
+    return result;
   } finally {
     session.active--;
     closeManagedSession(session);

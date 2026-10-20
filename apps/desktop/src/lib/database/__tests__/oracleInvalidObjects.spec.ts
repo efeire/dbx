@@ -8,12 +8,21 @@ import {
   mapOracleInvalidObjects,
   mapOracleObjectErrors,
   oracleCompileUnsupportedReason,
+  oracleInvalidObjectSourceKind,
   readAllOracleInvalidObjects,
   ORACLE_INVALID_OBJECTS_PAGE_SIZE,
 } from "../oracleInvalidObjects";
 
 describe("Oracle invalid-object SQL and mapping", () => {
   const pageColumns = ["OWNER", "OBJECT_NAME", "OBJECT_TYPE", "OBJECT_ID", "LAST_DDL_TIME"];
+  it.each(["VIEW", "MATERIALIZED VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE BODY", "TYPE", "TYPE BODY"])("maps source-readable %s to its API kind", (type) => {
+    expect(oracleInvalidObjectSourceKind(type)).toBe(type.replaceAll(" ", "_"));
+  });
+
+  it.each(["INDEX", "JAVA CLASS", "JAVA SOURCE", "TABLE", "", "__proto__"])("rejects unsupported source kind %s", (type) => {
+    expect(oracleInvalidObjectSourceKind(type)).toBeNull();
+  });
+
   it("builds an owner-quoted numeric keyset page with a string cursor", () => {
     const sql = buildOracleInvalidObjectsPageSql("Owner'X", "90071992547409931234");
     expect(sql).toContain("OWNER = 'Owner''X'");
