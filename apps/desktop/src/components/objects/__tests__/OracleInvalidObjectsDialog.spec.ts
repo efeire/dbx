@@ -488,7 +488,8 @@ describe("OracleInvalidObjectsDialog production flow", () => {
       .find((button) => button.textContent?.includes("batchCompileSelected:201"))
       ?.click();
     await waitForBatch();
-    const audit = (mocks.guard.mock.calls[0]?.[0] as { sql: string }).sql;
+    expect(mocks.guard).toHaveBeenCalledOnce();
+    const audit = (mocks.guard.mock.calls[0]![0] as { sql: string }).sql;
     expect(audit.split(";\n")).toHaveLength(201);
     expect(audit).toContain('"P_MATCH_200"');
     expect(audit).not.toContain('"P_OTHER"');
