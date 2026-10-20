@@ -237,7 +237,7 @@ async function completePlan(approved: OracleTypeManagementDraft, pending: TypeMa
     if (!approved.operation.startsWith("delete") && saved && tab.sql === tabSqlAtOpen) {
       queryStore.updateSql(tab.id, saved.source);
       queryStore.markTabClean(tab);
-      queryStore.retryObjectSourceTab(tab.id);
+      queryStore.refreshObjectSourceTab(tab.id);
     }
   }
   try {

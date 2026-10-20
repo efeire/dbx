@@ -325,6 +325,48 @@ describe("TYPE preview using the real component, planner and stores", () => {
     expect(queryStore.tabs[0].typeSourceEditing).toBe(false);
   });
 
+  it("reloads a completed recovery tab so its source identity allows the next explicit edit", async () => {
+    const { queryStore, outcome } = await mount();
+    const tab = queryStore.tabs[0];
+    const { assertSourceIdentity } = await import("@/lib/table/objectSourceIdentity");
+    expect(tab.sourceLoad).toBeUndefined();
+    const originalIdentity = queryStore.getObjectSourceIdentitySnapshot(tab)!;
+    confirm();
+    expect((await outcome).complete).toBe(true);
+    await vi.waitFor(() => expect(() => assertSourceIdentity(queryStore.getObjectSourceIdentitySnapshot(tab)!)).not.toThrow());
+    expect(mocks.getObjectSource).toHaveBeenCalledWith(target.connectionId, target.database, target.owner, target.name, "TYPE_BODY", undefined, undefined);
+    expect(tab.sql).toBe(changed);
+    expect(tab.originalSql).toBe(changed);
+    expect(tab.typeSourceEditing).toBe(false);
+    expect(() => assertSourceIdentity(originalIdentity)).toThrow();
+    expect(mocks.executeQuery).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("refreshes the completed recovery tab without handing it to another frozen source tab (dirty=%s)", async (dirty) => {
+    const { queryStore, outcome } = await mount();
+    const recovery = queryStore.tabs[0];
+    const sourceId = queryStore.createTab(target.connectionId, target.database, "Source - T", "query", target.owner, body, undefined, { forceNew: true, sourceView: true });
+    queryStore.setObjectSource(sourceId, { schema: target.owner, name: target.name, objectType: "TYPE_BODY" });
+    const source = queryStore.tabs.find((tab) => tab.id === sourceId)!;
+    const oldDraft = dirty ? `${body}\n-- unsaved source draft` : body;
+    queryStore.updateSql(sourceId, oldDraft);
+    const { assertSourceIdentity } = await import("@/lib/table/objectSourceIdentity");
+    const sourceIdentity = queryStore.getObjectSourceIdentitySnapshot(source)!;
+    confirm();
+    expect((await outcome).complete).toBe(true);
+    await vi.waitFor(() => expect(recovery.sourceLoad).toBeUndefined());
+    expect(queryStore.tabs.map((tab) => tab.id)).toEqual([recovery.id, sourceId]);
+    expect(recovery.typeManagementDraft?.state).toBe("complete");
+    expect(recovery.sql).toBe(changed);
+    expect(recovery.originalSql).toBe(changed);
+    expect(recovery.typeSourceEditing).toBe(false);
+    expect(() => assertSourceIdentity(queryStore.getObjectSourceIdentitySnapshot(recovery)!)).not.toThrow();
+    expect(source.sql).toBe(oldDraft);
+    expect(queryStore.isTabDirty(source)).toBe(dirty);
+    expect(() => assertSourceIdentity(sourceIdentity)).toThrow();
+    expect(mocks.executeQuery).toHaveBeenCalledOnce();
+  });
+
   it("honors the actual production guard's cancellation and target recheck", async () => {
     let current = true;
     const { queryStore, outcome, i18n } = await mount(true, () => current);
