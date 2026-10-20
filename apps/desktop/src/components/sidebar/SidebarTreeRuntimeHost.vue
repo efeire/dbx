@@ -164,6 +164,7 @@ import {
 } from "@/lib/sidebar/treeNodeClick";
 import { customTypeCapabilities, supportsOracleFamilyTypeManagement, supportsOracleTypeAttributeExpansion, supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
 import { requestOracleTypeManagement } from "@/lib/table/oracleTypeManagementRequest";
+import { qualifiedNameForSidebarNode } from "@/lib/sidebar/sidebarTableNameCopy";
 import { mongoCollectionTableTypeFromNode, mongoCreateDatabasePreview, mongoDropIndexFailureCount } from "@/lib/sidebar/mongoCollectionMutation";
 import { dataTabOpenModeFromTreeClick, type DataTabOpenMode } from "@/lib/sidebar/dataTabOpenPolicy";
 import { isCopySidebarSelectionShortcut, isDisconnectSidebarConnectionShortcut, isEditSidebarConnectionShortcut, isEditSidebarTableStructureShortcut, isModRShortcut, isPasteSidebarSelectionShortcut, isRefreshDataShortcut } from "@/lib/editor/keyboardShortcuts";
@@ -2675,17 +2676,44 @@ async function copyDisplayPath() {
   }
 }
 
+async function copyQualifiedName() {
+  const active = activeNode.value;
+  const selected = selectedTreeNodesInVisibleOrder();
+  const targets = selected.some((node) => node.id === active.id) ? selected : [active];
+  const connectionId = active.connectionId;
+  if (!connectionId || targets.some((node) => node.connectionId !== connectionId)) {
+    toast(t("contextMenu.copyQualifiedNameSameConnection"), 4000);
+    return;
+  }
+  const options = sidebarTableCopyFormatOptions(active);
+  const names = targets.map((node) => qualifiedNameForSidebarNode(node, options));
+  const invalid = names.findIndex((name) => !name);
+  if (invalid >= 0) {
+    toast(t("contextMenu.copyQualifiedNameUnavailable", { name: targets[invalid]?.label ?? "" }), 4000);
+    return;
+  }
+  try {
+    await copyToClipboard(names.join("\n"));
+    toast(t("connection.copied"), 2000);
+  } catch (e: any) {
+    toast(t("grid.copyFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
 function copyNameMenuItem(): ContextMenuItem {
   const node = activeNode.value;
   const connectionName = node.connectionId ? connectionStore.getConfig(node.connectionId)?.name || "" : "";
-  if (copyDisplayPathForTreeNode(node, connectionName)) {
+  const displayPath = copyDisplayPathForTreeNode(node, connectionName);
+  const qualifiedName = qualifiedNameForSidebarNode(node, sidebarTableCopyFormatOptions(node));
+  if (displayPath || qualifiedName) {
     return {
       sidebarActionId: "contextMenu.copyName",
       label: t("contextMenu.copyName"),
       icon: Copy,
       children: [
         { sidebarActionId: "contextMenu.name", label: t("contextMenu.name"), action: copyName, icon: Copy },
-        { sidebarActionId: "contextMenu.fullPath", label: t("contextMenu.fullPath"), action: copyDisplayPath, icon: Copy },
+        ...(displayPath ? [{ sidebarActionId: "contextMenu.fullPath", label: t("contextMenu.fullPath"), action: copyDisplayPath, icon: Copy }] : []),
+        ...(qualifiedName ? [{ sidebarActionId: "contextMenu.copyQualifiedName", label: t("contextMenu.copyQualifiedName"), action: copyQualifiedName, icon: Copy }] : []),
       ],
     };
   }
@@ -7676,7 +7704,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
 
   // 7. Column
   if (node.type === "column") {
-    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push(copyNameMenuItem());
     const columnActions: ContextMenuItem[] = [];
     columnActions.push({ label: t("contextMenu.viewDdl"), action: openColumnDdl, icon: FileCode });
     if (canOpenStructureEditor.value) {
@@ -7703,7 +7731,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
   }
 
   if (node.type === "index" || node.type === "fkey" || (node.type === "trigger" && !!node.tableName)) {
-    items.push(node.type === "trigger" ? copyNameMenuItem() : { label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push(node.type === "trigger" || node.type === "index" ? copyNameMenuItem() : { label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
     if (node.type === "trigger") {
       items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
       items.push({ label: t("contextMenu.changeOpenMode"), action: () => emit("open-settings", "navigation"), icon: Settings2 });
@@ -7796,7 +7824,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     // Open that surface from the tree instead of routing through the generic source dialog.
     items.push({ label: t("contextMenu.editObject"), action: () => openObjectBrowser(false, true), icon: Pencil });
     items.push({ label: t("contextMenu.viewObject"), action: () => openObjectBrowser(true, true), icon: Eye });
-    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push(copyNameMenuItem());
     items.push({ label: t("contextMenu.dropObject"), action: deleteMenuAction(requestDropObject), icon: Trash2, shortcut: shortcutDelete, variant: "destructive" as const });
     items.push({ label: t("contextMenu.refreshChildren"), action: refresh, icon: RefreshCw, shortcut: shortcutRefresh.value });
     return true;

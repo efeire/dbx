@@ -120,12 +120,12 @@ function inspectSettingsTemplates(entry: string): Map<string, Set<string>> {
     if (/ThemeCustomizerDialog|DataGridTypeColorSchemeDialog/.test(file)) {
       for (const match of script.matchAll(/labelKey:\s*["']([^"']+)["']|label:\s*t\(\s*["']([^"']+)["']/g)) keys.add(match[1] ?? match[2]);
     }
-    findings.set(relative(src, file), keys);
+    findings.set(relative(src, file).replaceAll("\\", "/"), keys);
     for (const component of components) {
       if (excludedComponents[component]) continue;
       const importPath = imports.get(component)!;
       const target = importPath.startsWith("@/") ? resolve(src, importPath.slice(2)) : resolve(dirname(file), importPath);
-      if (/\/components\/(ui|icons)\//.test(target)) continue;
+      if (/\/components\/(ui|icons)\//.test(target.replaceAll("\\", "/"))) continue;
       visit(target);
     }
   }
