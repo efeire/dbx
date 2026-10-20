@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { AlertTriangle, Loader2, RefreshCw, Wrench } from "@lucide/vue";
+import { computed, nextTick, onBeforeUnmount, reactive, ref, shallowRef, watch } from "vue";
+import { AlertTriangle, ChevronDown, Circle, CircleHelp, CircleMinus, CircleX, Clock, Loader2, RefreshCw, Wrench } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
+import { DynamicScroller, DynamicScrollerItem } from "vue-virtual-scroller";
+import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { ConnectionConfig, DatabaseType } from "@/types/database";
 import * as api from "@/lib/backend/api";
 import { executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
@@ -34,6 +38,18 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const objects = ref<OracleInvalidObject[]>([]);
 const selected = ref<OracleInvalidObject | null>(null);
+const selectedObjects = ref(new Map<string, OracleInvalidObject>());
+const currentView = ref<"list" | "detail">("list");
+const detailReturnKey = ref("");
+const nameFilter = ref("");
+const typeFilter = ref<Set<string> | null>(null);
+const fullObjects = ref<OracleInvalidObject[]>([]);
+const unverifiedKeys = ref(new Set<string>());
+const rowResults = ref(new Map<string, BatchItem>());
+const fullReadState = ref<"idle" | "reading" | "complete" | "error" | "stopped">("idle");
+const fullReadError = ref("");
+const fullReadGeneration = ref(0);
+const verifyMissingOnNextRead = ref(false);
 const errors = ref<OracleObjectError[]>([]);
 const errorsTruncated = ref(false);
 const loadError = ref("");
@@ -41,21 +57,19 @@ const errorLoadError = ref("");
 const loading = ref(false);
 const compiling = ref(false);
 const truncated = ref(false);
-const previewSql = ref("");
 const outcome = ref("");
-const singlePlan = ref<{ scope: ExecutionScope; object: OracleInvalidObject; sql: string } | null>(null);
+const fullReadCount = ref(0);
 const generation = ref(0);
 type ManagedSession = { id: string; connectionId: string; database: string; active: number; closeRequested: boolean; closed: boolean };
 type ExecutionScope = { connection: ConnectionConfig; connectionKey: string; database: string; schema: string; generation: number; session: ManagedSession };
-type BatchStatus = "pending" | "unsupported" | "valid" | "still-invalid" | "already-valid" | "target-changed" | "deleted" | "failed" | "unknown" | "not-run";
-type BatchItem = { object: OracleInvalidObject; sql?: string; unsupportedReason?: "unsupported-type" | "unsupported-on-engine"; status: BatchStatus; message?: string; errors?: OracleObjectError[]; errorsTruncated?: boolean };
+type BatchStatus = "pending" | "running" | "unsupported" | "valid" | "still-invalid" | "already-valid" | "target-changed" | "deleted" | "failed" | "unknown" | "not-run";
+type BatchItem = { object: OracleInvalidObject; sql?: string; unsupportedReason?: "unsupported-type" | "unsupported-on-engine"; status: BatchStatus; message?: string; errors?: OracleObjectError[]; errorsTruncated?: boolean; diagnosticError?: string };
 type BatchRun = {
   id: string;
   scope: ExecutionScope;
-  state: "reading" | "confirm" | "running" | "results" | "error";
+  state: "running" | "complete";
   readCount: number;
   items: BatchItem[];
-  page: number;
   stopRequested: boolean;
   submittedAny: boolean;
   currentName: string;
@@ -64,16 +78,9 @@ type BatchRun = {
   remainingError: string;
 };
 const batchRun = ref<BatchRun | null>(null);
-const batchPageSize = 100;
-const batchPageCount = computed(() => Math.max(1, Math.ceil((batchRun.value?.items.length ?? 0) / batchPageSize)));
-const visibleBatchItems = computed(() => {
-  const items = batchRun.value?.items ?? [];
-  const start = (batchRun.value?.page ?? 0) * batchPageSize;
-  return items.slice(start, start + batchPageSize);
-});
 const batchSupportedCount = computed(() => batchRun.value?.items.filter((item) => !!item.sql).length ?? 0);
 const batchSkippedCount = computed(() => batchRun.value?.items.filter((item) => !item.sql || item.status === "not-run").length ?? 0);
-const batchHandledCount = computed(() => batchRun.value?.items.filter((item) => item.status !== "pending" && item.status !== "unsupported").length ?? 0);
+const batchHandledCount = computed(() => batchRun.value?.items.filter((item) => item.status !== "pending" && item.status !== "running" && item.status !== "unsupported").length ?? 0);
 const batchValidCount = computed(() => batchRun.value?.items.filter((item) => item.status === "valid" || item.status === "already-valid").length ?? 0);
 const batchStillInvalidCount = computed(() => batchRun.value?.items.filter((item) => item.status === "still-invalid").length ?? 0);
 const batchFailureCount = computed(() => batchRun.value?.items.filter((item) => item.status === "failed" || item.status === "unknown" || item.status === "target-changed" || item.status === "deleted").length ?? 0);
@@ -82,11 +89,225 @@ function newManagedSession(connectionId: string, database: string): ManagedSessi
   return { id: `invalid-objects:${uuid()}`, connectionId, database, active: 0, closeRequested: false, closed: false };
 }
 let managedSession: ManagedSession | null = null;
+let sessionDrainWaiters: Array<() => void> = [];
+const displayedObjects = computed(() => objects.value);
+const filteredObjects = computed(() => displayedObjects.value.filter(matchesFilters));
+const availableTypes = computed(() => [...new Set([...objects.value.map((object) => object.type), ...(typeFilter.value ?? [])])].sort());
+const hasFilters = computed(() => nameFilter.value !== "" || typeFilter.value !== null);
+const selectedCount = computed(() => selectedObjects.value.size);
+const selectedSupportedCount = computed(() => [...selectedObjects.value.values()].filter(canCompileObject).length);
+const completeMatchingObjects = computed(() => {
+  const completeObjects = new Map(fullObjects.value.map((object) => [selectionKey(object), object]));
+  return filteredObjects.value.flatMap((object) => {
+    const current = completeObjects.get(selectionKey(object));
+    return current && sameObject(object, current) && object.lastDdlTime === current.lastDdlTime && !unverifiedKeys.value.has(selectionKey(object)) ? [current] : [];
+  });
+});
+const allSupportedCount = computed(() => completeMatchingObjects.value.filter(canCompileObject).length);
+const allSelectedInFilter = computed(() => {
+  const supported = filteredObjects.value.filter(canCompileObject);
+  return supported.length > 0 && supported.every((object) => selectedObjects.value.has(selectionKey(object)));
+});
+const someSelectedInFilter = computed(() => filteredObjects.value.some((object) => selectedObjects.value.has(selectionKey(object))) && !allSelectedInFilter.value);
 let singleCompilationGeneration = 0;
+let diagnosticGeneration = 0;
+let listLoadGeneration = 0;
 const databaseType = computed(() => (effectiveDatabaseTypeForConnection(props.connection) ?? props.connection.db_type) as DatabaseType);
+type ListCache = { keys: Array<string | number>; sizes: Array<number | null> };
+type ListScroller = {
+  $el: HTMLElement;
+  findItemIndex: (offset: number) => number;
+  getItemOffset: (index: number) => number;
+  scrollToItem: (index: number, options?: { align: "nearest" }) => void;
+  scrollToPosition: (position: number) => void;
+  cacheSnapshot: ListCache;
+};
+type ListViewport = { key: string; index: number; offset: number; focusedKey?: string; focusedControl?: "checkbox" | "name" };
+const listScroller = ref<ListScroller | null>(null);
+const listCache = shallowRef<ListCache>();
+let detailViewport: ListViewport | null = null;
+let viewportGeneration = 0;
 
 function isCurrent(token: number): boolean {
   return token === generation.value && props.open;
+}
+
+function selectionKey(object: OracleInvalidObject): string {
+  return `${object.owner}:${object.objectId}`;
+}
+
+function sameObject(left: OracleInvalidObject, right: OracleInvalidObject): boolean {
+  return selectionKey(left) === selectionKey(right) && left.name === right.name && left.type === right.type;
+}
+
+function renderKey(object: OracleInvalidObject): string {
+  return JSON.stringify([object.owner, object.name, object.type, object.objectId]);
+}
+
+function matchesFilters(object: OracleInvalidObject): boolean {
+  return object.name.toLowerCase().includes(nameFilter.value.toLowerCase()) && (typeFilter.value === null || typeFilter.value.has(object.type));
+}
+
+function captureViewport(): ListViewport | null {
+  const scroller = listScroller.value;
+  if (!scroller || currentView.value !== "list" || filteredObjects.value.length === 0) return null;
+  const index = Math.min(Math.max(0, scroller.findItemIndex(scroller.$el.scrollTop)), filteredObjects.value.length - 1);
+  const object = filteredObjects.value[index]!;
+  const focused = scroller.$el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+  return { key: renderKey(object), index, offset: scroller.$el.scrollTop - scroller.getItemOffset(index), focusedKey: focused?.closest<HTMLElement>("[data-row-key]")?.dataset.rowKey, focusedControl: focused?.tagName === "INPUT" ? "checkbox" : "name" };
+}
+
+async function restoreViewport(viewport: ListViewport | null, focusKey?: string, control: "checkbox" | "name" = "name") {
+  if (!viewport) return;
+  const requestId = ++viewportGeneration;
+  const token = generation.value;
+  await nextTick();
+  if (!isCurrent(token) || requestId !== viewportGeneration || currentView.value !== "list") return;
+  const rows = filteredObjects.value;
+  if (rows.length === 0) {
+    if (focusKey) document.querySelector<HTMLElement>("[data-list-heading]")?.focus();
+    return;
+  }
+  const anchorIndex = rows.findIndex((object) => renderKey(object) === viewport.key);
+  const index = anchorIndex >= 0 ? anchorIndex : Math.min(viewport.index, rows.length - 1);
+  listScroller.value?.scrollToPosition(Math.max(0, (listScroller.value?.getItemOffset(index) ?? 0) + viewport.offset));
+  if (!focusKey) return;
+  const focusIndex = rows.findIndex((object) => renderKey(object) === focusKey);
+  const targetIndex = focusIndex >= 0 ? focusIndex : index;
+  listScroller.value?.scrollToItem(targetIndex, { align: "nearest" });
+  await nextTick();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  if (!isCurrent(token) || requestId !== viewportGeneration || currentView.value !== "list") return;
+  const row = Array.from(listScroller.value?.$el.querySelectorAll<HTMLElement>("[data-row-key]") ?? []).find((element) => element.dataset.rowKey === renderKey(rows[targetIndex]!));
+  (row?.querySelector<HTMLElement>(control === "checkbox" ? "input:not(:disabled)" : "[data-object-key]") ?? row?.querySelector<HTMLElement>("[data-object-key]") ?? document.querySelector<HTMLElement>("[data-list-heading]"))?.focus({ preventScroll: true });
+}
+
+function keepViewport(viewport: ListViewport | null) {
+  const focusedRemoved = viewport?.focusedKey && !filteredObjects.value.some((object) => renderKey(object) === viewport.focusedKey);
+  void restoreViewport(viewport, focusedRemoved ? viewport.focusedKey : undefined, viewport?.focusedControl);
+}
+
+function resetFilterSelection() {
+  selectedObjects.value = new Map();
+  viewportGeneration++;
+  detailViewport = null;
+  void nextTick(() => listScroller.value?.scrollToPosition(0));
+}
+
+function setNameFilter(value: string | number) {
+  if (compiling.value) return;
+  resetFilterSelection();
+  nameFilter.value = String(value);
+}
+
+function setTypeFilter(type: string, checked: boolean) {
+  if (compiling.value) return;
+  resetFilterSelection();
+  const next = new Set(typeFilter.value ?? availableTypes.value);
+  if (checked) next.add(type);
+  else next.delete(type);
+  typeFilter.value = next;
+}
+
+function setAllTypes(checked: boolean) {
+  if (compiling.value) return;
+  resetFilterSelection();
+  typeFilter.value = checked ? null : new Set();
+}
+
+function clearFilters() {
+  if (compiling.value) return;
+  resetFilterSelection();
+  nameFilter.value = "";
+  typeFilter.value = null;
+}
+
+function onRowTab(event: KeyboardEvent, object: OracleInvalidObject, control: "checkbox" | "name") {
+  if (event.ctrlKey || event.altKey || event.metaKey) return;
+  if ((!event.shiftKey && control === "checkbox") || (event.shiftKey && control === "name" && !compiling.value && canCompileObject(object))) return;
+  const index = filteredObjects.value.findIndex((row) => sameObject(row, object)) + (event.shiftKey ? -1 : 1);
+  const next = filteredObjects.value[index];
+  if (!next) return;
+  event.preventDefault();
+  const viewport = captureViewport();
+  if (!viewport) return;
+  const nextControl = !event.shiftKey && !compiling.value && canCompileObject(next) ? "checkbox" : "name";
+  void restoreViewport(viewport, renderKey(next), nextControl);
+}
+
+function canCompileObject(object: OracleInvalidObject): boolean {
+  return !unverifiedKeys.value.has(selectionKey(object)) && !oracleCompileUnsupportedReason(databaseType.value, object.type);
+}
+
+function removeValidObject(object: OracleInvalidObject) {
+  const viewport = captureViewport();
+  objects.value = objects.value.filter((current) => !sameObject(current, object));
+  fullObjects.value = fullObjects.value.filter((current) => !sameObject(current, object));
+  selectedObjects.value.delete(selectionKey(object));
+  unverifiedKeys.value.delete(selectionKey(object));
+  rowResults.value.delete(selectionKey(object));
+  keepViewport(viewport);
+}
+
+function mergeDictionaryRows(rows: OracleInvalidObject[], complete: boolean, acceptChangedIdentity = false) {
+  const viewport = captureViewport();
+  const incoming = new Map(rows.map((object) => [selectionKey(object), object]));
+  const merged: OracleInvalidObject[] = [];
+  const unverified = new Set(unverifiedKeys.value);
+  for (const previous of objects.value) {
+    const key = selectionKey(previous);
+    const current = incoming.get(key);
+    if (current && sameObject(previous, current)) {
+      const result = rowResults.value.get(key);
+      const changed = previous.lastDdlTime !== current.lastDdlTime;
+      if (result && (changed || unverified.has(key)) && !acceptChangedIdentity) {
+        merged.push(previous);
+        unverified.add(key);
+      } else {
+        merged.push(current);
+        unverified.delete(key);
+      }
+      incoming.delete(key);
+    } else if (current) {
+      // The ID now describes another name/type; require explicit refresh before rebinding it.
+      if (acceptChangedIdentity) {
+        merged.push(current);
+        rowResults.value.delete(key);
+        unverified.delete(key);
+      } else {
+        merged.push(previous);
+        unverified.add(key);
+      }
+      incoming.delete(key);
+    } else {
+      merged.push(previous);
+      if (complete) unverified.add(key);
+    }
+  }
+  merged.push(...incoming.values());
+  objects.value = merged;
+  unverifiedKeys.value = unverified;
+  const current = new Map(merged.map((object) => [selectionKey(object), object]));
+  selectedObjects.value = new Map(
+    [...selectedObjects.value].filter(([key, previous]) => {
+      const refreshed = current.get(key);
+      return refreshed && matchesFilters(refreshed) && canCompileObject(refreshed) && sameObject(refreshed, previous) && refreshed.lastDdlTime === previous.lastDdlTime;
+    }),
+  );
+  keepViewport(viewport);
+}
+
+function waitForSessionDrain(session: ManagedSession): Promise<void> {
+  if (session.active === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const check = () => {
+      if (session.active === 0) {
+        sessionDrainWaiters = sessionDrainWaiters.filter((waiter) => waiter !== check);
+        resolve();
+      }
+    };
+    sessionDrainWaiters.push(check);
+  });
 }
 
 function ensureManagedSession(connectionId: string, database: string): ManagedSession {
@@ -116,6 +337,7 @@ async function query(sql: string, maxRows = 501, scope?: ExecutionScope, allowEx
     return result;
   } finally {
     session.active--;
+    if (session.active === 0) sessionDrainWaiters.slice().forEach((waiter) => waiter());
     closeManagedSession(session);
   }
 }
@@ -146,70 +368,127 @@ function closeCurrentManagedSession() {
   closeManagedSession(managedSession);
 }
 
-async function loadList(existingToken?: number, options?: { allowLastDdlTimeChange?: boolean }) {
+async function loadList(existingToken?: number, options?: { allowLastDdlTimeChange?: boolean; preserveSelected?: boolean; loadDiagnostics?: boolean }) {
   const token = existingToken ?? ++generation.value;
+  const readId = ++listLoadGeneration;
   loading.value = true;
   loadError.value = "";
-  errorLoadError.value = "";
-  errorsTruncated.value = false;
-  outcome.value = "";
+  if (options?.loadDiagnostics !== false) {
+    errorLoadError.value = "";
+    errorsTruncated.value = false;
+    outcome.value = "";
+  }
   try {
     const result = await query(buildOracleInvalidObjectsSql(props.schema, 501), 501);
-    if (!isCurrent(token)) return;
-    objects.value = mapOracleInvalidObjects(result.rows, props.schema);
-    truncated.value = result.truncated === true || objects.value.length >= 501;
+    if (!isCurrent(token) || readId !== listLoadGeneration) return;
+    const rows = mapOracleInvalidObjects(result.rows, props.schema);
+    mergeDictionaryRows(rows, false, verifyMissingOnNextRead.value);
+    truncated.value = result.truncated === true || rows.length >= 501;
     if (selected.value) {
       const previous = selected.value;
-      const refreshed = objects.value.find((row) => row.objectId === previous.objectId && row.owner === previous.owner) ?? null;
+      const refreshed = rows.find((row) => sameObject(row, previous)) ?? null;
       if (!refreshed || refreshed.name !== previous.name || refreshed.type !== previous.type || (!options?.allowLastDdlTimeChange && refreshed.lastDdlTime !== previous.lastDdlTime)) {
-        previewSql.value = "";
         if (refreshed) outcome.value = t("processList.oracleInvalidObjects.targetChanged");
       }
-      selected.value = refreshed;
+      selected.value = refreshed ?? (options?.preserveSelected ? previous : null);
     }
-    if (selected.value) await loadErrors(selected.value, token);
-    else {
-      errors.value = [];
-      errorsTruncated.value = false;
+    if (options?.loadDiagnostics !== false) {
+      if (selected.value) await loadErrors(selected.value, token);
+      else {
+        errors.value = [];
+        errorsTruncated.value = false;
+      }
     }
+    if (isCurrent(token) && readId === listLoadGeneration && !compiling.value) void startFullRead(token);
   } catch (error) {
-    if (isCurrent(token)) {
+    if (isCurrent(token) && readId === listLoadGeneration) {
       loadError.value = error instanceof Error ? error.message : String(error);
-      objects.value = [];
-      selected.value = null;
-      errors.value = [];
-      errorsTruncated.value = false;
-      truncated.value = false;
-      previewSql.value = "";
     }
   } finally {
-    if (isCurrent(token)) loading.value = false;
+    if (isCurrent(token) && readId === listLoadGeneration) loading.value = false;
+  }
+}
+
+async function startFullRead(token = generation.value) {
+  if (!isCurrent(token) || compiling.value) return;
+  const readId = ++fullReadGeneration.value;
+  const scope = captureExecutionScope();
+  fullReadState.value = "reading";
+  fullReadError.value = "";
+  fullReadCount.value = 0;
+  try {
+    const all = await readAllOracleInvalidObjects((sql, maxRows) => query(sql, maxRows, scope), scope.schema, {
+      isCurrent: () => isCurrent(token) && fullReadGeneration.value === readId && !compiling.value,
+      onProgress: (count) => {
+        if (isCurrent(token) && fullReadGeneration.value === readId) fullReadCount.value = count;
+      },
+    });
+    if (!isCurrent(token) || fullReadGeneration.value !== readId || compiling.value) return;
+    const verifyMissing = verifyMissingOnNextRead.value;
+    verifyMissingOnNextRead.value = false;
+    fullObjects.value = all;
+    mergeDictionaryRows(all, true, verifyMissing);
+    if (verifyMissing) {
+      for (const key of unverifiedKeys.value) {
+        if (!isCurrent(token) || fullReadGeneration.value !== readId || compiling.value) return;
+        const object = objects.value.find((row) => selectionKey(row) === key);
+        if (!object) continue;
+        try {
+          const status = await readObjectStatus(scope, object);
+          if (!isCurrent(token) || fullReadGeneration.value !== readId || compiling.value) return;
+          const row = status.rows.length === 1 ? status.rows[0] : undefined;
+          if (row && String(row[0] ?? "") === object.objectId && String(row[2] ?? "") === "VALID") {
+            removeValidObject(object);
+          } else if (row && String(row[0] ?? "") === object.objectId && String(row[2] ?? "") === "INVALID") {
+            const refreshed = { ...object, lastDdlTime: String(row[1] ?? object.lastDdlTime) };
+            objects.value = objects.value.map((current) => (sameObject(current, object) ? refreshed : current));
+            fullObjects.value.push(refreshed);
+            unverifiedKeys.value.delete(key);
+          } else {
+            const result = rowResults.value.get(key);
+            if (result) {
+              result.status = row ? "target-changed" : "deleted";
+              result.message = t(row ? "processList.oracleInvalidObjects.batchTargetChanged" : "processList.oracleInvalidObjects.batchDeleted");
+            }
+          }
+        } catch {
+          // Keep unconfirmed rows visible and unselectable after a failed read-only check.
+        }
+      }
+    }
+    if (!isCurrent(token) || fullReadGeneration.value !== readId || compiling.value) return;
+    fullReadState.value = "complete";
+  } catch (error) {
+    if (!isCurrent(token) || fullReadGeneration.value !== readId || compiling.value) return;
+    fullReadState.value = "error";
+    fullReadError.value = writeErrorMessage(error);
   }
 }
 
 async function loadErrors(object: OracleInvalidObject, token = generation.value) {
+  const requestId = ++diagnosticGeneration;
   errorLoadError.value = "";
   errors.value = [];
   errorsTruncated.value = false;
   try {
     const result = await readObjectErrors(captureExecutionScope(), object);
-    if (!isCurrent(token) || selected.value?.objectId !== object.objectId) return;
+    if (!isCurrent(token) || requestId !== diagnosticGeneration || selectionKey(selected.value ?? object) !== selectionKey(object)) return;
     errors.value = result.errors;
     errorsTruncated.value = result.truncated;
   } catch (error) {
-    if (isCurrent(token) && selected.value?.objectId === object.objectId) errorLoadError.value = error instanceof Error ? error.message : String(error);
+    if (isCurrent(token) && requestId === diagnosticGeneration && selectionKey(selected.value ?? object) === selectionKey(object)) errorLoadError.value = error instanceof Error ? error.message : String(error);
   }
 }
 
 function selectObject(object: OracleInvalidObject) {
+  diagnosticGeneration++;
   selected.value = object;
-  errors.value = [];
-  errorsTruncated.value = false;
-  errorLoadError.value = "";
-  previewSql.value = "";
-  singlePlan.value = null;
-  outcome.value = "";
-  void loadErrors(object);
+  const previousResult = rowBatchItem(object);
+  errors.value = previousResult?.errors ?? [];
+  errorsTruncated.value = previousResult?.errorsTruncated ?? false;
+  errorLoadError.value = previousResult?.diagnosticError ?? "";
+  outcome.value = previousResult?.message ?? "";
+  if (!compiling.value && !previousResult?.errors?.length && !previousResult?.diagnosticError && !unverifiedKeys.value.has(selectionKey(object))) void loadErrors(object);
 }
 
 class BatchWriteError extends Error {
@@ -276,58 +555,64 @@ async function submitCompile(scope: ExecutionScope, sql: string) {
 }
 
 const unsupportedReason = computed(() => (selected.value ? oracleCompileUnsupportedReason(databaseType.value, selected.value.type) : "unsupported-type"));
+const singleTargetPresent = computed(() => {
+  if (!selected.value) return false;
+  return canCompileObject(selected.value) && objects.value.some((object) => sameObject(object, selected.value!));
+});
 
-function prepareSingleCompile() {
-  if (!selected.value || unsupportedReason.value || compiling.value) return;
+async function compileSingle() {
+  const target = selected.value ? { ...selected.value } : null;
+  if (!target || unsupportedReason.value || compiling.value) return;
+  const scope = captureExecutionScope();
+  let sql: string;
   try {
-    const object = { ...selected.value };
-    const scope = captureExecutionScope();
-    const sql = buildOracleCompileSql(databaseType.value, object.owner, object);
-    singlePlan.value = { scope, object, sql };
-    previewSql.value = sql;
-    outcome.value = "";
+    sql = buildOracleCompileSql(databaseType.value, target.owner, target);
   } catch (error) {
-    outcome.value = error instanceof Error ? error.message : String(error);
+    outcome.value = writeErrorMessage(error);
+    return;
   }
-}
-
-async function confirmCompile() {
-  const plan = singlePlan.value;
-  const target = plan?.object;
-  const sql = plan?.sql;
-  if (!target || !sql || unsupportedReason.value || compiling.value) return;
-  const scope = plan.scope;
   const executionGeneration = ++singleCompilationGeneration;
   const token = scope.generation;
   const connection = scope.connection;
   const database = scope.database;
   const schema = scope.schema;
+  const item: BatchItem = reactive({ object: target, sql, status: "pending", errors: [...errors.value], errorsTruncated: errorsTruncated.value, diagnosticError: errorLoadError.value });
+  rowResults.value.set(selectionKey(target), item);
+  batchRun.value = null;
   let actionSubmitted = false;
   compiling.value = true;
   outcome.value = "";
+  listLoadGeneration++;
+  diagnosticGeneration++;
+  loading.value = false;
+  fullReadGeneration.value++;
+  if (fullReadState.value === "reading" || fullReadState.value === "complete") fullReadState.value = "stopped";
   try {
+    await waitForSessionDrain(scope.session);
+    if (!scopeIsCurrent(scope)) return;
     const result = await executeWithProductionSqlGuard({
       connection,
-      database: props.schema,
+      database: scope.schema,
       sql,
       source: t("production.sourceAdmin"),
       execute: async () => {
         if (!scopeIsCurrent(scope)) throw new Error(t("processList.oracleInvalidObjects.targetChanged"));
+        item.status = "running";
         const identity = await query(buildOracleObjectIdentitySql(target.owner, target), 2, scope);
         if (!scopeIsCurrent(scope)) return undefined;
         if (identity.truncated === true || identity.rows.length > 1) {
-          previewSql.value = "";
-          singlePlan.value = null;
-          outcome.value = t("processList.oracleInvalidObjects.batchIdentityUnknown");
+          item.status = "unknown";
+          item.message = t("processList.oracleInvalidObjects.batchIdentityUnknown");
+          unverifiedKeys.value.add(selectionKey(target));
           return undefined;
         }
         const row = identity.rows[0];
         if (!objectIdentityMatches(target, row)) {
-          previewSql.value = "";
-          singlePlan.value = null;
-          await loadList(token);
+          item.status = "target-changed";
+          unverifiedKeys.value.add(selectionKey(target));
+          await loadList(token, { preserveSelected: true, loadDiagnostics: false });
           if (!scopeIsCurrent(scope)) return undefined;
-          outcome.value = t("processList.oracleInvalidObjects.targetChanged");
+          item.message = t("processList.oracleInvalidObjects.targetChanged");
           return undefined;
         }
         actionSubmitted = true;
@@ -339,8 +624,14 @@ async function confirmCompile() {
         }
       },
     });
-    if (!isCurrent(token)) return;
-    if (result === undefined) return;
+    if (!scopeIsCurrent(scope)) return;
+    if (result === undefined) {
+      if (item.status === "pending") {
+        item.status = "not-run";
+        item.message = t("processList.oracleInvalidObjects.batchGuardDeclined");
+      }
+      return;
+    }
     const statusResult = await readObjectStatus(scope, target);
     if (!scopeIsCurrent(scope)) return;
     const statusRow = statusResult.rows.length === 1 ? statusResult.rows[0] : undefined;
@@ -348,9 +639,31 @@ async function confirmCompile() {
     // OBJECT_ID distinguishes a replacement; the preflight above still checks both fields.
     const sameObject = statusRow && String(statusRow[0]) === target.objectId;
     const status = sameObject ? String(statusRow[2] ?? "") : "";
-    await loadList(token, { allowLastDdlTimeChange: true });
+    if (sameObject && status === "VALID") {
+      item.status = "valid";
+      removeValidObject(target);
+    } else if (sameObject && status === "INVALID") {
+      item.status = "still-invalid";
+      updateInvalidObject(item, statusRow!);
+    } else {
+      item.status = !statusRow ? "deleted" : sameObject ? "unknown" : "target-changed";
+      unverifiedKeys.value.add(selectionKey(target));
+    }
+    if (sameObject && (status === "VALID" || status === "INVALID")) {
+      try {
+        const diagnostics = await readObjectErrors(scope, target);
+        if (!scopeIsCurrent(scope)) return;
+        item.errors = diagnostics.errors;
+        item.errorsTruncated = diagnostics.truncated;
+        item.diagnosticError = "";
+      } catch (error) {
+        if (!scopeIsCurrent(scope)) return;
+        item.diagnosticError = writeErrorMessage(error);
+      }
+    }
+    await loadList(token, { allowLastDdlTimeChange: true, preserveSelected: true, loadDiagnostics: false });
     if (!scopeIsCurrent(scope)) return;
-    outcome.value = !statusRow
+    item.message = !statusRow
       ? t("processList.oracleInvalidObjects.compileGone")
       : !sameObject
         ? t("processList.oracleInvalidObjects.targetChanged")
@@ -359,28 +672,37 @@ async function confirmCompile() {
           : status === "INVALID"
             ? t("processList.oracleInvalidObjects.compileStillInvalid")
             : t("processList.oracleInvalidObjects.compileUnknown");
-    previewSql.value = "";
-    singlePlan.value = null;
   } catch (error) {
     if (scopeIsCurrent(scope)) {
       if (actionSubmitted) {
-        previewSql.value = "";
-        singlePlan.value = null;
-        await loadList(token);
+        item.status = "unknown";
+        unverifiedKeys.value.add(selectionKey(target));
+        await loadList(token, { allowLastDdlTimeChange: true, preserveSelected: true, loadDiagnostics: false });
         if (!scopeIsCurrent(scope)) return;
-        outcome.value =
+        item.message =
           error instanceof BatchWriteError && !error.unknown
             ? t("processList.oracleInvalidObjects.compileFailed", { message: writeErrorMessage(error.value) })
             : error instanceof IncompleteObjectStatusError
               ? t("processList.oracleInvalidObjects.compileUnknown")
               : `${t("processList.oracleInvalidObjects.compileUnknown")} ${writeErrorMessage(error)}`;
       } else {
-        outcome.value = t("processList.oracleInvalidObjects.compileFailed", { message: writeErrorMessage(error instanceof BatchWriteError ? error.value : error) });
+        item.status = "failed";
+        item.message = t("processList.oracleInvalidObjects.compileFailed", { message: writeErrorMessage(error instanceof BatchWriteError ? error.value : error) });
       }
     }
   } finally {
     if (actionSubmitted) emit("compile-finished", { connectionId: connection.id, database, schema });
-    if (singleCompilationGeneration === executionGeneration) compiling.value = false;
+    if (singleCompilationGeneration === executionGeneration && scopeIsCurrent(scope)) {
+      if (selected.value && sameObject(selected.value, target)) {
+        outcome.value = item.message ?? "";
+        errors.value = item.errors ?? [];
+        errorsTruncated.value = item.errorsTruncated ?? false;
+        errorLoadError.value = item.diagnosticError ?? "";
+      }
+      compiling.value = false;
+      if (currentView.value === "detail" && selected.value && !sameObject(selected.value, target) && !unverifiedKeys.value.has(selectionKey(selected.value)) && !rowBatchItem(selected.value)) void loadErrors(selected.value, token);
+      void startFullRead(token);
+    }
   }
 }
 
@@ -400,60 +722,59 @@ function buildBatchItems(objects: OracleInvalidObject[]): BatchItem[] {
   });
 }
 
-async function readBatchPlan() {
-  if (!props.open || compiling.value || batchRun.value?.state === "reading") return;
-  generation.value++;
-  const scope = captureExecutionScope();
-  const run: BatchRun = reactive({
-    id: uuid(),
-    scope,
-    state: "reading",
-    readCount: 0,
-    items: [],
-    page: 0,
-    stopRequested: false,
-    submittedAny: false,
-    currentName: "",
-    readError: "",
-    remainingError: "",
-  });
-  batchRun.value = run;
-  try {
-    const all = await readAllOracleInvalidObjects((sql, maxRows) => query(sql, maxRows, scope), scope.schema, {
-      isCurrent: () => batchIsCurrent(run) && !run.stopRequested,
-      onProgress: (count) => {
-        if (batchIsCurrent(run)) run.readCount = count;
-      },
-    });
-    if (!batchIsCurrent(run)) return;
-    run.items = buildBatchItems(all);
-    run.state = "confirm";
-  } catch (error) {
-    if (!batchIsCurrent(run)) return;
-    run.state = "error";
-    run.readError = run.stopRequested ? t("processList.oracleInvalidObjects.batchReadStopped") : writeErrorMessage(error);
+function readBatchPlan() {
+  void startFullRead();
+}
+
+function toggleObjectSelection(object: OracleInvalidObject, checked: boolean) {
+  if (compiling.value || unverifiedKeys.value.has(selectionKey(object)) || oracleCompileUnsupportedReason(databaseType.value, object.type)) return;
+  const next = new Map(selectedObjects.value);
+  if (checked) next.set(selectionKey(object), { ...object });
+  else next.delete(selectionKey(object));
+  selectedObjects.value = next;
+}
+
+function toggleFilteredSelection(checked: boolean) {
+  if (compiling.value) return;
+  const next = new Map(selectedObjects.value);
+  for (const object of filteredObjects.value) {
+    if (!canCompileObject(object)) continue;
+    const key = selectionKey(object);
+    if (checked) next.set(key, { ...object });
+    else next.delete(key);
   }
+  selectedObjects.value = next;
+}
+
+function showDetail(object: OracleInvalidObject) {
+  detailViewport = captureViewport();
+  listCache.value = listScroller.value?.cacheSnapshot;
+  detailReturnKey.value = renderKey(object);
+  currentView.value = "detail";
+  selectObject(object);
+}
+
+function returnFromDetail() {
+  currentView.value = "list";
+  void restoreViewport(detailViewport, detailReturnKey.value);
 }
 
 function refreshCurrentList() {
-  const run = batchRun.value;
-  if (run?.state === "reading" || run?.state === "confirm") {
-    run.stopRequested = true;
-    batchRun.value = null;
-  }
+  if (compiling.value) return;
+  fullReadGeneration.value++;
+  fullReadState.value = "idle";
+  fullReadError.value = "";
+  verifyMissingOnNextRead.value = true;
+  batchRun.value = null;
+  selectedObjects.value = new Map();
+  generation.value++;
   void loadList();
 }
 
 function stopBatch() {
   const run = batchRun.value;
   if (!run) return;
-  if (run.state === "reading") run.stopRequested = true;
-  else if (run.state === "running") run.stopRequested = true;
-}
-
-function changeBatchPage(delta: number) {
-  const run = batchRun.value;
-  if (run) run.page = Math.min(Math.max(0, run.page + delta), batchPageCount.value - 1);
+  if (run.state === "running") run.stopRequested = true;
 }
 
 function classifyBatchWriteFailure(error: unknown): "failed" | "unknown" {
@@ -468,7 +789,7 @@ async function readBatchObjectErrors(run: BatchRun, item: BatchItem): Promise<vo
     item.errors = result.errors;
     item.errorsTruncated = result.truncated;
   } catch (error) {
-    if (batchIsCurrent(run)) item.message = `${item.message ? `${item.message}; ` : ""}${writeErrorMessage(error)}`;
+    if (batchIsCurrent(run)) item.diagnosticError = writeErrorMessage(error);
   }
 }
 
@@ -478,32 +799,30 @@ async function refreshBatchRemainder(run: BatchRun) {
     if (!batchIsCurrent(run)) return;
     run.remaining = remaining;
     run.remainingError = "";
-    objects.value = remaining.slice(0, 501);
-    truncated.value = remaining.length > 501;
-    const previous = selected.value;
-    if (previous) {
-      selected.value = remaining.find((object) => object.owner === previous.owner && object.objectId === previous.objectId) ?? null;
-      if (!selected.value) {
-        errors.value = [];
-        errorsTruncated.value = false;
-      }
-    }
+    fullObjects.value = remaining;
+    mergeDictionaryRows(remaining, true);
+    fullReadState.value = "complete";
+    fullReadError.value = "";
+    truncated.value = false;
     loadError.value = "";
   } catch (error) {
     if (!batchIsCurrent(run)) return;
     run.remainingError = writeErrorMessage(error);
-    objects.value = [];
-    selected.value = null;
-    errors.value = [];
-    errorsTruncated.value = false;
-    truncated.value = false;
+    fullReadState.value = "error";
+    fullReadError.value = run.remainingError;
     loadError.value = run.remainingError;
   }
 }
 
 async function executeBatchItem(run: BatchRun, item: BatchItem): Promise<boolean> {
   const object = item.object;
-  if (!batchIsCurrent(run) || run.stopRequested || !item.sql) return false;
+  if (!batchIsCurrent(run) || !item.sql) return false;
+  if (run.stopRequested) {
+    item.status = "not-run";
+    return false;
+  }
+  item.status = "running";
+  run.currentName = `${object.owner}.${object.name}`;
   let before;
   try {
     before = await readObjectStatus(run.scope, object);
@@ -511,53 +830,65 @@ async function executeBatchItem(run: BatchRun, item: BatchItem): Promise<boolean
     if (batchIsCurrent(run)) {
       item.status = error instanceof IncompleteObjectStatusError ? "unknown" : "failed";
       item.message = error instanceof IncompleteObjectStatusError ? t("processList.oracleInvalidObjects.batchIdentityUnknown") : writeErrorMessage(error);
+      unverifiedKeys.value.add(selectionKey(object));
     }
     return true;
   }
   if (!batchIsCurrent(run)) return false;
-  if (run.stopRequested) return false;
+  if (run.stopRequested) {
+    item.status = "not-run";
+    return false;
+  }
   if (before.rows.length === 0) {
     item.status = "deleted";
     item.message = t("processList.oracleInvalidObjects.batchDeleted");
+    unverifiedKeys.value.add(selectionKey(object));
     return true;
   }
   if (before.rows.length !== 1) {
     item.status = "unknown";
     item.message = t("processList.oracleInvalidObjects.batchIdentityUnknown");
+    unverifiedKeys.value.add(selectionKey(object));
     return true;
   }
   const beforeStatus = before.rows[0]![2];
   if (!objectIdMatches(object, before.rows[0])) {
     item.status = "target-changed";
     item.message = t("processList.oracleInvalidObjects.batchTargetChanged");
+    unverifiedKeys.value.add(selectionKey(object));
     return true;
   }
   if (beforeStatus === "VALID") {
     item.status = "already-valid";
     item.message = t("processList.oracleInvalidObjects.batchAlreadyValid");
+    removeValidObject(object);
     return true;
   }
   if (beforeStatus !== "INVALID") {
     item.status = "unknown";
     item.message = t("processList.oracleInvalidObjects.batchIdentityUnknown");
+    unverifiedKeys.value.add(selectionKey(object));
     return true;
   }
   if (!objectDdlTimeMatches(object, before.rows[0])) {
     item.status = "target-changed";
     item.message = t("processList.oracleInvalidObjects.batchTargetChanged");
+    unverifiedKeys.value.add(selectionKey(object));
     return true;
   }
   if (!batchIsCurrent(run) || run.stopRequested) return false;
 
-  run.currentName = `${object.owner}.${object.name}`;
+  const previouslySubmitted = run.submittedAny;
   run.submittedAny = true;
   try {
     await submitCompile(run.scope, item.sql);
   } catch (error) {
     if (!batchIsCurrent(run)) return false;
     const status = classifyBatchWriteFailure(error);
+    if (status === "failed") run.submittedAny = previouslySubmitted;
     item.status = status;
     item.message = writeErrorMessage(error);
+    if (status === "unknown") unverifiedKeys.value.add(selectionKey(object));
     return status !== "unknown";
   }
   if (!batchIsCurrent(run)) return false;
@@ -568,6 +899,7 @@ async function executeBatchItem(run: BatchRun, item: BatchItem): Promise<boolean
     if (batchIsCurrent(run)) {
       item.status = "unknown";
       item.message = error instanceof IncompleteObjectStatusError ? t("processList.oracleInvalidObjects.compileUnknown") : `${t("processList.oracleInvalidObjects.compileUnknown")} ${writeErrorMessage(error)}`;
+      unverifiedKeys.value.add(selectionKey(object));
     }
     return false;
   }
@@ -575,47 +907,81 @@ async function executeBatchItem(run: BatchRun, item: BatchItem): Promise<boolean
   if (after.rows.length === 0) {
     item.status = "deleted";
     item.message = t("processList.oracleInvalidObjects.batchDeleted");
+    unverifiedKeys.value.add(selectionKey(object));
     return true;
   }
   if (after.rows.length !== 1) {
     item.status = "unknown";
     item.message = t("processList.oracleInvalidObjects.compileUnknown");
+    unverifiedKeys.value.add(selectionKey(object));
     return false;
   }
   const [afterId, , afterStatus] = after.rows[0]!;
   if (String(afterId ?? "") !== object.objectId) {
     item.status = "target-changed";
     item.message = t("processList.oracleInvalidObjects.batchTargetChanged");
+    unverifiedKeys.value.add(selectionKey(object));
     return true;
   }
   if (afterStatus === "VALID") {
     item.status = "valid";
     item.message = t("processList.oracleInvalidObjects.compileValid");
+    removeValidObject(object);
   } else if (afterStatus === "INVALID") {
     item.status = "still-invalid";
     item.message = t("processList.oracleInvalidObjects.compileStillInvalid");
+    updateInvalidObject(item, after.rows[0]!);
     await readBatchObjectErrors(run, item);
   } else {
     item.status = "unknown";
     item.message = t("processList.oracleInvalidObjects.compileUnknown");
+    unverifiedKeys.value.add(selectionKey(object));
     return false;
   }
   return true;
 }
 
-async function confirmBatchCompile() {
-  const run = batchRun.value;
-  if (!run || run.state !== "confirm" || batchSupportedCount.value === 0 || compiling.value || !batchIsCurrent(run)) return;
+async function startBatchCompile(mode: "selected" | "all") {
+  if (!props.open || compiling.value || (!managedSession && mode !== "all")) return;
+  const stableObjects = objects.value;
+  const targets =
+    mode === "all"
+      ? fullReadState.value === "complete"
+        ? completeMatchingObjects.value.map((object) => ({ ...object }))
+        : []
+      : stableObjects.filter((object) => selectedObjects.value.has(selectionKey(object)) && canCompileObject(object)).map((object) => ({ ...selectedObjects.value.get(selectionKey(object))! }));
+  if (targets.length === 0) return;
+  const scope = captureExecutionScope();
+  const frozenItems = buildBatchItems(targets);
   const executionGeneration = ++batchExecutionGeneration;
-  run.state = "running";
-  run.stopRequested = false;
+  const run: BatchRun = reactive({
+    id: uuid(),
+    scope,
+    state: "running",
+    readCount: targets.length,
+    items: frozenItems,
+    stopRequested: false,
+    submittedAny: false,
+    currentName: "",
+    readError: "",
+    remainingError: "",
+  });
+  batchRun.value = run;
+  for (const item of run.items) rowResults.value.set(selectionKey(item.object), item);
   compiling.value = true;
+  listLoadGeneration++;
+  diagnosticGeneration++;
+  loading.value = false;
+  fullReadGeneration.value++;
+  if (fullReadState.value === "reading" || fullReadState.value === "complete") fullReadState.value = "stopped";
   const queue = run.items.filter((item) => !!item.sql);
   const auditSql = queue.map((item) => item.sql).join(";\n");
   try {
+    await waitForSessionDrain(scope.session);
+    if (!batchIsCurrent(run)) return;
     const guarded = await executeWithProductionSqlGuard({
-      connection: run.scope.connection,
-      database: run.scope.schema,
+      connection: scope.connection,
+      database: scope.schema,
       sql: auditSql,
       source: t("production.sourceAdmin"),
       execute: async () => {
@@ -629,26 +995,23 @@ async function confirmBatchCompile() {
     });
     if (!batchIsCurrent(run)) return;
     if (guarded === undefined) {
-      for (const item of queue) if (item.status === "pending") item.status = "not-run";
-      run.state = "results";
-      run.currentName = "";
+      for (const item of queue) if (item.status === "pending" || item.status === "running") item.status = "not-run";
       run.readError = t("processList.oracleInvalidObjects.batchGuardDeclined");
-      await refreshBatchRemainder(run);
-      return;
+    } else {
+      for (const item of queue) if (item.status === "pending" || item.status === "running") item.status = "not-run";
     }
-    for (const item of queue) if (item.status === "pending") item.status = "not-run";
-    run.state = "results";
+    run.state = "complete";
     run.currentName = "";
     await refreshBatchRemainder(run);
   } catch (error) {
     if (!batchIsCurrent(run)) return;
     run.readError = writeErrorMessage(error);
-    for (const item of queue) if (item.status === "pending") item.status = "not-run";
-    run.state = "results";
+    for (const item of queue) if (item.status === "pending" || item.status === "running") item.status = "not-run";
+    run.state = "complete";
     await refreshBatchRemainder(run);
   } finally {
-    if (run.submittedAny) emit("compile-finished", { connectionId: run.scope.connection.id, database: run.scope.database, schema: run.scope.schema });
-    if (batchExecutionGeneration === executionGeneration) compiling.value = false;
+    if (run.submittedAny) emit("compile-finished", { connectionId: scope.connection.id, database: scope.database, schema: scope.schema });
+    if (batchExecutionGeneration === executionGeneration && scopeIsCurrent(scope)) compiling.value = false;
   }
 }
 
@@ -656,8 +1019,24 @@ function batchStatusLabel(status: BatchStatus): string {
   return t(`processList.oracleInvalidObjects.batchStatus.${status}`);
 }
 
-function openBatchItemSource(item: BatchItem) {
-  if (item.status === "still-invalid") emit("open-source", item.object);
+function rowBatchItem(object: OracleInvalidObject): BatchItem | undefined {
+  const item = rowResults.value.get(selectionKey(object));
+  return item && sameObject(item.object, object) ? item : undefined;
+}
+
+function updateInvalidObject(item: BatchItem, status: unknown[]) {
+  const refreshed = { ...item.object, lastDdlTime: String(status[1] ?? item.object.lastDdlTime) };
+  objects.value = objects.value.map((object) => (sameObject(object, item.object) ? refreshed : object));
+  item.object = refreshed;
+}
+
+function rowStatus(object: OracleInvalidObject): BatchStatus | "invalid" {
+  return rowBatchItem(object)?.status ?? (unverifiedKeys.value.has(selectionKey(object)) ? "unknown" : oracleCompileUnsupportedReason(databaseType.value, object.type) ? "unsupported" : "invalid");
+}
+
+function rowStatusLabel(object: OracleInvalidObject): string {
+  const status = rowStatus(object);
+  return status === "invalid" ? "INVALID" : batchStatusLabel(status);
 }
 
 function close() {
@@ -673,9 +1052,26 @@ watch(
       singleCompilationGeneration++;
       batchExecutionGeneration++;
       batchRun.value = null;
-      singlePlan.value = null;
-      previewSql.value = "";
       compiling.value = false;
+      fullReadGeneration.value++;
+      fullReadState.value = "idle";
+      fullReadError.value = "";
+      fullObjects.value = [];
+      unverifiedKeys.value = new Set();
+      rowResults.value = new Map();
+      verifyMissingOnNextRead.value = false;
+      objects.value = [];
+      selected.value = null;
+      errors.value = [];
+      errorsTruncated.value = false;
+      diagnosticGeneration++;
+      selectedObjects.value = new Map();
+      currentView.value = "list";
+      nameFilter.value = "";
+      typeFilter.value = null;
+      listCache.value = undefined;
+      detailViewport = null;
+      viewportGeneration++;
     }
     if (previous && (previous[1] !== JSON.stringify(props.connection) || previous[2] !== props.database)) retireManagedSession();
     if (open) void loadList();
@@ -685,7 +1081,7 @@ watch(
       errors.value = [];
       errorsTruncated.value = false;
       selected.value = null;
-      previewSql.value = "";
+      selectedObjects.value = new Map();
       outcome.value = "";
       closeCurrentManagedSession();
     }
@@ -706,164 +1102,155 @@ onBeforeUnmount(() => {
   <Dialog :open="open" @update:open="(value) => !value && close()">
     <DialogContent class="h-[min(85vh,760px)] max-h-[min(85vh,760px)] w-[calc(100vw-2rem)] max-w-5xl flex flex-col gap-0 overflow-hidden p-0" @interact-outside="(event) => compiling && event.preventDefault()" @escape-key-down="(event) => compiling && event.preventDefault()">
       <DialogHeader class="shrink-0 border-b px-5 py-4">
-        <DialogTitle>{{ t("processList.oracleInvalidObjects.title") }} · {{ schema }}</DialogTitle>
+        <DialogTitle>{{ t("processList.oracleInvalidObjects.title") }} · {{ connection.name }} · {{ schema }}</DialogTitle>
       </DialogHeader>
-      <div class="grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(0,0.9fr)_minmax(0,1.1fr)] overflow-hidden md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.3fr)] md:grid-rows-[minmax(0,1fr)]">
-        <section class="min-h-0 min-w-0 overflow-auto border-b md:border-r md:border-b-0" :aria-label="t('processList.oracleInvalidObjects.listLabel')">
-          <div class="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-3 py-2 text-xs text-muted-foreground">
-            <span>{{ t("processList.oracleInvalidObjects.listCount", { count: objects.length }) }}</span>
-            <div class="flex items-center gap-1">
-              <Button variant="outline" size="sm" class="h-7 gap-1 px-2 text-xs" :disabled="loading || compiling || batchRun?.state === 'reading'" @click="readBatchPlan"><Wrench class="h-3.5 w-3.5" />{{ t("processList.oracleInvalidObjects.compileAll") }}</Button>
-              <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('common.refresh')" :disabled="loading || compiling" @click="refreshCurrentList"><RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" /></Button>
-            </div>
-          </div>
-          <div v-if="loadError" class="m-3 rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{{ loadError }}</div>
-          <p v-else-if="!loading && objects.length === 0" class="px-4 py-8 text-center text-sm text-muted-foreground">{{ t("processList.oracleInvalidObjects.empty") }}</p>
-          <button
-            v-for="object in objects"
-            :key="`${object.owner}:${object.objectId}`"
-            type="button"
-            class="flex w-full flex-col gap-1 border-b px-3 py-2.5 text-left text-xs transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            :class="selected?.objectId === object.objectId ? 'bg-accent/60' : ''"
-            :disabled="compiling"
-            :aria-pressed="selected?.objectId === object.objectId"
-            @click="selectObject(object)"
+      <section v-if="currentView === 'list'" class="flex min-h-0 flex-1 flex-col overflow-hidden" :aria-label="t('processList.oracleInvalidObjects.listLabel')" data-list-heading tabindex="-1">
+        <div class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-2 text-xs">
+          <span class="text-muted-foreground"
+            >{{ hasFilters ? t("processList.oracleInvalidObjects.filterCount", { matched: filteredObjects.length, total: displayedObjects.length }) : t("processList.oracleInvalidObjects.listCount", { count: displayedObjects.length })
+            }}<span v-if="fullReadState !== 'complete'"> · {{ t("processList.oracleInvalidObjects.currentlyLoaded") }}</span> · {{ t("processList.oracleInvalidObjects.batchSelectedCount", { count: selectedCount }) }}</span
           >
-            <span class="truncate font-medium text-foreground">{{ object.name }}</span>
-            <span class="flex items-center gap-2 text-muted-foreground"
-              ><span>{{ object.type }}</span
-              ><span>{{ object.lastDdlTime }}</span></span
+          <div class="flex flex-wrap items-center gap-1">
+            <Button variant="destructive" size="sm" class="h-7 px-2 text-xs" :disabled="selectedSupportedCount === 0 || compiling" @click="startBatchCompile('selected')">{{ t("processList.oracleInvalidObjects.batchCompileSelected", { count: selectedSupportedCount }) }}</Button>
+            <Button variant="outline" size="sm" class="h-7 gap-1 px-2 text-xs" :disabled="fullReadState !== 'complete' || allSupportedCount === 0 || compiling" @click="startBatchCompile('all')"
+              ><Wrench class="h-3.5 w-3.5" />{{
+                fullReadState === "complete"
+                  ? t(hasFilters ? "processList.oracleInvalidObjects.batchCompileFiltered" : "processList.oracleInvalidObjects.batchCompileAll", { count: allSupportedCount })
+                  : t(hasFilters ? "processList.oracleInvalidObjects.compileFiltered" : "processList.oracleInvalidObjects.compileAll")
+              }}</Button
             >
-          </button>
-          <p v-if="truncated" class="border-t px-3 py-2 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.truncated") }}</p>
-        </section>
-        <section class="flex min-h-0 min-w-0 flex-col overflow-hidden">
-          <p v-if="outcome" class="m-3 rounded border bg-muted/20 p-3 text-xs" role="status">{{ outcome }}</p>
-          <template v-if="batchRun">
-            <div class="min-h-0 flex-1 overflow-auto px-4 py-3">
-              <div v-if="batchRun.state === 'reading'" class="space-y-3" role="status" aria-live="polite">
-                <div class="font-medium">{{ t("processList.oracleInvalidObjects.batchReading") }}</div>
-                <p class="text-sm text-muted-foreground">{{ t("processList.oracleInvalidObjects.batchReadProgress", { count: batchRun.readCount }) }}</p>
+            <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('common.refresh')" :disabled="loading || compiling" @click="refreshCurrentList"><RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading || fullReadState === 'reading' }" /></Button>
+            <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" :disabled="compiling" @click="close">{{ t("common.close") }}</Button>
+          </div>
+        </div>
+        <div class="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
+          <label class="flex min-w-40 flex-1 items-center gap-2">
+            <span class="shrink-0 text-muted-foreground">{{ t("processList.oracleInvalidObjects.nameFilterLabel") }}</span>
+            <Input type="search" class="h-8 text-xs" :model-value="nameFilter" :aria-label="t('processList.oracleInvalidObjects.filterName')" :placeholder="t('processList.oracleInvalidObjects.filterName')" :disabled="compiling" @update:model-value="setNameFilter" />
+          </label>
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button variant="outline" size="sm" class="h-8 gap-1 text-xs" :disabled="compiling"
+                >{{ t("processList.oracleInvalidObjects.filterTypes") }} · {{ typeFilter === null ? t("processList.oracleInvalidObjects.allTypes") : t("processList.oracleInvalidObjects.selectedTypeCount", { count: typeFilter.size }) }}<ChevronDown class="h-3.5 w-3.5"
+              /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="min-w-44 max-h-72 overflow-y-auto">
+              <DropdownMenuCheckboxItem :model-value="typeFilter === null" :disabled="compiling" @select.prevent @update:model-value="setAllTypes($event === true)">{{ t("processList.oracleInvalidObjects.allTypes") }}</DropdownMenuCheckboxItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuCheckboxItem v-for="type in availableTypes" :key="type" :model-value="typeFilter === null || typeFilter.has(type)" :disabled="compiling" @select.prevent @update:model-value="setTypeFilter(type, $event === true)">{{ type }}</DropdownMenuCheckboxItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button variant="ghost" size="sm" class="h-8 px-2 text-xs" :disabled="compiling || !hasFilters" @click="clearFilters">{{ t("processList.oracleInvalidObjects.clearFilters") }}</Button>
+        </div>
+        <p class="shrink-0 border-b px-3 py-1.5 text-[11px] text-muted-foreground">{{ t("processList.oracleInvalidObjects.ddlWarning") }}</p>
+        <div v-if="batchRun" class="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2 text-xs" role="status" aria-live="polite">
+          <span v-if="batchRun.state === 'running'" class="min-w-0 flex-1 break-words">{{
+            batchRun.stopRequested ? t("processList.oracleInvalidObjects.batchStopping") : t("processList.oracleInvalidObjects.batchProgress", { handled: batchHandledCount, total: batchSupportedCount, current: batchRun.currentName || t("processList.oracleInvalidObjects.batchRunning") })
+          }}</span>
+          <span v-else class="min-w-0 flex-1 break-words"
+            >{{ t("processList.oracleInvalidObjects.batchSummary", { valid: batchValidCount, stillInvalid: batchStillInvalidCount, failed: batchFailureCount, skipped: batchSkippedCount })
+            }}<span v-if="batchRun.remaining"> · {{ t("processList.oracleInvalidObjects.batchRemaining", { count: batchRun.remaining.length }) }}</span
+            ><span v-else-if="batchRun.remainingError" class="text-destructive"> · {{ t("processList.oracleInvalidObjects.batchRemainingUnknown", { message: batchRun.remainingError }) }}</span></span
+          >
+          <Button v-if="batchRun.state === 'running'" variant="outline" size="sm" class="shrink-0" :disabled="batchRun.stopRequested" @click="stopBatch">{{ t("processList.oracleInvalidObjects.batchStop") }}</Button>
+        </div>
+        <p v-if="batchRun?.readError" class="shrink-0 border-b px-3 py-2 text-xs text-destructive" role="alert">{{ batchRun.readError }}</p>
+        <div v-if="loadError" class="m-3 shrink-0 break-words rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{{ loadError }}</div>
+        <p v-else-if="fullReadState === 'reading'" class="shrink-0 border-b px-3 py-2 text-xs text-muted-foreground" role="status" aria-live="polite">{{ t("processList.oracleInvalidObjects.batchReadProgress", { count: fullReadCount }) }}</p>
+        <p v-else-if="fullReadState === 'error'" class="shrink-0 break-words border-b px-3 py-2 text-xs text-destructive" role="alert">
+          {{ t("processList.oracleInvalidObjects.batchReadFailed") }} · {{ fullReadError }} <Button variant="ghost" size="sm" class="h-6 px-1" @click="readBatchPlan">{{ t("processList.oracleInvalidObjects.batchRetryRead") }}</Button>
+        </p>
+        <label class="flex shrink-0 cursor-pointer items-center gap-2 border-b px-4 py-2 text-xs font-medium">
+          <input type="checkbox" :checked="allSelectedInFilter" :indeterminate.prop="someSelectedInFilter" :disabled="compiling || !filteredObjects.some(canCompileObject)" @change="toggleFilteredSelection(($event.target as HTMLInputElement).checked)" />
+          {{ t("processList.oracleInvalidObjects.batchSelectFiltered") }}
+        </label>
+        <p v-if="!loading && displayedObjects.length === 0 && !loadError" class="px-4 py-8 text-center text-sm text-muted-foreground">{{ t("processList.oracleInvalidObjects.empty") }}</p>
+        <p v-else-if="filteredObjects.length === 0 && displayedObjects.length > 0" class="px-4 py-8 text-center text-sm text-muted-foreground">{{ t("processList.oracleInvalidObjects.noFilterMatches") }}</p>
+        <DynamicScroller v-if="filteredObjects.length > 0" ref="listScroller" data-object-scroller class="min-h-0 flex-1 overflow-x-hidden" :items="filteredObjects" :min-item-size="44" :buffer="400" :skip-hover="true" :key-field="renderKey" :cache="listCache">
+          <template #default="{ item: object, index, active }">
+            <DynamicScrollerItem :item="object" :active="active" :index="index">
+              <div :data-row-key="renderKey(object)" :inert="!active" :aria-hidden="!active || undefined" class="flex min-w-0 items-center gap-1 border-b px-2 py-1.5">
+                <label class="inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center">
+                  <input
+                    type="checkbox"
+                    :aria-label="`${object.name} ${object.type}`"
+                    :checked="selectedObjects.has(selectionKey(object))"
+                    :disabled="compiling || unverifiedKeys.has(selectionKey(object)) || !!oracleCompileUnsupportedReason(databaseType, object.type)"
+                    @change="toggleObjectSelection(object, ($event.target as HTMLInputElement).checked)"
+                    @keydown.tab="onRowTab($event, object, 'checkbox')"
+                  />
+                </label>
+                <Button
+                  variant="ghost"
+                  class="h-auto min-w-0 flex-1 justify-start whitespace-normal break-all px-1 py-1 text-left text-xs font-medium"
+                  :aria-label="`${object.name} ${object.type}`"
+                  :data-object-key="selectionKey(object)"
+                  @click="showDetail(object)"
+                  @keydown.tab="onRowTab($event, object, 'name')"
+                  >{{ object.name }}</Button
+                >
+                <span class="shrink-0 text-xs text-muted-foreground">{{ object.type }}</span>
+                <span role="img" :aria-label="rowStatusLabel(object)" :title="rowStatusLabel(object)" class="inline-flex h-5 w-5 shrink-0 items-center justify-center" :class="rowStatus(object) === 'failed' ? 'text-destructive' : 'text-muted-foreground'">
+                  <Loader2 v-if="rowStatus(object) === 'running'" class="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <Clock v-else-if="rowStatus(object) === 'pending' || rowStatus(object) === 'not-run'" class="h-4 w-4" aria-hidden="true" />
+                  <CircleX v-else-if="rowStatus(object) === 'failed'" class="h-4 w-4" aria-hidden="true" />
+                  <CircleHelp v-else-if="rowStatus(object) === 'unknown'" class="h-4 w-4" aria-hidden="true" />
+                  <CircleMinus v-else-if="rowStatus(object) === 'unsupported'" class="h-4 w-4" aria-hidden="true" />
+                  <Circle v-else-if="rowStatus(object) === 'invalid'" class="h-4 w-4" aria-hidden="true" />
+                  <AlertTriangle v-else class="h-4 w-4" aria-hidden="true" />
+                </span>
               </div>
-              <div v-else-if="batchRun.state === 'error'" class="space-y-3" role="alert">
-                <div class="font-medium">{{ t("processList.oracleInvalidObjects.batchReadFailed") }}</div>
-                <p class="break-words text-sm text-destructive">{{ batchRun.readError }}</p>
-                <p class="text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.batchNoPartialPlan") }}</p>
-              </div>
-              <template v-else>
-                <div class="mb-3 space-y-2">
-                  <div class="text-sm font-semibold">{{ batchRun.state === "confirm" ? t("processList.oracleInvalidObjects.batchConfirmTitle") : batchRun.state === "running" ? t("processList.oracleInvalidObjects.batchRunning") : t("processList.oracleInvalidObjects.batchResults") }}</div>
-                  <p class="text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.batchScope", { connection: batchRun.scope.connection.name, database: batchRun.scope.database, schema: batchRun.scope.schema }) }}</p>
-                  <p v-if="batchRun.state === 'confirm'" class="text-xs">{{ t("processList.oracleInvalidObjects.batchCounts", { total: batchRun.items.length, supported: batchSupportedCount, skipped: batchSkippedCount }) }}</p>
-                  <p v-if="batchRun.state === 'confirm'" class="rounded border bg-muted/30 p-2 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.ddlWarning") }}</p>
-                  <p v-if="batchRun.state === 'running'" role="status" aria-live="polite" class="rounded border bg-muted/30 p-2 text-xs">
-                    {{
-                      t("processList.oracleInvalidObjects.batchProgress", { handled: batchHandledCount, total: batchSupportedCount, current: batchRun.stopRequested ? t("processList.oracleInvalidObjects.batchStopping") : batchRun.currentName || t("processList.oracleInvalidObjects.batchRunning") })
-                    }}
-                  </p>
-                  <div v-if="batchRun.state === 'results'" class="rounded border bg-muted/20 p-2 text-xs" role="status">
-                    {{ t("processList.oracleInvalidObjects.batchSummary", { valid: batchValidCount, stillInvalid: batchStillInvalidCount, failed: batchFailureCount, skipped: batchSkippedCount }) }}
-                    <span v-if="batchRun.remaining"> {{ t("processList.oracleInvalidObjects.batchRemaining", { count: batchRun.remaining.length }) }}</span>
-                    <span v-else-if="batchRun.remainingError" class="text-destructive"> {{ t("processList.oracleInvalidObjects.batchRemainingUnknown", { message: batchRun.remainingError }) }}</span>
-                  </div>
-                  <p v-if="batchRun.readError && batchRun.state === 'results'" class="text-xs text-destructive" role="alert">{{ batchRun.readError }}</p>
-                </div>
-                <div v-if="batchRun.items.length" class="overflow-auto rounded border">
-                  <div v-for="item in visibleBatchItems" :key="`${item.object.owner}:${item.object.objectId}`" class="space-y-1 border-b p-2.5 last:border-b-0">
-                    <div class="flex items-start justify-between gap-2">
-                      <div class="min-w-0">
-                        <div class="break-all text-xs font-medium">
-                          {{ item.object.owner }}.{{ item.object.name }} <span class="font-normal text-muted-foreground">· {{ item.object.type }}</span>
-                        </div>
-                        <div class="mt-1 text-xs text-muted-foreground">{{ batchStatusLabel(item.status) }}</div>
-                      </div>
-                      <Button v-if="item.status === 'still-invalid'" variant="outline" size="sm" class="h-7 shrink-0 px-2 text-xs" @click="openBatchItemSource(item)">{{ t("processList.oracleInvalidObjects.openSource") }}</Button>
-                    </div>
-                    <p v-if="item.message" class="break-words text-xs text-destructive">{{ item.message }}</p>
-                    <p v-if="item.unsupportedReason" class="text-xs text-muted-foreground">{{ t(item.unsupportedReason === "unsupported-on-engine" ? "processList.oracleInvalidObjects.unsupportedOnEngine" : "processList.oracleInvalidObjects.unsupportedType") }}</p>
-                    <p v-if="item.errorsTruncated" class="text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.errorsTruncated") }}</p>
-                    <div v-if="item.errors?.length" class="space-y-1 pl-2 text-xs text-muted-foreground">
-                      <p v-for="error in item.errors.slice(0, 10)" :key="error.sequence" class="break-words font-mono">{{ error.line }}:{{ error.position }} {{ error.text }}</p>
-                      <p v-if="item.errors.length > 10">{{ t("processList.oracleInvalidObjects.batchMoreErrors", { count: item.errors.length - 10 }) }}</p>
-                    </div>
-                    <details v-if="item.sql" class="text-xs">
-                      <summary class="cursor-pointer text-muted-foreground">{{ t("processList.oracleInvalidObjects.batchSqlDetails") }}</summary>
-                      <pre class="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/30 p-2 font-mono">{{ item.sql }}</pre>
-                    </details>
-                  </div>
-                </div>
-                <p v-else-if="batchRun.state === 'confirm'" class="py-8 text-center text-sm text-muted-foreground">{{ t("processList.oracleInvalidObjects.batchEmpty") }}</p>
-                <div v-if="batchRun.items.length > batchPageSize" class="mt-2 flex items-center justify-between text-xs">
-                  <Button variant="ghost" size="sm" :disabled="batchRun.page === 0" @click="changeBatchPage(-1)">{{ t("processList.oracleInvalidObjects.batchPreviousPage") }}</Button>
-                  <span>{{ t("processList.oracleInvalidObjects.batchPage", { current: batchRun.page + 1, total: batchPageCount }) }}</span>
-                  <Button variant="ghost" size="sm" :disabled="batchRun.page + 1 >= batchPageCount" @click="changeBatchPage(1)">{{ t("processList.oracleInvalidObjects.batchNextPage") }}</Button>
-                </div>
-              </template>
-            </div>
-            <DialogFooter class="mx-0 mb-0 shrink-0 border-t px-4 py-3">
-              <Button v-if="batchRun.state === 'reading' || batchRun.state === 'running'" variant="outline" :disabled="batchRun.stopRequested" @click="stopBatch">{{
-                batchRun.state === "running" && batchRun.stopRequested ? t("processList.oracleInvalidObjects.batchStopping") : batchRun.state === "reading" ? t("processList.oracleInvalidObjects.batchStopReading") : t("processList.oracleInvalidObjects.batchStop")
-              }}</Button>
-              <Button v-if="batchRun.state === 'error'" variant="outline" @click="readBatchPlan">{{ t("processList.oracleInvalidObjects.batchRetryRead") }}</Button>
-              <Button v-if="batchRun.state === 'confirm' || batchRun.state === 'error' || batchRun.state === 'results'" variant="outline" :disabled="compiling" @click="batchRun = null">{{ t("common.close") }}</Button>
-              <Button v-if="batchRun.state === 'confirm'" variant="destructive" :disabled="batchSupportedCount === 0 || compiling" @click="confirmBatchCompile"
-                ><Loader2 v-if="compiling" class="mr-1.5 h-3.5 w-3.5 animate-spin" />{{ t("processList.oracleInvalidObjects.batchConfirm", { count: batchSupportedCount }) }}</Button
-              >
-            </DialogFooter>
+            </DynamicScrollerItem>
           </template>
-          <template v-else-if="selected">
-            <div class="flex items-start justify-between gap-3 border-b px-4 py-3">
-              <div class="min-w-0">
-                <div class="break-all text-sm font-semibold">{{ selected.owner }}.{{ selected.name }}</div>
-                <div class="mt-1 text-xs text-muted-foreground">{{ selected.type }} · {{ t("processList.oracleInvalidObjects.objectId", { id: selected.objectId }) }}</div>
-              </div>
-              <Button variant="outline" size="sm" class="h-7 shrink-0 gap-1.5 text-xs" :disabled="compiling" @click="emit('open-source', selected)"><Wrench class="h-3.5 w-3.5" />{{ t("processList.oracleInvalidObjects.openSource") }}</Button>
-            </div>
-            <div class="min-h-0 flex-1 overflow-auto px-4 py-3">
-              <div class="mb-2 text-xs font-medium">{{ t("processList.oracleInvalidObjects.errorsTitle") }}</div>
-              <div v-if="errorLoadError" class="rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{{ errorLoadError }}</div>
-              <p v-if="!errorLoadError && errorsTruncated" class="mb-2 rounded border bg-muted/30 p-2 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.errorsTruncated") }}</p>
-              <p v-if="!errorLoadError && errors.length === 0" class="py-4 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.noErrors") }}</p>
-              <div v-if="!errorLoadError && errors.length > 0" class="overflow-auto rounded border">
-                <table class="w-full border-collapse text-xs">
-                  <thead class="sticky top-0 bg-muted/60">
-                    <tr>
-                      <th class="px-2 py-1.5 text-left">{{ t("processList.oracleInvalidObjects.line") }}</th>
-                      <th class="px-2 py-1.5 text-left">{{ t("processList.oracleInvalidObjects.position") }}</th>
-                      <th class="px-2 py-1.5 text-left">{{ t("processList.oracleInvalidObjects.message") }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="error in errors" :key="error.sequence" class="border-t align-top">
-                      <td class="whitespace-nowrap px-2 py-1.5 font-mono">{{ error.line }}</td>
-                      <td class="whitespace-nowrap px-2 py-1.5 font-mono">{{ error.position }}</td>
-                      <td class="break-words px-2 py-1.5 font-mono">{{ error.text }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <p v-if="unsupportedReason" class="mt-3 flex items-start gap-2 rounded border bg-muted/30 p-3 text-xs text-muted-foreground">
-                <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />{{ t(unsupportedReason === "unsupported-on-engine" ? "processList.oracleInvalidObjects.unsupportedOnEngine" : "processList.oracleInvalidObjects.unsupportedType") }}
-              </p>
-              <div v-if="previewSql" class="mt-3 space-y-2 rounded border bg-muted/20 p-3">
-                <div class="text-xs font-medium">{{ t("processList.oracleInvalidObjects.singleConfirmTitle") }}</div>
-                <div class="break-all text-xs">{{ singlePlan?.object.owner }}.{{ singlePlan?.object.name }} · {{ singlePlan?.object.type }} · {{ t("processList.oracleInvalidObjects.objectId", { id: singlePlan?.object.objectId }) }}</div>
-                <p class="text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.ddlWarning") }}</p>
-                <details class="text-xs">
-                  <summary class="cursor-pointer text-muted-foreground">{{ t("processList.oracleInvalidObjects.batchSqlDetails") }}</summary>
-                  <pre class="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/30 p-2 font-mono">{{ previewSql }}</pre>
-                </details>
-              </div>
-            </div>
-            <DialogFooter class="mx-0 mb-0 shrink-0 border-t px-4 py-3">
-              <Button variant="outline" :disabled="compiling" @click="close">{{ t("common.close") }}</Button>
-              <Button v-if="!previewSql" variant="destructive" :disabled="!!unsupportedReason || compiling || !!loadError" @click="prepareSingleCompile">{{ t("processList.oracleInvalidObjects.compile") }}</Button>
-              <Button v-else variant="destructive" :disabled="compiling" @click="confirmCompile"><Loader2 v-if="compiling" class="mr-1.5 h-3.5 w-3.5 animate-spin" />{{ t("processList.oracleInvalidObjects.confirmCompile") }}</Button>
-            </DialogFooter>
-          </template>
-          <p v-else class="m-auto max-w-sm px-6 text-center text-sm text-muted-foreground">{{ t("processList.oracleInvalidObjects.selectPrompt") }}</p>
-        </section>
-      </div>
+        </DynamicScroller>
+        <p v-if="truncated && fullReadState !== 'complete'" class="shrink-0 border-t px-3 py-2 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.truncated") }}</p>
+      </section>
+      <section v-else-if="currentView === 'detail' && selected" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div class="flex shrink-0 items-start justify-between gap-3 border-b px-4 py-3">
+          <div class="min-w-0">
+            <div class="break-all text-sm font-semibold">{{ selected.owner }}.{{ selected.name }}</div>
+            <div class="mt-1 text-xs text-muted-foreground">{{ selected.type }} · {{ t("processList.oracleInvalidObjects.objectId", { id: selected.objectId }) }}</div>
+          </div>
+          <Button variant="outline" size="sm" class="h-7 shrink-0 gap-1.5 text-xs" :disabled="compiling" @click="emit('open-source', selected)"><Wrench class="h-3.5 w-3.5" />{{ t("processList.oracleInvalidObjects.openSource") }}</Button>
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto px-4 py-3">
+          <div class="mb-2 text-xs font-medium">{{ t("processList.oracleInvalidObjects.errorsTitle") }}</div>
+          <div v-if="errorLoadError" class="rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{{ errorLoadError }}</div>
+          <p v-if="!errorLoadError && errorsTruncated" class="mb-2 rounded border bg-muted/30 p-2 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.errorsTruncated") }}</p>
+          <p v-if="!errorLoadError && errors.length === 0 && !compiling" class="py-4 text-xs text-muted-foreground">{{ t("processList.oracleInvalidObjects.noErrors") }}</p>
+          <div v-if="!errorLoadError && errors.length > 0" class="overflow-auto rounded border">
+            <table class="w-full border-collapse text-xs">
+              <thead class="sticky top-0 bg-muted/60">
+                <tr>
+                  <th class="px-2 py-1.5 text-left">{{ t("processList.oracleInvalidObjects.line") }}</th>
+                  <th class="px-2 py-1.5 text-left">{{ t("processList.oracleInvalidObjects.position") }}</th>
+                  <th class="px-2 py-1.5 text-left">{{ t("processList.oracleInvalidObjects.message") }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="error in errors" :key="error.sequence" class="border-t align-top">
+                  <td class="whitespace-nowrap px-2 py-1.5 font-mono">{{ error.line }}</td>
+                  <td class="whitespace-nowrap px-2 py-1.5 font-mono">{{ error.position }}</td>
+                  <td class="break-words px-2 py-1.5 font-mono">{{ error.text }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-if="unsupportedReason" class="mt-3 flex items-start gap-2 rounded border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />{{ t(unsupportedReason === "unsupported-on-engine" ? "processList.oracleInvalidObjects.unsupportedOnEngine" : "processList.oracleInvalidObjects.unsupportedType") }}
+          </p>
+          <details v-if="selected && !unsupportedReason" class="mt-3 text-xs">
+            <summary class="cursor-pointer text-muted-foreground">{{ t("processList.oracleInvalidObjects.batchSqlDetails") }}</summary>
+            <pre class="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/30 p-2 font-mono">{{ buildOracleCompileSql(databaseType, selected.owner, selected) }}</pre>
+          </details>
+          <p v-if="outcome" class="mt-3 rounded border bg-muted/20 p-3 text-xs" role="status">{{ outcome }}</p>
+        </div>
+        <DialogFooter class="mx-0 mb-0 shrink-0 border-t px-4 py-3">
+          <Button variant="outline" @click="returnFromDetail">{{ t("processList.oracleInvalidObjects.batchCurrentList") }}</Button>
+          <Button variant="outline" :disabled="compiling" @click="close">{{ t("common.close") }}</Button>
+          <Button variant="destructive" :disabled="!!unsupportedReason || compiling || !!loadError || !singleTargetPresent" @click="compileSingle"><Loader2 v-if="compiling" class="mr-1.5 h-3.5 w-3.5 animate-spin" />{{ t("processList.oracleInvalidObjects.compile") }}</Button>
+        </DialogFooter>
+      </section>
     </DialogContent>
   </Dialog>
 </template>
