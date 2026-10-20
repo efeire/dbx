@@ -194,6 +194,7 @@ export default withEnglishFallback({
   sidebarMenu,
   oracleIndex: { mixedDraft: "Oracle 계열 인덱스 변경은 다른 테이블 구조 변경과 분리해 적용하세요." },
   schemaIndex: {
+    crossOwnerReadOnly: "이 편집기에서 인덱스 ‘{owner}.{name}’은 읽기 전용입니다.",
     editIndividually: "인덱스를 개별적으로 관리하세요",
     parentUnavailable: "상위 테이블 정보가 없습니다. 이름을 복사하거나 목록을 새로 고치세요.",
     focusUnavailable: "선택한 인덱스를 정확히 식별할 수 없습니다. 상위 테이블에서 읽을 수 있는 인덱스를 표시합니다.",

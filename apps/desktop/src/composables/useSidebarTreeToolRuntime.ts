@@ -195,7 +195,7 @@ export function useSidebarTreeToolRuntime(options: SidebarTreeToolRuntimeOptions
       const config = connectionStore.getConfig(node.connectionId);
       if (!target || !config || !supportsSchemaIndexManagement(effectiveDatabaseTypeForConnection(config))) return;
       if (schemaIndexIsSameOwner(target) && !connectionIsEffectivelyReadOnly(config)) {
-        queryStore.openTableStructure(node.connectionId, node.database, target.parentSchema, target.parentName, "indexes", { kind: "index", name: target.name }, node.catalog, "table", true);
+        queryStore.openTableStructure(node.connectionId, node.database, target.parentSchema, target.parentName, "indexes", { kind: "index", name: target.name, owner: target.schema }, node.catalog, "table", true);
       } else {
         queryStore.openObjectBrowser(node.connectionId, node.database, target.schema, node.catalog, undefined, false, "indexes", undefined, { view: target });
       }

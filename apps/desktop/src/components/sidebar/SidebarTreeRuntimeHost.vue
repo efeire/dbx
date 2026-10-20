@@ -2015,7 +2015,7 @@ async function openSchemaIndexCreate() {
 function requestSchemaIndexDelete(node: TreeNode): boolean {
   const target = schemaIndexNodeIdentity(node);
   if (!canEditSchemaIndex(node) || !target || !node.connectionId || !node.database) return false;
-  queryStore.openTableStructure(node.connectionId, node.database, target.parentSchema, target.parentName, "indexes", { kind: "index", name: target.name, action: "delete" }, node.catalog, "table", true);
+  queryStore.openTableStructure(node.connectionId, node.database, target.parentSchema, target.parentName, "indexes", { kind: "index", name: target.name, owner: target.schema, action: "delete" }, node.catalog, "table", true);
   return true;
 }
 

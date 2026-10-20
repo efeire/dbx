@@ -195,6 +195,7 @@ export default {
   sidebarMenu,
   oracleIndex: { mixedDraft: "Apply Oracle-family index changes separately from other table structure changes." },
   schemaIndex: {
+    crossOwnerReadOnly: "Index “{owner}.{name}” is read-only in this editor.",
     editIndividually: "Manage indexes individually",
     parentUnavailable: "Parent table information is unavailable. Copy the name or refresh the list.",
     focusUnavailable: "The selected index cannot be located exactly. The readable indexes of its parent table are shown below.",

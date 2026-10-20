@@ -185,6 +185,7 @@ function configureOracleIndexCatalog(
       (index) =>
         ({
           name: index.name,
+          owner: "APP",
           columns: [...index.columns],
           is_primary: false,
           is_unique: index.unique,
@@ -421,14 +422,27 @@ describe("Oracle CHECK and UNIQUE entry points", () => {
     await vi.waitFor(() => expect(container.querySelector('[data-constraint-editor="UQ_EMAIL"]')).toBeTruthy());
   });
 
-  it("opens the same UNIQUE draft from its paired index entry", async () => {
-    const container = await mountConstraintEditor("indexes");
+  it.each([false, true])("opens the paired UNIQUE draft with the selected identity mode (exact: %s)", async (exactIdentity) => {
+    const container = await mountConstraintEditor("indexes", undefined, undefined, undefined, false, undefined, undefined, {}, { exactIdentity });
     await vi.waitFor(() => expect(container.querySelector("[data-index-name-input]")).toBeTruthy());
 
     const editConstraint = container.querySelector<HTMLButtonElement>('[data-paired-unique-constraint="UQ_EMAIL"]');
     expect(editConstraint).toBeTruthy();
     editConstraint!.click();
     await vi.waitFor(() => expect(container.querySelector('[data-constraint-editor="UQ_EMAIL"]')).toBeTruthy());
+    expect(vi.mocked(api.listConstraints).mock.calls.some((call) => call[2] === "APP" && call[3] === "CONTACTS" && call[5] === (exactIdentity ? true : undefined))).toBe(true);
+  });
+
+  it.each([false, true])("limits only exact JDBC metadata tabs to implemented facets (exact: %s)", async (exactIdentity) => {
+    connection.db_type = "jdbc";
+    connection.driver_profile = "jdbc";
+    connection.connection_string = "jdbc:oracle:thin:@fixture";
+    const container = await mountConstraintEditor("indexes", undefined, undefined, undefined, false, undefined, undefined, {}, { exactIdentity });
+    const values = Array.from(container.querySelectorAll('[role="tab"]')).map((tab) => tab.getAttribute("data-value") ?? tab.getAttribute("id") ?? tab.textContent);
+    const labels = Array.from(container.querySelectorAll('[role="tab"]')).map((tab) => tab.textContent);
+    expect(labels).toContain("Indexes");
+    for (const label of ["Foreign Keys", "Constraints", "Triggers"]) expect(labels.includes(label), JSON.stringify(values)).toBe(!exactIdentity);
+    expect(container.querySelector('[data-paired-unique-constraint="UQ_EMAIL"]') !== null).toBe(!exactIdentity);
   });
 
   it("passes loaded Oracle key metadata through the index rebuild preview", async () => {
@@ -563,6 +577,7 @@ describe("Oracle independent index execution", () => {
     expect(fixture.ddl).toEqual([]);
   });
   const loadedIndex = {
+    owner: "APP",
     name: "IX_EMAIL",
     columns: ["EMAIL"],
     is_primary: false,
@@ -591,7 +606,7 @@ describe("Oracle independent index execution", () => {
       undefined,
       undefined,
       { drafts },
-      { exactIdentity: true, initialTarget: { kind: "index", name, action: "delete" }, initialTabRequestId: 1 },
+      { exactIdentity: true, initialTarget: { kind: "index", name, owner: "APP", action: "delete" }, initialTabRequestId: 1 },
     );
     await vi.waitFor(() => expect((drafts.at(-1) as TableStructureEditorDraft)?.indexes.filter((item) => item.markedForDrop).map((item) => item.original?.name)).toEqual([name]));
     expect(fixture.ddl).toEqual([]);
@@ -599,14 +614,88 @@ describe("Oracle independent index execution", () => {
 
   it("accepts a new exact target after an earlier requested index is missing", async () => {
     const fixture = configureOracleIndexCatalog();
-    const requests = reactive({ exactIdentity: true, initialTarget: { kind: "index", name: "MISSING", action: "delete" } as TableStructureEditorTarget, initialTabRequestId: 1 });
+    const requests = reactive({ exactIdentity: true, initialTarget: { kind: "index", name: "MISSING", owner: "APP", action: "delete" } as TableStructureEditorTarget, initialTabRequestId: 1 });
     const drafts: unknown[] = [];
     const container = await mountConstraintEditor("indexes", [loadedIndex], undefined, undefined, true, undefined, undefined, { drafts }, requests);
     await vi.waitFor(() => expect(container.textContent).toContain("MISSING"));
-    requests.initialTarget = { kind: "index", name: "IX_EMAIL", action: "delete" };
+    requests.initialTarget = { kind: "index", name: "IX_EMAIL", owner: "APP", action: "delete" };
     requests.initialTabRequestId = 2;
     await vi.waitFor(() => expect((drafts.at(-1) as TableStructureEditorDraft)?.indexes.filter((item) => item.markedForDrop).map((item) => item.original?.name)).toEqual(["IX_EMAIL"]));
     expect(fixture.ddl).toEqual([]);
+  });
+
+  it("uses owner/name to focus and draft a deletion without touching a same-name foreign index", async () => {
+    connection.db_type = "dameng";
+    connection.driver_profile = "dameng";
+    const drafts: unknown[] = [];
+    const container = await mountConstraintEditor(
+      "indexes",
+      [loadedIndex, { ...loadedIndex, owner: "Other" }],
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      { drafts },
+      { exactIdentity: true, initialTarget: { kind: "index", name: "IX_EMAIL", owner: "APP", action: "delete" }, initialTabRequestId: 1 },
+    );
+    await vi.waitFor(() => {
+      const indexes = (drafts.at(-1) as TableStructureEditorDraft)?.indexes ?? [];
+      expect(indexes.filter((index) => index.markedForDrop).map((index) => index.original?.owner)).toEqual(["APP"]);
+      expect(new Set(indexes.map((index) => index.id)).size).toBe(2);
+    });
+    expect(container.querySelectorAll("[data-index-name-input]")).toHaveLength(2);
+    expect(vi.mocked(api.executeBatch)).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "Other"])("does not auto-delete an exact target without a matching owner (%s)", async (owner) => {
+    connection.db_type = "dameng";
+    connection.driver_profile = "dameng";
+    const drafts: unknown[] = [];
+    const container = await mountConstraintEditor("indexes", [loadedIndex], undefined, undefined, false, undefined, undefined, { drafts }, { exactIdentity: true, initialTarget: { kind: "index", name: "IX_EMAIL", owner, action: "delete" }, initialTabRequestId: 1 });
+    await vi.waitFor(() => expect(container.textContent).toContain("Cannot locate index"));
+    expect((drafts.at(-1) as TableStructureEditorDraft).indexes.some((index) => index.markedForDrop)).toBe(false);
+    expect(vi.mocked(api.executeBatch)).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps foreign-owner index inputs read-only only in the new exact source (%s)", async (exactIdentity) => {
+    connection.db_type = "dameng";
+    connection.driver_profile = "dameng";
+    const container = await mountConstraintEditor("indexes", [{ ...loadedIndex, owner: "Other" }], undefined, undefined, false, undefined, undefined, {}, { exactIdentity });
+    expect(container.querySelector<HTMLInputElement>("[data-index-name-input]")!.disabled).toBe(exactIdentity);
+  });
+
+  it("blocks restored foreign-owner deletion before SQL preview or DM execution", async () => {
+    connection.db_type = "dameng";
+    connection.driver_profile = "dameng";
+    const drafts: unknown[] = [];
+    const first = await mountConstraintEditor("indexes", [{ ...loadedIndex, owner: "Other" }], undefined, undefined, false, undefined, undefined, { drafts }, { exactIdentity: true });
+    const saved = structuredClone(drafts.at(-1)) as TableStructureEditorDraft;
+    saved.dirty = true;
+    saved.indexes[0]!.markedForDrop = true;
+    app!.unmount();
+    app = undefined;
+    first.remove();
+    vi.mocked(api.buildTableStructureChangeSql).mockClear();
+    let editor!: { applyChanges: () => Promise<boolean> };
+    const restored = await mountConstraintEditor(
+      "indexes",
+      [{ ...loadedIndex, owner: "Other" }],
+      (instance) => {
+        editor = instance;
+      },
+      saved,
+      false,
+      undefined,
+      undefined,
+      {},
+      { exactIdentity: true },
+    );
+    expect(await editor.applyChanges()).toBe(false);
+    expect(restored.textContent).toContain("Other.IX_EMAIL");
+    expect(restored.textContent).toContain("read-only");
+    expect(vi.mocked(api.buildTableStructureChangeSql)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.executeBatch)).not.toHaveBeenCalled();
   });
 
   async function prepareRename(

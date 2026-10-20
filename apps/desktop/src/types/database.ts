@@ -1239,6 +1239,8 @@ export interface SqlServerColumnMetadata extends ColumnInfo {
 }
 
 export interface IndexInfo {
+  /** Dictionary-derived index owner; absent in older or non-owner metadata. */
+  owner?: string | null;
   name: string;
   columns: string[];
   is_unique: boolean;
@@ -2000,6 +2002,8 @@ export interface PgTablePartitioning {
 export interface TableStructureEditorTarget {
   kind: "column" | "index";
   name: string;
+  /** Raw schema-index owner; omitted by legacy table-child navigation. */
+  owner?: string;
   /** Schema-index requests are consumed once by the existing draft editor. */
   action?: "create" | "delete";
 }

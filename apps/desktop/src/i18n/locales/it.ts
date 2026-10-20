@@ -195,6 +195,7 @@ export default withEnglishFallback({
   sidebarMenu,
   oracleIndex: { mixedDraft: "Applica le modifiche agli indici Oracle separatamente dalle altre modifiche alla struttura della tabella." },
   schemaIndex: {
+    crossOwnerReadOnly: "L'indice «{owner}.{name}» è di sola lettura in questo editor.",
     editIndividually: "Gestire gli indici singolarmente",
     parentUnavailable: "Le informazioni sulla tabella padre non sono disponibili. Copiare il nome o aggiornare l'elenco.",
     focusUnavailable: "Non è possibile individuare esattamente l'indice selezionato. Sono mostrati gli indici leggibili della tabella padre.",

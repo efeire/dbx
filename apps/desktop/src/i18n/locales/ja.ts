@@ -196,6 +196,7 @@ export default withEnglishFallback({
   sidebarMenu,
   oracleIndex: { mixedDraft: "Oracle 系インデックスの変更は、他のテーブル構造の変更と分けて適用してください。" },
   schemaIndex: {
+    crossOwnerReadOnly: "インデックス「{owner}.{name}」はこのエディターでは読み取り専用です。",
     editIndividually: "インデックスは個別に管理してください",
     parentUnavailable: "親テーブルの情報がありません。名前をコピーするか一覧を更新してください。",
     focusUnavailable: "選択したインデックスを正確に特定できません。親テーブルの読み取り可能なインデックスを表示しています。",

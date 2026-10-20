@@ -364,7 +364,7 @@ let sidePanelResizeStartWidth = 0;
 const isResizingSidePanel = ref(false);
 const sidePanelGuard = createSidePanelRequestGuard();
 const sidePanelRef = ref<InstanceType<typeof CustomTypeInfoPanel> | null>(null);
-const tableMetadataCapabilities = computed<TableMetadataCapabilities>(() => getTableMetadataCapabilities(effectiveDatabaseType.value));
+const tableMetadataCapabilities = computed<TableMetadataCapabilities>(() => getTableMetadataCapabilities(effectiveDatabaseType.value, { connectionType: props.connection.db_type, exactIdentity: sidePanelRow.value?.type === "INDEX" }));
 const effectiveDatabaseType = computed(() => effectiveDatabaseTypeForConnection(props.connection) ?? props.connection.db_type);
 const oracleInvalidObjectsSupported = computed(() => effectiveDatabaseType.value === "oracle" || effectiveDatabaseType.value === "oceanbase-oracle");
 const supportsSchemaIndexes = computed(() => supportsSchemaIndexManagement(effectiveDatabaseType.value));
@@ -568,13 +568,13 @@ const objectFilters = computed<ObjectFilter[]>(() =>
         .filter(([filter, count]) => filter === "all" || count > 0 || (filter === "indexes" && supportsSchemaIndexes.value))
         .map(([filter]) => filter),
 );
-const showObjectFilter = computed(() => objectFilters.value.length > 2);
+const showObjectFilter = computed(() => objectFilters.value.length > 2 || (supportsSchemaIndexes.value && objectFilters.value.includes("indexes")));
 // A scope that holds a single object kind makes "全部 14" and "表 14" the same number, so the
 // strip is dropped as redundant — which used to drop the only object count the toolbar could
 // show at all (t8y2/dbx#11624, the common MySQL "tables only" database). Keep that one kind's
 // count visible on its own instead; it stays a value, not a filter control, because with a
 // single kind there is no 全部 chip left for the user to reset the selection back to.
-const singleKindFilter = computed<ObjectFilter | null>(() => (objectFilters.value.length === 2 ? (objectFilters.value.find((filter) => filter !== "all") ?? null) : null));
+const singleKindFilter = computed<ObjectFilter | null>(() => (!showObjectFilter.value && objectFilters.value.length === 2 ? (objectFilters.value.find((filter) => filter !== "all") ?? null) : null));
 // Measured condensation for the header row: tier 1 moves the sort/view/checkbox
 // controls into the overflow menu, tier 2 additionally moves the object type
 // filter there and drops the database chip. See useToolbarOverflow for the
@@ -909,6 +909,7 @@ const selectedTableRows = computed(() => {
   return selectableRows.value.filter((row) => ids.has(row.id));
 });
 const selectedTableCount = computed(() => selectedTableRows.value.length);
+const hasSelectedSchemaIndexes = computed(() => selectedTableRows.value.some((row) => row.type === "INDEX"));
 const hasSelectedTablesOnly = computed(() => selectedTableRows.value.length > 0 && selectedTableRows.value.every((row) => row.type === "TABLE"));
 const batchDropConfirmTitle = computed(() => (hasSelectedTablesOnly.value ? t("objects.confirmBatchDropTitle") : t("contextMenu.confirmBatchDropTitle")));
 const batchDropConfirmMessage = computed(() => (hasSelectedTablesOnly.value ? t("objects.confirmBatchDropMessage", { count: selectedTableCount.value }) : t("contextMenu.confirmBatchDropMessage", { count: selectedTableCount.value })));
@@ -1395,7 +1396,7 @@ const filteredTableIndexes = computed(() => {
 });
 
 function schemaIndexOwner(index: IndexInfo): string | undefined {
-  return "owner" in index && typeof index.owner === "string" ? index.owner : undefined;
+  return typeof index.owner === "string" ? index.owner : undefined;
 }
 
 function isInitialSchemaIndex(index: IndexInfo): boolean {
@@ -2832,7 +2833,7 @@ function openSchemaIndexEditor(row: ObjectBrowserRow, action?: "delete") {
     if (!action) void openTableInfo(row, "indexes");
     return;
   }
-  queryStore.openTableStructure(props.connection.id, props.database, target.parentSchema, target.parentName, "indexes", { kind: "index", name: target.name, ...(action ? { action } : {}) }, props.catalog, "table", true);
+  queryStore.openTableStructure(props.connection.id, props.database, target.parentSchema, target.parentName, "indexes", { kind: "index", name: target.name, owner: target.schema, ...(action ? { action } : {}) }, props.catalog, "table", true);
 }
 
 const showIndexParentPicker = ref(false);
@@ -3020,6 +3021,7 @@ function clearTableSelection() {
 }
 
 function openBatchDatabaseExport() {
+  if (hasSelectedSchemaIndexes.value) return;
   const selectedTables = selectedTableRows.value.map((row) => row.name);
   if (selectedTables.length === 0) return;
   connectionStore.databaseExportSource = {
@@ -3643,6 +3645,7 @@ function objectBrowserTableNamesCopyText(rows: readonly ObjectBrowserRow[]): str
 }
 
 async function copySelectedTablesToClipboard() {
+  if (hasSelectedSchemaIndexes.value) return;
   const selectedRows = selectedTableRows.value;
   if (selectedRows.length === 0) return;
   connectionStore.treeClipboard = {
@@ -4402,8 +4405,7 @@ async function loadObjects(options?: { allowCached?: boolean; preserveExistingRo
     const nextRows = await objectBrowserRowsLoadGuard.wait(request.epoch, load, metadataLoadBudgetMs(props.connection.query_timeout_secs));
     if (!objectBrowserRowsLoadGuard.isCurrent(request)) return;
     applyObjectBrowserRows(nextRows);
-    // A failed optional INDEX subset is not a complete mixed snapshot.
-    const cachedAt = scaffoldRefreshError.value ? undefined : cacheObjectBrowserRows(cacheWriteToken, nextRows);
+    const cachedAt = cacheObjectBrowserRows(cacheWriteToken, nextRows);
     void loadObjectStatistics(request, cacheWriteToken, cachedAt);
   } catch (e: any) {
     if (!objectBrowserRowsLoadGuard.isCurrent(request)) return;
@@ -4438,9 +4440,7 @@ async function loadObjectPage(append: boolean, options?: { preserveExistingRows?
   const exactIdentity = exactIndexList.value;
   const keepExisting = exactIdentity && !append && options?.preserveExistingRows === true && rows.value.length > 0;
   const expectedAnchor = append ? indexNextPageAnchor : undefined;
-  const includeIndexSubset = supportsSchemaIndexes.value && typeFilter === "all";
-  const queryTypes = includeIndexSubset ? sidebarObjectKindsForDatabase(effectiveDatabaseType.value).filter((type) => type !== "INDEX") : undefined;
-  const rawIndexSchema = indexParentSchema();
+  const queryTypes = supportsSchemaIndexes.value && typeFilter === "all" ? sidebarObjectKindsForDatabase(effectiveDatabaseType.value).filter((type) => type !== "INDEX") : undefined;
   const objectTypes: Partial<Record<ObjectFilter, (SidebarObjectKind | "EVENT")[]>> = {
     tables: ["TABLE"],
     views: ["VIEW"],
@@ -4492,10 +4492,8 @@ async function loadObjectPage(append: boolean, options?: { preserveExistingRows?
       if (!isCurrent()) return;
     }
     const page = objects.slice(0, size);
-    const indexes = includeIndexSubset && !append ? await loadMixedSchemaIndexes(request, rawIndexSchema, filter) : [];
-    if (!isCurrent()) return;
     const pageRows = buildObjectBrowserRows({
-      objects: [...page.filter((object) => !includeIndexSubset || object.object_type !== "INDEX"), ...indexes],
+      objects: page.filter((object) => !supportsSchemaIndexes.value || typeFilter !== "all" || object.object_type !== "INDEX"),
       database: request.scope.database,
       fallbackSchema: request.scope.schema,
       rowSchema: connectionObjectTreeNodeSchema(props.connection, props.database, selectedSchema.value),
@@ -4519,32 +4517,16 @@ async function loadObjectPage(append: boolean, options?: { preserveExistingRows?
 }
 
 async function loadSqlObjectBrowserRows(request: ObjectBrowserRowsLoadHandle) {
-  const includeIndexes = supportsSchemaIndexes.value;
-  const rawIndexSchema = indexParentSchema();
-  const types = includeIndexes ? sidebarObjectKindsForDatabase(effectiveDatabaseType.value).filter((type) => type !== "INDEX") : undefined;
-  const [objects, indexes] = await Promise.all([
-    api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, types, undefined, undefined, undefined, request.scope.catalog),
-    includeIndexes ? loadMixedSchemaIndexes(request, rawIndexSchema) : Promise.resolve([] as ObjectInfo[]),
-  ]);
+  // Schema indexes use their dedicated exact, server-paged filter. Mixing an
+  // unbounded exact subset into the legacy all view defeats both contracts.
+  const types = supportsSchemaIndexes.value ? sidebarObjectKindsForDatabase(effectiveDatabaseType.value).filter((type) => type !== "INDEX") : undefined;
+  const objects = await api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, types, undefined, undefined, undefined, request.scope.catalog);
   return buildObjectBrowserRows({
-    objects: [...objects.filter((object) => object.object_type !== "INDEX"), ...indexes],
+    objects: objects.filter((object) => !supportsSchemaIndexes.value || object.object_type !== "INDEX"),
     database: request.scope.database,
     fallbackSchema: request.scope.schema,
     rowSchema: connectionObjectTreeNodeSchema(props.connection, props.database, selectedSchema.value),
   });
-}
-
-async function loadMixedSchemaIndexes(request: ObjectBrowserRowsLoadHandle, schema: string, filter?: string): Promise<ObjectInfo[]> {
-  try {
-    return await objectBrowserRowsLoadGuard.wait(
-      request.epoch,
-      api.listObjects(request.scope.connectionId, request.scope.database, schema, ["INDEX"], filter || undefined, undefined, undefined, request.scope.catalog, undefined, undefined, true),
-      metadataLoadBudgetMs(props.connection.query_timeout_secs),
-    );
-  } catch (error) {
-    if (objectBrowserRowsLoadGuard.isCurrent(request)) scaffoldRefreshError.value = translateBackendError(t, error);
-    return [];
-  }
 }
 
 async function loadMongoObjectBrowserRows(connectionId: string, database: string) {
@@ -5281,11 +5263,11 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       <div class="min-w-0 flex-1 truncate text-muted-foreground">
         {{ t("objects.selectedTables", { count: selectedTableCount }) }}
       </div>
-      <Button v-if="supportsBatchTableActions" variant="ghost" size="sm" class="h-7 px-2 text-xs" @click="openBatchDatabaseExport">
+      <Button v-if="supportsBatchTableActions && !hasSelectedSchemaIndexes" variant="ghost" size="sm" class="h-7 px-2 text-xs" @click="openBatchDatabaseExport">
         <Upload class="mr-1.5 h-3.5 w-3.5" />
         {{ t("objects.exportSelected") }}
       </Button>
-      <Button v-if="supportsBatchTableActions" variant="ghost" size="sm" class="h-7 px-2 text-xs" @click="copySelectedTablesToClipboard">
+      <Button v-if="supportsBatchTableActions && !hasSelectedSchemaIndexes" variant="ghost" size="sm" class="h-7 px-2 text-xs" @click="copySelectedTablesToClipboard">
         <Clipboard class="mr-1.5 h-3.5 w-3.5" />
         {{ t("objects.copyTableSelected") }}
       </Button>
@@ -5733,7 +5715,13 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               {{ t("grid.tableInfoEmpty") }}
             </div>
             <div v-else class="divide-y">
-              <div v-for="index in filteredTableIndexes" :key="JSON.stringify([schemaIndexOwner(index), index.name])" class="p-3 text-xs" :class="{ 'bg-primary/10 ring-1 ring-inset ring-primary/40': isInitialSchemaIndex(index) }" :data-schema-index-match="isInitialSchemaIndex(index) || undefined">
+              <div
+                v-for="(index, ordinal) in filteredTableIndexes"
+                :key="JSON.stringify([schemaIndexOwner(index), index.name, ordinal])"
+                class="p-3 text-xs"
+                :class="{ 'bg-primary/10 ring-1 ring-inset ring-primary/40': isInitialSchemaIndex(index) }"
+                :data-schema-index-match="isInitialSchemaIndex(index) || undefined"
+              >
                 <div class="flex items-start gap-2">
                   <div class="min-w-0 flex-1">
                     <div class="font-medium truncate">{{ index.name }}</div>

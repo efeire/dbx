@@ -2386,12 +2386,14 @@ public final class DamengAgent extends AbstractJdbcAgent {
                 MAX(CASE WHEN constraint_metadata.TYPE$ = 'P' THEN 1 ELSE 0 END) AS IS_PK,
                 index_metadata.TYPE$,
                 MAX(CASE WHEN constraint_metadata.TYPE$ IN ('P', 'U') THEN 1 ELSE 0 END) AS CONSTRAINT_BACKED,
-                index_metadata.FLAG
+                index_metadata.FLAG, index_schema_object.NAME AS INDEX_OWNER
             FROM SYS.SYSOBJECTS schema_object
             JOIN SYS.SYSOBJECTS table_object ON table_object.SCHID = schema_object.ID
                 AND table_object.TYPE$ = 'SCHOBJ' AND table_object.SUBTYPE$ = 'UTAB'
             JOIN SYS.SYSOBJECTS index_object ON index_object.PID = table_object.ID
                 AND index_object.SUBTYPE$ = 'INDEX'
+            JOIN SYS.SYSOBJECTS index_schema_object ON index_schema_object.ID = index_object.SCHID
+                AND index_schema_object.TYPE$ = 'SCH'
             JOIN SYS.SYSINDEXES index_metadata ON index_metadata.ID = index_object.ID
             JOIN SYS.SYSCOLUMNS column_object ON column_object.ID = table_object.ID
                 AND SF_COL_IS_IDX_KEY(
@@ -2403,8 +2405,8 @@ public final class DamengAgent extends AbstractJdbcAgent {
                 AND constraint_metadata.INDEXID = index_metadata.ID
                 AND constraint_metadata.TYPE$ IN ('P', 'U')
             WHERE schema_object.TYPE$ = 'SCH' AND schema_object.NAME = ? AND table_object.NAME = ?
-            GROUP BY index_object.NAME, index_metadata.ISUNIQUE, index_metadata.TYPE$, index_metadata.FLAG
-            ORDER BY index_object.NAME
+            GROUP BY index_schema_object.NAME, index_object.NAME, index_metadata.ISUNIQUE, index_metadata.TYPE$, index_metadata.FLAG
+            ORDER BY index_schema_object.NAME, index_object.NAME
             """.stripIndent().trim();
         try (PreparedStatement stmt = requireConnected().prepareStatement(sql)) {
             stmt.setString(1, schema);
@@ -2424,6 +2426,7 @@ public final class DamengAgent extends AbstractJdbcAgent {
                         null
                     );
                     index.setConstraint_backed(constraintBacked);
+                    index.setOwner(rs.getString(8));
                     result.add(index);
                 }
             }
@@ -2441,14 +2444,14 @@ public final class DamengAgent extends AbstractJdbcAgent {
                 i.UNIQUENESS,
                 CASE WHEN c.CONSTRAINT_TYPE = 'P' THEN 1 ELSE 0 END AS IS_PK,
                 i.INDEX_TYPE,
-                CASE WHEN c.CONSTRAINT_TYPE IN ('P', 'U') THEN 1 ELSE 0 END AS CONSTRAINT_BACKED
+                CASE WHEN c.CONSTRAINT_TYPE IN ('P', 'U') THEN 1 ELSE 0 END AS CONSTRAINT_BACKED, i.OWNER AS INDEX_OWNER
             FROM ALL_INDEXES i
             JOIN ALL_IND_COLUMNS ic ON i.INDEX_NAME = ic.INDEX_NAME AND i.OWNER = ic.INDEX_OWNER AND i.TABLE_OWNER = ic.TABLE_OWNER
             LEFT JOIN ALL_CONSTRAINTS c ON i.INDEX_NAME = c.INDEX_NAME AND i.TABLE_OWNER = c.OWNER
                 AND c.CONSTRAINT_TYPE IN ('P', 'U')
             WHERE i.TABLE_OWNER = ? AND i.TABLE_NAME = ?
-            GROUP BY i.INDEX_NAME, i.UNIQUENESS, c.CONSTRAINT_TYPE, i.INDEX_TYPE
-            ORDER BY i.INDEX_NAME
+            GROUP BY i.OWNER, i.INDEX_NAME, i.UNIQUENESS, c.CONSTRAINT_TYPE, i.INDEX_TYPE
+            ORDER BY i.OWNER, i.INDEX_NAME
             """.stripIndent().trim();
         try (PreparedStatement stmt = requireConnected().prepareStatement(sql)) {
             stmt.setString(1, schema);
@@ -2466,6 +2469,7 @@ public final class DamengAgent extends AbstractJdbcAgent {
                         null
                     );
                     index.setConstraint_backed("1".equals(rs.getString(6)));
+                    index.setOwner(rs.getString(7));
                     result.add(index);
                 }
             }

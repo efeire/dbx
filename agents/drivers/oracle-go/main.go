@@ -509,6 +509,7 @@ type columnInfo struct {
 }
 
 type indexInfo struct {
+	Owner               *string  `json:"owner,omitempty"`
 	Name                string   `json:"name"`
 	Columns             []string `json:"columns"`
 	IsUnique            bool     `json:"is_unique"`
@@ -2888,7 +2889,7 @@ SELECT i.INDEX_NAME,
        i.VISIBILITY,
        ic.DESCEND,
        ie.COLUMN_EXPRESSION,
-       ic.COLUMN_POSITION
+       ic.COLUMN_POSITION, i.OWNER
 FROM ALL_INDEXES i
 JOIN ALL_IND_COLUMNS ic ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME
   AND ic.TABLE_OWNER = i.TABLE_OWNER AND ic.TABLE_NAME = i.TABLE_NAME
@@ -2898,27 +2899,30 @@ LEFT JOIN ALL_CONSTRAINTS pk ON pk.OWNER = i.TABLE_OWNER
   AND pk.TABLE_NAME = i.TABLE_NAME
   AND pk.CONSTRAINT_TYPE = 'P'
   AND pk.INDEX_NAME = i.INDEX_NAME
+  AND pk.INDEX_OWNER = i.OWNER
 WHERE i.TABLE_OWNER = :1 AND i.TABLE_NAME = :2
-ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION`, []any{schema, table})
+ORDER BY i.OWNER, i.INDEX_NAME, ic.COLUMN_POSITION`, []any{schema, table})
 	if err != nil {
 		return nil, err
 	}
 	defer s.closeRows(rows)
 
-	byName := map[string]*indexInfo{}
-	order := []string{}
+	byName := map[[2]string]*indexInfo{}
+	order := [][2]string{}
 	for rows.Next() {
-		var name, column, uniqueness, indexType, partitioned, visibility, direction string
+		var name, column, uniqueness, indexType, partitioned, visibility, direction, owner string
 		var expression sql.NullString
 		var primary int
 		var position int
-		if err := rows.Scan(&name, &column, &uniqueness, &primary, &indexType, &partitioned, &visibility, &direction, &expression, &position); err != nil {
+		if err := rows.Scan(&name, &column, &uniqueness, &primary, &indexType, &partitioned, &visibility, &direction, &expression, &position, &owner); err != nil {
 			return nil, err
 		}
-		item := byName[name]
+		identity := [2]string{owner, name}
+		item := byName[identity]
 		if item == nil {
 			visible := visibility
 			item = &indexInfo{
+				Owner:               &owner,
 				Name:                name,
 				Columns:             []string{},
 				IsUnique:            uniqueness == "UNIQUE",
@@ -2930,8 +2934,8 @@ ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION`, []any{schema, table})
 				Visibility:          &visible,
 				KeyMetadataComplete: true,
 			}
-			byName[name] = item
-			order = append(order, name)
+			byName[identity] = item
+			order = append(order, identity)
 		}
 		if position != len(item.Columns)+1 || (direction != "ASC" && direction != "DESC") || (visibility != "VISIBLE" && visibility != "INVISIBLE") || item.Visibility == nil || *item.Visibility != visibility || partitioned != "NO" || (indexType != "NORMAL" && indexType != "FUNCTION-BASED NORMAL") {
 			item.KeyMetadataComplete = false

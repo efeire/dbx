@@ -1953,7 +1953,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             String tableName = normalizeObjectName(table);
             String sql = """
                 SELECT i.INDEX_NAME, ic.COLUMN_NAME, ic.COLUMN_POSITION, i.UNIQUENESS,
-                    c.CONSTRAINT_TYPE, i.INDEX_TYPE, i.PARTITIONED, i.VISIBILITY, ic.DESCEND, ie.COLUMN_EXPRESSION
+                    c.CONSTRAINT_TYPE, i.INDEX_TYPE, i.PARTITIONED, i.VISIBILITY, ic.DESCEND, ie.COLUMN_EXPRESSION, i.OWNER AS INDEX_OWNER
                 FROM ALL_INDEXES i
                 JOIN ALL_IND_COLUMNS ic
                     ON i.INDEX_NAME = ic.INDEX_NAME
@@ -1970,29 +1970,33 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                     ON i.INDEX_NAME = c.INDEX_NAME
                     AND i.TABLE_OWNER = c.OWNER
                     AND i.TABLE_NAME = c.TABLE_NAME
+                    AND i.OWNER = c.INDEX_OWNER
                     AND c.CONSTRAINT_TYPE = 'P'
                 WHERE i.TABLE_OWNER = ? AND i.TABLE_NAME = ?
-                ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION
+                ORDER BY i.OWNER, i.INDEX_NAME, ic.COLUMN_POSITION
                 """.stripIndent().trim();
 
-            Map<String, IndexInfo> indexesByName = new LinkedHashMap<>();
+            Map<List<String>, IndexInfo> indexesByName = new LinkedHashMap<>();
             try (var stmt = requireConnection().prepareStatement(sql)) {
                 stmt.setString(1, owner);
                 stmt.setString(2, tableName);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
                         String indexName = rs.getString("INDEX_NAME");
-                        IndexInfo index = indexesByName.get(indexName);
+                        String indexOwner = rs.getString("INDEX_OWNER");
+                        var identity = java.util.Arrays.asList(indexOwner, indexName);
+                        IndexInfo index = indexesByName.get(identity);
                         if (index == null) {
                             IndexInfo item = new IndexInfo(indexName, new ArrayList<>(),
                                 "UNIQUE".equalsIgnoreCase(rs.getString("UNIQUENESS")),
                                 "P".equalsIgnoreCase(rs.getString("CONSTRAINT_TYPE")),
                                 null, rs.getString("INDEX_TYPE"), null, null);
                             item.setKey_is_expression(new ArrayList<>());
+                            item.setOwner(indexOwner);
                             item.setKey_directions(new ArrayList<>());
                             item.setKey_metadata_complete(true);
                             item.setVisibility(rs.getString("VISIBILITY"));
-                            indexesByName.put(indexName, item);
+                            indexesByName.put(identity, item);
                             index = item;
                         }
                         String column = rs.getString("COLUMN_NAME");

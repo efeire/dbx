@@ -215,6 +215,21 @@ describe("queryStore database open state", () => {
     expect(store.tabs.find((tab) => tab.id === id)).toMatchObject({ structureInitialTarget: create, structureInitialTabRequestId: 2 });
   });
 
+  it("retains raw index owner requests while reusing an exact parent tab with dirty drafts", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const initial = { kind: "index", name: " Ix(a) ", owner: " Owner " } as const;
+    const id = store.openTableStructure("ob", "service", " Owner ", " T(a) ", "indexes", initial, undefined, "table", true);
+    const tab = store.tabs.find((item) => item.id === id)!;
+    tab.structureDraft = { dirty: true, newTableName: "untouched" } as NonNullable<typeof tab.structureDraft>;
+    expect(tab.structureInitialTarget).toEqual(initial);
+
+    const deletion = { ...initial, action: "delete" } as const;
+    expect(store.openTableStructure("ob", "service", " Owner ", " T(a) ", "indexes", deletion, undefined, "table", true)).toBe(id);
+    expect(tab.structureInitialTarget).toEqual(deletion);
+    expect(tab.structureDraft.newTableName).toBe("untouched");
+  });
+
   it("reuses only matching schema-less structure targets", async () => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();

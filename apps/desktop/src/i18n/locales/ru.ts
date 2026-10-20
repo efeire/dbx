@@ -138,6 +138,7 @@ export default withEnglishFallback({
   sidebarMenu,
   oracleIndex: { mixedDraft: "Применяйте изменения индексов Oracle отдельно от других изменений структуры таблицы." },
   schemaIndex: {
+    crossOwnerReadOnly: "Индекс «{owner}.{name}» в этом редакторе доступен только для чтения.",
     editIndividually: "Управляйте индексами по отдельности",
     parentUnavailable: "Сведения о родительской таблице недоступны. Скопируйте имя или обновите список.",
     focusUnavailable: "Невозможно точно определить выбранный индекс. Показаны доступные для чтения индексы родительской таблицы.",

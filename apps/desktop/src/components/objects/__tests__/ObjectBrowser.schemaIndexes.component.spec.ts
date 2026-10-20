@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ObjectBrowser from "@/components/objects/ObjectBrowser.vue";
 import { clearObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
 import { clearMetadataRuntimeCache } from "@/lib/metadata/metadataRuntimeCache";
-import type { ConnectionConfig, ObjectInfo } from "@/types/database";
+import type { ConnectionConfig, IndexInfo, ObjectInfo } from "@/types/database";
 
-const mocks = vi.hoisted(() => ({ listObjects: vi.fn(), listTables: vi.fn(), listIndexes: vi.fn(), getColumns: vi.fn(), getTableDdl: vi.fn(), openTableStructure: vi.fn(), executeQuery: vi.fn(), executeBatch: vi.fn() }));
+const mocks = vi.hoisted(() => ({ listObjects: vi.fn(), listTables: vi.fn(), listIndexes: vi.fn(), getColumns: vi.fn(), getTableDdl: vi.fn(), openTableStructure: vi.fn(), executeQuery: vi.fn(), executeBatch: vi.fn(), toolbarTier: 0 }));
 vi.mock("@/lib/backend/api", () => ({ ...mocks, listSchemas: vi.fn().mockResolvedValue([" Mixed "]), listObjectStatistics: vi.fn().mockResolvedValue([]), loadSchemaCache: vi.fn().mockResolvedValue(null), saveSchemaCache: vi.fn(), deleteSchemaCachePrefix: vi.fn() }));
 vi.mock("@/stores/connectionStore", () => ({ useConnectionStore: () => ({ getConfig: () => connection, ensureConnected: vi.fn().mockResolvedValue(undefined), orderByPinnedTreeNodes: (rows: unknown[]) => rows }) }));
 vi.mock("@/stores/queryStore", () => ({ useQueryStore: () => ({ openTableStructure: mocks.openTableStructure }) }));
@@ -15,6 +15,7 @@ vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key, locale: 
 vi.mock("@/i18n", () => ({ default: { install: () => undefined } }));
 vi.mock("@/composables/useSqlHighlighter", () => ({ useSqlHighlighter: () => ({ highlight: (sql: string) => sql }) }));
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
+vi.mock("@/composables/useToolbarOverflow", () => ({ useToolbarOverflow: () => ({ tier: ref(mocks.toolbarTier) }) }));
 vi.mock("vue-virtual-scroller", () => ({
   RecycleScroller: defineComponent({
     props: { items: { type: Array, default: () => [] } },
@@ -70,7 +71,6 @@ vi.mock("@/components/ui/dialog", () => ({
     },
   },
 }));
-vi.mock("@/components/ui/ToolbarOverflowMenu.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/editor/QueryEditor.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/editor/DangerConfirmDialog.vue", () => ({
   default: defineComponent({
@@ -97,6 +97,7 @@ beforeEach(() => {
   mocks.getColumns.mockReset().mockResolvedValue([]);
   mocks.getTableDdl.mockReset().mockResolvedValue("CREATE TABLE parent (id NUMBER)");
   connection.db_type = "oceanbase-oracle";
+  mocks.toolbarTier = 0;
   clearObjectBrowserRowsCache();
   clearMetadataRuntimeCache();
 });
@@ -119,14 +120,48 @@ async function mountBrowser(extra: Record<string, unknown> = {}) {
 }
 
 describe("schema index browsing and draft navigation", () => {
-  it.each(["same", "mixed"])("blocks %s batch deletion containing INDEX rows at the browser entry", async (kind) => {
-    mocks.listObjects.mockImplementation(async (...args: unknown[]) => (args[10] === true ? [index("INDEX_A"), index("INDEX_B")] : [{ name: "ORDINARY", object_type: "TABLE", schema: " Mixed " }]));
+  it("keeps INDEX selectable in the real overflow menu when the all view is empty", async () => {
+    mocks.toolbarTier = 2;
+    mocks.listObjects.mockImplementation(async (...args: unknown[]) => (args[10] === true ? [index("EXACT")] : []));
     const { host } = await mountBrowser({ selectedObjectFilter: "all" });
+    expect(host.querySelector("[data-object-filter-chips]")).toBeNull();
+    const trigger = host.querySelector<HTMLButtonElement>('[aria-label="toolbar.moreActions"]')!;
+    trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    const filter = await vi.waitFor(() => {
+      const item = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')).find((item) => item.textContent?.trim() === "tree.indexes");
+      expect(item).toBeDefined();
+      return item!;
+    });
+    filter.click();
+    await vi.waitFor(() => expect(host.querySelector('[title="EXACT"]')).not.toBeNull());
+    expect(mocks.listObjects.mock.calls.at(-1)?.slice(3, 7)).toEqual([["INDEX"], undefined, 3, 0]);
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+  });
+  it.each(["empty", "only-indexes"])("keeps the exact INDEX filter clickable from a legacy %s all view", async (kind) => {
+    connection.db_type = "oracle";
+    mocks.listObjects.mockImplementation(async (...args: unknown[]) => (args[10] === true ? [index("EXACT")] : kind === "empty" ? [] : [index("LEGACY")]));
+    const { host } = await mountBrowser({ selectedObjectFilter: "all" });
+    const button = await vi.waitFor(() => {
+      const filter = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim().startsWith("tree.indexes"));
+      expect(filter).toBeDefined();
+      return filter!;
+    });
+    button.click();
+    await vi.waitFor(() => expect(host.querySelector('[title="EXACT"]')).not.toBeNull());
+    expect(host.querySelector('[title="LEGACY"]')).toBeNull();
+    expect(mocks.listObjects.mock.calls.at(-1)?.slice(3, 7)).toEqual([["INDEX"], undefined, 3, 0]);
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+  });
+  it.each(["same", "mixed"])("blocks %s batch deletion containing INDEX rows at the browser entry", async (kind) => {
+    mocks.listObjects.mockResolvedValue([index("INDEX_A"), kind === "same" ? index("INDEX_B") : { name: "ORDINARY", object_type: "TABLE", schema: " Mixed " }]);
+    const { host } = await mountBrowser();
     await vi.waitFor(() => expect(host.querySelector('[title="INDEX_A"]')).not.toBeNull());
     for (const name of ["INDEX_A", kind === "same" ? "INDEX_B" : "ORDINARY"]) {
       host.querySelector(`[title="${name}"]`)!.parentElement!.parentElement!.querySelector<HTMLButtonElement>("button")!.click();
     }
     await nextTick();
+    expect(host.textContent).not.toContain("objects.exportSelected");
+    expect(host.textContent).not.toContain("objects.copyTableSelected");
     Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => button.textContent?.includes("objects.dropSelected"))!
       .click();
@@ -137,17 +172,41 @@ describe("schema index browsing and draft navigation", () => {
     expect(mocks.executeBatch).not.toHaveBeenCalled();
   });
 
-  it.each(["oracle", "oceanbase-oracle", "dameng"] as const)("retains exact INDEX rows in the %s mixed all view", async (type) => {
+  it.each(["oracle", "oceanbase-oracle", "dameng"] as const)("keeps %s schema indexes out of the legacy mixed all view", async (type) => {
     connection.db_type = type;
     mocks.listObjects.mockImplementation(async (...args: unknown[]) => (args[10] === true ? [index(" Ix(a) ")] : [{ name: "ORDINARY", schema: " Mixed ", object_type: "TABLE" }, index("LEGACY_WRONG")]));
     const { host } = await mountBrowser({ selectedObjectFilter: "all" });
-    await vi.waitFor(() => expect(host.querySelector('[title=" Ix(a) "]')).not.toBeNull());
+    await vi.waitFor(() => expect(host.querySelector('[title="ORDINARY"]')).not.toBeNull());
     expect(host.querySelector('[title="ORDINARY"]')).not.toBeNull();
     expect(host.querySelector('[title="LEGACY_WRONG"]')).toBeNull();
-    expect(mocks.listObjects.mock.calls.find((call) => call[10] === true)?.slice(0, 4)).toEqual([connection.id, "service", " Mixed ", ["INDEX"]]);
+    expect(host.querySelector('[title=" Ix(a) "]')).toBeNull();
+    expect(mocks.listObjects.mock.calls.every((call) => !call[10] && !call[3]?.includes("INDEX"))).toBe(true);
   });
 
-  it("keeps ordinary mixed objects visible when only the exact INDEX subset cannot be verified", async () => {
+  it("loads indexes only after choosing the dedicated bounded exact filter", async () => {
+    mocks.listObjects.mockImplementation(async (...args: unknown[]) => {
+      if (args[10] !== true) return [{ name: "ORDINARY", object_type: "TABLE", schema: " Mixed " }];
+      const all = [index("I1"), index("I2"), index("I3"), index("I4")];
+      return all.slice(Number(args[6] ?? 0), Number(args[6] ?? 0) + Number(args[5] ?? all.length));
+    });
+    const { host } = await mountBrowser({ selectedObjectFilter: "all" });
+    await vi.waitFor(() => expect(host.querySelector('[title="ORDINARY"]')).not.toBeNull());
+    expect(mocks.listObjects.mock.calls.some((call) => call[10] === true)).toBe(false);
+    Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "tree.indexes")!
+      .click();
+    await vi.waitFor(() => expect(host.querySelector('[title="I2"]')).not.toBeNull());
+    expect(mocks.listObjects.mock.calls.find((call) => call[10] === true)?.slice(5, 7)).toEqual([3, 0]);
+    expect(host.querySelector('[title="I3"]')).toBeNull();
+    host.querySelector<HTMLButtonElement>("[data-object-load-more]")!.click();
+    await vi.waitFor(() => expect(host.querySelector('[title="I4"]')).not.toBeNull());
+    expect(mocks.listObjects.mock.calls.filter((call) => call[10] === true)[1]?.slice(5, 7)).toEqual([3, 2]);
+    expect(host.querySelectorAll('[title="I1"]')).toHaveLength(1);
+    expect(host.querySelector('[title="ORDINARY"]')).toBeNull();
+    expect(host.querySelector("[data-object-load-more]")).toBeNull();
+  });
+
+  it("keeps ordinary mixed objects available without requesting exact INDEX metadata", async () => {
     connection.db_type = "oracle";
     mocks.listObjects.mockImplementation(async (...args: unknown[]) => {
       if (args[10] === true) throw new Error("exact_metadata_identity_v1 unavailable");
@@ -155,7 +214,8 @@ describe("schema index browsing and draft navigation", () => {
     });
     const { host } = await mountBrowser({ selectedObjectFilter: "all" });
     await vi.waitFor(() => expect(host.querySelector('[title="ORDINARY"]')).not.toBeNull());
-    expect(host.textContent).toContain("exact_metadata_identity_v1 unavailable");
+    expect(host.textContent).not.toContain("exact_metadata_identity_v1 unavailable");
+    expect(mocks.listObjects).toHaveBeenCalledTimes(1);
   });
 
   it.each(["oracle", "oceanbase-oracle", "dameng"] as const)("%s requests exact typed pages before rendering INDEX rows", async (type) => {
@@ -309,6 +369,15 @@ describe("schema index browsing and draft navigation", () => {
     await vi.waitFor(() => expect(host.querySelector("[data-schema-index-focus-unavailable]")).not.toBeNull());
     expect(host.querySelector("[data-schema-index-match]")).toBeNull();
     expect(host.querySelector("[data-object-table-structure]")).toBeNull();
+    expect(mocks.openTableStructure).not.toHaveBeenCalled();
+  });
+
+  it("focuses only the exact dictionary owner among same-name parent indexes", async () => {
+    const indexes: IndexInfo[] = [" Mixed ", "Other"].map((owner) => ({ name: " Ix(a) ", owner, columns: ["Id"], is_unique: false, is_primary: false }));
+    mocks.listIndexes.mockResolvedValue(indexes);
+    const { host } = await mountBrowser({ initialViewTarget: { schema: " Mixed ", name: " Ix(a) ", parentSchema: " Other Owner ", parentName: ' T(a)" ' }, initialViewRequestId: 1 });
+    await vi.waitFor(() => expect(host.querySelectorAll("[data-schema-index-match]")).toHaveLength(1));
+    expect(host.querySelector("[data-schema-index-focus-unavailable]")).toBeNull();
     expect(mocks.openTableStructure).not.toHaveBeenCalled();
   });
 });

@@ -165,6 +165,7 @@ export default withEnglishFallback({
   },
   oracleIndex: { mixedDraft: "กรุณาแยกการแก้ไข Index ของตระกูล Oracle ออกจากการแก้ไขโครงสร้างตารางอื่น" },
   schemaIndex: {
+    crossOwnerReadOnly: "ดัชนี “{owner}.{name}” เป็นแบบอ่านอย่างเดียวในตัวแก้ไขนี้",
     editIndividually: "จัดการดัชนีทีละรายการ",
     parentUnavailable: "ไม่มีข้อมูลตารางแม่ คัดลอกชื่อหรือรีเฟรชรายการ",
     focusUnavailable: "ไม่สามารถระบุดัชนีที่เลือกได้อย่างแน่ชัด ด้านล่างคือดัชนีของตารางแม่ที่อ่านได้",

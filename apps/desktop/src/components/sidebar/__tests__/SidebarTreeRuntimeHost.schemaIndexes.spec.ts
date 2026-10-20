@@ -93,14 +93,14 @@ it("routes menu, double click and Delete to one exact parent draft, never the ge
   const { host, queries, danger } = await mountHost(node);
   host.handleRowDoubleClick(node, new MouseEvent("dblclick"));
   await nextTick();
-  expect(queries.tabs.at(-1)).toMatchObject({ mode: "structure", schema: " Owner ", structureTableName: " T (1) ", structureExactIdentity: true, structureInitialTarget: { kind: "index", name: " Ix (a) " } });
+  expect(queries.tabs.at(-1)).toMatchObject({ mode: "structure", schema: " Owner ", structureTableName: " T (1) ", structureExactIdentity: true, structureInitialTarget: { kind: "index", name: " Ix (a) ", owner: " Owner " } });
   host
     .buildContextMenu(node)
     .find((entry: ContextMenuItem) => entry.label === tr("contextMenu.dropIndex"))
     ?.action?.();
   await nextTick();
   expect(queries.tabs).toHaveLength(1);
-  expect(queries.tabs[0]?.structureInitialTarget).toMatchObject({ name: " Ix (a) ", action: "delete" });
+  expect(queries.tabs[0]?.structureInitialTarget).toMatchObject({ name: " Ix (a) ", owner: " Owner ", action: "delete" });
   expect(showDropTableChildObjectConfirm.value).toBe(false);
   host.handleRowKeydown(node, new KeyboardEvent("keydown", { key: "Delete" }));
   await nextTick();

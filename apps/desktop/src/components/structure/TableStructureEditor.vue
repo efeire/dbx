@@ -1475,7 +1475,7 @@ const usesNativeMysqlIndexNames = computed(() => {
 const supportsCharacterLengthUnits = computed(() => databaseType.value === "dameng" || databaseType.value === "oracle" || databaseType.value === "oceanbase-oracle");
 const usesMysql8SafeDefaults = computed(() => databaseType.value === "mysql" && connection.value?.db_type === "mysql" && connection.value.driver_profile === "mysql");
 const structureCapabilities = computed(() => getTableStructureCapabilities(databaseType.value, connection.value?.db_type, connection.value?.database_info?.productVersion, starrocksAlterContext.value?.model));
-const tableMetadataCapabilities = computed(() => getTableMetadataCapabilities(databaseType.value));
+const tableMetadataCapabilities = computed(() => getTableMetadataCapabilities(databaseType.value, { connectionType: connection.value?.db_type, exactIdentity: props.exactIdentity }));
 const structureDialect = computed(() => structureCapabilities.value.dialect);
 const isTableCommentDisabled = computed(() => !structureCapabilities.value.comment || (!isCreateMode.value && databaseType.value === "starrocks" && !getStarRocksCapabilities(connection.value?.database_info?.productVersion).tableComment));
 const dynamicDataTypeOptions = ref<string[]>([]);
@@ -2255,7 +2255,7 @@ function addOracleUniqueColumn(name: string) {
 }
 
 function canOpenPairedOracleConstraint(index: EditableStructureIndex): boolean {
-  return isOracleConstraintEditor.value && index.isUnique && !!index.original;
+  return isOracleConstraintEditor.value && tableMetadataCapabilities.value.constraints && index.isUnique && !!index.original;
 }
 
 async function editOracleUniqueConstraintForIndex(index: EditableStructureIndex) {
@@ -2263,7 +2263,7 @@ async function editOracleUniqueConstraintForIndex(index: EditableStructureIndex)
   const target = oracleConstraintTarget();
   const identity = JSON.stringify(target);
   try {
-    const fresh = await api.listConstraints(target.connectionId, target.database, target.schema, target.tableName, target.catalog);
+    const fresh = await api.listConstraints(target.connectionId, target.database, target.schema, target.tableName, target.catalog, ...(target.exactIdentity ? ([true] as const) : []));
     if (primaryKeyUnmounted || identity !== JSON.stringify(oracleConstraintTarget())) return;
     const constraint = fresh.find((item) => item.constraint_type === "UNIQUE" && item.oracle_metadata?.metadataComplete && item.oracle_metadata.owner === target.schema && item.oracle_metadata.indexOwner === target.schema && item.oracle_metadata.indexName === index.original?.name);
     if (!constraint) throw new Error("This unique index has no uniquely paired constraint metadata.");
@@ -3140,6 +3140,14 @@ async function refreshSqlPreview() {
   existingOracleForeignKeySession.value = undefined;
   newOracleForeignKeyPlan.value = undefined;
   newOracleForeignKeySession.value = undefined;
+  const indexWriteWarning = schemaIndexWriteWarning();
+  if (indexWriteWarning) {
+    pendingStatements.value = [];
+    warnings.value = [indexWriteWarning];
+    sqlPreviewLoading.value = false;
+    sqlPreviewPending.value = false;
+    return;
+  }
   if (concurrentAvailabilityInvalidated.value) {
     // Availability gap in effect: never regenerate SQL here — doing so would
     // turn a lost Concurrent request into a silent blocking CREATE INDEX. Keep
@@ -5624,6 +5632,7 @@ function toggleDropIndex(index: EditableStructureIndex) {
 
 function canEditIndexDraft(index: EditableStructureIndex): boolean {
   if (indexesLoading.value) return false;
+  if (schemaIndexDraftIsReadOnly(index)) return false;
   if (index.markedForDrop || index.isPrimary) return false;
   if (!index.original) return structureCapabilities.value.createIndex;
   return structureCapabilities.value.rebuildIndex && structureCapabilities.value.createIndex && structureCapabilities.value.dropIndex;
@@ -5722,7 +5731,18 @@ function canEditIndexComment(index: EditableStructureIndex): boolean {
 
 function canDropIndex(index: EditableStructureIndex): boolean {
   if (indexesLoading.value) return false;
+  if (schemaIndexDraftIsReadOnly(index)) return false;
   return !!index.original && !index.isPrimary && structureCapabilities.value.dropIndex;
+}
+
+function schemaIndexDraftIsReadOnly(index: EditableStructureIndex): boolean {
+  return props.exactIdentity === true && !!index.original && (index.original.owner == null || index.original.owner !== metadataSchema.value);
+}
+
+function schemaIndexWriteWarning(): string | undefined {
+  const blocked = indexes.value.find((index) => schemaIndexDraftIsReadOnly(index) && indexChanged(index));
+  if (!blocked) return undefined;
+  return blocked.original?.owner == null ? t("schemaIndex.targetMissing", { name: blocked.original?.name }) : t("schemaIndex.crossOwnerReadOnly", { owner: blocked.original.owner, name: blocked.original.name });
 }
 
 const isOracleForeignKeyEditor = computed(() => databaseType.value === "oracle" || databaseType.value === "oceanbase-oracle");
@@ -6739,6 +6759,11 @@ async function applyOracleForeignKeyCreatePlan(): Promise<boolean> {
 }
 
 async function applyChanges() {
+  const indexWriteWarning = schemaIndexWriteWarning();
+  if (indexWriteWarning) {
+    errorMessage.value = indexWriteWarning;
+    return false;
+  }
   if (!canApply.value || !props.connectionId || !props.database) return false;
   if (oracleIndexRefreshGuard.value?.target === oracleIndexTargetIdentity(oracleConstraintTarget())) {
     errorMessage.value = "Index execution may have changed the database. Refresh index metadata before applying again.";
@@ -7218,7 +7243,7 @@ function applyPendingInitialStructureTab() {
 }
 
 function initialTargetKey(target: TableStructureEditorTarget): string {
-  return JSON.stringify([props.initialTabRequestId ?? 0, props.exactIdentity === true, target.kind, target.name, target.action]);
+  return JSON.stringify([props.initialTabRequestId ?? 0, props.exactIdentity === true, target.kind, target.owner, target.name, target.action]);
 }
 
 function applyInitialStructureTarget() {
@@ -7241,7 +7266,7 @@ function applyInitialStructureTarget() {
       syncDraftToParent();
       return;
     }
-    const matches = indexes.value.filter((index) => index.original?.name === target.name);
+    const matches = typeof target.owner === "string" ? indexes.value.filter((index) => index.original?.owner === target.owner && index.original?.name === target.name) : [];
     if (matches.length !== 1) {
       initialIndexTargetError = { key, message: t("schemaIndex.targetMissing", { name: target.name }) };
       errorMessage.value = initialIndexTargetError.message;

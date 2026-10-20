@@ -3294,17 +3294,18 @@ final class DbxJdbcPluginTest {
     @Test
     void oracleIndexMetadataPreservesGuardFidelity() throws Exception {
         ResultSet rows = rowsResultSet(
-            new String[]{"index_name", "uniqueness", "index_type", "column_name", "is_primary", "column_position", "partitioned", "visibility", "descend", "column_expression"},
+            new String[]{"index_name", "uniqueness", "index_type", "column_name", "is_primary", "column_position", "partitioned", "visibility", "descend", "column_expression", "index_owner"},
             new Object[][]{
-                {" Ix(a) ", "NONUNIQUE", "FUNCTION-BASED NORMAL", "SYS_NC0001$", 0, 1, "NO", "INVISIBLE", "DESC", "LOWER(\" Code \" )"},
-                {" Ix(a) ", "NONUNIQUE", "FUNCTION-BASED NORMAL", "ID", 0, 2, "NO", "INVISIBLE", "ASC", null},
-                {"UNKNOWN", "UNIQUE", "NORMAL", "ID", 0, 1, null, "VISIBLE", "ASC", null}
+                {" Ix(a) ", "NONUNIQUE", "FUNCTION-BASED NORMAL", "SYS_NC0001$", 0, 1, "NO", "INVISIBLE", "DESC", "LOWER(\" Code \" )", " Index Owner "},
+                {" Ix(a) ", "NONUNIQUE", "FUNCTION-BASED NORMAL", "ID", 0, 2, "NO", "INVISIBLE", "ASC", null, " Index Owner "},
+                {"UNKNOWN", "UNIQUE", "NORMAL", "ID", 0, 1, null, "VISIBLE", "ASC", null, "Other"}
             });
         Method method = DbxJdbcPlugin.class.getDeclaredMethod("oracleListIndexes", Connection.class, String.class, String.class);
         method.setAccessible(true);
         JsonNode indexes = (JsonNode) method.invoke(null, preparedStatementConnection(rows), "Owner", " T(a) ");
 
         JsonNode index = findByName(indexes, " Ix(a) ");
+        assertEquals(" Index Owner ", index.path("owner").asText());
         assertEquals("LOWER(\" Code \" )", index.path("columns").path(0).asText());
         assertEquals(true, index.path("key_is_expression").path(0).asBoolean());
         assertEquals(false, index.path("key_is_expression").path(1).asBoolean());
@@ -3326,10 +3327,10 @@ final class DbxJdbcPluginTest {
         });
         ResultSet indexes = longFirstResultSet("column_expression", new String[] {
             "column_expression", "index_name", "uniqueness", "index_type", "column_name", "column_position",
-            "partitioned", "visibility", "descend", "is_primary"
+            "partitioned", "visibility", "descend", "is_primary", "index_owner"
         }, new Object[][] {
-            {"LOWER(\" Code \")", " Ix (a) ", "NONUNIQUE", "FUNCTION-BASED NORMAL", "SYS_NC0001$", 1, "NO", "VISIBLE", "ASC", 0},
-            {null, " Ix (a) ", "NONUNIQUE", "FUNCTION-BASED NORMAL", "ID", 2, "NO", "VISIBLE", "DESC", 0}
+            {"LOWER(\" Code \")", " Ix (a) ", "NONUNIQUE", "FUNCTION-BASED NORMAL", "SYS_NC0001$", 1, "NO", "VISIBLE", "ASC", 0, " Index Owner "},
+            {null, " Ix (a) ", "NONUNIQUE", "FUNCTION-BASED NORMAL", "ID", 2, "NO", "VISIBLE", "DESC", 0, " Index Owner "}
         });
         Connection conn = (Connection) Proxy.newProxyInstance(
             DbxJdbcPluginTest.class.getClassLoader(), new Class<?>[] {Connection.class},
@@ -3360,12 +3361,31 @@ final class DbxJdbcPluginTest {
                 """.formatted(config));
             assertFalse(indexResponse.has("error"), indexResponse.toString());
             JsonNode index = indexResponse.path("result").path(0);
+            assertEquals(" Index Owner ", index.path("owner").asText());
             assertEquals("LOWER(\" Code \")", index.path("columns").path(0).asText());
             assertEquals("ID", index.path("columns").path(1).asText());
             assertTrue(index.path("key_metadata_complete").asBoolean());
         } finally {
             closeAndDeregister(config, driver);
         }
+    }
+
+    @Test
+    void exactOracleIndexesSeparateEqualNamesByDictionaryOwner() throws Exception {
+        ResultSet rows = rowsResultSet(
+            new String[]{"index_name", "uniqueness", "index_type", "column_name", "is_primary", "column_position", "partitioned", "visibility", "descend", "column_expression", "index_owner"},
+            new Object[][]{
+                {" Ix(a) ", "NONUNIQUE", "NORMAL", "ID", 0, 1, "NO", "VISIBLE", "ASC", null, " Index Owner "},
+                {" Ix(a) ", "NONUNIQUE", "NORMAL", "CODE", 0, 1, "NO", "VISIBLE", "ASC", null, "Other"}
+            });
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod("oracleListIndexes", Connection.class, String.class, String.class, boolean.class);
+        method.setAccessible(true);
+        JsonNode indexes = (JsonNode) method.invoke(null, preparedStatementConnection(rows), " Parent ", " T(a) ", true);
+        assertEquals(2, indexes.size());
+        assertEquals(" Index Owner ", indexes.get(0).path("owner").asText());
+        assertEquals("Other", indexes.get(1).path("owner").asText());
+        assertEquals(1, indexes.get(0).path("columns").size());
+        assertEquals(1, indexes.get(1).path("columns").size());
     }
 
     @Test

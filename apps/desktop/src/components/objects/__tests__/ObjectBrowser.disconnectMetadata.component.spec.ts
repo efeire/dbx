@@ -92,7 +92,7 @@ it("cancels a pending object search when the real store disconnects", async () =
   app.use(pinia);
   try {
     app.mount(host);
-    await vi.waitFor(() => expect(api.listObjects).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(api.listObjects).toHaveBeenCalledTimes(1));
     const input = host.querySelector<HTMLInputElement>("[data-object-search-input]")!;
     input.value = "PENDING_SEARCH";
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -100,7 +100,7 @@ it("cancels a pending object search when the real store disconnects", async () =
     await store.disconnect(connection.id);
     await nextTick();
     await vi.advanceTimersByTimeAsync(350);
-    expect(api.listObjects).toHaveBeenCalledTimes(2);
+    expect(api.listObjects).toHaveBeenCalledTimes(1);
   } finally {
     app.unmount();
     host.remove();

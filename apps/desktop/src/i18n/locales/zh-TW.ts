@@ -196,6 +196,7 @@ export default withEnglishFallback({
   sidebarMenu,
   oracleIndex: { mixedDraft: "請將 Oracle 系索引修改與其他資料表結構修改分開套用。" },
   schemaIndex: {
+    crossOwnerReadOnly: "索引「{owner}.{name}」在此編輯器中為唯讀。",
     editIndividually: "索引需逐項管理",
     parentUnavailable: "缺少父資料表資訊，可複製名稱或重新整理清單。",
     focusUnavailable: "無法精確定位所選索引；以下為父資料表可讀取的索引。",

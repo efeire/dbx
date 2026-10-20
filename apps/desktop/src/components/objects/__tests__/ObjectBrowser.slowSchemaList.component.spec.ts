@@ -111,9 +111,9 @@ describe("ObjectBrowser with a slow schema list", () => {
     const host = await mountBrowser();
 
     await vi.waitFor(() => expect(host.textContent).toContain("TEST2026"));
-    // The all view reads legacy objects and exact INDEX metadata independently.
+    // Schema index metadata is read only in the dedicated paged filter.
     expect(mocks.listObjects).toHaveBeenCalledWith("dameng-slow-schemas", "TEST", "TEST", expect.arrayContaining(["TABLE", "VIEW"]), undefined, undefined, undefined, undefined);
-    expect(mocks.listObjects).toHaveBeenCalledWith("dameng-slow-schemas", "TEST", "TEST", ["INDEX"], undefined, undefined, undefined, undefined, undefined, undefined, true);
+    expect(mocks.listObjects).toHaveBeenCalledTimes(1);
     expect(mocks.listSchemas).toHaveBeenCalledWith("dameng-slow-schemas", "TEST");
     expect(host.textContent).not.toContain("objects.empty");
   });
@@ -128,6 +128,6 @@ describe("ObjectBrowser with a slow schema list", () => {
     resolveSchemas(["TEST", "OTHER"]);
     await Promise.resolve();
     await nextTick();
-    expect(mocks.listObjects).toHaveBeenCalledTimes(2);
+    expect(mocks.listObjects).toHaveBeenCalledTimes(1);
   });
 });

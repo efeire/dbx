@@ -4639,16 +4639,16 @@ public final class DbxJdbcPlugin {
         String sql =
             "SELECT ie.column_expression, i.index_name, i.uniqueness, i.index_type, ic.column_name, " +
             "ic.column_position, i.partitioned, i.visibility, ic.descend, " +
-            "CASE WHEN pk.index_name IS NULL THEN 0 ELSE 1 END AS is_primary " +
+            "CASE WHEN pk.index_name IS NULL THEN 0 ELSE 1 END AS is_primary, i.owner AS index_owner " +
             "FROM all_indexes i " +
             "JOIN all_ind_columns ic ON ic.index_owner = i.owner AND ic.index_name = i.index_name " +
             "AND ic.table_owner = i.table_owner AND ic.table_name = i.table_name " +
             "LEFT JOIN all_ind_expressions ie ON ie.index_owner = ic.index_owner AND ie.index_name = ic.index_name " +
             "AND ie.table_owner = ic.table_owner AND ie.table_name = ic.table_name AND ie.column_position = ic.column_position " +
-            "LEFT JOIN (SELECT owner, index_name, table_name FROM all_constraints WHERE constraint_type = 'P') pk " +
-            "ON pk.owner = i.owner AND pk.index_name = i.index_name AND pk.table_name = i.table_name " +
+            "LEFT JOIN (SELECT owner, index_owner, index_name, table_name FROM all_constraints WHERE constraint_type = 'P') pk " +
+            "ON pk.owner = i.table_owner AND pk.index_owner = i.owner AND pk.index_name = i.index_name AND pk.table_name = i.table_name " +
             "WHERE i.table_owner = ? AND i.table_name = ? " +
-            "ORDER BY i.index_name, ic.column_position";
+            "ORDER BY i.owner, i.index_name, ic.column_position";
         LinkedHashMap<String, ObjectNode> indexes = new LinkedHashMap<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, owner);
@@ -4658,7 +4658,9 @@ public final class DbxJdbcPlugin {
                     // COLUMN_EXPRESSION is LONG on Oracle; read it before the other fields.
                     String expression = rs.getString("column_expression");
                     String name = rs.getString("index_name");
-                    ObjectNode item = indexes.get(name);
+                    String indexOwner = rs.getString("index_owner");
+                    String identity = MAPPER.createArrayNode().add(indexOwner).add(name).toString();
+                    ObjectNode item = indexes.get(identity);
                     if (item == null) {
                         item = indexNode(
                             name,
@@ -4667,10 +4669,11 @@ public final class DbxJdbcPlugin {
                             rs.getString("index_type")
                         );
                         item.set("key_is_expression", MAPPER.createArrayNode());
+                        putNullable(item, "owner", indexOwner);
                         item.set("key_directions", MAPPER.createArrayNode());
                         putNullable(item, "visibility", rs.getString("visibility"));
                         item.put("key_metadata_complete", true);
-                        indexes.put(name, item);
+                        indexes.put(identity, item);
                     }
                     String column = rs.getString("column_name");
                     boolean isExpression = expression != null && !expression.isBlank();

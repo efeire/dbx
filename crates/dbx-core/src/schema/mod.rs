@@ -3245,6 +3245,7 @@ mod tests {
     #[test]
     fn reference_keys_require_effective_unfiltered_plain_unique_columns() {
         let index = |name: &str, columns: &[&str], is_unique: bool, is_primary: bool| db::IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,
@@ -10419,6 +10420,7 @@ async fn external_driver_gaussdb_m_indexes(
                 let is_primary =
                     current_name.to_lowercase().ends_with("_pkey") || current_name.eq_ignore_ascii_case("primary");
                 indexes.push(db::IndexInfo {
+                    owner: None,
                     key_directions: Vec::new(),
                     visibility: None,
                     key_metadata_complete: false,
@@ -10494,6 +10496,7 @@ async fn external_driver_gaussdb_m_indexes(
     if !current_name.is_empty() {
         let is_primary = current_name.to_lowercase().ends_with("_pkey") || current_name.eq_ignore_ascii_case("primary");
         indexes.push(db::IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,
@@ -13225,6 +13228,7 @@ mod ddl_tests {
         id.is_primary_key = true;
         let indexes = vec![
             db::IndexInfo {
+                owner: None,
                 key_directions: Vec::new(),
                 visibility: None,
                 key_metadata_complete: false,
@@ -13242,6 +13246,7 @@ mod ddl_tests {
                 constraint_backed: true,
             },
             db::IndexInfo {
+                owner: None,
                 key_directions: Vec::new(),
                 visibility: None,
                 key_metadata_complete: false,
@@ -13259,6 +13264,7 @@ mod ddl_tests {
                 constraint_backed: true,
             },
             db::IndexInfo {
+                owner: None,
                 key_directions: Vec::new(),
                 visibility: None,
                 key_metadata_complete: false,
@@ -13455,6 +13461,7 @@ mod ddl_tests {
         // expression key just like a real column.
         let id = column("id", "integer");
         let indexes = vec![db::IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,
@@ -13484,6 +13491,7 @@ mod ddl_tests {
     fn postgres_table_ddl_preserves_btree_key_order_and_nulls_position() {
         let id = column("id", "bigint");
         let indexes = vec![db::IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,
@@ -13511,6 +13519,7 @@ mod ddl_tests {
 
     fn postgres_primary_index(keys: &[&str]) -> db::IndexInfo {
         db::IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,
@@ -13755,6 +13764,7 @@ mod ddl_tests {
         let mut id = column("id", "integer");
         id.is_primary_key = true;
         let indexes = vec![db::IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,
@@ -13809,6 +13819,7 @@ mod ddl_tests {
     #[test]
     fn postgres_partition_ddl_preserves_local_unique_without_local_primary_key() {
         let indexes = vec![db::IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,
@@ -13877,6 +13888,7 @@ mod ddl_tests {
         let mut id = column("id", "integer");
         id.is_primary_key = true;
         let indexes = vec![db::IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,

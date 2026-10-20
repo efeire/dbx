@@ -219,16 +219,16 @@ fn list_indexes_sql(schema: &str, table: &str) -> String {
     format!(
         "SELECT ai.INDEX_NAME, aic.COLUMN_NAME, ai.UNIQUENESS, \
          CASE WHEN ac.CONSTRAINT_NAME IS NULL THEN 0 ELSE 1 END AS IS_PRIMARY, ai.INDEX_TYPE, ai.PARTITIONED, \
-         ai.VISIBILITY, aic.DESCEND, aie.COLUMN_EXPRESSION, aic.COLUMN_POSITION \
+         ai.VISIBILITY, aic.DESCEND, aie.COLUMN_EXPRESSION, aic.COLUMN_POSITION, ai.OWNER \
          FROM ALL_INDEXES ai \
          JOIN ALL_IND_COLUMNS aic ON ai.INDEX_NAME = aic.INDEX_NAME AND ai.OWNER = aic.INDEX_OWNER \
            AND ai.TABLE_OWNER = aic.TABLE_OWNER AND ai.TABLE_NAME = aic.TABLE_NAME \
          LEFT JOIN ALL_IND_EXPRESSIONS aie ON aie.INDEX_OWNER = aic.INDEX_OWNER AND aie.INDEX_NAME = aic.INDEX_NAME \
            AND aie.TABLE_OWNER = aic.TABLE_OWNER AND aie.TABLE_NAME = aic.TABLE_NAME AND aie.COLUMN_POSITION = aic.COLUMN_POSITION \
          LEFT JOIN ALL_CONSTRAINTS ac ON ac.INDEX_NAME = ai.INDEX_NAME AND ac.OWNER = ai.TABLE_OWNER \
-           AND ac.TABLE_NAME = ai.TABLE_NAME AND ac.CONSTRAINT_TYPE = 'P' \
+           AND ac.TABLE_NAME = ai.TABLE_NAME AND ac.INDEX_OWNER = ai.OWNER AND ac.CONSTRAINT_TYPE = 'P' \
          WHERE ai.TABLE_OWNER = {s} AND ai.TABLE_NAME = {t} \
-         ORDER BY ai.INDEX_NAME, aic.COLUMN_POSITION",
+         ORDER BY ai.OWNER, ai.INDEX_NAME, aic.COLUMN_POSITION",
         s = metadata_owner_sql(schema),
         t = quote_value(table),
     )
@@ -240,16 +240,18 @@ pub async fn list_indexes(pool: &mysql_async::Pool, schema: &str, table: &str) -
     let result = conn.query_iter(&sql).await.map_err(|e| e.to_string())?;
     let rows: Vec<mysql_async::Row> = result.collect_and_drop().await.map_err(|e| e.to_string())?;
 
-    let mut indexes = BTreeMap::<String, IndexInfo>::new();
+    let mut indexes = BTreeMap::<(String, String), IndexInfo>::new();
     for row in &rows {
         let name = get_str(row, 0);
+        let owner = get_str(row, 10);
         let visibility = get_str(row, 6);
         let partitioned = get_str(row, 5);
         let direction = get_str(row, 7);
         let expression = get_opt_str(row, 8).filter(|value| !value.trim().is_empty());
         let column = get_str(row, 1);
         let position = row_get::<u64, _>(row, 9).unwrap_or(0) as usize;
-        let index = indexes.entry(name.clone()).or_insert_with(|| IndexInfo {
+        let index = indexes.entry((owner.clone(), name.clone())).or_insert_with(|| IndexInfo {
+            owner: Some(owner),
             key_directions: Vec::new(),
             visibility: Some(visibility.clone()),
             key_metadata_complete: true,

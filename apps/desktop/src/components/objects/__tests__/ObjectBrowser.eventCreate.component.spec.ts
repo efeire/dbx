@@ -192,7 +192,7 @@ describe("ObjectBrowser refresh scope", () => {
   it("matches the schema selected automatically by loadSchemas", async () => {
     mocks.listSchemas.mockResolvedValue(["APP", "OTHER"]);
     const damengConnection = { ...connection, id: "dameng", name: "Dameng", db_type: "dameng" } as ConnectionConfig;
-    const { browser } = await mountBrowser({ connection: damengConnection, initialEventCreateRequestId: undefined }, 2);
+    const { browser } = await mountBrowser({ connection: damengConnection, initialEventCreateRequestId: undefined });
 
     expect(browser.value?.matchesRefreshScope({ schema: "APP" })).toBe(true);
     expect(browser.value?.matchesRefreshScope({ schema: "OTHER" })).toBe(false);

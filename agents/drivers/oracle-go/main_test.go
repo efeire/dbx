@@ -879,14 +879,14 @@ func TestListIndexesSeparatesQuotedCloneTableNamesByCase(t *testing.T) {
 		{
 			queryContains: "FROM ALL_INDEXES",
 			args:          []driver.Value{schema, "ORDERS_COPY"},
-			columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION"},
-			rows:          [][]driver.Value{{"ORDERS_COPY_IDX1", "STATUS", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1)}},
+			columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
+			rows:          [][]driver.Value{{"ORDERS_COPY_IDX1", "STATUS", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1), "HR"}},
 		},
 		{
 			queryContains: "FROM ALL_INDEXES",
 			args:          []driver.Value{schema, "ORDERS_copy"},
-			columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION"},
-			rows:          [][]driver.Value{{"ORDERS_copy_IDX1", "STATUS", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1)}},
+			columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
+			rows:          [][]driver.Value{{"ORDERS_copy_IDX1", "STATUS", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1), "HR"}},
 		},
 	})
 	s := newServer()
@@ -917,10 +917,10 @@ func TestListIndexesExposesExpressionDirectionAndVisibilityMetadata(t *testing.T
 	db, _ := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{
 		queryContains: "FROM ALL_INDEXES",
 		args:          []driver.Value{schema, table},
-		columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION"},
+		columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
 		rows: [][]driver.Value{
-			{"IX_EVENT_EXPR", "SYS_NC00001$", "NONUNIQUE", int64(0), "FUNCTION-BASED NORMAL", "NO", "INVISIBLE", "DESC", `LOWER("EVENT_NAME")`, int64(1)},
-			{"IX_EVENT_EXPR", "EVENT_TS", "NONUNIQUE", int64(0), "FUNCTION-BASED NORMAL", "NO", "INVISIBLE", "ASC", nil, int64(2)},
+			{"IX_EVENT_EXPR", "SYS_NC00001$", "NONUNIQUE", int64(0), "FUNCTION-BASED NORMAL", "NO", "INVISIBLE", "DESC", `LOWER("EVENT_NAME")`, int64(1), " Index Owner "},
+			{"IX_EVENT_EXPR", "EVENT_TS", "NONUNIQUE", int64(0), "FUNCTION-BASED NORMAL", "NO", "INVISIBLE", "ASC", nil, int64(2), " Index Owner "},
 		},
 	}})
 	s := newServer()
@@ -946,6 +946,7 @@ func TestListIndexesExposesExpressionDirectionAndVisibilityMetadata(t *testing.T
 		t.Fatal(err)
 	}
 	for key, want := range map[string]any{
+		"owner":                 " Index Owner ",
 		"columns":               []any{`LOWER("EVENT_NAME")`, "EVENT_TS"},
 		"key_is_expression":     []any{true, false},
 		"key_directions":        []any{"DESC", "ASC"},
@@ -971,8 +972,8 @@ func TestListIndexesMarksUnsupportedShapesIncompleteThroughRPC(t *testing.T) {
 			db, _ := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{
 				queryContains: "FROM ALL_INDEXES",
 				args:          []driver.Value{"APP", "EVENTS"},
-				columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION"},
-				rows:          [][]driver.Value{{"IX_EVENT", "EVENT_TS", "NONUNIQUE", int64(0), test.indexType, test.partitioned, "VISIBLE", "ASC", nil, int64(1)}},
+				columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
+				rows:          [][]driver.Value{{"IX_EVENT", "EVENT_TS", "NONUNIQUE", int64(0), test.indexType, test.partitioned, "VISIBLE", "ASC", nil, int64(1), "APP"}},
 			}})
 			s := newServer()
 			s.db = db
@@ -986,6 +987,28 @@ func TestListIndexesMarksUnsupportedShapesIncompleteThroughRPC(t *testing.T) {
 				t.Fatalf("list_indexes returned unsupported shape as complete: %#v", resp.Result)
 			}
 		})
+	}
+}
+
+func TestExactIndexesKeepSameNameDifferentOwnersSeparate(t *testing.T) {
+	db, _ := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{
+		queryContains: "FROM ALL_INDEXES",
+		args:          []driver.Value{" Parent ", " T(a) "},
+		columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
+		rows: [][]driver.Value{
+			{" Ix(a) ", "ID", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1), " Owner "},
+			{" Ix(a) ", "CODE", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1), "Other"},
+		},
+	}})
+	s := newServer()
+	s.db = db
+	response, _ := s.handleLine(`{"jsonrpc":"2.0","id":1,"method":"list_indexes","params":{"schema":" Parent ","table":" T(a) ","exact_identity":true}}`)
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	indexes := response.Result.([]indexInfo)
+	if len(indexes) != 2 || indexes[0].Owner == nil || *indexes[0].Owner != " Owner " || indexes[1].Owner == nil || *indexes[1].Owner != "Other" || len(indexes[0].Columns) != 1 || len(indexes[1].Columns) != 1 {
+		t.Fatalf("owner identity was lost or merged: %#v", indexes)
 	}
 }
 
