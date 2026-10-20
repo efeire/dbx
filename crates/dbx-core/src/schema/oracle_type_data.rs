@@ -834,10 +834,7 @@ where
                 if relation.projection.iter().any(|field| {
                     constraints.text(row, "SEARCH_CONDITION_VC").as_deref()
                         == Some(format!("{} IS NOT NULL", quote(&field.path[0])).as_str())
-                }) =>
-            {
-                ()
-            }
+                }) => {}
             _ => return Err("A target constraint is not a verified key or simple NOT NULL check".into()),
         }
     }

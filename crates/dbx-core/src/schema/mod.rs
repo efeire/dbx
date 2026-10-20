@@ -11330,11 +11330,10 @@ pub async fn get_oracle_type_management_snapshot_with_objects_core(
     let dialect = oracle_type_details::dialect(config)
         .ok_or_else(|| "TYPE management is supported only for Oracle-family connections".to_string())?;
     let run = |sql: String| run_oracle_type_management_query(state, connection_id, database, sql, 10_000);
-    let (acting_user, acting_user_read) = oracle_type_management::acting_user(|sql| run(sql)).await;
-    let (dependencies, dependencies_read) =
-        oracle_type_management::dependencies(dialect, owner, name, |sql| run(sql)).await;
+    let (acting_user, acting_user_read) = oracle_type_management::acting_user(&run).await;
+    let (dependencies, dependencies_read) = oracle_type_management::dependencies(dialect, owner, name, &run).await;
     let (direct_privileges, privileges_read) =
-        oracle_type_management::direct_privileges(dialect, owner, name, |sql| run(sql)).await;
+        oracle_type_management::direct_privileges(dialect, owner, name, &run).await;
 
     let mut objects = Vec::new();
     let mut identities = vec![
@@ -11356,8 +11355,7 @@ pub async fn get_oracle_type_management_snapshot_with_objects_core(
             continue;
         }
         let mut object =
-            oracle_type_management::object_metadata(dialect, &object_owner, &object_name, &object_type, |sql| run(sql))
-                .await;
+            oracle_type_management::object_metadata(dialect, &object_owner, &object_name, &object_type, &run).await;
         let source_kind = match object_type.as_str() {
             "TYPE" => Some(db::ObjectSourceKind::Type),
             "TYPE BODY" | "CLASS_BODY" => Some(db::ObjectSourceKind::TypeBody),
@@ -11429,7 +11427,7 @@ pub async fn get_oracle_type_management_snapshot_with_objects_core(
             if object_owner == owner && object_name == name {
                 (direct_privileges.clone(), privileges_read.clone())
             } else {
-                oracle_type_management::direct_privileges(dialect, &object_owner, &object_name, |sql| run(sql)).await
+                oracle_type_management::direct_privileges(dialect, &object_owner, &object_name, &run).await
             }
         } else {
             (
@@ -11446,8 +11444,7 @@ pub async fn get_oracle_type_management_snapshot_with_objects_core(
         object.privileges_read = object_privileges_read;
         if is_type {
             let (references, read) =
-                oracle_type_management::persistent_references(dialect, &object_owner, &object_name, |sql| run(sql))
-                    .await;
+                oracle_type_management::persistent_references(dialect, &object_owner, &object_name, &run).await;
             persistent_references.extend(references);
             if read.state != db::TypeMetadataState::Available {
                 persistent_references_read.state = db::TypeMetadataState::Incomplete;

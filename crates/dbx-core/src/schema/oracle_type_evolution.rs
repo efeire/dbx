@@ -113,10 +113,8 @@ where
             for (index, shape) in
                 std::iter::once(&plan.before).chain(plan.steps.iter().map(|step| &step.after)).enumerate()
             {
-                if state.matches(shape)? {
-                    if phase.replace(index).is_some() {
-                        return Err("The native evolution phase is ambiguous".into());
-                    }
+                if state.matches(shape)? && phase.replace(index).is_some() {
+                    return Err("The native evolution phase is ambiguous".into());
                 }
             }
         }

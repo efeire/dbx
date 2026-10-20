@@ -216,7 +216,7 @@ where
         }
     }
     let (errors, errors_read) = if exists == Some(true) && object_type != "TABLE" {
-        compilation_errors(dialect, owner, name, object_type, |sql| run(sql)).await
+        compilation_errors(dialect, owner, name, object_type, &mut run).await
     } else if exists == Some(false) {
         (Vec::new(), available())
     } else {
