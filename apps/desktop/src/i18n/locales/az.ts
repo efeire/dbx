@@ -61,6 +61,22 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  objectDependencies: {
+    dependencies: "Asılılıqlar",
+    dependents: "Asılı obyektlər",
+    viewSql: "SQL-ə bax",
+    visibility: "ALL_DEPENDENCIES-də cari hesaba görünən birbaşa asılılıqları göstərir.",
+    packageScope: "Paketin spesifikasiyası və gövdəsi birlikdə göstərilir; ayrı-ayrı üzvlər fərqləndirilmir.",
+    partial: "Nəticələr kəsilib; siyahı natamam ola bilər.",
+    notUpdated: "Yenilənmə alınmadı. Əvvəlki nəticələr göstərilir.",
+    empty: "Cari hesaba görünən birbaşa asılılıq tapılmadı.",
+    dependencyType: "Asılılıq növü",
+    sourceType: "Mənbə növü",
+    link: "Verilənlər bazası bağlantısı",
+    remoteObject: "Uzaq obyekt: adı kopyalana bilər, lakin açılması hələ dəstəklənmir.",
+    unsupportedObject: "Bu obyekt növünün açılması hələ dəstəklənmir. Adını kopyalaya bilərsiniz.",
+    navigateDiscardConfirm: "Mənbədə saxlanılmamış dəyişikliklər var. Onları ləğv edib əlaqəli obyekti açasınız?",
+  },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Oracle indeks dəyişikliklərini digər cədvəl quruluşu dəyişikliklərindən ayrıca tətbiq edin." },
   pluginPlatform: {
@@ -3528,6 +3544,9 @@ export default withEnglishFallback({
     skillsLoadedState: "Yükləndi",
     skillsPreloadHint: "Seçdiyiniz «{name}» skili bu söhbətdə hələ istifadə edilməyib · İndi yükləmək üçün klikləyin",
     skillsPreloadFailed: "Skill yüklənə bilmədi",
+    skillsCollapse: "Seçilmiş skill-ləri yığışdır",
+    skillsExpand: "Seçilmiş skill-ləri genişləndir",
+    skillsSelectedCount: "{count} skill seçildi",
     templateSelectorEmpty: "Şablon yoxdur. Əlavə etmək üçün İdarə et düyməsinə klikləyin.",
     templateSelectorTooLong: "Seçilmiş şablonlar ümumi məzmun limitini ({max} simvol) aşır. Davam etmək üçün bəzilərinin seçimini ləğv edin.",
     templateSetDefault: "Standart olaraq təyin et",

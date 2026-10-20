@@ -7,6 +7,22 @@ import { sqlServerTraceMessages as sqlServerTrace } from "./sqlServerTraceMessag
 import { meilisearchManagementId } from "./meilisearchManagement";
 
 export default withEnglishFallback({
+  objectDependencies: {
+    dependencies: "Dependensi",
+    dependents: "Objek yang bergantung",
+    viewSql: "Lihat SQL",
+    visibility: "Menampilkan dependensi langsung yang terlihat oleh akun saat ini di ALL_DEPENDENCIES.",
+    packageScope: "Spesifikasi dan isi paket digabung; anggota individual tidak dibedakan.",
+    partial: "Hasil terpotong; daftar mungkin tidak lengkap.",
+    notUpdated: "Penyegaran gagal. Hasil sebelumnya tetap ditampilkan.",
+    empty: "Tidak ditemukan dependensi langsung yang terlihat oleh akun saat ini.",
+    dependencyType: "Jenis dependensi",
+    sourceType: "Jenis sumber",
+    link: "Tautan basis data",
+    remoteObject: "Objek jarak jauh: namanya dapat disalin, tetapi belum dapat dibuka.",
+    unsupportedObject: "Jenis objek ini belum dapat dibuka. Anda dapat menyalin namanya.",
+    navigateDiscardConfirm: "Sumber memiliki perubahan yang belum disimpan. Buang perubahan dan buka objek terkait?",
+  },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Terapkan perubahan indeks Oracle secara terpisah dari perubahan struktur tabel lainnya." },
   cellTransform: {
@@ -3846,6 +3862,9 @@ export default withEnglishFallback({
     skillsReasonInvalidFrontmatter: "Frontmatter SKILL.md tidak memiliki name/description atau tidak valid",
     skillsReasonUnreadable: "SKILL.md tidak dapat dibaca",
     skillsTotalTrimmed: "Beberapa skill yang dipilih melebihi batas konten gabungan ({max} karakter) dan dilewati untuk pengiriman ini.",
+    skillsCollapse: "Ciutkan skill yang dipilih",
+    skillsExpand: "Perluas skill yang dipilih",
+    skillsSelectedCount: "{count} skill dipilih",
     templateSelectorEmpty: "Tidak ada template. Klik Kelola untuk menambahkan.",
     templateSelectorTooLong: "Template yang dipilih melebihi batas total konten ({max} karakter). Batalkan pilihan beberapa untuk melanjutkan.",
     templateSetDefault: "Jadikan default",

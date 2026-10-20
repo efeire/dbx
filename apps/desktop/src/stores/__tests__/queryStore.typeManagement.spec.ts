@@ -125,6 +125,7 @@ describe("durable TYPE recovery through the real query store", () => {
     const tab = store.tabs.find((tab) => tab.id === id)!;
     expect(tab.sourceView).toBe(true);
     expect(tab.typeSourceEditing).toBe(false);
+    expect(tab.objectDetails).toMatchObject({ connectionId: target.connectionId, database: target.database, schema: target.owner, name: target.name, objectType, section: "source" });
     await expect(store.executeTabSql(id, source)).rejects.toThrow();
     tab.typeSourceEditing = true;
     expect(tab.objectSource?.objectType).toBe(objectType);
@@ -136,11 +137,18 @@ describe("durable TYPE recovery through the real query store", () => {
     await store.persistTypeManagementDraft(tabId, plan);
     expect(mocks.save).toHaveBeenCalledOnce();
     expect(mocks.load).toHaveBeenCalledOnce();
-    const tab = saved.tabs.find((value) => (value as { id: string }).id === tabId) as { typeManagementDraft: OracleTypeManagementDraft };
+    const tab = saved.tabs.find((value) => (value as { id: string }).id === tabId) as { typeManagementDraft: OracleTypeManagementDraft; objectDetails: unknown };
     expect(tab.typeManagementDraft.planId).toBe(plan.planId);
     expect(tab.typeManagementDraft.revision).toBe(plan.revision);
     expect(tab.typeManagementDraft.originalSnapshot.objects[0].objectId).toBe("9007199254740993");
     expect(tab.typeManagementDraft.drafts[0].source).toBe(source);
+    const { restoreOpenTabsPayload } = await import("@/lib/app/openTabsPersistence");
+    const restored = restoreOpenTabsPayload(saved).tabs.find((value) => value.id === tabId)!;
+    expect(restored.objectDetails).toEqual(tab.objectDetails);
+    expect(restored.objectDetails).toMatchObject({ name: target.name, schema: target.owner, objectType: "TYPE", section: "source" });
+    expect(restored.typeManagementDraft?.planId).toBe(plan.planId);
+    expect(restored.typeManagementDraft?.requiresReverify).toBe(true);
+    expect(restored.typeSourceEditing).toBe(false);
     expect(store.tabs[0].sql).toBe(store.tabs[0].originalSql);
     expect(store.isTabDirty(store.tabs[0])).toBe(true);
   });

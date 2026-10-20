@@ -61,6 +61,22 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  objectDependencies: {
+    dependencies: "Bağımlılıklar",
+    dependents: "Bağımlı nesneler",
+    viewSql: "SQL'i göster",
+    visibility: "ALL_DEPENDENCIES içinde geçerli hesabın görebildiği doğrudan bağımlılıkları gösterir.",
+    packageScope: "Paket bildirimi ve gövdesi birlikte gösterilir; tek tek üyeler ayrılmaz.",
+    partial: "Sonuçlar kesildi; liste eksik olabilir.",
+    notUpdated: "Yenileme başarısız. Önceki sonuçlar gösteriliyor.",
+    empty: "Geçerli hesabın görebildiği doğrudan bağımlılık bulunamadı.",
+    dependencyType: "Bağımlılık türü",
+    sourceType: "Kaynak türü",
+    link: "Veritabanı bağlantısı",
+    remoteObject: "Uzak nesne: adı kopyalanabilir, ancak henüz açılamaz.",
+    unsupportedObject: "Bu nesne türü henüz açılamaz. Adını kopyalayabilirsiniz.",
+    navigateDiscardConfirm: "Kaynakta kaydedilmemiş değişiklikler var. Değişiklikler atılıp ilgili nesne açılsın mı?",
+  },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Oracle indeks değişikliklerini diğer tablo yapısı değişikliklerinden ayrı uygulayın." },
   pluginPlatform: {
@@ -3498,6 +3514,9 @@ export default withEnglishFallback({
     skillsLoadedState: "Yüklendi",
     skillsPreloadHint: "Seçtiğiniz «{name}» skill'i bu sohbette henüz kullanılmadı · Şimdi yüklemek için tıklayın",
     skillsPreloadFailed: "Skill yüklenemedi",
+    skillsCollapse: "Seçili skill'leri daralt",
+    skillsExpand: "Seçili skill'leri genişlet",
+    skillsSelectedCount: "{count} skill seçildi",
     templateSelectorEmpty: "Şablon yok. Eklemek için Yönet'e tıklayın.",
     templateSelectorTooLong: "Seçili şablonlar toplam içerik sınırını aşıyor ({max} karakter). Devam etmek için bazılarının seçimini kaldırın.",
     templateSetDefault: "Varsayılan yap",

@@ -74,6 +74,7 @@ export interface SavedOpenTab {
   objectBrowser?: QueryTab["objectBrowser"];
   objectSource?: QueryTab["objectSource"];
   typeManagementDraft?: QueryTab["typeManagementDraft"];
+  objectDetails?: QueryTab["objectDetails"];
   sourceView?: boolean;
   ddlViewer?: QueryTab["ddlViewer"];
   tableComment?: QueryTab["tableComment"];
@@ -225,6 +226,7 @@ export function serializeOpenTabs(tabs: QueryTab[]): SavedOpenTab[] {
     objectBrowser: tab.objectBrowser,
     objectSource: tab.objectSource,
     ...(tab.typeManagementDraft ? { typeManagementDraft: JSON.parse(JSON.stringify(tab.typeManagementDraft)) } : {}),
+    ...(tab.objectDetails ? { objectDetails: { ...tab.objectDetails } } : {}),
     ...(tab.sourceView ? { sourceView: true } : {}),
     ...(tab.ddlViewer ? { ddlViewer: { ...tab.ddlViewer } } : {}),
     ...(tab.tableComment !== undefined ? { tableComment: tab.tableComment } : {}),
