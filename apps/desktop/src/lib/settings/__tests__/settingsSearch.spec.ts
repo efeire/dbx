@@ -108,6 +108,7 @@ describe("settings search", () => {
     expect(searchSettings(formatterEntries, "align UPDATE", "en").map((entry) => entry.id)).toContain("formatter-align-update-assignments");
     expect(searchSettings(formatterEntries, "WHERE logical", "en").map((entry) => entry.id)).toContain("formatter-where-logical-newline");
     expect(formatterEntries.find((entry) => entry.id === "formatter-custom-rules")?.targetId).toBe("formatter");
+    expect(formatterEntries.every((entry) => entry.route?.formatterMode === "form" || entry.route?.formatterMode === "json")).toBe(true);
   });
 
   it("indexes the query editor caret-browsing preference (#11827)", () => {
