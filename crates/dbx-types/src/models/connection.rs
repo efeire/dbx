@@ -64,6 +64,8 @@ pub struct ConnectionIdleClosedEvent {
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseConnectionInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product_version: Option<String>,
@@ -3205,7 +3207,8 @@ mod tests {
                 "productName": "H2",
                 "currentDatabase": "app",
                 "serverCharset": "utf8mb4",
-                "jdbcVersion": "4.2"
+                "jdbcVersion": "4.2",
+                "compatibilityMode": "oracle"
             }
         }))
         .unwrap();
@@ -3213,6 +3216,7 @@ mod tests {
         assert_eq!(parsed.current_database.as_deref(), Some("app"));
         assert_eq!(parsed.server_charset.as_deref(), Some("utf8mb4"));
         assert_eq!(parsed.jdbc_version.as_deref(), Some("4.2"));
+        assert_eq!(parsed.compatibility_mode.as_deref(), Some("oracle"));
         assert_eq!(database_info_from_protocol_value(&serde_json::json!({ "ok": true })), None);
     }
 

@@ -249,6 +249,7 @@ export type ProductionBadgeScope = "connection" | "database" | "table";
 export type IdentifierCase = "lower" | "upper" | "mixed";
 
 export interface DatabaseConnectionInfo {
+  compatibilityMode?: string;
   productName?: string;
   productVersion?: string;
   currentDatabase?: string;
