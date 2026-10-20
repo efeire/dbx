@@ -1022,6 +1022,7 @@ impl AgentHandshake {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentCapability {
+    ExactMetadataIdentityV1,
     BlobBindStatementsV1,
     Connect,
     TestConnection,
@@ -1131,7 +1132,7 @@ fn parse_agent_rpc_error_header(header: &str) -> (Option<i64>, String) {
 }
 
 impl AgentCapability {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Connect,
         Self::TestConnection,
         Self::Metadata,
@@ -1158,6 +1159,7 @@ impl AgentCapability {
         Self::MongoBulkWrite,
         Self::MongoRenameCollection,
         Self::MongoFindCursor,
+        Self::ExactMetadataIdentityV1,
         Self::MultiSession,
         Self::StructuredErrorV1,
         Self::BlobBindStatementsV1,
@@ -1165,6 +1167,7 @@ impl AgentCapability {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::ExactMetadataIdentityV1 => "exact_metadata_identity_v1",
             Self::BlobBindStatementsV1 => "blob_bind_statements_v1",
             Self::Connect => "connect",
             Self::TestConnection => "test_connection",
@@ -3270,7 +3273,8 @@ pub fn is_unsupported_handshake_error(error: &str) -> bool {
 pub fn agent_supports_capability(handshake: Option<&AgentHandshake>, capability: AgentCapability) -> bool {
     if matches!(
         capability,
-        AgentCapability::BlobBindStatementsV1
+        AgentCapability::ExactMetadataIdentityV1
+            | AgentCapability::BlobBindStatementsV1
             | AgentCapability::Kv
             | AgentCapability::KvTtl
             | AgentCapability::KvCas
@@ -5885,7 +5889,8 @@ for line in sys.stdin:
         assert_eq!(AgentCapability::MultiSession.as_str(), "multi_session");
         assert_eq!(AgentCapability::StructuredErrorV1.as_str(), "structured_error_v1");
         assert_eq!(AgentCapability::BlobBindStatementsV1.as_str(), "blob_bind_statements_v1");
-        assert_eq!(AgentCapability::ALL.len(), 29);
+        assert_eq!(AgentCapability::ExactMetadataIdentityV1.as_str(), "exact_metadata_identity_v1");
+        assert_eq!(AgentCapability::ALL.len(), 30);
     }
 
     #[test]
@@ -6243,6 +6248,20 @@ for line in sys.stdin:
         assert!(handshake.supports(AgentCapability::Metadata));
         assert!(!handshake.supports(AgentCapability::Query));
         assert!(!handshake.supports(AgentCapability::Kv));
+    }
+
+    #[test]
+    fn exact_metadata_identity_requires_explicit_process_support() {
+        assert!(!agent_supports_capability(None, AgentCapability::ExactMetadataIdentityV1));
+        let mut handshake = AgentHandshake {
+            protocol_version: AGENT_PROTOCOL_VERSION,
+            agent_protocol_version: AGENT_PROTOCOL_VERSION,
+            capabilities: vec!["metadata".into()],
+        };
+        assert!(agent_supports_capability(Some(&handshake), AgentCapability::Metadata));
+        assert!(!agent_supports_capability(Some(&handshake), AgentCapability::ExactMetadataIdentityV1));
+        handshake.capabilities.push("exact_metadata_identity_v1".into());
+        assert!(agent_supports_capability(Some(&handshake), AgentCapability::ExactMetadataIdentityV1));
     }
 
     #[test]

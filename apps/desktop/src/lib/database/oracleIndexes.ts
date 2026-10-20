@@ -262,6 +262,10 @@ export function mergeOracleIndexDraftsAfterRefresh(drafts: EditableStructureInde
   const loadedByName = new Map(actualIndexes.map((index) => [index.name, index]));
   const refreshedDrafts: EditableStructureIndex[] = [];
   for (const draft of drafts) {
+    if (!draft.original && !completedCreates.some((created) => created.name === draft.name)) {
+      refreshedDrafts.push(draft);
+      continue;
+    }
     const current = loadedByName.get(draft.original?.name || draft.name);
     if (current) {
       loadedByName.delete(current.name);

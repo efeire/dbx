@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { createApp, h, nextTick, type App } from "vue";
+import { createApp, h, nextTick, reactive, type App } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TableStructureEditor from "../TableStructureEditor.vue";
@@ -10,9 +10,10 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 import type { ConnectionConfig, ConstraintInfo, IndexInfo } from "@/types/database";
-import type { TableStructureEditorDraft } from "@/types/database";
+import type { TableStructureEditorDraft, TableStructureEditorTarget } from "@/types/database";
 import * as api from "@/lib/backend/api";
 import { invalidateObjectMetadataCache } from "@/lib/metadata/objectMetadataCache";
+import { cacheObjectBrowserRows, createObjectBrowserRowsCacheWriteToken, getCachedObjectBrowserRows } from "@/lib/table/objectBrowserRowsCache";
 
 vi.mock("@/lib/backend/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/backend/api")>()),
@@ -25,6 +26,7 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   getColumns: vi.fn(),
   listConstraints: vi.fn(),
   listIndexes: vi.fn(),
+  listTables: vi.fn().mockResolvedValue([]),
   listForeignKeys: vi.fn().mockResolvedValue([]),
   listTriggers: vi.fn().mockResolvedValue([]),
   getTableComment: vi.fn().mockResolvedValue(""),
@@ -35,6 +37,7 @@ vi.mock("@/lib/backend/api", async (importOriginal) => ({
   saveOpenTabsState: vi.fn().mockResolvedValue(undefined),
   disconnectDb: vi.fn().mockResolvedValue(undefined),
   executeQuery: vi.fn().mockResolvedValue({ columns: [], rows: [], affected_rows: 0, execution_time_ms: 0 }),
+  executeBatch: vi.fn().mockResolvedValue({ affected_rows: 0 }),
 }));
 
 const connection = { id: "ob-constraint-edit", name: "OB constraint fixture", db_type: "oceanbase-oracle", driver_profile: "oceanbase-oracle", host: "fixture", port: 2881, username: "APP", database: "APP" } as ConnectionConfig;
@@ -46,6 +49,7 @@ beforeEach(() => {
   connection.db_type = "oceanbase-oracle";
   connection.driver_profile = "oceanbase-oracle";
   connection.is_production = false;
+  delete connection.connection_string;
   i18n.global.locale.value = "en";
 });
 
@@ -65,6 +69,7 @@ async function mountConstraintEditor(
   loadedColumns?: Array<{ name: string; data_type: string; is_nullable: boolean; is_primary_key: boolean; column_default: string | null; character_maximum_length?: number }>,
   beforeMount: (() => void) | undefined = undefined,
   events: { drafts?: unknown[]; saved?: unknown[] } = {},
+  editorProps: { exactIdentity?: boolean; initialTarget?: TableStructureEditorTarget; initialTabRequestId?: number } = {},
 ) {
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -144,7 +149,10 @@ async function mountConstraintEditor(
       h(
         TooltipProvider,
         {},
-        { default: () => h(TableStructureEditor, { connectionId: connection.id, database: "APP", schema: "APP", tableName: "CONTACTS", initialTab, ref: expose, draft, "onUpdate:draft": (value: unknown) => events.drafts?.push(value), onSaved: (...args: unknown[]) => events.saved?.push(args) }) },
+        {
+          default: () =>
+            h(TableStructureEditor, { connectionId: connection.id, database: "APP", schema: "APP", tableName: "CONTACTS", initialTab, ref: expose, draft, ...editorProps, "onUpdate:draft": (value: unknown) => events.drafts?.push(value), onSaved: (...args: unknown[]) => events.saved?.push(args) }),
+        },
       ),
   });
   app.use(pinia);
@@ -460,6 +468,100 @@ describe("Oracle CHECK and UNIQUE entry points", () => {
 });
 
 describe("Oracle independent index execution", () => {
+  it.each([false, true])("DM exact index saves retain the batch path and bind confirmation to the connection (changed: %s)", async (changeTarget) => {
+    connection.db_type = "dameng";
+    connection.driver_profile = "dameng";
+    connection.is_production = changeTarget;
+    let editor: { applyChanges: () => Promise<boolean> } | undefined;
+    const container = await mountConstraintEditor(
+      "indexes",
+      [loadedIndex],
+      (instance) => {
+        editor = instance;
+      },
+      undefined,
+      false,
+      undefined,
+      configureIndexRenamePreview,
+      {},
+      { exactIdentity: true },
+    );
+    const input = container.querySelector<HTMLInputElement>("[data-index-name-input]")!;
+    input.value = "IX_EMAIL_RENAMED";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(vi.mocked(api.buildTableStructureChangeSql).mock.calls.at(-1)?.[0].indexes?.[0]?.name).toBe("IX_EMAIL_RENAMED"));
+    const refresh = vi.spyOn(useConnectionStore(), "refreshObjectListTreeNode");
+    const oldHost = connection.host;
+    try {
+      const applying = editor!.applyChanges();
+      if (changeTarget) {
+        const safety = useProductionSafetyStore();
+        await vi.waitFor(() => expect(safety.pending).toBeDefined());
+        useConnectionStore().connections[0].host = "different-target";
+        safety.confirm();
+      }
+      expect(await applying).toBe(!changeTarget);
+      if (changeTarget) {
+        expect(api.executeBatch).not.toHaveBeenCalled();
+        expect(refresh).not.toHaveBeenCalled();
+        expect(input.value).toBe("IX_EMAIL_RENAMED");
+      } else {
+        expect(api.executeBatch).toHaveBeenCalledOnce();
+        expect(refresh).toHaveBeenCalledWith(connection.id, "APP", "APP", undefined, true);
+      }
+    } finally {
+      connection.host = oldHost;
+    }
+  });
+
+  it.each([true, false])("explicit Oracle-mode JDBC satisfies the real editor index guards only with complete metadata (%s)", async (complete) => {
+    connection.db_type = "jdbc";
+    connection.driver_profile = "jdbc";
+    connection.connection_string = "jdbc:oceanbase:oracle://fixture:2881/service";
+    const fixture = configureOracleIndexCatalog();
+    vi.mocked(api.listIndexes).mockResolvedValue([{ ...loadedIndex, key_metadata_complete: complete }]);
+    let editor: { applyChanges: () => Promise<boolean> } | undefined;
+    const container = await mountConstraintEditor(
+      "indexes",
+      [loadedIndex],
+      (instance) => {
+        editor = instance;
+      },
+      undefined,
+      true,
+      undefined,
+      configureIndexRenamePreview,
+      {},
+      { exactIdentity: true },
+    );
+    const input = container.querySelector<HTMLInputElement>("[data-index-name-input]")!;
+    input.value = "IX_EMAIL_RENAMED";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(vi.mocked(api.buildTableStructureChangeSql).mock.calls.at(-1)?.[0].indexes?.[0]?.name).toBe("IX_EMAIL_RENAMED"));
+    expect(await editor!.applyChanges()).toBe(complete);
+    expect(fixture.ddl).toHaveLength(complete ? 2 : 0);
+  });
+
+  it("consumes a Schema create-index request once after exact columns and indexes load", async () => {
+    const fixture = configureOracleIndexCatalog(false, []);
+    const requests = reactive({ exactIdentity: true, initialTarget: { kind: "index", name: "", action: "create" } as TableStructureEditorTarget, initialTabRequestId: 1 });
+    const drafts: unknown[] = [];
+    const container = await mountConstraintEditor("indexes", [], undefined, undefined, true, undefined, undefined, { drafts }, requests);
+    await vi.waitFor(() => expect(container.querySelectorAll("[data-index-name-input]")).toHaveLength(1));
+    expect(api.getColumns).toHaveBeenCalledWith(connection.id, "APP", "APP", "CONTACTS", undefined, undefined, undefined, true);
+    expect(api.listIndexes).toHaveBeenCalledWith(connection.id, "APP", "APP", "CONTACTS", undefined, true);
+    requests.initialTabRequestId = 2;
+    await vi.waitFor(() => expect(container.querySelectorAll("[data-index-name-input]")).toHaveLength(2));
+    const saved = drafts.at(-1) as TableStructureEditorDraft;
+    expect(saved.appliedInitialTargetRequestId).toBe(2);
+    expect(fixture.ddl).toEqual([]);
+    app!.unmount();
+    app = undefined;
+    container.remove();
+    const restored = await mountConstraintEditor("indexes", [], undefined, saved, true, undefined, undefined, {}, requests);
+    await vi.waitFor(() => expect(restored.querySelectorAll("[data-index-name-input]")).toHaveLength(2));
+    expect(fixture.ddl).toEqual([]);
+  });
   const loadedIndex = {
     name: "IX_EMAIL",
     columns: ["EMAIL"],
@@ -472,6 +574,40 @@ describe("Oracle independent index execution", () => {
     visibility: "VISIBLE",
     constraint_backed: false,
   } as IndexInfo;
+
+  it.each(["IX_EMAIL", "IX_EMAIL_2", "ix_email", " IX_EMAIL "])("targets only the exact original index %s when opening a delete draft", async (name) => {
+    const names = ["IX_EMAIL", "IX_EMAIL_2", "ix_email", " IX_EMAIL "];
+    const fixture = configureOracleIndexCatalog(
+      false,
+      names.map((item) => ({ name: item, columns: ["EMAIL"], unique: false, indexType: "NORMAL", partitioned: "NO", visibility: "VISIBLE", directions: ["ASC"], expressions: [null] })),
+    );
+    const drafts: unknown[] = [];
+    await mountConstraintEditor(
+      "indexes",
+      names.map((item) => ({ ...loadedIndex, name: item })),
+      undefined,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      { drafts },
+      { exactIdentity: true, initialTarget: { kind: "index", name, action: "delete" }, initialTabRequestId: 1 },
+    );
+    await vi.waitFor(() => expect((drafts.at(-1) as TableStructureEditorDraft)?.indexes.filter((item) => item.markedForDrop).map((item) => item.original?.name)).toEqual([name]));
+    expect(fixture.ddl).toEqual([]);
+  });
+
+  it("accepts a new exact target after an earlier requested index is missing", async () => {
+    const fixture = configureOracleIndexCatalog();
+    const requests = reactive({ exactIdentity: true, initialTarget: { kind: "index", name: "MISSING", action: "delete" } as TableStructureEditorTarget, initialTabRequestId: 1 });
+    const drafts: unknown[] = [];
+    const container = await mountConstraintEditor("indexes", [loadedIndex], undefined, undefined, true, undefined, undefined, { drafts }, requests);
+    await vi.waitFor(() => expect(container.textContent).toContain("MISSING"));
+    requests.initialTarget = { kind: "index", name: "IX_EMAIL", action: "delete" };
+    requests.initialTabRequestId = 2;
+    await vi.waitFor(() => expect((drafts.at(-1) as TableStructureEditorDraft)?.indexes.filter((item) => item.markedForDrop).map((item) => item.original?.name)).toEqual(["IX_EMAIL"]));
+    expect(fixture.ddl).toEqual([]);
+  });
 
   async function prepareRename(
     failCreate = false,
@@ -980,7 +1116,7 @@ describe("Oracle independent index execution", () => {
     expect(container.querySelector<HTMLInputElement>("[data-index-name-input]")?.value).toBe("IX_EMAIL_RENAMED");
   });
 
-  it("returns false and preserves the index draft when post-DDL column readback mismatches", async () => {
+  it("keeps an authoritative committed result when only the later column refresh mismatches, then retries reads only", async () => {
     let editor: { applyChanges: () => Promise<boolean> } | undefined;
     const { container, fixture } = await prepareRename(false, loadedIndex, undefined, (instance) => {
       editor = instance;
@@ -990,10 +1126,86 @@ describe("Oracle independent index execution", () => {
       { name: "AGE", data_type: "NUMBER", is_nullable: true, is_primary_key: false, column_default: null },
     ]);
 
-    expect(await editor!.applyChanges()).toBe(false);
+    expect(await editor!.applyChanges()).toBe(true);
     expect(fixture.ddl).toHaveLength(2);
     expect(container.querySelector<HTMLInputElement>("[data-index-name-input]")?.value).toBe("IX_EMAIL_RENAMED");
     expect(document.body.textContent).toContain("committed");
-    expect(document.body.textContent).toContain("Readback failed or did not match the intended result");
+    expect(container.querySelector("[data-oracle-index-refresh-warning]")).not.toBeNull();
+    expect(document.body.textContent).not.toContain("Operation did not complete");
+    expect(await editor!.applyChanges()).toBe(false);
+    expect(fixture.ddl).toHaveLength(2);
+    container.querySelector<HTMLButtonElement>("[data-retry-oracle-index-refresh]")!.click();
+    await vi.waitFor(() => expect(container.querySelector("[data-oracle-index-refresh-warning]")).toBeNull());
+    expect(fixture.ddl).toHaveLength(2);
+  });
+
+  it.each(["columns", "indexes", "comment", "cache"] as const)("keeps committed DDL separate from an auxiliary %s failure", async (facet) => {
+    let editor: { applyChanges: () => Promise<boolean> } | undefined;
+    const { container, fixture } = await prepareRename(false, loadedIndex, undefined, (instance) => {
+      editor = instance;
+    });
+    let armed = true;
+    const originalExecute = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      const result = await originalExecute(...args);
+      if (armed && args[2].startsWith("CREATE INDEX")) {
+        armed = false;
+        if (facet === "columns") vi.mocked(api.getColumns).mockRejectedValueOnce(new Error("later columns unavailable"));
+        if (facet === "indexes") vi.mocked(api.listIndexes).mockRejectedValueOnce(new Error("later indexes unavailable"));
+        if (facet === "comment") vi.mocked(api.getTableComment).mockRejectedValueOnce(new Error("later comment unavailable"));
+        if (facet === "cache") vi.mocked(api.deleteSchemaCachePrefix).mockRejectedValueOnce(new Error("later cache unavailable"));
+      }
+      return result;
+    });
+    expect(await editor!.applyChanges()).toBe(true);
+    expect(fixture.ddl).toHaveLength(2);
+    expect(container.querySelector("[data-oracle-index-refresh-warning]")).not.toBeNull();
+    expect(document.body.textContent).toContain("committed");
+    expect(document.body.textContent).not.toContain("Operation did not complete");
+    expect(await editor!.applyChanges()).toBe(false);
+    expect(fixture.ddl).toHaveLength(2);
+  });
+
+  it("still reports unknown and stops when immediate executor dictionary readback fails", async () => {
+    let editor: { applyChanges: () => Promise<boolean> } | undefined;
+    const { fixture } = await prepareRename(false, loadedIndex, undefined, (instance) => {
+      editor = instance;
+    });
+    const originalExecute = vi.mocked(api.executeQuery).getMockImplementation()!;
+    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+      if (fixture.ddl.length && args[2].includes("SYS.ALL_IND_COLUMNS")) throw new Error("immediate dictionary unavailable");
+      return originalExecute(...args);
+    });
+    expect(await editor!.applyChanges()).toBe(false);
+    expect(fixture.ddl).toHaveLength(1);
+    expect(document.body.textContent).toContain("unknown");
+    expect(document.body.textContent).toContain("immediate catalog readback failed");
+    expect(await editor!.applyChanges()).toBe(false);
+    expect(fixture.ddl).toHaveLength(1);
+  });
+
+  it.each([false, true])("invalidates only the owner list after an index attempt (CREATE rejected: %s)", async (rejectCreate) => {
+    let editor: { applyChanges: () => Promise<boolean> } | undefined;
+    const { fixture } = await prepareRename(rejectCreate, loadedIndex, undefined, (instance) => {
+      editor = instance;
+    });
+    const store = useConnectionStore();
+    const refresh = vi.spyOn(store, "refreshObjectListTreeNode");
+    const target = { connectionId: connection.id, database: "APP", schema: "APP" };
+    const other = { ...target, schema: "OTHER" };
+    cacheObjectBrowserRows(createObjectBrowserRowsCacheWriteToken(target), []);
+    cacheObjectBrowserRows(createObjectBrowserRowsCacheWriteToken(other), []);
+    const event = vi.fn();
+    window.addEventListener("dbx-refresh-object-browser", event);
+    try {
+      expect(await editor!.applyChanges()).toBe(!rejectCreate);
+      expect(fixture.ddl).toHaveLength(2);
+      expect(refresh).toHaveBeenCalledWith(connection.id, "APP", "APP", undefined, true);
+      expect(getCachedObjectBrowserRows(target)).toBeUndefined();
+      expect(getCachedObjectBrowserRows(other)).toEqual([]);
+      expect(event).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining(target) }));
+    } finally {
+      window.removeEventListener("dbx-refresh-object-browser", event);
+    }
   });
 });

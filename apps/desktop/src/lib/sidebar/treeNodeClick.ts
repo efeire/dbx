@@ -221,6 +221,7 @@ export function sidebarSelectionCopyAction(event: ShortcutLikeEvent, platform?: 
 }
 
 export function copyNameForTreeNode(node: TreeNode): string {
+  if (node.type === "index" && node.objectScope === "schema" && node.objectName) return node.objectName;
   if (tableChildGroupNodeTypes.has(node.type) && node.tableName) return node.tableName;
   if (databaseChildGroupNodeTypes.has(node.type)) return node.schema || node.database || node.label;
   if (node.type === "column") {

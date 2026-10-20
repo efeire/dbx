@@ -1,0 +1,281 @@
+// @vitest-environment happy-dom
+import { createApp, defineComponent, h, nextTick, ref, type App } from "vue";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import ObjectBrowser from "@/components/objects/ObjectBrowser.vue";
+import { clearObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
+import { clearMetadataRuntimeCache } from "@/lib/metadata/metadataRuntimeCache";
+import type { ConnectionConfig, ObjectInfo } from "@/types/database";
+
+const mocks = vi.hoisted(() => ({ listObjects: vi.fn(), listTables: vi.fn(), listIndexes: vi.fn(), getColumns: vi.fn(), getTableDdl: vi.fn(), openTableStructure: vi.fn(), executeQuery: vi.fn(), executeBatch: vi.fn() }));
+vi.mock("@/lib/backend/api", () => ({ ...mocks, listSchemas: vi.fn().mockResolvedValue([" Mixed "]), listObjectStatistics: vi.fn().mockResolvedValue([]), loadSchemaCache: vi.fn().mockResolvedValue(null), saveSchemaCache: vi.fn(), deleteSchemaCachePrefix: vi.fn() }));
+vi.mock("@/stores/connectionStore", () => ({ useConnectionStore: () => ({ getConfig: () => connection, ensureConnected: vi.fn().mockResolvedValue(undefined), orderByPinnedTreeNodes: (rows: unknown[]) => rows }) }));
+vi.mock("@/stores/queryStore", () => ({ useQueryStore: () => ({ openTableStructure: mocks.openTableStructure }) }));
+vi.mock("@/stores/settingsStore", () => ({ useSettingsStore: () => ({ desktopSettings: { sidebar_table_page_size: 2 }, editorSettings: { shortcuts: { refreshData: "F5" }, objectBrowserViewMode: "list", objectBrowserShowCheckbox: true, sidebarActivation: "double" } }) }));
+vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key, locale: ref("en-US") }) }));
+vi.mock("@/i18n", () => ({ default: { install: () => undefined } }));
+vi.mock("@/composables/useSqlHighlighter", () => ({ useSqlHighlighter: () => ({ highlight: (sql: string) => sql }) }));
+vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
+vi.mock("vue-virtual-scroller", () => ({
+  RecycleScroller: defineComponent({
+    props: { items: { type: Array, default: () => [] } },
+    setup:
+      (props, { slots }) =>
+      () =>
+        h(
+          "div",
+          props.items.map((item) => slots.default?.({ item })),
+        ),
+  }),
+}));
+vi.mock("@/components/ui/searchable-select", () => ({
+  SearchableSelect: defineComponent({
+    props: ["modelValue", "options"],
+    emits: ["update:modelValue"],
+    setup:
+      (props, { emit, attrs }) =>
+      () =>
+        h(
+          "select",
+          { ...attrs, value: props.modelValue, onChange: (event: Event) => emit("update:modelValue", (event.target as HTMLSelectElement).value) },
+          (props.options ?? []).map((option: string) => h("option", { value: option }, option)),
+        ),
+  }),
+}));
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: defineComponent({
+    props: ["open"],
+    setup:
+      (props, { slots }) =>
+      () =>
+        props.open ? h("div", slots.default?.()) : null,
+  }),
+  DialogContent: {
+    render() {
+      return h("div", this.$slots.default?.());
+    },
+  },
+  DialogHeader: {
+    render() {
+      return h("div", this.$slots.default?.());
+    },
+  },
+  DialogTitle: {
+    render() {
+      return h("h2", this.$slots.default?.());
+    },
+  },
+  DialogFooter: {
+    render() {
+      return h("div", this.$slots.default?.());
+    },
+  },
+}));
+vi.mock("@/components/ui/ToolbarOverflowMenu.vue", () => ({ default: { render: () => null } }));
+vi.mock("@/components/editor/QueryEditor.vue", () => ({ default: { render: () => null } }));
+vi.mock("@/components/editor/DangerConfirmDialog.vue", () => ({
+  default: defineComponent({
+    props: ["open"],
+    emits: ["confirm"],
+    setup:
+      (props, { emit }) =>
+      () =>
+        props.open ? h("button", { "data-danger-confirm": "", onClick: () => emit("confirm") }, "Confirm") : null,
+  }),
+}));
+vi.mock("@/components/objects/ProcedureExecutionDialog.vue", () => ({ default: { render: () => null } }));
+vi.mock("@/components/objects/CustomTypeInfoPanel.vue", () => ({ default: { render: () => null } }));
+vi.mock("@/components/export/XlsxHeaderDialog.vue", () => ({ default: { render: () => null } }));
+
+const connection = { id: "schema-indexes", db_type: "oceanbase-oracle", name: "fixture", database: "service", transport_layers: [] } as unknown as ConnectionConfig;
+const mounted: { app: App; host: HTMLElement }[] = [];
+const index = (name: string, parentSchema = " Mixed "): ObjectInfo => ({ name, schema: " Mixed ", object_type: "INDEX", parent_schema: parentSchema, parent_name: ' T(a)" ' });
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.listObjects.mockReset().mockResolvedValue([]);
+  mocks.listTables.mockReset().mockResolvedValue([{ name: ' T(a)" ', table_type: "TABLE" }]);
+  mocks.listIndexes.mockReset().mockResolvedValue([{ name: " Ix(a) ", owner: " Mixed ", columns: ["Id"], is_unique: false, is_primary: false }]);
+  mocks.getColumns.mockReset().mockResolvedValue([]);
+  mocks.getTableDdl.mockReset().mockResolvedValue("CREATE TABLE parent (id NUMBER)");
+  connection.db_type = "oceanbase-oracle";
+  clearObjectBrowserRowsCache();
+  clearMetadataRuntimeCache();
+});
+afterEach(() => {
+  for (const { app, host } of mounted.splice(0)) {
+    app.unmount();
+    host.remove();
+  }
+});
+
+async function mountBrowser(extra: Record<string, unknown> = {}) {
+  const schema = ref(" Mixed ");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection, database: "service", schema: schema.value, selectedObjectFilter: "indexes", ...extra }) });
+  mounted.push({ app, host });
+  app.mount(host);
+  await vi.waitFor(() => expect(mocks.listObjects).toHaveBeenCalled());
+  return { host, schema };
+}
+
+describe("schema index browsing and draft navigation", () => {
+  it.each(["same", "mixed"])("blocks %s batch deletion containing INDEX rows at the browser entry", async (kind) => {
+    mocks.listObjects.mockImplementation(async (...args: unknown[]) => (args[10] === true ? [index("INDEX_A"), index("INDEX_B")] : [{ name: "ORDINARY", object_type: "TABLE", schema: " Mixed " }]));
+    const { host } = await mountBrowser({ selectedObjectFilter: "all" });
+    await vi.waitFor(() => expect(host.querySelector('[title="INDEX_A"]')).not.toBeNull());
+    for (const name of ["INDEX_A", kind === "same" ? "INDEX_B" : "ORDINARY"]) {
+      host.querySelector(`[title="${name}"]`)!.parentElement!.parentElement!.querySelector<HTMLButtonElement>("button")!.click();
+    }
+    await nextTick();
+    Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("objects.dropSelected"))!
+      .click();
+    await nextTick();
+    expect(host.querySelector("[data-danger-confirm]")).toBeNull();
+    expect(mocks.openTableStructure).not.toHaveBeenCalled();
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeBatch).not.toHaveBeenCalled();
+  });
+
+  it.each(["oracle", "oceanbase-oracle", "dameng"] as const)("retains exact INDEX rows in the %s mixed all view", async (type) => {
+    connection.db_type = type;
+    mocks.listObjects.mockImplementation(async (...args: unknown[]) => (args[10] === true ? [index(" Ix(a) ")] : [{ name: "ORDINARY", schema: " Mixed ", object_type: "TABLE" }, index("LEGACY_WRONG")]));
+    const { host } = await mountBrowser({ selectedObjectFilter: "all" });
+    await vi.waitFor(() => expect(host.querySelector('[title=" Ix(a) "]')).not.toBeNull());
+    expect(host.querySelector('[title="ORDINARY"]')).not.toBeNull();
+    expect(host.querySelector('[title="LEGACY_WRONG"]')).toBeNull();
+    expect(mocks.listObjects.mock.calls.find((call) => call[10] === true)?.slice(0, 4)).toEqual([connection.id, "service", " Mixed ", ["INDEX"]]);
+  });
+
+  it("keeps ordinary mixed objects visible when only the exact INDEX subset cannot be verified", async () => {
+    connection.db_type = "oracle";
+    mocks.listObjects.mockImplementation(async (...args: unknown[]) => {
+      if (args[10] === true) throw new Error("exact_metadata_identity_v1 unavailable");
+      return [{ name: "ORDINARY", schema: " Mixed ", object_type: "TABLE" }];
+    });
+    const { host } = await mountBrowser({ selectedObjectFilter: "all" });
+    await vi.waitFor(() => expect(host.querySelector('[title="ORDINARY"]')).not.toBeNull());
+    expect(host.textContent).toContain("exact_metadata_identity_v1 unavailable");
+  });
+
+  it.each(["oracle", "oceanbase-oracle", "dameng"] as const)("%s requests exact typed pages before rendering INDEX rows", async (type) => {
+    connection.db_type = type;
+    mocks.listObjects.mockResolvedValue([index(" Ix(a) "), index("IX_A_2"), index("third")]);
+    const { host } = await mountBrowser();
+    await vi.waitFor(() => expect(host.querySelector('[title=" Ix(a) "]')).not.toBeNull());
+    expect(mocks.listObjects).toHaveBeenCalledExactlyOnceWith(connection.id, "service", " Mixed ", ["INDEX"], undefined, 3, 0, undefined, undefined, undefined, true);
+    expect(host.querySelector('[title="third"]')).toBeNull();
+    expect(host.querySelector("[data-object-load-more]")).not.toBeNull();
+  });
+
+  it("creates from an empty index list by choosing an exact visible TABLE, with no DDL", async () => {
+    const { host } = await mountBrowser();
+    const create = await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>("[data-create-schema-index]");
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    create.click();
+    await vi.waitFor(() => expect(mocks.listTables).toHaveBeenCalledExactlyOnceWith(connection.id, "service", " Mixed ", undefined, undefined, undefined, ["TABLE"], undefined, undefined, true));
+    const select = host.querySelector<HTMLSelectElement>("[data-index-parent-table]")!;
+    await vi.waitFor(() => expect([...select.options].some((option) => option.value === ' T(a)" ')).toBe(true));
+    select.value = ' T(a)" ';
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    host.querySelector<HTMLButtonElement>("[data-confirm-index-parent]")!.click();
+    expect(mocks.openTableStructure).toHaveBeenCalledExactlyOnceWith(connection.id, "service", " Mixed ", ' T(a)" ', "indexes", { kind: "index", name: "", action: "create" }, undefined, "table", true);
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeBatch).not.toHaveBeenCalled();
+  });
+
+  it("a direct cross-owner view request reads the parent even outside the loaded page and never edits", async () => {
+    const target = { schema: " Mixed ", name: " Ix(a) ", parentSchema: " Other Owner ", parentName: ' T(a)" ' };
+    const { host } = await mountBrowser({ initialViewTarget: target, initialViewRequestId: 1 });
+    await vi.waitFor(() => expect(mocks.listIndexes).toHaveBeenCalledExactlyOnceWith(connection.id, "service", " Other Owner ", ' T(a)" ', undefined, true));
+    expect(host.querySelector("[data-object-table-info-panel]")).not.toBeNull();
+    expect(host.querySelector("[data-object-table-structure]")).toBeNull();
+    expect(mocks.openTableStructure).not.toHaveBeenCalled();
+  });
+
+  it("changing schema retires a pending table picker, without opening a stale draft", async () => {
+    let resolve!: (value: unknown[]) => void;
+    mocks.listTables.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const { host, schema } = await mountBrowser();
+    const create = await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>("[data-create-schema-index]");
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    create.click();
+    await vi.waitFor(() => expect(mocks.listTables).toHaveBeenCalledOnce());
+    schema.value = "OTHER";
+    await nextTick();
+    resolve([{ name: "STALE", table_type: "TABLE" }]);
+    await nextTick();
+    expect(host.querySelector("[data-confirm-index-parent]")).toBeNull();
+    expect(mocks.openTableStructure).not.toHaveBeenCalled();
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed parent read and permits cancelling without creating a draft", async () => {
+    mocks.listTables.mockRejectedValueOnce(new Error("exact metadata unavailable"));
+    const { host } = await mountBrowser();
+    host.querySelector<HTMLButtonElement>("[data-create-schema-index]")!.click();
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]')?.textContent).toContain("exact metadata unavailable"));
+    expect(host.querySelector<HTMLButtonElement>("[data-confirm-index-parent]")!.disabled).toBe(true);
+    Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "common.retry")!
+      .click();
+    await vi.waitFor(() => expect(mocks.listTables).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]')).toBeNull());
+    Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "common.cancel")!
+      .click();
+    await nextTick();
+    expect(host.querySelector("[data-confirm-index-parent]")).toBeNull();
+    expect(mocks.openTableStructure).not.toHaveBeenCalled();
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeBatch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("ignores a late exact INDEX page after changing Schema (failed: %s)", async (failed) => {
+    let release!: (value: ObjectInfo[]) => void;
+    let reject!: (error: Error) => void;
+    mocks.listObjects.mockResolvedValueOnce([index("FIRST"), index("SECOND"), index("LOOKAHEAD")]);
+    mocks.listObjects.mockImplementationOnce(
+      () =>
+        new Promise<ObjectInfo[]>((resolve, fail) => {
+          release = resolve;
+          reject = fail;
+        }),
+    );
+    mocks.listObjects.mockResolvedValue([{ ...index("CURRENT", "OTHER"), schema: "OTHER" }]);
+    const { host, schema } = await mountBrowser();
+    await vi.waitFor(() => expect(host.querySelector('[title="SECOND"]')).not.toBeNull());
+    host.querySelector<HTMLButtonElement>("[data-object-load-more]")!.click();
+    await vi.waitFor(() => expect(mocks.listObjects).toHaveBeenCalledTimes(2));
+    expect(mocks.listObjects.mock.calls[1]?.slice(5, 7)).toEqual([3, 2]);
+    schema.value = "OTHER";
+    await vi.waitFor(() => expect(host.querySelector('[title="CURRENT"]')).not.toBeNull());
+    if (failed) reject(new Error("retired page failure"));
+    else release([index("STALE")]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+    expect(host.querySelector('[title="CURRENT"]')).not.toBeNull();
+    expect(host.querySelector('[title="STALE"]')).toBeNull();
+    expect(host.textContent).not.toContain("retired page failure");
+  });
+
+  it("shows parent indexes without a false match when index owner is absent", async () => {
+    mocks.listIndexes.mockResolvedValue([{ name: " Ix(a) ", columns: ["Id"], is_unique: false, is_primary: false }]);
+    const { host } = await mountBrowser({ initialViewTarget: { schema: " Mixed ", name: " Ix(a) ", parentSchema: " Other Owner ", parentName: ' T(a)" ' }, initialViewRequestId: 1 });
+    await vi.waitFor(() => expect(host.querySelector("[data-schema-index-focus-unavailable]")).not.toBeNull());
+    expect(host.querySelector("[data-schema-index-match]")).toBeNull();
+    expect(host.querySelector("[data-object-table-structure]")).toBeNull();
+    expect(mocks.openTableStructure).not.toHaveBeenCalled();
+  });
+});

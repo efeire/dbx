@@ -154,3 +154,37 @@ fn indexes_on_other_oracle_dialect_engines_keep_existing_rebuild_behavior() {
         assert!(result.statements[1].starts_with("CREATE INDEX"), "{database_type:?}: {result:?}");
     }
 }
+
+#[test]
+fn oracle_family_rebuild_preserves_unchanged_dictionary_names_and_selected_column_identity() {
+    for database_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle, DatabaseType::Dameng] {
+        let input = json!({
+            "id":"raw-index", "name":" Ix (a) ", "columns":[" Id(a) "], "isUnique":true, "isPrimary":false,
+            "original":{"name":" Ix (a) ", "columns":[" Id(a) "], "is_unique":false, "is_primary":false,
+                "index_type":"NORMAL", "key_is_expression":[false], "key_directions":["ASC"],
+                "visibility":"VISIBLE", "key_metadata_complete":true}
+        });
+        let mut request = options(input);
+        request.database_type = Some(database_type);
+        request.schema = Some(" Owner ".into());
+        request.table_name = " T(a) ".into();
+        let result = build_table_structure_change_sql(request);
+        let create = result
+            .statements
+            .iter()
+            .find(|sql| sql.starts_with("CREATE"))
+            .unwrap_or_else(|| panic!("{database_type:?}: {result:?}"));
+        assert!(create.contains("INDEX \" Ix (a) \""), "{database_type:?}: {result:?}");
+        assert!(create.contains("ON \" Owner \".\" T(a) \""), "{database_type:?}: {result:?}");
+        assert!(create.contains("\" Id(a) \""), "{database_type:?}: {result:?}");
+    }
+}
+
+#[test]
+fn oracle_similar_raw_keys_keep_their_own_direction_after_reorder() {
+    let input = json!({"id":"raw-keys", "name":"IX_NEW", "columns":["k", " k "], "isUnique":false, "isPrimary":false,
+        "original":{"name":"IX_OLD", "columns":[" k ", "k"], "is_unique":false, "is_primary":false,
+            "key_is_expression":[false,false], "key_directions":["DESC","ASC"], "visibility":"VISIBLE", "key_metadata_complete":true}});
+    let result = build_table_structure_change_sql(options(input));
+    assert!(result.statements.iter().any(|sql| sql.contains("(\"k\" ASC, \" k \" DESC)")), "{result:?}");
+}

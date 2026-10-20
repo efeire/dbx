@@ -57,6 +57,9 @@ func TestHandshakeResponse(t *testing.T) {
 	if !contains(result.Capabilities, "query") || !contains(result.Capabilities, "metadata") {
 		t.Fatalf("expected query and metadata capabilities, got %v", result.Capabilities)
 	}
+	if !contains(result.Capabilities, "exact_metadata_identity_v1") {
+		t.Fatal("updated Oracle metadata must explicitly advertise exact identity")
+	}
 }
 
 func TestRuntimeHandshakeAdvertisesMultiSessionProtocol(t *testing.T) {
@@ -2340,6 +2343,92 @@ func TestListObjectsSQLUsesSplitDictionaryQuery(t *testing.T) {
 	}
 	if !strings.Contains(sqlText, "ALL_SYNONYMS") || !strings.Contains(sqlText, "'SYNONYM' AS OBJECT_TYPE") {
 		t.Fatalf("object listing should include schema synonyms, got: %s", oracleListObjectsSQL)
+	}
+}
+
+func TestSchemaIndexObjectsPreserveBothOwnersThroughRPC(t *testing.T) {
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{queryContains: "SYS_CONTEXT('USERENV', 'SESSION_USER')", args: []driver.Value{}, rows: [][]driver.Value{{"APP"}}},
+		{queryContains: "USER_INDEXES", args: []driver.Value{"INDEX", int64(2), int64(0)}, columns: []string{"OBJECT_NAME", "OBJECT_TYPE", "COMMENTS", "PARENT_SCHEMA", "PARENT_NAME"}, rows: [][]driver.Value{{" Ix (a) ", "INDEX", nil, "Table Owner", " T(a) "}}},
+	})
+	s := newServer()
+	s.db = db
+	resp, _ := s.handleLine(`{"id":1,"method":"list_objects","params":{"schema":"APP","object_types":["INDEX"],"limit":2}}`)
+	if resp.Error != nil {
+		t.Fatalf("list_objects failed: %v", resp.Error)
+	}
+	data, err := json.Marshal(resp.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var objects []map[string]any
+	if err := json.Unmarshal(data, &objects); err != nil {
+		t.Fatal(err)
+	}
+	if len(objects) != 1 || objects[0]["schema"] != "APP" || objects[0]["name"] != " Ix (a) " || objects[0]["object_type"] != "INDEX" || objects[0]["parent_schema"] != "Table Owner" || objects[0]["parent_name"] != " T(a) " {
+		t.Fatalf("index identities were not preserved: %s", data)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("queries consumed = %d, want %d", scripted.next, len(scripted.steps))
+	}
+}
+
+func TestSchemaIndexObjectsDoNotReportPGAFailureAsEmpty(t *testing.T) {
+	db, _ := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{queryContains: "SYS_CONTEXT('USERENV', 'SESSION_USER')", args: []driver.Value{}, rows: [][]driver.Value{{"APP"}}},
+		{queryContains: "FROM USER_TABLES", args: []driver.Value{"INDEX"}, err: errors.New("ORA-04036: PGA memory used by the instance exceeds PGA_AGGREGATE_LIMIT")},
+	})
+	s := newServer()
+	s.db = db
+	resp, _ := s.handleLine(`{"id":1,"method":"list_objects","params":{"schema":"APP","object_types":["INDEX"]}}`)
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "ORA-04036") {
+		t.Fatalf("dictionary failure must remain an error, got %+v", resp)
+	}
+}
+
+func TestExactSchemaIndexAllDictionaryPagePreservesMissingParent(t *testing.T) {
+	owner := " Index Owner "
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{queryContains: "SYS_CONTEXT('USERENV', 'SESSION_USER')", args: []driver.Value{}, rows: [][]driver.Value{{"Other Owner"}}},
+		{queryContains: "ALL_INDEXES", args: []driver.Value{owner, owner, owner, "INDEX", int64(3), int64(1)}, columns: []string{"OBJECT_NAME", "OBJECT_TYPE", "COMMENTS", "PARENT_SCHEMA", "PARENT_NAME"}, rows: [][]driver.Value{{" Ix (a) ", "INDEX", nil, nil, nil}}},
+	})
+	s := newServer()
+	s.db = db
+	resp, _ := s.handleLine(`{"id":1,"method":"list_objects","params":{"schema":" Index Owner ","object_types":["INDEX"],"limit":2,"offset":1,"exact_identity":true}}`)
+	if resp.Error != nil {
+		t.Fatalf("exact ALL dictionary page failed: %v", resp.Error)
+	}
+	objects := resp.Result.([]objectInfo)
+	if len(objects) != 1 || objects[0].Schema != owner || objects[0].Name != " Ix (a) " || objects[0].ParentName != nil || objects[0].ParentSchema != nil || scripted.next != 2 {
+		t.Fatalf("page must preserve raw/unknown identities without applying offset twice: %+v", objects)
+	}
+}
+
+func TestExactMetadataRPCNeverNormalizesOrRetriesANearbyName(t *testing.T) {
+	for _, method := range []string{"get_columns", "list_indexes", "get_table_comment", "list_foreign_keys", "list_constraints", "list_triggers"} {
+		t.Run(method, func(t *testing.T) {
+			query := map[string]string{"get_columns": "FROM ALL_TAB_COLUMNS", "list_indexes": "FROM ALL_INDEXES", "get_table_comment": "FROM ALL_TAB_COMMENTS", "list_foreign_keys": "FROM ALL_CONSTRAINTS", "list_constraints": "FROM ALL_CONSTRAINTS", "list_triggers": "FROM ALL_TRIGGERS"}[method]
+			db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{queryContains: query, args: []driver.Value{" Mixed Owner ", " T(a) "}}})
+			s := newServer()
+			s.db = db
+			resp, _ := s.handleLine(fmt.Sprintf(`{"id":1,"method":%q,"params":{"schema":" Mixed Owner ","table":" T(a) ","exact_identity":true}}`, method))
+			if resp.Error != nil {
+				t.Fatalf("exact read failed: %v", resp.Error)
+			}
+			if scripted.next != 1 {
+				t.Fatalf("exact missing target must not retry a nearby name; queries=%d", scripted.next)
+			}
+		})
+	}
+}
+
+func TestExactTableDDLDoesNotBuildAnotherTargetAfterMetadataFailure(t *testing.T) {
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{queryContains: "DBMS_METADATA.GET_DDL", args: []driver.Value{"TABLE", " T(a) ", " Mixed Owner "}, err: errors.New("ORA-01031: insufficient privileges")}})
+	s := newServer()
+	s.db = db
+	resp, _ := s.handleLine(`{"id":1,"method":"get_table_ddl","params":{"schema":" Mixed Owner ","table":" T(a) ","object_type":"TABLE","exact_identity":true}}`)
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "ORA-01031") || scripted.next != 1 {
+		t.Fatalf("must preserve exact identity failure without fallback, got %+v after %d queries", resp, scripted.next)
 	}
 }
 

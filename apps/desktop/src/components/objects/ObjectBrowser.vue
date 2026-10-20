@@ -81,7 +81,7 @@ import CustomTypeInfoPanel from "@/components/objects/CustomTypeInfoPanel.vue";
 import TablePartitionsPanel from "@/components/structure/TablePartitionsPanel.vue";
 import XlsxHeaderDialog from "@/components/export/XlsxHeaderDialog.vue";
 import * as api from "@/lib/backend/api";
-import type { ColumnInfo, ConnectionConfig, ConstraintInfo, ForeignKeyInfo, IndexInfo, ObjectBrowserViewMode, ObjectBrowserViewport, ObjectInfo, ObjectSourceKind, ObjectStatistics, PgTablePartitioning, TableInfoTab, TreeNode, TriggerInfo } from "@/types/database";
+import type { ColumnInfo, ConnectionConfig, ConstraintInfo, ForeignKeyInfo, IndexInfo, ObjectBrowserViewMode, ObjectBrowserViewport, ObjectInfo, ObjectSourceKind, ObjectStatistics, PgTablePartitioning, SchemaIndexIdentity, TableInfoTab, TreeNode, TriggerInfo } from "@/types/database";
 import { sortTablesByFkDependency, type TableWithFk } from "@/lib/table/tableDependencySort";
 import { isSchemaAware, supportsTableVacuum, supportsTransfer } from "@/lib/database/databaseCapabilities";
 import { supportsAiAssistantContext, supportsDataDictionary, supportsSchemaDiagram, supportsTableImport, supportsTableStructureEditing, supportsTableTruncate } from "@/lib/database/databaseFeatureSupport";
@@ -185,7 +185,9 @@ import {
 } from "@/lib/table/objectBrowserRows";
 import { isSourceOnlyObjectBrowserRow, resolveRowClickAction, shouldDeferSingleClick, singleClickRowAction, type ObjectBrowserRowAction } from "@/lib/table/objectBrowserRowAction";
 import { objectBrowserTableSelectionAnchor, objectBrowserTableSelectionRange } from "@/lib/table/objectBrowserSelection";
-import { customTypeCapabilities, supportsTypeObjectSource, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
+import { customTypeCapabilities, sidebarObjectKindsForDatabase, supportsSchemaIndexManagement, supportsTypeObjectSource, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
+import { schemaIndexIdentity, schemaIndexIsSameOwner } from "@/lib/table/schemaIndexNavigation";
+import { connectionConfigFingerprint } from "@/lib/connection/connectionDatabaseInfo";
 import { filterObjectBrowserTableColumns } from "@/lib/table/objectBrowserTableInfo";
 import { visibleMongoCollections } from "@/lib/sidebar/mongoCollectionMutation";
 import { createSidePanelRequestGuard } from "@/lib/table/sidePanelRequestGuard";
@@ -217,7 +219,10 @@ const props = defineProps<{
   initialEventOpenRequestId?: number;
   /** 显式"新建事件"请求号：每次菜单点击递增，用于打开/重新进入 CREATE 编辑器 */
   initialEventCreateRequestId?: number;
-  initialObjectFilter?: "tables" | "events";
+  initialObjectFilter?: "tables" | "events" | "indexes";
+  initialIndexCreateRequestId?: number;
+  initialViewTarget?: SchemaIndexIdentity;
+  initialViewRequestId?: number;
   selectedObjectFilter?: ObjectFilter;
   initialSearchQuery?: string;
   viewport?: ObjectBrowserViewport;
@@ -230,6 +235,7 @@ const emit = defineEmits<{
   viewportChange: [viewport: ObjectBrowserViewport];
   searchChange: [query: string];
   filterChange: [filter: ObjectFilter];
+  indexRequestConsumed: [kind: "create" | "view"];
   addToAi: [tables: Array<{ name: string; schema?: string }>];
 }>();
 
@@ -253,7 +259,7 @@ const selectedSchema = ref<string | undefined>(props.schema);
 const rows = ref<ObjectBrowserRow[]>([]);
 const rootRef = ref<HTMLElement>();
 const search = ref(props.initialSearchQuery ?? "");
-const objectFilter = ref<ObjectFilter>(props.connection.db_type === "oceanbase-oracle" ? (props.selectedObjectFilter ?? props.initialObjectFilter ?? "tables") : "all");
+const objectFilter = ref<ObjectFilter>(props.selectedObjectFilter === "indexes" || props.initialObjectFilter === "indexes" ? "indexes" : props.connection.db_type === "oceanbase-oracle" ? (props.selectedObjectFilter ?? props.initialObjectFilter ?? "tables") : "all");
 const userHasSelectedFilter = ref(false);
 const sortKey = ref<ObjectBrowserSortKey>("name");
 const sortDirection = ref<ObjectBrowserSortDirection>("asc");
@@ -304,6 +310,7 @@ const tableDdlLoaded = ref(false);
 const tableIndexes = ref<IndexInfo[]>([]);
 const tableIndexesLoading = ref(false);
 const tableIndexesLoaded = ref(false);
+const tableIndexesError = ref("");
 const tableForeignKeys = ref<ForeignKeyInfo[]>([]);
 const tableForeignKeysLoading = ref(false);
 const tableForeignKeysLoaded = ref(false);
@@ -350,7 +357,9 @@ const sidePanelGuard = createSidePanelRequestGuard();
 const sidePanelRef = ref<InstanceType<typeof CustomTypeInfoPanel> | null>(null);
 const tableMetadataCapabilities = computed<TableMetadataCapabilities>(() => getTableMetadataCapabilities(effectiveDatabaseType.value));
 const effectiveDatabaseType = computed(() => effectiveDatabaseTypeForConnection(props.connection) ?? props.connection.db_type);
-const usesServerObjectPaging = computed(() => props.connection.db_type === "oceanbase-oracle");
+const supportsSchemaIndexes = computed(() => supportsSchemaIndexManagement(effectiveDatabaseType.value));
+const exactIndexList = computed(() => supportsSchemaIndexes.value && objectFilter.value === "indexes");
+const usesServerObjectPaging = computed(() => props.connection.db_type === "oceanbase-oracle" || exactIndexList.value);
 const objectPageSize = computed(() => Math.max(1, Math.min(10_000, Math.floor(settingsStore.desktopSettings?.sidebar_table_page_size || 500))));
 const isGaussdbM = computed(() => effectiveDatabaseType.value === "gaussdb" && props.connection.driver_profile?.toLowerCase() === "gaussdb-m");
 const isVictoriaMetrics = computed(() => effectiveDatabaseType.value === "victoriametrics");
@@ -507,6 +516,7 @@ const objectCounts = computed(() => countObjectBrowserRowsByFilter(rows.value));
 // Count direct search matches once; partition parents rendered only for context must not inflate badges.
 const objectSearchSummary = computed(() => summarizeObjectBrowserSearch(rows.value, search.value));
 const canOpenStructureEditor = computed(() => supportsTableStructureEditing(tableStructureDatabaseType.value));
+const canCreateSchemaIndex = computed(() => supportsSchemaIndexes.value && !connectionIsEffectivelyReadOnly(props.connection));
 const canOpenDiagram = computed(() => !!props.database && supportsSchemaDiagram(effectiveDatabaseType.value));
 const canOpenDataDictionary = computed(() => !!props.database && supportsDataDictionary(effectiveDatabaseType.value));
 const canOpenTableImport = computed(() => !!props.database && supportsTableImport(effectiveDatabaseType.value));
@@ -517,7 +527,7 @@ const sourceDialect = computed(() => codeMirrorSqlDialect(effectiveDatabaseType.
 const sourceFormatDialect = computed<SqlFormatDialect>(() => sqlFormatDialectForDbType(effectiveDatabaseType.value));
 const objectFilters = computed<ObjectFilter[]>(() =>
   usesServerObjectPaging.value
-    ? ["all", "tables", "views", "procedures", "functions", "sequences", "packages", "types"]
+    ? ["all", "tables", "views", "procedures", "functions", "sequences", ...(supportsSchemaIndexes.value ? ["indexes" as const] : []), "packages", "types"]
     : (
         [
           ["all", objectCounts.value.all],
@@ -529,11 +539,12 @@ const objectFilters = computed<ObjectFilter[]>(() =>
           ["triggers", objectCounts.value.triggers],
           ["events", objectCounts.value.events],
           ["sequences", objectCounts.value.sequences],
+          ["indexes", objectCounts.value.indexes],
           ["packages", objectCounts.value.packages],
           ["types", objectCounts.value.types],
         ] as Array<[ObjectFilter, number]>
       )
-        .filter(([filter, count]) => filter === "all" || count > 0)
+        .filter(([filter, count]) => filter === "all" || count > 0 || (filter === "indexes" && supportsSchemaIndexes.value))
         .map(([filter]) => filter),
 );
 const showObjectFilter = computed(() => objectFilters.value.length > 2);
@@ -894,6 +905,7 @@ const allVisibleTablesSelected = computed(() => visibleSelectableRows.value.leng
 const batchDropProgressPercent = computed(() => (batchDropProgress.value.total > 0 ? Math.round((batchDropProgress.value.completed / batchDropProgress.value.total) * 100) : 0));
 
 function iconFor(row: ObjectBrowserRow) {
+  if (row.type === "INDEX") return KeyRound;
   if (row.type === "VIEW" || row.type === "MATERIALIZED_VIEW") return Eye;
   if (row.type === "PROCEDURE") return ScrollText;
   if (row.type === "FUNCTION") return Braces;
@@ -906,6 +918,7 @@ function iconFor(row: ObjectBrowserRow) {
 }
 
 function typeLabel(row: ObjectBrowserRow) {
+  if (row.type === "INDEX") return t("grid.tableInfoIndexes");
   if (isMongodb.value) {
     if (row.collectionKind === "view" || row.type === "VIEW") return t("objects.view");
     if (row.collectionKind === "timeseries") return t("objects.timeseries");
@@ -1025,6 +1038,7 @@ function rowMatchesFilter(row: ObjectBrowserRow, filter: ObjectFilter) {
   if (filter === "triggers") return row.type === "TRIGGER";
   if (filter === "events") return row.type === "EVENT";
   if (filter === "sequences") return row.type === "SEQUENCE";
+  if (filter === "indexes") return row.type === "INDEX";
   if (filter === "packages") return row.type === "PACKAGE" || row.type === "PACKAGE_BODY";
   if (filter === "types") return row.type === "TYPE" || row.type === "TYPE_BODY";
   return true;
@@ -1132,6 +1146,7 @@ function togglePartitionParent(row: ObjectBrowserRow) {
 }
 
 function canRename(row: ObjectBrowserRow) {
+  if (row.type === "INDEX") return false;
   return (
     supportsObjectRename(effectiveDatabaseType.value, row.type) ||
     ((effectiveDatabaseType.value === "oracle" || effectiveDatabaseType.value === "oceanbase-oracle") && (row.type === "PROCEDURE" || row.type === "FUNCTION")) ||
@@ -1149,6 +1164,12 @@ let singleClickTimer: ReturnType<typeof setTimeout> | null = null;
 
 function executeRowAction(row: ObjectBrowserRow, action: ObjectBrowserRowAction) {
   switch (action) {
+    case "index-info":
+      void openTableInfo(row, "indexes");
+      break;
+    case "index-editor":
+      openSchemaIndexEditor(row);
+      break;
     case "table-info":
       void openTableInfo(row);
       break;
@@ -1250,7 +1271,7 @@ const tableInfoTabs = computed<TableInfoTabItem[]>(() => {
   if (tableMetadataCapabilities.value.partitions && tableIsPartitioned.value) {
     tabs.push({ id: "partitions", label: t("structureEditor.partitions"), icon: Network, count: tablePartitions.value?.partitions.length });
   }
-  return tabs;
+  return sidePanelRow.value?.type === "INDEX" ? tabs.filter((tab) => ["info", "ddl", "columns", "indexes"].includes(tab.id)) : tabs;
 });
 
 const tableInfoTabListStyle = computed(() => ({
@@ -1318,9 +1339,12 @@ function onTableInfoColumnsKeydown(event: KeyboardEvent) {
 }
 const tableOverviewRows = computed(() => {
   const stats = tableOverviewStats.value;
+  const source = sidePanelRow.value;
+  const index = source?.type === "INDEX" ? schemaIndexIdentity(source) : null;
   const rows = [
-    { label: t("common.table"), value: sidePanelRow.value?.name ?? "" },
-    { label: t("common.schema"), value: sidePanelRow.value?.schema || selectedSchema.value || props.database },
+    ...(index ? [{ label: t("grid.tableInfoIndexes"), value: `${index.schema}.${index.name}` }] : []),
+    { label: t("common.table"), value: index ? `${index.parentSchema}.${index.parentName}` : (source?.name ?? "") },
+    { label: t("common.schema"), value: index?.parentSchema ?? (source?.schema || selectedSchema.value || props.database) },
     { label: t("common.database"), value: props.database },
     ...(sidePanelRow.value?.valid != null ? [{ label: t("objects.validity"), value: t(sidePanelRow.value.valid ? "objects.validStatus" : "objects.invalidStatus") }] : []),
     { label: t("structureEditor.comment"), value: tableOverviewComment.value ?? "" },
@@ -1348,6 +1372,16 @@ const filteredTableIndexes = computed(() => {
   const q = tableInfoSearchQuery.value.toLowerCase();
   return tableIndexes.value.filter((i) => i.name.toLowerCase().includes(q) || i.columns.some((c) => c.toLowerCase().includes(q)));
 });
+
+function schemaIndexOwner(index: IndexInfo): string | undefined {
+  return "owner" in index && typeof index.owner === "string" ? index.owner : undefined;
+}
+
+function isInitialSchemaIndex(index: IndexInfo): boolean {
+  const source = sidePanelRow.value;
+  if (source?.type !== "INDEX" || !source.schema || schemaIndexOwner(index) !== source.schema || index.name !== source.name) return false;
+  return tableIndexes.value.filter((item) => schemaIndexOwner(item) === source.schema && item.name === source.name).length === 1;
+}
 
 const filteredTableForeignKeys = computed(() => {
   if (!tableInfoSearchQuery.value) return tableForeignKeys.value;
@@ -1380,6 +1414,10 @@ const filteredTableDdlContent = computed(() => {
 });
 
 async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
+  if (row.type === "INDEX" && (!supportsSchemaIndexes.value || !schemaIndexIdentity(row))) {
+    toast(t("schemaIndex.parentUnavailable"), 4000);
+    return;
+  }
   selectedTableInfoColumns.value = [];
   selectedRowId.value = row.id;
   // Toggle off if clicking the same table
@@ -1401,6 +1439,7 @@ async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
   tableOverviewLoaded.value = false;
   rawTableDdlContent.value = "";
   tableIndexes.value = [];
+  tableIndexesError.value = "";
   tableForeignKeys.value = [];
   tableTriggers.value = [];
   tableConstraints.value = [];
@@ -1451,16 +1490,20 @@ async function fetchTableOverview(force = false) {
   const row = sidePanelRow.value;
   if (!row || (!force && tableOverviewLoaded.value)) return;
   const epoch = sidePanelGuard.capture();
-  const schema = row.schema || selectedSchema.value || props.database;
+  const request = tableMetadataRequest(row);
+  const schema = request.schema;
   tableOverviewLoading.value = true;
   try {
     const [statistics, comment] = await sidePanelGuard.wait(
       epoch,
-      Promise.all([api.listObjectStatistics(props.connection.id, props.database, schema).catch(() => [] as ObjectStatistics[]), api.getTableComment(props.connection.id, props.database, schema, row.name, props.catalog).catch(() => null)]),
+      Promise.all([
+        request.exactIdentity ? Promise.resolve([] as ObjectStatistics[]) : api.listObjectStatistics(props.connection.id, props.database, schema).catch(() => [] as ObjectStatistics[]),
+        api.getTableComment(props.connection.id, props.database, schema, request.tableName, props.catalog, ...(request.exactIdentity ? ([true] as const) : [])).catch(() => null),
+      ]),
       metadataLoadBudgetMs(props.connection.query_timeout_secs),
     );
     if (sidePanelGuard.isStale(epoch)) return;
-    tableOverviewStats.value = findTableStatistics(statistics, row.name, schema) ?? null;
+    tableOverviewStats.value = findTableStatistics(statistics, request.tableName, schema) ?? null;
     tableOverviewComment.value = comment;
     tableOverviewLoaded.value = true;
   } catch (error) {
@@ -1471,14 +1514,17 @@ async function fetchTableOverview(force = false) {
 }
 
 function tableMetadataRequest(row: ObjectBrowserRow): ObjectDdlRequest {
+  const index = row.type === "INDEX" ? schemaIndexIdentity(row) : null;
+  if (row.type === "INDEX" && !index) throw new Error("Index parent identity is unavailable");
   return {
     connectionId: props.connection.id,
     queryTimeoutSecs: props.connection.query_timeout_secs,
     database: props.database || "",
-    schema: row.schema || selectedSchema.value || props.database,
-    tableName: row.name,
-    objectType: tableDdlObjectType(row.type),
+    schema: index ? index.parentSchema : row.schema || selectedSchema.value || props.database,
+    tableName: index ? index.parentName : row.name,
+    objectType: index ? undefined : tableDdlObjectType(row.type),
     catalog: props.catalog,
+    ...(index ? { exactIdentity: true } : {}),
   };
 }
 
@@ -1516,7 +1562,13 @@ async function fetchTableColumns(force = false) {
     const request = tableMetadataRequest(row);
     const { value: columns } = await sidePanelGuard.wait(
       epoch,
-      loadObjectMetadataFacet(request, "columns", () => api.getColumns(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog), { force }),
+      loadObjectMetadataFacet(
+        request,
+        "columns",
+        () =>
+          request.exactIdentity ? api.getColumns(request.connectionId, request.database, request.schema, request.tableName, request.catalog, undefined, undefined, true) : api.getColumns(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog),
+        { force },
+      ),
       metadataLoadBudgetMs(props.connection.query_timeout_secs),
     );
     if (sidePanelGuard.isStale(epoch)) return;
@@ -1539,12 +1591,13 @@ async function fetchTableIndexes(force = false) {
   if (!row || (tableIndexesLoaded.value && !force)) return;
   const epoch = sidePanelGuard.capture();
   tableIndexesLoading.value = true;
+  tableIndexesError.value = "";
   let loadedSuccessfully = false;
   try {
     const request = tableMetadataRequest(row);
     const { value: indexes } = await sidePanelGuard.wait(
       epoch,
-      loadObjectMetadataFacet(request, "indexes", () => api.listIndexes(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog), { force }),
+      loadObjectMetadataFacet(request, "indexes", () => api.listIndexes(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog, ...(request.exactIdentity ? ([true] as const) : [])), { force }),
       metadataLoadBudgetMs(props.connection.query_timeout_secs),
     );
     if (sidePanelGuard.isStale(epoch)) return;
@@ -1553,7 +1606,7 @@ async function fetchTableIndexes(force = false) {
   } catch (error) {
     if (sidePanelGuard.isStale(epoch)) return;
     tableIndexes.value = [];
-    toast(translateBackendError(t, error), 5000);
+    tableIndexesError.value = translateBackendError(t, error);
   } finally {
     if (sidePanelGuard.isFresh(epoch)) {
       tableIndexesLoaded.value = loadedSuccessfully;
@@ -1572,7 +1625,7 @@ async function fetchTableForeignKeys(force = false) {
     const request = tableMetadataRequest(row);
     const { value: fks } = await sidePanelGuard.wait(
       epoch,
-      loadObjectMetadataFacet(request, "foreign-keys", () => api.listForeignKeys(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog), { force }),
+      loadObjectMetadataFacet(request, "foreign-keys", () => api.listForeignKeys(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog, ...(request.exactIdentity ? ([true] as const) : [])), { force }),
       metadataLoadBudgetMs(props.connection.query_timeout_secs),
     );
     if (sidePanelGuard.isStale(epoch)) return;
@@ -1600,7 +1653,7 @@ async function fetchTableTriggers(force = false) {
     const request = tableMetadataRequest(row);
     const { value: triggers } = await sidePanelGuard.wait(
       epoch,
-      loadObjectMetadataFacet(request, "triggers", () => api.listTriggers(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog), { force }),
+      loadObjectMetadataFacet(request, "triggers", () => api.listTriggers(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog, ...(request.exactIdentity ? ([true] as const) : [])), { force }),
       metadataLoadBudgetMs(props.connection.query_timeout_secs),
     );
     if (sidePanelGuard.isStale(epoch)) return;
@@ -1620,7 +1673,7 @@ async function fetchTableTriggers(force = false) {
 
 async function probeTablePartitionStatus() {
   const row = sidePanelRow.value;
-  if (!row || !tableMetadataCapabilities.value.partitions) {
+  if (!row || row.type === "INDEX" || !tableMetadataCapabilities.value.partitions) {
     tableIsPartitioned.value = false;
     tablePartitionStatusResolved.value = true;
     return;
@@ -1676,7 +1729,7 @@ async function fetchTableConstraints(force = false) {
     const request = tableMetadataRequest(row);
     const { value: constraints } = await sidePanelGuard.wait(
       epoch,
-      loadObjectMetadataFacet(request, "constraints", () => api.listConstraints(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog), { force }),
+      loadObjectMetadataFacet(request, "constraints", () => api.listConstraints(request.connectionId, request.database, request.schema || request.database, request.tableName, request.catalog, ...(request.exactIdentity ? ([true] as const) : [])), { force }),
       metadataLoadBudgetMs(props.connection.query_timeout_secs),
     );
     if (sidePanelGuard.isStale(epoch)) return;
@@ -2022,6 +2075,14 @@ async function executeProcedureSql(sql: string) {
 }
 
 function requestDrop(row: ObjectBrowserRow) {
+  if (selectedTableCount.value > 1 && selectedTableIds.value.has(row.id) && selectedTableRows.value.some((item) => item.type === "INDEX")) {
+    toast(t("schemaIndex.editIndividually"), 4000);
+    return;
+  }
+  if (row.type === "INDEX") {
+    openSchemaIndexEditor(row, "delete");
+    return;
+  }
   dropTarget.value = row;
   dropPreviewSql.value = "";
   dropTableCascade.value = false;
@@ -2218,7 +2279,7 @@ async function refreshRenamePreviewSql() {
   const requestId = ++renamePreviewRequestId;
   const row = renameTarget.value;
   const newName = renameInput.value.trim();
-  if (!showRenameDialog.value || !row || !newName || newName === row.name) {
+  if (!showRenameDialog.value || !row || row.type === "INDEX" || !newName || newName === row.name) {
     renamePreviewSqlText.value = "";
     viewRenamePlan.value = undefined;
     routineRenamePlan.value = undefined;
@@ -2385,7 +2446,7 @@ watch([showRenameDialog, renameTarget, renameInput, selectedSchema, () => props.
 async function confirmRename() {
   const row = renameTarget.value;
   let newName = renameInput.value.trim();
-  if (!row || !newName || newName === row.name) return;
+  if (!row || row.type === "INDEX" || !newName || newName === row.name) return;
   renameError.value = "";
   const oldPinnedNode = pinnedTreeNodeForObjectBrowserRow(row);
   const oldLegacyPinnedNodes = legacyPinnedTreeNodesForObjectBrowserRow(row);
@@ -2525,6 +2586,7 @@ async function confirmRename() {
 async function confirmDrop() {
   if (!dropTarget.value) return;
   const row = dropTarget.value;
+  if (row.type === "INDEX") return;
   let executedSql = "";
   const start = Date.now();
   let successRecorded = false;
@@ -2573,6 +2635,7 @@ async function confirmDrop() {
 }
 
 async function buildDropSqlForRow(row: ObjectBrowserRow, options?: { cascade?: boolean }): Promise<string> {
+  if (row.type === "INDEX") throw new Error(t("schemaIndex.editIndividually"));
   if (row.type === "TABLE") {
     return buildDropTableSql(tableAdminSqlOptions(row, { cascade: options?.cascade && supportsDropTableCascade(effectiveDatabaseType.value) }));
   }
@@ -2664,6 +2727,108 @@ function openStructureEditor(row: ObjectBrowserRow) {
   if (row.type !== "TABLE") return;
   queryStore.openTableStructure(props.connection.id, props.database, row.schema || selectedSchema.value, row.name, undefined, undefined, props.catalog);
 }
+
+function openSchemaIndexEditor(row: ObjectBrowserRow, action?: "delete") {
+  if (row.type !== "INDEX" || !supportsSchemaIndexes.value) return;
+  const target = schemaIndexIdentity(row);
+  if (!target) return;
+  if (!schemaIndexIsSameOwner(target) || connectionIsEffectivelyReadOnly(props.connection)) {
+    if (!action) void openTableInfo(row, "indexes");
+    return;
+  }
+  queryStore.openTableStructure(props.connection.id, props.database, target.parentSchema, target.parentName, "indexes", { kind: "index", name: target.name, ...(action ? { action } : {}) }, props.catalog, "table", true);
+}
+
+const showIndexParentPicker = ref(false);
+const indexParentTables = ref<string[]>([]);
+const indexParentTable = ref("");
+const indexParentLoading = ref(false);
+const indexParentError = ref("");
+const indexParentGuard = createSidePanelRequestGuard();
+let loadedIndexParentScope = "";
+function indexParentSchema() {
+  return selectedSchema.value ?? props.schema ?? objectListSchemaForConnection(props.connection, selectedSchema.value) ?? props.database;
+}
+function indexParentScope() {
+  return JSON.stringify([props.connection.id, props.database, props.catalog, indexParentSchema(), connectionConfigFingerprint(props.connection)]);
+}
+async function loadIndexParentTables() {
+  if (!showIndexParentPicker.value || !canCreateSchemaIndex.value) return;
+  const epoch = indexParentGuard.start();
+  const scope = indexParentScope();
+  const schema = indexParentSchema();
+  loadedIndexParentScope = "";
+  indexParentLoading.value = true;
+  indexParentError.value = "";
+  indexParentTables.value = [];
+  indexParentTable.value = "";
+  try {
+    const tables = await indexParentGuard.wait(epoch, api.listTables(props.connection.id, props.database, schema, undefined, undefined, undefined, ["TABLE"], props.catalog, undefined, true), metadataLoadBudgetMs(props.connection.query_timeout_secs));
+    if (indexParentGuard.isStale(epoch) || indexParentScope() !== scope) return;
+    indexParentTables.value = tables.filter((table) => table.table_type.toUpperCase() === "TABLE").map((table) => table.name);
+    loadedIndexParentScope = scope;
+  } catch (error) {
+    if (indexParentGuard.isFresh(epoch) && indexParentScope() === scope) indexParentError.value = translateBackendError(t, error);
+  } finally {
+    if (indexParentGuard.isFresh(epoch)) indexParentLoading.value = false;
+  }
+}
+function createSchemaIndex() {
+  if (!canCreateSchemaIndex.value) return;
+  showIndexParentPicker.value = true;
+  void loadIndexParentTables();
+}
+function confirmIndexParent() {
+  if (!showIndexParentPicker.value || !canCreateSchemaIndex.value || indexParentLoading.value || loadedIndexParentScope !== indexParentScope() || !indexParentTables.value.includes(indexParentTable.value)) return;
+  queryStore.openTableStructure(props.connection.id, props.database, indexParentSchema(), indexParentTable.value, "indexes", { kind: "index", name: "", action: "create" }, props.catalog, "table", true);
+  showIndexParentPicker.value = false;
+}
+watch(showIndexParentPicker, (open) => {
+  if (open) return;
+  indexParentGuard.bump();
+  indexParentLoading.value = false;
+  loadedIndexParentScope = "";
+});
+watch(
+  () => [props.connection.id, props.database, selectedSchema.value, props.catalog, connectionConfigFingerprint(props.connection)],
+  () => {
+    showIndexParentPicker.value = false;
+    indexParentGuard.bump();
+  },
+);
+let consumedIndexCreateRequest = "";
+watch(
+  () => props.initialIndexCreateRequestId,
+  () => {
+    if (props.initialIndexCreateRequestId === undefined) return;
+    const key = JSON.stringify([props.connection.id, props.database, props.schema, props.initialIndexCreateRequestId]);
+    if (consumedIndexCreateRequest === key) return;
+    consumedIndexCreateRequest = key;
+    const scope = indexParentScope();
+    emit("indexRequestConsumed", "create");
+    void nextTick(() => {
+      if (indexParentScope() === scope) createSchemaIndex();
+    });
+  },
+  { immediate: true },
+);
+let consumedIndexViewRequest = "";
+watch(
+  () => [props.initialViewRequestId, props.initialViewTarget],
+  () => {
+    const target = props.initialViewTarget && schemaIndexIdentity(props.initialViewTarget);
+    if (!target || props.initialViewRequestId === undefined || !supportsSchemaIndexes.value) return;
+    const key = JSON.stringify([props.connection.id, props.database, target, props.initialViewRequestId]);
+    if (consumedIndexViewRequest === key) return;
+    consumedIndexViewRequest = key;
+    const scope = indexParentScope();
+    emit("indexRequestConsumed", "view");
+    void nextTick(() => {
+      if (indexParentScope() === scope) void openTableInfo({ ...target, id: `index:${JSON.stringify(target)}`, type: "INDEX", displayName: target.name }, "indexes");
+    });
+  },
+  { immediate: true, flush: "post" },
+);
 
 function droppedTableObjectTypeForRow(row: ObjectBrowserRow): "TABLE" | "VIEW" | "MATERIALIZED_VIEW" | null {
   if (row.type === "TABLE") return "TABLE";
@@ -2799,6 +2964,10 @@ async function refreshBatchDropPreviewSql() {
 
 function requestBatchDropTables() {
   if (selectedTableCount.value === 0) return;
+  if (selectedTableRows.value.some((row) => row.type === "INDEX")) {
+    toast(t("schemaIndex.editIndividually"), 4000);
+    return;
+  }
   batchDropCascade.value = false;
   batchDropProgress.value = { completed: 0, total: 0 };
   batchDropPreviewSql.value = "";
@@ -2808,6 +2977,7 @@ function requestBatchDropTables() {
 
 async function confirmBatchDropTables() {
   if (batchDropExecuting.value) return;
+  if (selectedTableRows.value.some((row) => row.type === "INDEX")) return;
   batchDropExecuting.value = true;
   let batchSql = "";
   let batchDropRecorded = false;
@@ -3492,6 +3662,20 @@ function openPasteTableDialog() {
 
 function onObjectBrowserKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented) return;
+  const selectedIndex = rows.value.find((row) => row.id === selectedRowId.value && row.type === "INDEX");
+  const target = event.target;
+  if (event.key === "Delete" && target instanceof Element && !target.closest("input, textarea, select, [contenteditable='true']") && selectedTableCount.value > 1 && selectedTableRows.value.some((row) => row.type === "INDEX")) {
+    event.preventDefault();
+    event.stopPropagation();
+    toast(t("schemaIndex.editIndividually"), 4000);
+    return;
+  }
+  if (selectedIndex && target instanceof Element && !target.closest("input, textarea, select, [contenteditable='true']") && (event.key === "Delete" || event.key === "F2")) {
+    event.preventDefault();
+    event.stopPropagation();
+    openSchemaIndexEditor(selectedIndex, event.key === "Delete" ? "delete" : undefined);
+    return;
+  }
   if (!supportsBatchTableActions.value) return;
   if (eventTargetAllowsAppClipboardShortcut(event, "c")) {
     if (selectedTableCount.value === 0) return;
@@ -3986,6 +4170,7 @@ function objectBrowserRowsCacheScope(schema: string): ObjectBrowserRowsCacheScop
     database: props.database,
     schema,
     catalog: props.catalog,
+    ...(supportsSchemaIndexes.value ? { exactIdentity: true } : {}),
   };
 }
 
@@ -4106,7 +4291,8 @@ async function loadObjects(options?: { allowCached?: boolean; preserveExistingRo
     const nextRows = await objectBrowserRowsLoadGuard.wait(request.epoch, load, metadataLoadBudgetMs(props.connection.query_timeout_secs));
     if (!objectBrowserRowsLoadGuard.isCurrent(request)) return;
     applyObjectBrowserRows(nextRows);
-    const cachedAt = cacheObjectBrowserRows(cacheWriteToken, nextRows);
+    // A failed optional INDEX subset is not a complete mixed snapshot.
+    const cachedAt = scaffoldRefreshError.value ? undefined : cacheObjectBrowserRows(cacheWriteToken, nextRows);
     void loadObjectStatistics(request, cacheWriteToken, cachedAt);
   } catch (e: any) {
     if (!objectBrowserRowsLoadGuard.isCurrent(request)) return;
@@ -4128,12 +4314,16 @@ async function loadObjects(options?: { allowCached?: boolean; preserveExistingRo
 
 async function loadObjectPage(append: boolean) {
   if (append && (loadingObjects.value || loadingMoreObjects.value || !hasMoreObjects.value)) return;
-  const schema = needsSchema.value ? objectListSchemaForConnection(props.connection, selectedSchema.value) : props.database;
+  const schema = exactIndexList.value ? indexParentSchema() : needsSchema.value ? objectListSchemaForConnection(props.connection, selectedSchema.value) : props.database;
   const request = objectBrowserRowsLoadGuard.start(objectBrowserRowsCacheScope(schema));
   const offset = append ? objectPageOffset : 0;
   const pageSize = objectPageSize.value;
   const filter = search.value.trim();
   const typeFilter = objectFilter.value;
+  const exactIdentity = exactIndexList.value;
+  const includeIndexSubset = supportsSchemaIndexes.value && typeFilter === "all";
+  const queryTypes = includeIndexSubset ? sidebarObjectKindsForDatabase(effectiveDatabaseType.value).filter((type) => type !== "INDEX") : undefined;
+  const rawIndexSchema = indexParentSchema();
   const objectTypes: Partial<Record<ObjectFilter, (SidebarObjectKind | "EVENT")[]>> = {
     tables: ["TABLE"],
     views: ["VIEW"],
@@ -4143,6 +4333,7 @@ async function loadObjectPage(append: boolean) {
     triggers: ["TRIGGER"],
     events: ["EVENT"],
     sequences: ["SEQUENCE"],
+    indexes: ["INDEX"],
     packages: ["PACKAGE", "PACKAGE_BODY"],
     types: ["TYPE", "TYPE_BODY"],
   };
@@ -4163,12 +4354,21 @@ async function loadObjectPage(append: boolean) {
     }
     const objects = await objectBrowserRowsLoadGuard.wait(
       request.epoch,
-      api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, objectTypes[typeFilter], filter || undefined, pageSize + 1, offset, request.scope.catalog),
+      exactIdentity
+        ? api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, objectTypes[typeFilter], filter || undefined, pageSize + 1, offset, request.scope.catalog, undefined, undefined, true)
+        : api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, queryTypes ?? objectTypes[typeFilter], filter || undefined, pageSize + 1, offset, request.scope.catalog),
       metadataLoadBudgetMs(props.connection.query_timeout_secs),
     );
     if (!isCurrent()) return;
     const page = objects.slice(0, pageSize);
-    const pageRows = buildObjectBrowserRows({ objects: page, database: request.scope.database, fallbackSchema: request.scope.schema, rowSchema: connectionObjectTreeNodeSchema(props.connection, props.database, selectedSchema.value) });
+    const indexes = includeIndexSubset && !append ? await loadMixedSchemaIndexes(request, rawIndexSchema, filter) : [];
+    if (!isCurrent()) return;
+    const pageRows = buildObjectBrowserRows({
+      objects: [...page.filter((object) => !includeIndexSubset || object.object_type !== "INDEX"), ...indexes],
+      database: request.scope.database,
+      fallbackSchema: request.scope.schema,
+      rowSchema: connectionObjectTreeNodeSchema(props.connection, props.database, selectedSchema.value),
+    });
     applyObjectBrowserRows(append ? [...rows.value, ...pageRows] : pageRows);
     objectPageOffset = offset + page.length;
     hasMoreObjects.value = objects.length > pageSize;
@@ -4186,13 +4386,32 @@ async function loadObjectPage(append: boolean) {
 }
 
 async function loadSqlObjectBrowserRows(request: ObjectBrowserRowsLoadHandle) {
-  const objects: ObjectInfo[] = await api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, undefined, undefined, undefined, undefined, request.scope.catalog);
+  const includeIndexes = supportsSchemaIndexes.value;
+  const rawIndexSchema = indexParentSchema();
+  const types = includeIndexes ? sidebarObjectKindsForDatabase(effectiveDatabaseType.value).filter((type) => type !== "INDEX") : undefined;
+  const [objects, indexes] = await Promise.all([
+    api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, types, undefined, undefined, undefined, request.scope.catalog),
+    includeIndexes ? loadMixedSchemaIndexes(request, rawIndexSchema) : Promise.resolve([] as ObjectInfo[]),
+  ]);
   return buildObjectBrowserRows({
-    objects: objects.filter((object) => object.object_type !== "INDEX"),
+    objects: [...objects.filter((object) => object.object_type !== "INDEX"), ...indexes],
     database: request.scope.database,
     fallbackSchema: request.scope.schema,
     rowSchema: connectionObjectTreeNodeSchema(props.connection, props.database, selectedSchema.value),
   });
+}
+
+async function loadMixedSchemaIndexes(request: ObjectBrowserRowsLoadHandle, schema: string, filter?: string): Promise<ObjectInfo[]> {
+  try {
+    return await objectBrowserRowsLoadGuard.wait(
+      request.epoch,
+      api.listObjects(request.scope.connectionId, request.scope.database, schema, ["INDEX"], filter || undefined, undefined, undefined, request.scope.catalog, undefined, undefined, true),
+      metadataLoadBudgetMs(props.connection.query_timeout_secs),
+    );
+  } catch (error) {
+    if (objectBrowserRowsLoadGuard.isCurrent(request)) scaffoldRefreshError.value = translateBackendError(t, error);
+    return [];
+  }
 }
 
 async function loadMongoObjectBrowserRows(connectionId: string, database: string) {
@@ -4294,6 +4513,7 @@ function filterCount(filter: ObjectFilter) {
 }
 
 function filterLabel(filter: ObjectFilter) {
+  if (filter === "indexes") return usesServerObjectPaging.value ? t("tree.indexes") : `${t("tree.indexes")} ${filterCount(filter)}`;
   const key =
     filter === "tables"
       ? isMongodb.value
@@ -4323,11 +4543,19 @@ function filterLabel(filter: ObjectFilter) {
 
 function selectObjectFilter(filter: ObjectFilter) {
   if (filter === objectFilter.value) return;
+  const wasPaged = usesServerObjectPaging.value;
   userHasSelectedFilter.value = true;
   objectFilter.value = filter;
   emit("filterChange", filter);
-  if (usesServerObjectPaging.value) void loadObjects();
+  if (wasPaged || usesServerObjectPaging.value) void loadObjects();
 }
+
+watch(
+  () => props.selectedObjectFilter ?? props.initialObjectFilter,
+  (filter) => {
+    if (filter && (filter === "indexes" || objectFilter.value === "indexes")) selectObjectFilter(filter);
+  },
+);
 
 function getSearchInput(): HTMLInputElement | null {
   return rootRef.value?.querySelector<HTMLInputElement>("[data-object-search-input]") ?? null;
@@ -4368,6 +4596,7 @@ function matchesRefreshScope(scope: { schema?: string; catalog?: string }): bool
 defineExpose({ focusSearch, refresh, matchesRefreshScope });
 
 onBeforeUnmount(() => {
+  indexParentGuard.bump();
   clearTimeout(objectSearchTimer);
   sidePanelGuard.bump();
   objectBrowserRowsLoadGuard.invalidate();
@@ -4674,6 +4903,28 @@ function getTypeMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
 }
 
 function getObjectBrowserActionMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
+  if (item.type === "INDEX") {
+    const target = schemaIndexIdentity(item);
+    const writable = supportsSchemaIndexes.value && schemaIndexIsSameOwner(target) && !connectionIsEffectivelyReadOnly(props.connection);
+    const multiple = selectedTableCount.value > 1 && selectedTableIds.value.has(item.id);
+    return [
+      ...(target ? [{ label: t("contextMenu.viewDetails"), action: () => void openTableInfo(item, "indexes"), icon: Info }] : [{ label: t("schemaIndex.parentUnavailable"), disabled: true }]),
+      ...(writable
+        ? [
+            { label: t("contextMenu.editStructure"), action: () => openSchemaIndexEditor(item), icon: PencilRuler },
+            { label: t(multiple ? "schemaIndex.editIndividually" : "contextMenu.dropIndex"), action: () => (multiple ? toast(t("schemaIndex.editIndividually"), 4000) : openSchemaIndexEditor(item, "delete")), icon: Trash2, variant: "destructive" as const },
+          ]
+        : []),
+      { label: t("contextMenu.copyName"), action: () => copyName(item), icon: Copy },
+      {
+        label: t("grid.refresh"),
+        action: () => {
+          refresh();
+        },
+        icon: RefreshCw,
+      },
+    ];
+  }
   if (isMongodb.value) {
     return [
       { label: t("contextMenu.viewData"), action: () => openViewData(item), icon: Table2 },
@@ -4723,6 +4974,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
     <SidebarMenuPreferencesDialog v-if="sidebarMenuPreferences" v-model:open="sidebarMenuPreferencesOpen" :scope="sidebarMenuPreferences.scope" :items="sidebarMenuPreferences.items" />
     <div v-if="!isEventEditor" ref="toolbarRef" class="flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b px-3">
       <Button v-if="effectiveDatabaseType === 'firebird'" variant="outline" size="sm" @click="firebirdManagerOpen = true">{{ t("tree.firebirdObjectManager") }}</Button>
+      <Button v-if="canCreateSchemaIndex" data-create-schema-index variant="outline" size="sm" class="h-7 shrink-0 gap-1 px-2 text-xs" @click="createSchemaIndex"> <CopyPlus class="h-3.5 w-3.5" />{{ t("structureEditor.addIndex") }} </Button>
       <div class="flex min-w-12 items-center gap-2">
         <span class="inline-flex max-w-[14rem] min-w-0 items-center rounded border border-border bg-muted/50 px-2 py-0.5 text-xs font-medium truncate" :title="selectedSchema || props.database">
           {{ selectedSchema || props.database }}
@@ -4912,14 +5164,14 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       <RefreshCw class="h-3 w-3 shrink-0" />
       <span class="min-w-0 truncate">{{ scaffoldRefreshError }}</span>
     </div>
-    <div v-if="loadingObjects" class="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+    <div v-if="loadingObjects && !isSidePanelOpen" class="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
       <Loader2 class="h-4 w-4 animate-spin" />
       {{ t("objects.loading") }}
     </div>
-    <div v-else-if="error" class="flex flex-1 items-center justify-center px-6 text-center text-sm text-destructive">
+    <div v-else-if="error && !isSidePanelOpen" class="flex flex-1 items-center justify-center px-6 text-center text-sm text-destructive">
       {{ error }}
     </div>
-    <div v-else-if="filteredRows.length === 0 && !isEventEditor" class="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+    <div v-else-if="filteredRows.length === 0 && !isSidePanelOpen" class="flex flex-1 items-center justify-center text-sm text-muted-foreground">
       {{ t("objects.empty") }}
     </div>
     <div v-else class="flex min-h-0 min-w-0 flex-1" :class="{ 'event-editor-layout': isEventEditor }">
@@ -5322,9 +5574,11 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
             </table>
           </div>
           <div v-else-if="tableInfoTab === 'indexes'" class="flex-1 min-h-0 overflow-auto">
+            <p v-if="sidePanelRow?.type === 'INDEX' && tableIndexesLoaded && !tableIndexesError && !tableIndexes.some(isInitialSchemaIndex)" class="border-b px-3 py-2 text-xs text-muted-foreground" data-schema-index-focus-unavailable>{{ t("schemaIndex.focusUnavailable") }}</p>
             <div v-if="tableIndexesLoading" class="h-full flex items-center justify-center">
               <Loader2 class="w-4 h-4 animate-spin text-muted-foreground" />
             </div>
+            <div v-else-if="tableIndexesError" class="p-3 text-xs text-destructive">{{ tableIndexesError }}</div>
             <div v-else-if="tableInfoSearchQuery && filteredTableIndexes.length === 0" class="p-6 text-center text-xs text-muted-foreground">
               {{ t("grid.tableInfoNoResults") }}
             </div>
@@ -5332,7 +5586,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               {{ t("grid.tableInfoEmpty") }}
             </div>
             <div v-else class="divide-y">
-              <div v-for="index in filteredTableIndexes" :key="index.name" class="p-3 text-xs">
+              <div v-for="index in filteredTableIndexes" :key="JSON.stringify([schemaIndexOwner(index), index.name])" class="p-3 text-xs" :class="{ 'bg-primary/10 ring-1 ring-inset ring-primary/40': isInitialSchemaIndex(index) }" :data-schema-index-match="isInitialSchemaIndex(index) || undefined">
                 <div class="flex items-start gap-2">
                   <div class="min-w-0 flex-1">
                     <div class="font-medium truncate">{{ index.name }}</div>
@@ -5582,6 +5836,25 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
     @reload="validatePackageSaveAsDrafts"
     @confirm="confirmPackageSaveAs"
   />
+  <Dialog v-model:open="showIndexParentPicker">
+    <DialogContent data-schema-index-parent-picker class="sm:max-w-[420px]">
+      <DialogHeader
+        ><DialogTitle>{{ t("structureEditor.addIndex") }}</DialogTitle></DialogHeader
+      >
+      <label class="grid gap-2 text-sm">
+        {{ t("structureEditor.tableName") }}
+        <SearchableSelect data-index-parent-table v-model="indexParentTable" :options="indexParentTables" :loading="indexParentLoading" :disabled="indexParentLoading" :placeholder="t('schemaDiff.selectTable')" :search-placeholder="t('common.search')" :empty-text="t('grid.noSearchResults')" />
+      </label>
+      <div v-if="indexParentError" role="alert" class="flex items-center gap-2 text-sm text-destructive">
+        <span class="min-w-0 flex-1 break-words">{{ indexParentError }}</span>
+        <Button variant="outline" size="sm" @click="loadIndexParentTables">{{ t("common.retry") }}</Button>
+      </div>
+      <DialogFooter>
+        <Button variant="outline" @click="showIndexParentPicker = false">{{ t("common.cancel") }}</Button>
+        <Button data-confirm-index-parent :disabled="indexParentLoading || !indexParentTables.includes(indexParentTable) || !!indexParentError" @click="confirmIndexParent">{{ t("common.confirm") }}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
   <Dialog v-model:open="showRenameDialog">
     <DialogContent
       :class="(effectiveDatabaseType === 'oracle' || effectiveDatabaseType === 'oceanbase-oracle') && (renameTarget?.type === 'VIEW' || renameTarget?.type === 'PROCEDURE' || renameTarget?.type === 'FUNCTION' || renameTarget?.type === 'TABLE') ? 'sm:max-w-[min(90vw,900px)]' : 'sm:max-w-[420px]'"

@@ -162,6 +162,44 @@ describe("queryStore database open state", () => {
     expect(store.openTableStructure("pg-1", "app", "Sales", "Users")).toBe(quotedTabId);
   });
 
+  it("never upgrades a legacy structure draft to an exact dictionary target", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const legacy = store.openTableStructure("ob", "service", " Mixed ", " T(a) ");
+    const oldTab = store.tabs.find((tab) => tab.id === legacy)!;
+    oldTab.structureDraft = { dirty: true, newTableName: "untouched" } as NonNullable<typeof oldTab.structureDraft>;
+    const exact = store.openTableStructure("ob", "service", " Mixed ", " T(a) ", "indexes", { kind: "index", name: " Ix(a) " }, undefined, "table", true);
+    expect(exact).not.toBe(legacy);
+    expect(oldTab.structureDraft.newTableName).toBe("untouched");
+    expect(oldTab.structureExactIdentity).toBeUndefined();
+    expect(store.tabs.find((tab) => tab.id === exact)).toMatchObject({ schema: " Mixed ", structureTableName: " T(a) ", structureExactIdentity: true });
+    expect(store.openTableStructure("ob", "service", " Mixed ", " T(a) ", "indexes", { kind: "index", name: "Ix(a)" }, undefined, "table", true)).toBe(exact);
+    expect(store.openTableStructure("ob", "service", "Mixed", "T(a)", "indexes", undefined, undefined, "table", true)).not.toBe(exact);
+  });
+
+  it("isolates exact structure refreshes by raw identity, catalog and metadata mode", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    store.invalidateTableStructure("ob", "service", " Mixed ", " T(a) ", true, "catalog");
+    expect(store.tableStructureRefreshVersion("ob", "service", " Mixed ", " T(a) ", true, "catalog")).toBe(1);
+    expect(store.tableStructureRefreshVersion("ob", "service", " Mixed ", " T(a) ")).toBe(0);
+    expect(store.tableStructureRefreshVersion("ob", "service", " Mixed ", " T(a) ", true, "other")).toBe(0);
+    expect(store.tableStructureRefreshVersion("ob", "service", " mixed ", " T(a) ", true, "catalog")).toBe(0);
+    expect(store.tableStructureRefreshVersion("ob", "service", "Mixed", "T(a)", true, "catalog")).toBe(0);
+    store.invalidateTableStructure("ob", "service", "APP", "TABLE");
+    expect(store.tableStructureRefreshVersion("ob", "service", "app", "table")).toBe(1);
+  });
+
+  it("retains explicit create-index requests without inventing an existing index name", async () => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const create = { kind: "index", name: "", action: "create" } as const;
+    const id = store.openTableStructure("ob", "service", "APP", "Items", undefined, create, undefined, "table", true);
+    expect(store.tabs.find((tab) => tab.id === id)).toMatchObject({ structureInitialTarget: create, structureInitialTabRequestId: 1 });
+    store.openTableStructure("ob", "service", "APP", "Items", undefined, create, undefined, "table", true);
+    expect(store.tabs.find((tab) => tab.id === id)).toMatchObject({ structureInitialTarget: create, structureInitialTabRequestId: 2 });
+  });
+
   it("reuses only matching schema-less structure targets", async () => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();

@@ -139,6 +139,8 @@ export interface CompletionAssistantResponse {
 export interface ConnectionConfig {
   id: string;
   name: string;
+  /** Read-only response identity retained when a saved JDBC URL is protected. */
+  readonly jdbc_dialect?: "oceanbase-oracle";
   note?: string;
   db_type: DatabaseType;
   driver_profile?: string;
@@ -1891,6 +1893,8 @@ export interface TreeNode {
   schema?: string;
   tableName?: string;
   objectName?: string;
+  /** Distinguishes schema indexes from the existing table-child index actions. */
+  objectScope?: "schema";
   signature?: string;
   customTypeKind?: CustomTypeKind;
   hasMembers?: boolean;
@@ -1995,6 +1999,15 @@ export interface PgTablePartitioning {
 export interface TableStructureEditorTarget {
   kind: "column" | "index";
   name: string;
+  /** Schema-index requests are consumed once by the existing draft editor. */
+  action?: "create" | "delete";
+}
+
+export interface SchemaIndexIdentity {
+  schema: string;
+  name: string;
+  parentSchema: string;
+  parentName: string;
 }
 
 export interface TableStructureEditorDraft {
@@ -2047,6 +2060,12 @@ export interface TableStructureEditorDraft {
   scrollPositions?: Partial<Record<TableInfoTab, TableStructureEditorViewport>>;
   /** Request id of the structureInitialTab the editor already applied; remounts must not replay a consumed initial tab over the restored draft. */
   appliedInitialTabRequestId?: number;
+  appliedInitialTargetRequestId?: number;
+  oracleIndexRecovery?: {
+    target: string;
+    completedCreates: import("@/lib/database/oracleIndexes").OracleIndexDefinition[];
+    refreshError?: string;
+  };
   initialized: boolean;
 }
 
@@ -2057,7 +2076,7 @@ export interface TableStructureEditorViewport {
 
 export type ObjectBrowserViewMode = "list" | "grid" | "compact";
 
-export type ObjectBrowserFilter = "all" | "tables" | "views" | "materializedViews" | "procedures" | "functions" | "triggers" | "events" | "sequences" | "packages" | "types";
+export type ObjectBrowserFilter = "all" | "tables" | "views" | "materializedViews" | "procedures" | "functions" | "triggers" | "events" | "sequences" | "indexes" | "packages" | "types";
 
 export interface ObjectBrowserViewport {
   scrollTop: number;
@@ -2352,6 +2371,7 @@ export interface QueryTab {
   nacosTargetRequestId?: number;
   nacosConfigEditorViewport?: NacosConfigEditorViewport;
   structureTableName?: string;
+  structureExactIdentity?: boolean;
   /** Navigation type of the opened structure object; views matter for "view data" routing. */
   structureTableType?: "table" | "view";
   structureInitialTab?: TableInfoTab;
@@ -2368,7 +2388,10 @@ export interface QueryTab {
     eventOpenRequestId?: number;
     /** 显式的"新建事件"请求：单调递增，用于让已复用 tab 也能重复进入 CREATE 编辑器 */
     eventCreateRequestId?: number;
-    initialObjectFilter?: "tables" | "events";
+    initialObjectFilter?: "tables" | "events" | "indexes";
+    indexCreateRequestId?: number;
+    initialViewTarget?: SchemaIndexIdentity;
+    initialViewRequestId?: number;
     filter?: ObjectBrowserFilter;
     searchQuery?: string;
     viewport?: ObjectBrowserViewport;

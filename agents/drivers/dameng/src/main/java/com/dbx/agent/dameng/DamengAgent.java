@@ -575,6 +575,9 @@ public final class DamengAgent extends AbstractJdbcAgent {
     }
 
     @Override
+    public boolean supportsExactMetadataIdentity() { return !legacyJdbcMetadata; }
+
+    @Override
     public List<TableInfo> listTables(String schema, List<String> objectTypes) {
         return queryConstrainedTables(schema, new MetadataListConstraints(null, null, null, objectTypes));
     }
@@ -586,6 +589,10 @@ public final class DamengAgent extends AbstractJdbcAgent {
 
     private List<TableInfo> queryConstrainedTables(String rawSchema, MetadataListConstraints constraints) {
         final String schema = normalizeSchema(rawSchema);
+        if (constraints.isExactIdentity()) {
+            if (legacyJdbcMetadata) throw new UnsupportedOperationException("Legacy DM metadata does not support exact_metadata_identity_v1");
+            return withViewValidity(executeConstrainedTables(buildAccessibleConstrainedTablesQuery(schema, constraints), constraints), schema);
+        }
         if (legacyJdbcMetadata) {
             return withViewValidity(executeJdbcMetadataTables(schema, constraints), schema);
         }
@@ -1176,12 +1183,53 @@ public final class DamengAgent extends AbstractJdbcAgent {
 
     private List<ObjectInfo> queryConstrainedObjects(String rawSchema, MetadataListConstraints constraints) {
         final String schema = normalizeSchema(rawSchema);
-        List<ObjectInfo> objects = queryConstrainedObjectsWithoutValidity(schema, constraints);
+        List<ObjectInfo> objects;
+        if (constraints.objectTypeAllowed("INDEX") && (constraints.hasObjectTypes() || constraints.isExactIdentity())) {
+            // Merge before paging: separate dictionary sources must not each consume the offset.
+            objects = new ArrayList<>();
+            List<String> otherTypes = damengObjectTypes(constraints);
+            if (!otherTypes.isEmpty()) {
+                objects.addAll(queryConstrainedObjectsWithoutValidity(schema,
+                    new MetadataListConstraints(constraints.getFilter(), null, null, otherTypes, constraints.isExactIdentity())));
+            }
+            objects.addAll(querySchemaIndexes(schema, constraints.withoutPaging()));
+            objects.sort(java.util.Comparator.comparing(ObjectInfo::getName).thenComparing(ObjectInfo::getObject_type));
+            objects = constraints.filterObjects(objects);
+        } else {
+            objects = queryConstrainedObjectsWithoutValidity(schema, constraints);
+        }
         applyViewValidity(objects, schema);
         return objects;
     }
 
+    private List<ObjectInfo> querySchemaIndexes(String schema, MetadataListConstraints constraints) {
+        return unchecked(() -> {
+            List<Object> args = new ArrayList<>();
+            args.add(schema);
+            StringBuilder sql = new StringBuilder("SELECT OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME FROM ALL_INDEXES i WHERE i.OWNER = ?");
+            appendNameFilter(sql, args, "i.INDEX_NAME", constraints);
+            sql.append(" ORDER BY i.INDEX_NAME");
+            List<ObjectInfo> objects = new ArrayList<>();
+            try (PreparedStatement statement = requireConnected().prepareStatement(sql.toString())) {
+                bind(statement, args);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        ObjectInfo index = new ObjectInfo(rows.getString(2), "INDEX", rows.getString(1), null);
+                        index.setParent_schema(rows.getString(3));
+                        index.setParent_name(rows.getString(4));
+                        objects.add(index);
+                    }
+                }
+            }
+            return constraints.filterObjects(objects);
+        });
+    }
+
     private List<ObjectInfo> queryConstrainedObjectsWithoutValidity(String schema, MetadataListConstraints constraints) {
+        if (constraints.isExactIdentity()) {
+            if (legacyJdbcMetadata) throw new UnsupportedOperationException("Legacy DM metadata does not support exact_metadata_identity_v1");
+            return executeConstrainedObjects(schema, buildAccessibleConstrainedObjectsQuery(schema, constraints), constraints);
+        }
         if (legacyJdbcMetadata) {
             return executeJdbcMetadataObjects(schema, constraints);
         }
@@ -1875,8 +1923,14 @@ public final class DamengAgent extends AbstractJdbcAgent {
 
     @Override
     public String getTableDdl(String rawSchema, String table) {
+        return getTableDdl(rawSchema, table, false);
+    }
+
+    @Override
+    public String getTableDdl(String rawSchema, String table, boolean exactIdentity) {
         final String schema = normalizeSchema(rawSchema);
         if (legacyJdbcMetadata) {
+            if (exactIdentity) throw new UnsupportedOperationException("Legacy DM metadata does not support exact_metadata_identity_v1");
             return super.getTableDdl(schema, table);
         }
         try {
@@ -1900,6 +1954,7 @@ public final class DamengAgent extends AbstractJdbcAgent {
                 throw new IllegalArgumentException("Table not found: " + schema + "." + table);
             });
         } catch (RuntimeException error) {
+            if (exactIdentity) throw error;
             if (!isDamengMetadataUnavailableError(error)) {
                 throw error;
             }
@@ -3441,6 +3496,6 @@ public final class DamengAgent extends AbstractJdbcAgent {
     }
 
     public static void main(String[] args) {
-        new MultiSessionJsonRpcServer(DamengAgent::new).run();
+        new MultiSessionJsonRpcServer(DamengAgent::new).withExactMetadataIdentity().run();
     }
 }
