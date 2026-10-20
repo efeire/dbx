@@ -4,7 +4,7 @@ import { executeOracleTypeDataInsert, prepareOracleTypeDataInsert, verifyOracleT
 import { executeOracleTypeManagement, prepareOracleTypeManagement, registerOracleTypeDataMapping, restoreOracleTypeManagementDraft, type OracleTypeManagementDraft, type TypeManagementTarget } from "@/lib/table/oracleTypeManagement";
 import type { OracleTypeDataBaseline, OracleTypeDataManifest, OracleTypeDataMappingInput, OracleTypeManagementSnapshot } from "@/types/database";
 
-vi.mock("@/lib/backend/api", () => ({ getOracleTypeManagementSnapshot: vi.fn(), buildOracleTypeManagementSql: vi.fn(), executeQuery: vi.fn(), verifyOracleTypeData: vi.fn() }));
+vi.mock("@/lib/backend/api", () => ({ getOracleTypeManagementSnapshot: vi.fn(), buildOracleTypeManagementSql: vi.fn(), executeQuery: vi.fn(), executeConditionalUpdate: vi.fn(), verifyOracleTypeData: vi.fn() }));
 const target: TypeManagementTarget = { connectionId: "mapping-test", database: "db", owner: "APP", name: "ROOT", databaseType: "oceanbase-oracle" };
 const read = { state: "available" as const };
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -99,6 +99,7 @@ beforeEach(() => {
     }
     return { execution_error: false, messages: [], rows: [] } as never;
   });
+  vi.mocked(api.executeConditionalUpdate).mockImplementation((...args) => api.executeQuery(...args));
 });
 async function registered(nextSource = changed): Promise<OracleTypeManagementDraft> {
   const plan = await prepareOracleTypeManagement(target, "save-spec", [{ owner: "APP", name: "ROOT", objectType: "TYPE", source: nextSource }]);

@@ -14,7 +14,7 @@ import {
 } from "@/lib/table/oracleTypeManagement";
 import type { OracleTypeManagementDependency, OracleTypeManagementObject, OracleTypeManagementSnapshot, OracleTypeManagementSqlInput } from "@/types/database";
 
-vi.mock("@/lib/backend/api", () => ({ getOracleTypeManagementSnapshot: vi.fn(), buildOracleTypeManagementSql: vi.fn(), executeQuery: vi.fn() }));
+vi.mock("@/lib/backend/api", () => ({ getOracleTypeManagementSnapshot: vi.fn(), buildOracleTypeManagementSql: vi.fn(), executeConditionalUpdate: vi.fn(), cancelConditionalUpdate: vi.fn() }));
 
 const target: TypeManagementTarget = { connectionId: "type-manager-test", database: "db", databaseType: "oceanbase-oracle", owner: "APP", name: "ROOT" };
 const available = { state: "available" as const };
@@ -91,6 +91,7 @@ function isolateRoot() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.cancelConditionalUpdate).mockResolvedValue({ requested: false, terminal: true, databaseTerminal: true });
   requests = [];
   statements = new Map();
   fault = undefined;
@@ -114,7 +115,7 @@ beforeEach(() => {
     statements.set(sql, json(input));
     return { statements: [sql], sourceFingerprint: input.source };
   });
-  vi.mocked(api.executeQuery).mockImplementation(async (_connection, _database, sql) => {
+  vi.mocked(api.executeConditionalUpdate).mockImplementation(async (_connection, _database, sql) => {
     requests.push(sql);
     const input = statements.get(sql)!;
     if (!input) throw new Error("Unexpected SQL");
@@ -212,8 +213,8 @@ describe("controlled TYPE plans", () => {
     objects.set(identity("TRG", "TRIGGER"), { ...object("TRG", "TRIGGER", source, "7"), triggerEnabled: false, triggerEnabledRead: { ...available } });
     edges.push(edge("TRG", "TRIGGER", "ROOT"));
     const plan = await prepareOracleTypeManagement(target, "save-spec", [draft()]);
-    const execute = vi.mocked(api.executeQuery).getMockImplementation()!;
-    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+    const execute = vi.mocked(api.executeConditionalUpdate).getMockImplementation()!;
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(async (...args) => {
       const result = await execute(...args);
       if (statements.get(args[2])?.objectType === "TRIGGER") objects.get(identity("TRG", "TRIGGER"))!.triggerEnabled = true;
       return result;
@@ -237,7 +238,7 @@ describe("controlled TYPE plans", () => {
     expect(positions("grant", "COLL")).toBeLessThan(positions("rebuild", "PROC"));
     expect(plan.steps.find((step) => step.kind === "grant")?.sql).toContain("WITH GRANT OPTION");
     expect(plan.steps.some((step) => /\bFORCE\b/.test(step.sql))).toBe(false);
-    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(api.executeConditionalUpdate).not.toHaveBeenCalled();
   });
 
   it("keeps same-name kinds and case-sensitive owners distinct", () => {
@@ -266,7 +267,7 @@ describe("controlled TYPE plans", () => {
     expect(plan.drafts.find((item) => item.name === "COLL")?.source).toBe("BAD_DECLARATION");
     expect(plan.drafts.find((item) => item.name === "FN")?.source).toBe("");
     expect(plan.steps.length).toBeGreaterThan(2);
-    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(api.executeConditionalUpdate).not.toHaveBeenCalled();
   });
 
   it("does not silently drop persistent values, unknown grants, remote edges, or cyclic dependencies", async () => {
@@ -307,6 +308,140 @@ describe("controlled TYPE plans", () => {
 });
 
 describe("TYPE execution, persistence and recovery", () => {
+  it.each([
+    { requested: false, terminal: false, databaseTerminal: false },
+    { requested: false, terminal: true, databaseTerminal: false },
+    { requested: false, terminal: true },
+  ])("keeps an INVALID execution active across repeated edited previews without database completion: %j", async (completion) => {
+    isolateRoot();
+    fault = () => "invalid";
+    const execute = vi.mocked(api.executeConditionalUpdate).getMockImplementation()!;
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(async (...args) => {
+      await execute(...args);
+      throw new Error("Lost INVALID response");
+    });
+    vi.mocked(api.cancelConditionalUpdate).mockResolvedValue(completion);
+    const plan = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", body, "TYPE BODY")]);
+    const saved: OracleTypeManagementDraft[] = [];
+    await expect(
+      executeOracleTypeManagement(plan, {
+        persist: async (value) => {
+          saved.push(json(value));
+        },
+      }),
+    ).rejects.toThrow("Lost INVALID response");
+    const sent = saved.find((record) => record.steps[0].state === "sent")!;
+    expect(sent.steps[0].executionId).toBeTruthy();
+    expect(api.executeConditionalUpdate).toHaveBeenCalledWith(target.connectionId, target.database, body, "APP", sent.steps[0].executionId);
+    let reopened = restoreOracleTypeManagementDraft(saved.at(-1))!;
+    for (const value of ["2", "3"]) {
+      const revised = [draft("ROOT", body.replace("RETURN SELF.ID", `RETURN ${value}`), "TYPE BODY")];
+      reopened = await prepareOracleTypeManagement(target, "save-body", revised, reopened);
+      expect(reopened.executable).toBe(false);
+      expect(reopened.issues.map((issue) => issue.code)).toContain("unknown-result");
+      expect(reopened.steps[0].executionId).toBe(sent.steps[0].executionId);
+      expect(reopened.steps[0].state).toBe("unknown");
+      expect(reopened.drafts).toEqual(revised);
+      await expect(executeOracleTypeManagement(reopened, { persist: async () => {} })).rejects.toThrow("Revalidate");
+    }
+    expect(api.executeConditionalUpdate).toHaveBeenCalledOnce();
+    expect(vi.mocked(api.cancelConditionalUpdate).mock.calls.every(([id, options]) => id === sent.steps[0].executionId && options?.cancel === false)).toBe(true);
+  });
+
+  it("waits for the original completion before taking the snapshot that makes INVALID repairable", async () => {
+    isolateRoot();
+    fault = () => "network-before";
+    vi.mocked(api.cancelConditionalUpdate).mockResolvedValue({ requested: false, terminal: false, databaseTerminal: false });
+    const desired = body.replace("RETURN SELF.ID", "RETURN SELF.ID + 7");
+    const plan = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", desired, "TYPE BODY")]);
+    await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow();
+    vi.mocked(api.cancelConditionalUpdate).mockImplementation(async () => {
+      const current = objects.get(identity("ROOT", "TYPE BODY"))!;
+      current.source = current.sourceFingerprint = desired;
+      current.status = "INVALID";
+      return { requested: false, terminal: true, databaseTerminal: true };
+    });
+    const rechecked = await prepareOracleTypeManagement(target, "save-body", plan.drafts, restoreOracleTypeManagementDraft(json(plan)));
+    expect(rechecked.executable).toBe(true);
+    expect(rechecked.issues).toEqual([]);
+    expect(rechecked.history[0]).toMatchObject({ state: "failed", databaseTerminal: true, executionId: plan.steps[0].executionId });
+    expect(rechecked.history[0].message).toContain("INVALID");
+    expect(rechecked.lastSnapshot.objects.find((item) => item.objectType === "TYPE BODY")?.status).toBe("INVALID");
+    expect(api.executeConditionalUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("does not adopt a concurrent grant change as the baseline when an unknown result is rechecked repeatedly", async () => {
+    isolateRoot();
+    fault = () => "invalid";
+    const execute = vi.mocked(api.executeConditionalUpdate).getMockImplementation()!;
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(async (...args) => {
+      await execute(...args);
+      throw new Error("Lost INVALID response");
+    });
+    vi.mocked(api.cancelConditionalUpdate).mockResolvedValue({ requested: false, terminal: false, databaseTerminal: false });
+    const desired = body.replace("RETURN SELF.ID", "RETURN SELF.ID + 6");
+    const plan = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", desired, "TYPE BODY")]);
+    await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow();
+    const accepted = typeManagementSnapshotIdentity(plan.lastSnapshot);
+    objects.get(identity("ROOT"))!.directPrivileges = [{ grantor: "APP", grantee: "OTHER", privilege: "EXECUTE", grantable: true, hierarchy: false }];
+    vi.mocked(api.cancelConditionalUpdate).mockResolvedValue({ requested: false, terminal: true, databaseTerminal: true });
+    let previous = restoreOracleTypeManagementDraft(json(plan))!;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      previous = await prepareOracleTypeManagement(target, "save-body", previous.drafts, previous);
+      expect(previous.executable).toBe(false);
+      expect(previous.steps[0].state).toBe("unknown");
+      expect(typeManagementSnapshotIdentity(previous.lastSnapshot)).toBe(accepted);
+      expect(previous.issues.map((issue) => issue.code)).toContain("unknown-result");
+    }
+    expect(api.executeConditionalUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("keeps legacy INVALID records without execution IDs blocked and validates optional durable fields", async () => {
+    isolateRoot();
+    fault = () => "network-before";
+    vi.mocked(api.cancelConditionalUpdate).mockResolvedValue({ requested: false, terminal: false, databaseTerminal: false });
+    const plan = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", body, "TYPE BODY")]);
+    await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow();
+    delete plan.steps[0].executionId;
+    delete plan.steps[0].databaseTerminal;
+    const actual = objects.get(identity("ROOT", "TYPE BODY"))!;
+    actual.status = "INVALID";
+    const legacy = restoreOracleTypeManagementDraft(json(plan))!;
+    vi.mocked(api.cancelConditionalUpdate).mockClear();
+    const rechecked = await prepareOracleTypeManagement(target, "save-body", legacy.drafts, legacy);
+    expect(rechecked.executable).toBe(false);
+    expect(api.cancelConditionalUpdate).not.toHaveBeenCalled();
+    expect(rechecked.steps[0].state).toBe("unknown");
+    expect(restoreOracleTypeManagementDraft({ ...json(plan), steps: [{ ...plan.steps[0], databaseTerminal: true }] })).toBeUndefined();
+    expect(restoreOracleTypeManagementDraft({ ...json(plan), steps: [{ ...plan.steps[0], executionId: 1 }] })).toBeUndefined();
+  });
+
+  it("repairs an INVALID write after its completed execution response was lost without replaying confirmed steps", async () => {
+    fault = (input) => (input.operation === "rebuild_source" && input.objectType === "TYPE_BODY" ? "invalid" : undefined);
+    const execute = vi.mocked(api.executeConditionalUpdate).getMockImplementation()!;
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(async (...args) => {
+      const result = await execute(...args);
+      if (statements.get(args[2])?.objectType === "TYPE_BODY") throw new Error("Lost response after completed INVALID DDL");
+      return result;
+    });
+    const plan = await prepareOracleTypeManagement(target, "save-spec", [draft()]);
+    await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow();
+    expect(objects.get(identity("ROOT", "TYPE BODY"))?.status).toBe("INVALID");
+    const sent = requests.length;
+    const restored = restoreOracleTypeManagementDraft(json(plan))!;
+    const reconciled = await prepareOracleTypeManagement(target, "save-spec", restored.drafts, restored);
+    expect(reconciled.issues).toEqual([]);
+    fault = undefined;
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(execute);
+    const fixed = reconciled.drafts.map((item) => (item.objectType === "TYPE BODY" ? { ...item, source: item.source.replace("RETURN SELF.ID", "RETURN SELF.ID + 1") } : item));
+    const remaining = await prepareOracleTypeManagement(target, "save-spec", fixed, reconciled);
+    expect(remaining.issues).toEqual([]);
+    await executeOracleTypeManagement(remaining, { persist: async () => {} });
+    expect(remaining.state).toBe("complete");
+    expect(requests.slice(sent).every((sql) => !sql.startsWith("DROP TYPE") && sql !== changedRoot)).toBe(true);
+    expect(objects.get(identity("ROOT", "TYPE BODY"))?.source).toContain("RETURN SELF.ID + 1");
+  });
+
   it.each(["reject", "invalid"] as const)("keeps the %s attempt and diagnostic when reopening an unchanged failed draft", async (failure) => {
     isolateRoot();
     fault = () => failure;
@@ -318,10 +453,10 @@ describe("TYPE execution, persistence and recovery", () => {
     const reopened = await prepareOracleTypeManagement(target, "save-body", plan.drafts, restoreOracleTypeManagementDraft(json(plan)));
     expect(reopened.history).toEqual([failed]);
     expect(reopened.steps[0].state).toBe("not-sent");
-    expect(api.executeQuery).toHaveBeenCalledOnce();
+    expect(api.executeConditionalUpdate).toHaveBeenCalledOnce();
     const rechecked = await prepareOracleTypeManagement(target, "save-body", reopened.drafts, restoreOracleTypeManagementDraft(json(reopened)));
     expect(rechecked.history).toEqual([failed]);
-    expect(api.executeQuery).toHaveBeenCalledOnce();
+    expect(api.executeConditionalUpdate).toHaveBeenCalledOnce();
     fault = () => (failure === "reject" ? "invalid" : "reject");
     await expect(executeOracleTypeManagement(rechecked, { persist: async () => {} })).rejects.toThrow();
     const secondFailure = json(rechecked.steps[0]);
@@ -331,7 +466,7 @@ describe("TYPE execution, persistence and recovery", () => {
     expect(retried.history).toEqual([failed, secondFailure]);
     const validatedAgain = await prepareOracleTypeManagement(target, "save-body", retried.drafts, restoreOracleTypeManagementDraft(json(retried)));
     expect(validatedAgain.history).toEqual(retried.history);
-    expect(api.executeQuery).toHaveBeenCalledTimes(2);
+    expect(api.executeConditionalUpdate).toHaveBeenCalledTimes(2);
   });
 
   it("can revalidate a rejected grant with no effect and resume without dropping rebuilt types again", async () => {
@@ -353,8 +488,8 @@ describe("TYPE execution, persistence and recovery", () => {
     const desired = body.replace("RETURN SELF.ID", "RETURN SELF.ID + 5");
     const concurrent = body.replace("RETURN SELF.ID", "RETURN SELF.ID + 9");
     const plan = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", desired, "TYPE BODY")]);
-    const execute = vi.mocked(api.executeQuery).getMockImplementation()!;
-    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+    const execute = vi.mocked(api.executeConditionalUpdate).getMockImplementation()!;
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(async (...args) => {
       const result = await execute(...args);
       const current = objects.get(identity("ROOT", "TYPE BODY"))!;
       current.source = current.sourceFingerprint = concurrent;
@@ -365,14 +500,14 @@ describe("TYPE execution, persistence and recovery", () => {
     const rechecked = await prepareOracleTypeManagement(target, "save-body", plan.drafts, restoreOracleTypeManagementDraft(json(plan)));
     expect(rechecked.executable).toBe(false);
     expect(rechecked.issues.map((issue) => issue.code)).toContain("unknown-result");
-    expect(api.executeQuery).toHaveBeenCalledOnce();
+    expect(api.executeConditionalUpdate).toHaveBeenCalledOnce();
   });
   it("retains a terminal SQL rejection as failed and retries only after fresh validation and confirmation", async () => {
     isolateRoot();
     const changedBody = body.replace("RETURN SELF.ID", "RETURN SELF.ID + 8");
     const plan = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", changedBody, "TYPE BODY")]);
-    const execute = vi.mocked(api.executeQuery).getMockImplementation()!;
-    vi.mocked(api.executeQuery).mockRejectedValueOnce(
+    const execute = vi.mocked(api.executeConditionalUpdate).getMockImplementation()!;
+    vi.mocked(api.executeConditionalUpdate).mockRejectedValueOnce(
       new BackendErrorException({
         version: 1,
         code: "DBX-JDBC-4001",
@@ -388,13 +523,13 @@ describe("TYPE execution, persistence and recovery", () => {
     await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow("Insufficient privileges");
     expect(plan.steps[0].state).toBe("failed");
     await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow("Revalidate");
-    expect(api.executeQuery).toHaveBeenCalledTimes(1);
-    vi.mocked(api.executeQuery).mockImplementation(execute);
+    expect(api.executeConditionalUpdate).toHaveBeenCalledTimes(1);
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(execute);
     const resumed = await prepareOracleTypeManagement(target, "save-body", plan.drafts, restoreOracleTypeManagementDraft(json(plan)));
     expect(resumed.executable).toBe(true);
     await executeOracleTypeManagement(resumed, { persist: async () => {} });
     expect(resumed.state).toBe("complete");
-    expect(api.executeQuery).toHaveBeenCalledTimes(2);
+    expect(api.executeConditionalUpdate).toHaveBeenCalledTimes(2);
   });
 
   it("flushes each exact sent revision before SQL and each readback before the next step", async () => {
@@ -421,7 +556,7 @@ describe("TYPE execution, persistence and recovery", () => {
         },
       }),
     ).rejects.toBeInstanceOf(OracleTypeManagementFailure);
-    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(api.executeConditionalUpdate).not.toHaveBeenCalled();
     expect(first.steps[0].state).toBe("not-sent");
     const second = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", body, "TYPE BODY")]);
     let current = true;
@@ -433,21 +568,21 @@ describe("TYPE execution, persistence and recovery", () => {
         isCurrent: () => current,
       }),
     ).rejects.toThrow("changed before dispatch");
-    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(api.executeConditionalUpdate).not.toHaveBeenCalled();
   });
 
   it("binds dispatched steps to the approved target even if the UI switches later", async () => {
     const plan = await prepareOracleTypeManagement(target, "save-spec", [draft()]);
     await executeOracleTypeManagement(plan, { persist: async () => {}, isCurrent: () => requests.length === 0 });
     expect(plan.state).toBe("complete");
-    expect(vi.mocked(api.executeQuery).mock.calls.every(([connection, database]) => connection === target.connectionId && database === target.database)).toBe(true);
+    expect(vi.mocked(api.executeConditionalUpdate).mock.calls.every(([connection, database]) => connection === target.connectionId && database === target.database)).toBe(true);
   });
 
   it("detects source/grant/dependency concurrency before sending any DDL", async () => {
     const plan = await prepareOracleTypeManagement(target, "save-spec", [draft()]);
     objects.get(identity("FN", "FUNCTION"))!.source += " -- concurrent";
     await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow("changed");
-    expect(api.executeQuery).not.toHaveBeenCalled();
+    expect(api.executeConditionalUpdate).not.toHaveBeenCalled();
   });
 
   it("does not call INVALID with zero errors a success; repaired BODY resumes without replaying the root or drops", async () => {
@@ -491,8 +626,8 @@ describe("TYPE execution, persistence and recovery", () => {
   it("does not hide an applied write when readback fails, and stops later sends", async () => {
     isolateRoot();
     const plan = await prepareOracleTypeManagement(target, "save-spec", [draft()]);
-    const implementation = vi.mocked(api.executeQuery).getMockImplementation()!;
-    vi.mocked(api.executeQuery).mockImplementation(async (...args) => {
+    const implementation = vi.mocked(api.executeConditionalUpdate).getMockImplementation()!;
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(async (...args) => {
       const result = await implementation(...args);
       vi.mocked(api.getOracleTypeManagementSnapshot).mockRejectedValue(new Error("Readback unavailable"));
       return result;

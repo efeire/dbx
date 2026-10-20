@@ -20,6 +20,19 @@ beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Oracle-family TYPE management transports", () => {
+  it.each([undefined, { cancel: false }])("preserves cancellation defaults and forwards TYPE wait-only options over both transports: %j", async (options) => {
+    const response = { requested: false, terminal: true, databaseTerminal: true };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => response });
+    vi.stubGlobal("fetch", fetchMock);
+    mocks.invoke.mockResolvedValue(response);
+    const http = await import("@/lib/backend/http");
+    const tauri = await import("@/lib/backend/tauri");
+    await expect(http.cancelConditionalUpdate("type-step-1", options)).resolves.toEqual(response);
+    await expect(tauri.cancelConditionalUpdate("type-step-1", options)).resolves.toEqual(response);
+    expect(fetchMock).toHaveBeenCalledWith("/api/query/cancel-conditional-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ executionId: "type-step-1", ...options }) });
+    expect(mocks.invoke).toHaveBeenCalledWith("cancel_conditional_update", { executionId: "type-step-1", ...options });
+  });
+
   it("uses the same read-only native evolution preview and recovery manifest over both transports", async () => {
     const response = { target, sourceBefore: "original definition", sourceAfter: "approved definition", statements: ["native preview"], metadata: "unchanged targets", phase: 1 };
     const input = { target, sourceBefore: response.sourceBefore, sourceAfter: response.sourceAfter, manifest: response };

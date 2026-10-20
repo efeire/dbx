@@ -34,7 +34,7 @@ const stopRequested = ref(false);
 const maintenanceConfirmed = ref(false);
 const busy = computed(() => loading.value || executing.value || dataBusy.value);
 const deleting = computed(() => plan.value?.operation.startsWith("delete") ?? request?.operation.startsWith("delete"));
-const statements = computed(() => plan.value?.steps.filter((step) => step.state !== "confirmed").map((step) => step.sql) ?? []);
+const statements = computed(() => (plan.value?.requiresReverify ? [] : (plan.value?.steps.filter((step) => step.state !== "confirmed").map((step) => step.sql) ?? [])));
 const maintenanceRequired = computed(() => !!plan.value && (plan.value.steps.some((step) => step.kind === "drop-dependent") || (!plan.value.operation.endsWith("body") && plan.value.originalSnapshot.persistentReferences.length > 0)));
 const entries = computed<SourceMigrationEntry[]>(
   () =>
@@ -48,12 +48,14 @@ const entries = computed<SourceMigrationEntry[]>(
         name: draft.name,
         objectType: draft.objectType === "TRIGGER" ? `${draft.objectType} · ${original?.triggerEnabled === true ? "ENABLED" : original?.triggerEnabled === false ? "DISABLED" : t("common.unknown")}` : draft.objectType,
         source: original?.source ?? "",
-        currentSource: plan.value!.lastSnapshot.objects.find((object) => typeManagementObjectKey(object) === key)?.source ?? undefined,
+        currentSource: (plan.value!.observedSnapshot ?? plan.value!.lastSnapshot).objects.find((object) => typeManagementObjectKey(object) === key)?.source ?? undefined,
         draft: draft.source,
-        generated: plan
-          .value!.steps.filter((step) => typeManagementObjectKey(step.object) === key && step.state !== "confirmed")
-          .map((step) => step.sql)
-          .join("\n\n"),
+        generated: plan.value!.requiresReverify
+          ? ""
+          : plan
+              .value!.steps.filter((step) => typeManagementObjectKey(step.object) === key && step.state !== "confirmed")
+              .map((step) => step.sql)
+              .join("\n\n"),
         rewriteRequired: !(deleting.value && root),
         showOriginal: true,
       };

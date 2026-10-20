@@ -32,6 +32,8 @@ export interface TypeManagementStep {
   nativePhase?: number;
   triggerEnabled?: boolean;
   state: "not-sent" | "sent" | "confirmed" | "failed" | "unknown";
+  executionId?: string;
+  databaseTerminal?: boolean;
   message?: string;
 }
 
@@ -44,6 +46,8 @@ export interface OracleTypeManagementDraft {
   operation: TypeManagementOperation;
   originalSnapshot: OracleTypeManagementSnapshot;
   lastSnapshot: OracleTypeManagementSnapshot;
+  /** Read-only observation of an unresolved write; never an execution baseline. */
+  observedSnapshot?: OracleTypeManagementSnapshot;
   drafts: TypeManagementObjectDraft[];
   steps: TypeManagementStep[];
   history: TypeManagementStep[];
@@ -181,7 +185,7 @@ async function buildStep(plan: OracleTypeManagementDraft, object: OracleTypeMana
     const sql = result.statements[0];
     const id = JSON.stringify([kind, typeManagementObjectKey(object), sql]);
     const previous = plan.steps.find((step) => step.id === id);
-    return { id, kind, object: clone(object), sql, sourceFingerprint: result.sourceFingerprint ?? undefined, privilege: privilege && clone(privilege), triggerEnabled: input.triggerEnabled, state: previous?.state ?? "not-sent" } satisfies TypeManagementStep;
+    return { ...previous, id, kind, object: clone(object), sql, sourceFingerprint: result.sourceFingerprint ?? undefined, privilege: privilege && clone(privilege), triggerEnabled: input.triggerEnabled, state: previous?.state ?? "not-sent" } satisfies TypeManagementStep;
   } catch (error) {
     addIssue(plan, "invalid-definition", errorMessage(error), object);
     return null;
@@ -221,6 +225,18 @@ function restoreGrantIssue(plan: OracleTypeManagementDraft, object: OracleTypeMa
 /** Preparing never sends SQL. A repairable plan retains every draft and generated step. */
 export async function prepareOracleTypeManagement(target: TypeManagementTarget, operation: TypeManagementOperation, drafts: TypeManagementObjectDraft[] = [], previous?: OracleTypeManagementDraft): Promise<OracleTypeManagementDraft> {
   if (previous && (!sameTarget(previous.target, target) || previous.target.databaseType !== target.databaseType || previous.operation !== operation)) throw new Error("A recovery plan cannot be rebound to a different TYPE target.");
+  const recoveringSteps = clone(previous?.steps ?? []);
+  for (const step of recoveringSteps) {
+    if (!["sent", "unknown"].includes(step.state) || !step.executionId || step.databaseTerminal) continue;
+    try {
+      const completion = await api.cancelConditionalUpdate(step.executionId, { cancel: false });
+      step.databaseTerminal = completion.terminal && completion.databaseTerminal === true;
+    } catch {
+      // A failed status read is not proof that the original DDL has stopped.
+      step.databaseTerminal = false;
+    }
+  }
+  // Never use a snapshot taken before the original execution finished.
   const actual = await readSnapshot(target, previous ? knownObjects(previous) : []);
   const started = previous?.steps.some((step) => step.state !== "not-sent") === true || !!previous?.dataMappings?.length;
   const plan: OracleTypeManagementDraft = {
@@ -232,7 +248,7 @@ export async function prepareOracleTypeManagement(target: TypeManagementTarget, 
     originalSnapshot: clone(started ? previous!.originalSnapshot : actual),
     lastSnapshot: clone(actual),
     drafts: clone(drafts),
-    steps: clone(previous?.steps ?? []),
+    steps: recoveringSteps,
     history: clone(previous?.history ?? []),
     dataMappings: clone(previous?.dataMappings ?? []),
     dataPreparation: previous?.dataPreparation && clone(previous.dataPreparation),
@@ -279,29 +295,45 @@ export async function prepareOracleTypeManagement(target: TypeManagementTarget, 
       addIssue(plan, "native-evolution", errorMessage(error), selected);
     }
   }
+  // A sent or unknown request must first be reconciled, never turned into a new write.
+  for (const step of plan.steps) {
+    if (step.state !== "sent" && step.state !== "unknown") continue;
+    try {
+      if (step.executionId && !step.databaseTerminal) throw new Error("The original database execution has not been confirmed as finished. Keep this plan and read it again after completion.");
+      assertNoUnapprovedChange(previous!.lastSnapshot, actual, step, plan.originalSnapshot);
+      if (stepSatisfied(actual, step, plan.nativeEvolution)) {
+        step.state = "confirmed";
+        step.message = "Confirmed by fresh readback.";
+      } else if (stepWrittenInvalid(actual, step)) {
+        step.state = "failed";
+        step.message = [step.message, invalidDefinitionMessage(objectIn(actual, step.object)!)].filter(Boolean).join("\n");
+      } else throw new Error("A previously sent step is not yet verified. Read back its result; do not resend it.");
+    } catch (error) {
+      addIssue(plan, "unknown-result", errorMessage(error), step.object);
+    }
+  }
   if (previous && started) {
     for (const object of previous.lastSnapshot.objects) {
       const current = objectIn(actual, object);
       if (verifiedMapping(object)) continue; // external preparation was verified against the original permanent baselines
       if (current && JSON.stringify(objectDefinition(current)) === JSON.stringify(objectDefinition(object))) continue;
-      const approved = previous.steps.some(
+      const approved = plan.steps.some(
         (step) =>
           step.state !== "not-sent" &&
-          stepSatisfied(actual, step, plan.nativeEvolution) &&
+          (stepSatisfied(actual, step, plan.nativeEvolution) || stepWrittenInvalid(actual, step)) &&
           (sameObject(step.object, object) || ((step.kind === "delete" || step.kind === "drop-dependent") && step.object.objectType === "TYPE" && object.objectType === "TYPE BODY" && step.object.owner === object.owner && step.object.name === object.name && current?.exists === false)),
       );
       if (!approved) addIssue(plan, "definition-changed", "This object's definition, identity, or grants changed after the last recorded state. Review the live definition before starting a replacement plan.", object);
     }
   }
 
-  // A sent or unknown request must first be reconciled, never turned into a new write.
-  for (const step of plan.steps) {
-    if (step.state === "sent" || step.state === "unknown") {
-      if (stepSatisfied(actual, step, plan.nativeEvolution)) {
-        step.state = "confirmed";
-        step.message = "Confirmed by fresh readback.";
-      } else addIssue(plan, "unknown-result", "A previously sent step is not yet verified. Read back its result; do not resend it.", step.object);
-    }
+  if (plan.steps.some((step) => step.state === "sent" || step.state === "unknown")) {
+    // Keep active execution identities even when the user has edited their drafts.
+    // Replacing these with newly generated steps would lose the no-replay guard.
+    plan.requiresReverify = true;
+    plan.observedSnapshot = clone(actual);
+    plan.lastSnapshot = clone(previous!.lastSnapshot);
+    return plan;
   }
   const priorSteps = plan.steps;
   const generated: TypeManagementStep[] = [];
@@ -346,7 +378,8 @@ export async function prepareOracleTypeManagement(target: TypeManagementTarget, 
     if (plan.nativeEvolution) {
       plan.nativeEvolution.statements.forEach((sql, index) => {
         const id = JSON.stringify(["evolve", typeManagementObjectKey(selected), sql]);
-        push({ id, kind: "evolve", object: clone(selected), sql, nativePhase: index + 1, state: plan.steps.find((step) => step.id === id)?.state ?? "not-sent" });
+        const previous = plan.steps.find((step) => step.id === id);
+        push({ ...previous, id, kind: "evolve", object: clone(selected), sql, nativePhase: index + 1, state: previous?.state ?? "not-sent" });
       });
     } else if (!isDelete(operation)) {
       const draft = plan.drafts.find((item) => sameObject(item, selected));
@@ -398,7 +431,11 @@ export async function prepareOracleTypeManagement(target: TypeManagementTarget, 
   plan.steps = generated;
   for (const step of plan.steps) {
     if (step.state === "confirmed" && !stepStillSatisfied(actual, step, plan.steps, plan.nativeEvolution)) addIssue(plan, "confirmed-step-changed", "A confirmed result no longer matches the approved definition. Review the actual state before continuing.", step.object);
-    if (step.state === "failed") step.state = "not-sent"; // a server rejection, unlike an unknown response, is retryable after fresh confirmation
+    if (step.state === "failed") {
+      step.state = "not-sent"; // a verified failure is retryable only after fresh confirmation
+      delete step.executionId;
+      delete step.databaseTerminal;
+    }
   }
   plan.executable = !plan.issues.length;
   plan.state = plan.executable ? (plan.steps.every((step) => step.state === "confirmed") ? "complete" : "validated") : "draft";
@@ -413,6 +450,26 @@ function stepSatisfied(snapshot: OracleTypeManagementSnapshot, step: TypeManagem
   if (step.object.objectType === "TRIGGER" && (typeof step.triggerEnabled !== "boolean" || object.triggerEnabled !== step.triggerEnabled || !complete(object.triggerEnabledRead ?? { state: "unavailable" }))) return false;
   if (step.kind === "evolve") return !!native && !!step.nativePhase && native.phase >= step.nativePhase && object.exists === true && object.status === "VALID" && complete(object.sourceRead) && complete(object.errorsRead) && !object.errors.length;
   return object.exists === true && object.status === "VALID" && complete(object.sourceRead) && complete(object.errorsRead) && !object.errors.length && object.sourceFingerprint === step.sourceFingerprint;
+}
+
+function stepWrittenInvalid(snapshot: OracleTypeManagementSnapshot, step: TypeManagementStep) {
+  const object = objectIn(snapshot, step.object);
+  return (
+    step.databaseTerminal === true &&
+    ["replace", "rebuild", "compile"].includes(step.kind) &&
+    !!step.sourceFingerprint &&
+    object?.exists === true &&
+    object.status === "INVALID" &&
+    complete(object.statusRead) &&
+    complete(object.sourceRead) &&
+    complete(object.errorsRead) &&
+    object.sourceFingerprint === step.sourceFingerprint &&
+    (step.object.objectType !== "TRIGGER" || (typeof step.triggerEnabled === "boolean" && object.triggerEnabled === step.triggerEnabled && complete(object.triggerEnabledRead ?? { state: "unavailable" })))
+  );
+}
+
+function invalidDefinitionMessage(object: OracleTypeManagementObject) {
+  return `Written, but INVALID. ${object.errors.map((error) => `${error.line}:${error.position} ${error.text}`).join(" ") || "The error dictionary returned no diagnostics."}`;
 }
 
 function stepStillSatisfied(snapshot: OracleTypeManagementSnapshot, step: TypeManagementStep, steps: TypeManagementStep[], native?: OracleTypeEvolutionManifest) {
@@ -536,6 +593,8 @@ export async function executeOracleTypeManagement(plan: OracleTypeManagementDraf
       }
       plan.revision++;
       step.state = "sent";
+      step.executionId = uuid();
+      step.databaseTerminal = false;
       try {
         await options.persist(plan);
       } catch (error) {
@@ -551,7 +610,8 @@ export async function executeOracleTypeManagement(plan: OracleTypeManagementDraf
       let executionError: unknown;
       let rejected = false;
       try {
-        const result = await api.executeQuery(plan.target.connectionId, plan.target.database, step.sql, step.object.owner);
+        const result = await api.executeConditionalUpdate(plan.target.connectionId, plan.target.database, step.sql, step.object.owner, step.executionId);
+        step.databaseTerminal = true;
         if (result.execution_error || result.messages?.some((message) => message.severity.toUpperCase() === "ERROR")) {
           rejected = true;
           throw new BackendErrorException(result.error || "The database rejected the TYPE statement.");
@@ -562,11 +622,20 @@ export async function executeOracleTypeManagement(plan: OracleTypeManagementDraf
         // A terminal, typed execute rejection can be reviewed and retried. Fetch,
         // timeout and legacy text errors do not prove that the DDL has stopped.
         rejected ||= envelope?.operationOutcome === "not_started" || (envelope?.code === "DBX-JDBC-4001" && envelope.diagnostics?.category === "sql" && envelope.diagnostics?.stage === "execute");
+        step.databaseTerminal ||= rejected;
+      }
+      if (!step.databaseTerminal) {
+        try {
+          const completion = await api.cancelConditionalUpdate(step.executionId, { cancel: false });
+          step.databaseTerminal = completion.terminal && completion.databaseTerminal === true;
+        } catch {
+          // Keep the original execution unknown when its completion cannot be read.
+        }
       }
       try {
         const after = await readSnapshot(plan.target, knownObjects(plan));
         await refreshNative(plan, step.kind === "evolve" ? [plan.nativeEvolution!.phase, step.nativePhase!] : [plan.nativeEvolution?.phase ?? 0]);
-        const satisfied = stepSatisfied(after, step, plan.nativeEvolution);
+        const satisfied = step.databaseTerminal && stepSatisfied(after, step, plan.nativeEvolution);
         assertNoUnapprovedChange(before, after, step, plan.originalSnapshot);
         await verifyOracleTypeDataMappings(plan);
         plan.lastSnapshot = clone(after);
@@ -574,14 +643,14 @@ export async function executeOracleTypeManagement(plan: OracleTypeManagementDraf
           const object = objectIn(after, step.object);
           const original = objectIn(before, step.object);
           const unchanged = object && original && JSON.stringify(objectDefinition(object)) === JSON.stringify(objectDefinition(original));
-          const writtenInvalid = !!step.sourceFingerprint && object?.sourceFingerprint === step.sourceFingerprint && complete(object.sourceRead) && object.status === "INVALID";
+          const writtenInvalid = stepWrittenInvalid(after, step);
           // A different VALID definition, or a success without its expected
           // effect, is not a retryable rejection. Reconcile it before any send.
-          step.state = (!executionError || rejected) && (writtenInvalid || (rejected && unchanged)) ? "failed" : "unknown";
+          step.state = writtenInvalid || (rejected && unchanged) ? "failed" : "unknown";
           step.message = executionError
-            ? errorMessage(executionError)
+            ? [errorMessage(executionError), writtenInvalid ? invalidDefinitionMessage(object!) : undefined].filter(Boolean).join("\n")
             : object?.status === "INVALID"
-              ? `Written, but INVALID. ${object.errors.map((error) => `${error.line}:${error.position} ${error.text}`).join(" ") || "The error dictionary returned no diagnostics."}`
+              ? invalidDefinitionMessage(object)
               : "The write result has not been verified against the approved definition.";
           throw new Error(step.message);
         }
@@ -677,6 +746,9 @@ export function restoreOracleTypeManagementDraft(value: unknown): OracleTypeMana
     ["drop-dependent", "replace", "rebuild", "grant", "delete", "evolve", "compile"].includes(step.kind) &&
     ["not-sent", "sent", "confirmed", "failed", "unknown"].includes(step.state) &&
     optionalString(step.sourceFingerprint) &&
+    optionalString(step.executionId) &&
+    (step.databaseTerminal === undefined || typeof step.databaseTerminal === "boolean") &&
+    (step.databaseTerminal !== true || !!step.executionId) &&
     (step.triggerEnabled === undefined || typeof step.triggerEnabled === "boolean") &&
     (step.kind !== "evolve" || (Number.isSafeInteger(step.nativePhase) && step.nativePhase! > 0 && step.nativePhase! <= 2)) &&
     (step.kind !== "grant" || validGrant(step.privilege!));
@@ -693,6 +765,7 @@ export function restoreOracleTypeManagementDraft(value: unknown): OracleTypeMana
   )
     return undefined;
   if (![draft.originalSnapshot, draft.lastSnapshot].every(validSnapshot)) return undefined;
+  if (draft.observedSnapshot !== undefined && !validSnapshot(draft.observedSnapshot)) return undefined;
   if (!Array.isArray(draft.drafts) || !draft.drafts.every((object) => validKey(object) && typeof object.source === "string") || !Array.isArray(draft.steps) || !draft.steps.every(validStep) || (draft.history !== undefined && (!Array.isArray(draft.history) || !draft.history.every(validStep))))
     return undefined;
   if (draft.dataMappings !== undefined && (!Array.isArray(draft.dataMappings) || !draft.dataMappings.every(isTypeDataMappingDraft) || new Set(draft.dataMappings.map((record) => record.manifest.mapping.id)).size !== draft.dataMappings.length)) return undefined;

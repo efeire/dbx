@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   buildOracleTypeManagementSql: vi.fn(),
   verifyOracleTypeData: vi.fn(),
   prepareOracleTypeEvolution: vi.fn(),
-  executeQuery: vi.fn(),
+  executeConditionalUpdate: vi.fn(),
+  cancelConditionalUpdate: vi.fn(),
   saveOpenTabsState: vi.fn(),
   loadOpenTabsState: vi.fn(),
   getObjectSource: vi.fn(),
@@ -30,7 +31,7 @@ const changed = body.replace("RETURN 1", "RETURN 2");
 const read = { state: "available" as const };
 let actualBody: string;
 let actualStatus: string;
-let failure: "invalid" | "unknown" | "different" | undefined;
+let failure: "invalid" | "invalid-response-lost" | "unknown" | "different" | undefined;
 let saved: { tabs: unknown[]; activeTabId: string | null };
 let pinia: ReturnType<typeof createPinia>;
 let app: App | undefined;
@@ -64,6 +65,7 @@ function snapshot(): OracleTypeManagementSnapshot {
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
+  mocks.cancelConditionalUpdate.mockResolvedValue({ requested: false, terminal: true, databaseTerminal: true });
   vi.stubGlobal(
     "EventSource",
     class extends EventTarget {
@@ -93,10 +95,11 @@ beforeEach(() => {
   });
   mocks.loadOpenTabsState.mockImplementation(async () => clone(saved));
   mocks.getObjectSource.mockImplementation(async () => ({ name: "T", object_type: "TYPE_BODY", source: actualBody, editable: true }));
-  mocks.executeQuery.mockImplementation(async (_connection, _database, sql) => {
+  mocks.executeConditionalUpdate.mockImplementation(async (_connection, _database, sql) => {
     if (failure === "unknown") throw new Error("Unknown response");
     actualBody = failure === "different" ? sql.replace("RETURN 2", "RETURN 9") : sql;
-    actualStatus = failure === "invalid" ? "INVALID" : "VALID";
+    actualStatus = failure === "invalid" || failure === "invalid-response-lost" ? "INVALID" : "VALID";
+    if (failure === "invalid-response-lost") throw new Error("Lost response after completed INVALID DDL");
     return { columns: [], rows: [], execution_error: false, error: null, messages: [] };
   });
 });
@@ -150,6 +153,23 @@ function button(text: string) {
 }
 
 describe("TYPE preview using the real component, planner and stores", () => {
+  it("hides the previous final SQL after editing until the new draft is revalidated", async () => {
+    const { queryStore } = await mount();
+    expect([...document.querySelectorAll("pre")].filter((item) => item.textContent === changed)).toHaveLength(2);
+    const editor = document.querySelector<HTMLTextAreaElement>("[data-source-draft]")!;
+    const revised = changed.replace("RETURN 2", "RETURN 3");
+    editor.value = revised;
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    expect(queryStore.tabs[0].typeManagementDraft?.drafts[0].source).toBe(revised);
+    expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(true);
+    expect([...document.querySelectorAll("pre")].some((item) => item.textContent === changed)).toBe(false);
+    document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(false));
+    expect([...document.querySelectorAll("pre")].filter((item) => item.textContent === revised)).toHaveLength(2);
+    expect(mocks.executeConditionalUpdate).not.toHaveBeenCalled();
+  });
+
   it("retains successful compiler warnings in the durable execution record without classifying VALID as a failed save", async () => {
     mocks.getOracleTypeManagementSnapshot.mockImplementation(async () => {
       const value = snapshot();
@@ -176,7 +196,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     expect(queryStore.tabs[0].typeManagementDraft?.nativeEvolution?.phase).toBe(0);
     expect(queryStore.tabs[0].typeManagementDraft?.issues).toEqual([]);
     expect(mocks.verifyOracleTypeData).not.toHaveBeenCalled();
-    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeConditionalUpdate).not.toHaveBeenCalled();
   });
   it("shows a different live definition read-only and never offers a blind resend", async () => {
     failure = "different";
@@ -188,7 +208,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
     await vi.waitFor(() => expect(queryStore.tabs[0].typeManagementDraft?.issues.some((issue) => issue.code === "unknown-result")).toBe(true));
     expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(true);
-    expect(mocks.executeQuery).toHaveBeenCalledOnce();
+    expect(mocks.executeConditionalUpdate).toHaveBeenCalledOnce();
   });
   it("does not impose a scalar data migration on a BODY-only save even when the TYPE has stored values", async () => {
     mocks.getOracleTypeManagementSnapshot.mockImplementation(async () => {
@@ -201,7 +221,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(false);
     confirm();
     expect((await outcome).complete).toBe(true);
-    expect(mocks.executeQuery).toHaveBeenCalledOnce();
+    expect(mocks.executeConditionalUpdate).toHaveBeenCalledOnce();
     expect(mocks.verifyOracleTypeData).not.toHaveBeenCalled();
   });
   it("persists a complete manual mapping, keeps SQL-editor preparation separate, and revalidates after actual data and unlink verification", async () => {
@@ -282,7 +302,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     await vi.waitFor(() => expect(carrier().typeManagementDraft?.dataPreparation?.fields[0].targetObjectNull).toBe(false));
     button(i18n.global.t("objects.typeDataPrepareSql")).click();
     expect(queryStore.tabs.some((tab) => tab.sql.includes('CASE WHEN T."VALUE" IS NULL THEN 1 ELSE 0 END'))).toBe(true);
-    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeConditionalUpdate).not.toHaveBeenCalled();
     button(i18n.global.t("objects.typeDataRegister")).click();
     await vi.waitFor(() => expect(carrier().typeManagementDraft?.dataMappings).toHaveLength(1));
     const registered = clone(carrier().typeManagementDraft!.dataMappings[0].manifest);
@@ -297,14 +317,14 @@ describe("TYPE preview using the real component, planner and stores", () => {
     document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
     await vi.waitFor(() => expect(carrier().typeManagementDraft?.executable).toBe(true));
     expect(carrier().typeManagementDraft!.dataMappings[0].manifest.old).toEqual(registered.old);
-    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeConditionalUpdate).not.toHaveBeenCalled();
     button(i18n.global.t("objects.typeManagementKeepDraft")).click();
     expect((await outcome).complete).toBe(false);
     expect(carrier().typeManagementDraft?.dataMappings[0].manifest.old).toEqual(registered.old);
   });
   it("keeps the source draft durable on cancel and sends no SQL merely for preparing a preview", async () => {
     const { queryStore, outcome, i18n } = await mount();
-    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeConditionalUpdate).not.toHaveBeenCalled();
     expect(queryStore.tabs[0].typeManagementDraft?.drafts[0].source).toBe(changed);
     expect(document.body.textContent).toContain("TYPE BODY");
     button(i18n.global.t("objects.typeManagementKeepDraft")).click();
@@ -317,8 +337,8 @@ describe("TYPE preview using the real component, planner and stores", () => {
     const { queryStore, outcome } = await mount();
     confirm();
     expect((await outcome).complete).toBe(true);
-    expect(mocks.executeQuery).toHaveBeenCalledOnce();
-    expect(mocks.executeQuery.mock.calls[0].slice(0, 4)).toEqual([target.connectionId, target.database, changed, "APP"]);
+    expect(mocks.executeConditionalUpdate).toHaveBeenCalledOnce();
+    expect(mocks.executeConditionalUpdate.mock.calls[0].slice(0, 4)).toEqual([target.connectionId, target.database, changed, "APP"]);
     expect(actualBody).toBe(changed);
     expect(queryStore.tabs[0].typeManagementDraft?.steps[0].state).toBe("confirmed");
     expect(queryStore.tabs[0].typeManagementDraft?.state).toBe("complete");
@@ -339,7 +359,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     expect(tab.originalSql).toBe(changed);
     expect(tab.typeSourceEditing).toBe(false);
     expect(() => assertSourceIdentity(originalIdentity)).toThrow();
-    expect(mocks.executeQuery).toHaveBeenCalledOnce();
+    expect(mocks.executeConditionalUpdate).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])("refreshes the completed recovery tab without handing it to another frozen source tab (dirty=%s)", async (dirty) => {
@@ -364,7 +384,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     expect(source.sql).toBe(oldDraft);
     expect(queryStore.isTabDirty(source)).toBe(dirty);
     expect(() => assertSourceIdentity(sourceIdentity)).toThrow();
-    expect(mocks.executeQuery).toHaveBeenCalledOnce();
+    expect(mocks.executeConditionalUpdate).toHaveBeenCalledOnce();
   });
 
   it("honors the actual production guard's cancellation and target recheck", async () => {
@@ -376,20 +396,20 @@ describe("TYPE preview using the real component, planner and stores", () => {
     await vi.waitFor(() => expect(safety.pending).toBeDefined());
     safety.cancel();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(false));
-    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeConditionalUpdate).not.toHaveBeenCalled();
     expect(queryStore.tabs[0].typeManagementDraft?.state).toBe("validated");
     confirm();
     await vi.waitFor(() => expect(safety.pending).toBeDefined());
     current = false;
     safety.confirm();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(false));
-    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeConditionalUpdate).not.toHaveBeenCalled();
     button(i18n.global.t("objects.typeManagementKeepDraft")).click();
     expect((await outcome).complete).toBe(false);
   });
 
-  it("keeps INVALID with zero diagnostics editable and saves the repaired per-object draft", async () => {
-    failure = "invalid";
+  it.each(["invalid", "invalid-response-lost"] as const)("keeps %s with zero diagnostics editable and saves the repaired per-object draft", async (outcomeFailure) => {
+    failure = outcomeFailure;
     const { queryStore, outcome, i18n } = await mount();
     confirm();
     await vi.waitFor(() => expect(document.body.textContent).toContain("INVALID"));
@@ -409,7 +429,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     expect(document.querySelector("[data-type-execution-history]")?.textContent).toContain("INVALID");
     confirm();
     expect((await outcome).complete).toBe(true);
-    expect(mocks.executeQuery).toHaveBeenCalledTimes(2);
+    expect(mocks.executeConditionalUpdate).toHaveBeenCalledTimes(2);
     expect(actualBody).toBe(repaired);
     expect(queryStore.tabs[0].sql).toBe(repaired);
     expect(queryStore.tabs[0].typeManagementDraft?.history[0].state).toBe("failed");
@@ -431,7 +451,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(false));
     expect(queryStore.tabs[0].typeManagementDraft?.history).toHaveLength(2);
-    expect(mocks.executeQuery).toHaveBeenCalledTimes(2);
+    expect(mocks.executeConditionalUpdate).toHaveBeenCalledTimes(2);
     button(i18n.global.t("objects.typeManagementKeepDraft")).click();
     expect((await outcome).complete).toBe(false);
   });
@@ -444,7 +464,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("[data-validate]")!.disabled).toBe(false));
     document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
     await vi.waitFor(() => expect(document.body.textContent).toContain("previously sent"));
-    expect(mocks.executeQuery).toHaveBeenCalledOnce();
+    expect(mocks.executeConditionalUpdate).toHaveBeenCalledOnce();
     expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(true);
     button(i18n.global.t("objects.typeManagementKeepDraft")).click();
     expect((await outcome).complete).toBe(false);
@@ -456,7 +476,7 @@ describe("TYPE preview using the real component, planner and stores", () => {
     expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(true);
     expect(document.body.textContent).toContain("changed since it was loaded");
     expect(document.body.textContent).toContain(body);
-    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    expect(mocks.executeConditionalUpdate).not.toHaveBeenCalled();
     document.querySelector<HTMLButtonElement>("[data-validate]")!.click();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("[data-type-management-confirm]")!.disabled).toBe(false));
     button(i18n.global.t("objects.typeManagementKeepDraft")).click();

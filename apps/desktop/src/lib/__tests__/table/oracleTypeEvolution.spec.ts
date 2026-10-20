@@ -3,7 +3,7 @@ import * as api from "@/lib/backend/api";
 import { executeOracleTypeManagement, prepareOracleTypeManagement, restoreOracleTypeManagementDraft, type TypeManagementTarget } from "@/lib/table/oracleTypeManagement";
 import type { OracleTypeEvolutionManifest, OracleTypeManagementObject, OracleTypeManagementSnapshot } from "@/types/database";
 
-vi.mock("@/lib/backend/api", () => ({ getOracleTypeManagementSnapshot: vi.fn(), buildOracleTypeManagementSql: vi.fn(), prepareOracleTypeEvolution: vi.fn(), executeQuery: vi.fn() }));
+vi.mock("@/lib/backend/api", () => ({ getOracleTypeManagementSnapshot: vi.fn(), buildOracleTypeManagementSql: vi.fn(), prepareOracleTypeEvolution: vi.fn(), executeConditionalUpdate: vi.fn(), cancelConditionalUpdate: vi.fn() }));
 const target: TypeManagementTarget = { connectionId: "native-evolution", database: "db", owner: "APP", name: "ROOT", databaseType: "oracle" };
 const before = 'CREATE OR REPLACE TYPE "APP"."ROOT" AS OBJECT (ID NUMBER(8,0), MEMBER FUNCTION F RETURN NUMBER);';
 const after = 'CREATE OR REPLACE TYPE "APP"."ROOT" AS OBJECT (ID NUMBER(10,0), LABEL VARCHAR2(40 BYTE), MEMBER FUNCTION F RETURN NUMBER);';
@@ -68,6 +68,7 @@ function snapshot(): OracleTypeManagementSnapshot {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.cancelConditionalUpdate).mockResolvedValue({ requested: false, terminal: true, databaseTerminal: true });
   phase = 0;
   source = before;
   metadata = "exact identity, grants, restrictions and native row-count guards";
@@ -82,7 +83,7 @@ beforeEach(() => {
     return { target, sourceBefore: before, sourceAfter: after, statements, metadata, phase };
   });
   vi.mocked(api.buildOracleTypeManagementSql).mockImplementation(async (input) => ({ statements: [input.operation === "compile_spec" ? `ALTER TYPE "${input.owner}"."${input.name}" COMPILE SPECIFICATION;` : (input.source ?? "compile specification")], sourceFingerprint: input.source }));
-  vi.mocked(api.executeQuery).mockImplementation(async (_id, _database, sql) => {
+  vi.mocked(api.executeConditionalUpdate).mockImplementation(async (_id, _database, sql) => {
     writes.push(sql);
     if (sql.startsWith("CREATE OR REPLACE TYPE BODY")) {
       pairedBody = sql;
@@ -104,7 +105,7 @@ it("uses Oracle native in-place evolution without demanding manual baselines or 
   expect(plan.issues).toEqual([]);
   expect(plan.dataMappings).toEqual([]);
   expect(plan.steps.map((step) => step.sql)).toEqual(statements);
-  expect(api.executeQuery).not.toHaveBeenCalled();
+  expect(api.executeConditionalUpdate).not.toHaveBeenCalled();
   await executeOracleTypeManagement(plan, { persist: async () => {} });
   expect(plan.state).toBe("complete");
   expect(writes).toEqual(statements);
