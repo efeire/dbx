@@ -1923,7 +1923,7 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
     props.database === database &&
     props.catalog === catalog &&
     (selectedSchema.value || props.database) === schema;
-  if (objectType === "TYPE" || objectType === "TYPE_BODY" || objectType === "TRIGGER") {
+  if (objectType === "TRIGGER") {
     try {
       const source = await api.getObjectSource(connection.id, database, object.owner, object.name, objectType);
       if (!isCurrentRequest()) return;
