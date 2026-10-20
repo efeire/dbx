@@ -535,6 +535,8 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
       "connection.proxyPassword",
       "connection.proxyTestTarget",
       "connection.httpTunnelProtocol",
+      "connection.httpTunnelProtocolDbx",
+      "connection.httpTunnelProtocolNavicat",
       "connection.httpTunnelUrl",
       "connection.httpTunnelToken",
       "connection.httpTunnelConnectTimeout",
