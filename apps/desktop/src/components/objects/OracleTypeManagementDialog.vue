@@ -291,7 +291,22 @@ onBeforeUnmount(() => {
         <p v-if="notice" role="status" class="text-sm">{{ notice }}</p>
         <p v-if="deleting" class="rounded border border-destructive/40 bg-destructive/5 p-3 text-sm">{{ t(plan?.operation === "delete-body" ? "objects.typeManagementDeleteBody" : "objects.typeManagementDeleteSpec") }}</p>
         <p v-if="error" ref="errorRef" role="alert" tabindex="-1" class="whitespace-pre-wrap break-words rounded border border-destructive/40 p-3 text-sm text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{{ error }}</p>
-        <SourceMigrationPreview :entries="entries" :issues="issues" :drafts="drafts" :statements="statements" :loading="loading" :validating="false" :executing="executing || dataBusy" :executable="!!plan?.executable" :ready="!!plan" @edit="edit" @validate="revalidate" @reload="revalidate" />
+        <SourceMigrationPreview
+          :entries="entries"
+          :issues="issues"
+          :drafts="drafts"
+          :statements="statements"
+          :loading="loading"
+          :validating="false"
+          :executing="executing || dataBusy"
+          :executable="!!plan?.executable"
+          :ready="!!plan"
+          :draft-label="t('objects.typeManagementDraftLabel')"
+          :validation-pending-message="t('objects.typeManagementValidationPending')"
+          @edit="edit"
+          @validate="revalidate"
+          @reload="revalidate"
+        />
         <p v-if="plan?.nativeEvolution" role="status" class="text-sm leading-relaxed text-muted-foreground" data-native-type-evolution>{{ t("objects.typeManagementNativeEvolution") }}</p>
         <OracleTypeDataMappingPanel
           v-if="plan && !plan.nativeEvolution && !plan.operation.endsWith('body') && (plan.originalSnapshot.persistentReferences.length || plan.dataMappings.length)"

@@ -5937,6 +5937,8 @@ export default withEnglishFallback({
     typeManagementCurrentSource: "数据库当前源码",
     typeManagementNativeEvolution: "使用 Oracle 原生演进，原位保留数据，无需准备 OLD/EXPECTED。每步核对类型结构、依赖和表状态。",
     typeManagementPreviousAttempts: "之前的执行尝试",
+    typeManagementDraftLabel: "待执行定义",
+    typeManagementValidationPending: "修正定义或依赖后，点击“重新校验”；通过后再确认执行。",
     typeManagementState: {
       "not-sent": "未发送",
       sent: "已发送",

@@ -5893,6 +5893,8 @@ export default withEnglishFallback({
     typeManagementCurrentSource: "ซอร์สปัจจุบันในฐานข้อมูล",
     typeManagementNativeEvolution: "การปรับชนิดข้อมูลแบบเนทีฟของ Oracle เก็บข้อมูลไว้ที่เดิม ไม่ต้องเตรียม OLD/EXPECTED แต่ละขั้นจะตรวจสอบโครงสร้างชนิดข้อมูล ความเชื่อมโยง และสถานะตาราง",
     typeManagementPreviousAttempts: "ความพยายามดำเนินการก่อนหน้า",
+    typeManagementDraftLabel: "นิยามที่จะดำเนินการ",
+    typeManagementValidationPending: "แก้ไขนิยามหรือการอ้างอิง แล้วตรวจสอบอีกครั้ง เมื่อตรวจสอบผ่านจึงยืนยันการดำเนินการ",
     typeManagementState: {
       "not-sent": "ยังไม่ส่ง",
       sent: "ส่งแล้ว",

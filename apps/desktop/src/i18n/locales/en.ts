@@ -5948,6 +5948,8 @@ export default {
     typeManagementCurrentSource: "Current database source",
     typeManagementNativeEvolution: "Oracle native evolution preserves data in place; no OLD/EXPECTED preparation is required. Type structure, dependencies and table state are checked at each step.",
     typeManagementPreviousAttempts: "Previous execution attempts",
+    typeManagementDraftLabel: "Definition to execute",
+    typeManagementValidationPending: "Fix the definition or dependencies, then revalidate. Confirm execution after validation succeeds.",
     typeManagementState: {
       "not-sent": "Not sent",
       sent: "Sent",

@@ -5597,6 +5597,8 @@ export default withEnglishFallback({
     typeManagementCurrentSource: "Текущий исходный код в базе",
     typeManagementNativeEvolution: "Нативное изменение типа Oracle сохраняет данные на месте; подготовка OLD/EXPECTED не требуется. На каждом шаге проверяются структура типа, зависимости и состояние таблиц.",
     typeManagementPreviousAttempts: "Предыдущие попытки выполнения",
+    typeManagementDraftLabel: "Определение для выполнения",
+    typeManagementValidationPending: "Исправьте определение или зависимости и повторите проверку. Подтвердите выполнение после успешной проверки.",
     typeManagementState: {
       "not-sent": "Не отправлено",
       sent: "Отправлено",

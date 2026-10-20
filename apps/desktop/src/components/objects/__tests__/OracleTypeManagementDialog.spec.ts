@@ -348,11 +348,14 @@ describe("TYPE preview using the real component, planner and stores", () => {
 
   it("keeps INVALID with zero diagnostics editable and saves the repaired per-object draft", async () => {
     failure = "invalid";
-    const { queryStore, outcome } = await mount();
+    const { queryStore, outcome, i18n } = await mount();
     confirm();
     await vi.waitFor(() => expect(document.body.textContent).toContain("INVALID"));
     await vi.waitFor(() => expect(document.querySelector<HTMLTextAreaElement>("[data-source-draft]")!.disabled).toBe(false));
     const editor = document.querySelector<HTMLTextAreaElement>("[data-source-draft]")!;
+    expect(editor.labels?.[0]?.textContent).toContain(`${i18n.global.t("objects.typeManagementDraftLabel")} · APP.T`);
+    expect(document.body.textContent).toContain(i18n.global.t("objects.typeManagementValidationPending"));
+    expect(document.body.textContent).not.toContain(i18n.global.t("objects.viewRenameValidationPending"));
     const repaired = changed.replace("RETURN 2", "RETURN 3");
     editor.value = repaired;
     editor.dispatchEvent(new Event("input", { bubbles: true }));

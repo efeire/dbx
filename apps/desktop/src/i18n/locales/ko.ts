@@ -5117,6 +5117,8 @@ export default withEnglishFallback({
     typeManagementCurrentSource: "현재 데이터베이스 소스",
     typeManagementNativeEvolution: "Oracle 기본 타입 진화로 데이터를 제자리에 보존하며 OLD/EXPECTED 준비가 필요하지 않습니다. 각 단계에서 타입 구조, 종속성 및 테이블 상태를 확인합니다.",
     typeManagementPreviousAttempts: "이전 실행 시도",
+    typeManagementDraftLabel: "실행할 정의",
+    typeManagementValidationPending: "정의 또는 종속성을 수정한 후 다시 검증하세요. 검증이 성공하면 실행을 확인하세요.",
     typeManagementState: {
       "not-sent": "미전송",
       sent: "전송됨",

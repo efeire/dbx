@@ -22,7 +22,19 @@ export interface SourceMigrationIssue {
   message: string;
   repairable: boolean;
 }
-const props = defineProps<{ entries: SourceMigrationEntry[]; issues: SourceMigrationIssue[]; drafts: Record<string, string>; statements: string[]; loading: boolean; validating: boolean; executing: boolean; executable: boolean; ready: boolean }>();
+const props = defineProps<{
+  entries: SourceMigrationEntry[];
+  issues: SourceMigrationIssue[];
+  drafts: Record<string, string>;
+  statements: string[];
+  loading: boolean;
+  validating: boolean;
+  executing: boolean;
+  executable: boolean;
+  ready: boolean;
+  draftLabel?: string;
+  validationPendingMessage?: string;
+}>();
 const emit = defineEmits<{ edit: [key: string, source: string]; validate: []; reload: [] }>();
 const { t } = useI18n();
 const id = useId();
@@ -39,7 +51,7 @@ function isCurrentDraft(key: string, draft: string) {
   <section class="space-y-3 text-sm" :aria-busy="busy">
     <slot />
     <p v-if="loading || validating" role="status" class="text-muted-foreground">{{ t("common.loading") }}</p>
-    <p v-else-if="!executable" role="status" class="text-destructive">{{ t("objects.viewRenameValidationPending") }}</p>
+    <p v-else-if="!executable" role="status" class="text-destructive">{{ validationPendingMessage ?? t("objects.viewRenameValidationPending") }}</p>
     <ul v-if="issues.some((issue) => !issue.objectKey || !assigned.has(issue.objectKey))" class="space-y-2" aria-live="polite">
       <li v-for="(issue, index) in issues.filter((item) => !item.objectKey || !assigned.has(item.objectKey))" :key="index" class="rounded border border-destructive/40 p-3">
         <p class="font-medium text-destructive">{{ issue.label || t("objects.viewRenameNeedsRepair") }}</p>
@@ -75,7 +87,7 @@ function isCurrentDraft(key: string, draft: string) {
           </li>
         </ul>
         <label v-if="entry.rewriteRequired" class="block space-y-1" :for="`${id}-draft-${index}`">
-          <span class="block text-xs text-muted-foreground">{{ t("objects.viewRenameDraft") }} · {{ entry.owner ? `${entry.owner}.` : "" }}{{ entry.name }}</span>
+          <span class="block text-xs text-muted-foreground">{{ draftLabel ?? t("objects.viewRenameDraft") }} · {{ entry.owner ? `${entry.owner}.` : "" }}{{ entry.name }}</span>
           <textarea
             :id="`${id}-draft-${index}`"
             :value="drafts[entry.key] ?? entry.draft"

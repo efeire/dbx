@@ -5124,6 +5124,8 @@ export default withEnglishFallback({
     typeManagementCurrentSource: "データベースの現在のソース",
     typeManagementNativeEvolution: "Oracle のネイティブ型進化でデータをその場に保持します。OLD/EXPECTED の準備は不要です。各手順で型構造、依存関係、表の状態を確認します。",
     typeManagementPreviousAttempts: "以前の実行試行",
+    typeManagementDraftLabel: "実行する定義",
+    typeManagementValidationPending: "定義または依存関係を修正してから再検証してください。検証に成功したら実行を確認してください。",
     typeManagementState: {
       "not-sent": "未送信",
       sent: "送信済み",

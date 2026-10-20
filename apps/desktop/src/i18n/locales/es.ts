@@ -5242,6 +5242,8 @@ export default withEnglishFallback({
     typeManagementCurrentSource: "Código actual en la base de datos",
     typeManagementNativeEvolution: "La evolución nativa de Oracle conserva los datos sin moverlos; no requiere preparar OLD/EXPECTED. Cada paso verifica la estructura del tipo, las dependencias y el estado de las tablas.",
     typeManagementPreviousAttempts: "Intentos de ejecución anteriores",
+    typeManagementDraftLabel: "Definición que se ejecutará",
+    typeManagementValidationPending: "Corrige la definición o las dependencias y vuelve a validar. Confirma la ejecución cuando la validación sea correcta.",
     typeManagementState: {
       "not-sent": "No enviado",
       sent: "Enviado",

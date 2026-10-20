@@ -4808,6 +4808,8 @@ export default withEnglishFallback({
     typeManagementCurrentSource: "資料庫目前原始碼",
     typeManagementNativeEvolution: "使用 Oracle 原生演進，原位保留資料，無需準備 OLD/EXPECTED。每步核對類型結構、相依性及資料表狀態。",
     typeManagementPreviousAttempts: "先前的執行嘗試",
+    typeManagementDraftLabel: "待執行定義",
+    typeManagementValidationPending: "修正定義或相依性後，按「重新驗證」；通過後再確認執行。",
     typeManagementState: {
       "not-sent": "未傳送",
       sent: "已傳送",
