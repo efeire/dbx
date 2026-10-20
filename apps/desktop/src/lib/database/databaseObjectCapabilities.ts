@@ -192,6 +192,14 @@ export function supportsTypeObjectSource(dbType?: DatabaseType): boolean {
   return dbType === "oracle" || dbType === "oceanbase-oracle" || dbType === "dameng" || dbType === "xugu";
 }
 
+export function supportsOracleFamilyTypeManagement(dbType?: DatabaseType): boolean {
+  return dbType === "oracle" || dbType === "oceanbase-oracle" || dbType === "dameng";
+}
+
+export function isOracleFamilyTypeSource(dbType: DatabaseType | undefined, objectType: string | undefined): boolean {
+  return supportsOracleFamilyTypeManagement(dbType) && (objectType === "TYPE" || objectType === "TYPE_BODY");
+}
+
 export type CustomTypeCapabilities = {
   details: boolean;
   members: boolean;

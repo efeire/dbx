@@ -160,7 +160,8 @@ import {
   treeNodeRowAction,
   treeNodeRowDoubleClickAction,
 } from "@/lib/sidebar/treeNodeClick";
-import { customTypeCapabilities, supportsOracleTypeAttributeExpansion, supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
+import { customTypeCapabilities, supportsOracleFamilyTypeManagement, supportsOracleTypeAttributeExpansion, supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
+import { requestOracleTypeManagement } from "@/lib/table/oracleTypeManagementRequest";
 import { mongoCollectionTableTypeFromNode, mongoCreateDatabasePreview, mongoDropIndexFailureCount } from "@/lib/sidebar/mongoCollectionMutation";
 import { dataTabOpenModeFromTreeClick, type DataTabOpenMode } from "@/lib/sidebar/dataTabOpenPolicy";
 import { isCopySidebarSelectionShortcut, isDisconnectSidebarConnectionShortcut, isEditSidebarConnectionShortcut, isEditSidebarTableStructureShortcut, isModRShortcut, isPasteSidebarSelectionShortcut } from "@/lib/editor/keyboardShortcuts";
@@ -2964,9 +2965,7 @@ function openObjectSourceDialog(initialEditing: boolean, viewPackageBody = false
   // issue #9035：两个分支都不再 await 连接与取源。先把容器挂出来（源码 tab /
   // 源码弹窗），ensureConnected 与 getObjectSource 都发生在已挂载的 UI 之内，
   // 加载中有状态、失败就地重试，而不是点击后一段时间毫无反应。
-  const dbType = currentDatabaseType();
-  const oracleFamilyTypeSource = (sourceNode.type === "type" || sourceNode.type === "type-body") && (dbType === "oracle" || dbType === "oceanbase-oracle" || dbType === "dameng");
-  if (settingsStore.editorSettings.routineSourceOpenMode === "query-tab" && !oracleFamilyTypeSource) {
+  if (settingsStore.editorSettings.routineSourceOpenMode === "query-tab") {
     queryStore.openObjectSourceTabPending({
       connectionId,
       database,
@@ -3166,8 +3165,49 @@ function triggerToggleMenuItems(node: TreeNode): ContextMenuItem[] {
 }
 
 function requestDropObject() {
+  if (isManagedTypeNode(activeNode.value)) {
+    void manageTypeDropNode(activeNode.value);
+    return;
+  }
   void refreshDropObjectPreviewSql();
   showDropObjectConfirm.value = true;
+}
+
+function isManagedTypeNode(node: TreeNode) {
+  return (node.type === "type" || node.type === "type-body") && supportsOracleFamilyTypeManagement(databaseTypeForNode(node));
+}
+
+async function manageTypeDropNode(node: TreeNode): Promise<boolean> {
+  if (!node.connectionId || !node.database || !isManagedTypeNode(node)) return false;
+  const connectionId = node.connectionId,
+    database = node.database,
+    owner = node.schema || database,
+    name = node.objectName || node.label;
+  const databaseType = databaseTypeForNode(node) as "oracle" | "oceanbase-oracle" | "dameng";
+  const activeId = activeNode.value.id;
+  try {
+    const result = await requestOracleTypeManagement({
+      target: { connectionId, database, owner, name, databaseType },
+      operation: node.type === "type-body" ? "delete-body" : "delete-spec",
+      isCurrent: () => activeNode.value.id === activeId && databaseTypeForNode(node) === databaseType && !!connectionStore.getConfig(connectionId),
+    });
+    if (!result.complete) return false;
+    const removed: TreeNode[] = [node];
+    const visit = (nodes: TreeNode[]) => {
+      for (const item of nodes) {
+        if (item.connectionId === connectionId && item.database === database && (item.schema || database) === owner && (item.objectName || item.label) === name && (item.type === node.type || (node.type === "type" && item.type === "type-body"))) removed.push(item);
+        if (item.children) visit(item.children);
+      }
+    };
+    visit(connectionStore.treeNodes);
+    connectionStore.removePinnedTreeNodes(removed);
+    for (const item of removed) connectionStore.removeTreeNode(item.id);
+    releaseActiveNodeReference(removed.map((item) => item.id));
+    return true;
+  } catch (error) {
+    toast(t("contextMenu.tableOperationFailed", { message: String(error) }), 5000);
+    return false;
+  }
 }
 
 function requestDropTableChildObject() {
@@ -3179,6 +3219,7 @@ function requestDropTableChildObject() {
 function canDropTreeNode(node: TreeNode): boolean {
   if (["neo4j", "nebula"].includes(databaseTypeForNode(node) || "")) return false;
   if (isSqlServerLinkedNode(node)) return false;
+  if (isManagedTypeNode(node)) return !!node.connectionId && !!node.database;
   if (node.type === "table") return !!node.connectionId && !!node.database;
   if (node.type === "view" || node.type === "materialized_view" || node.type === "procedure" || node.type === "function" || node.type === "event") {
     return !!node.connectionId && !!node.database && !!dropObjectSqlOptionsForNode(node);
@@ -3318,6 +3359,7 @@ function batchTruncateConfirmMessage(): string {
 }
 
 async function dropSqlForTreeNode(node: TreeNode, options?: { cascade?: boolean }): Promise<string | null> {
+  if (isManagedTypeNode(node)) throw new Error(t("objects.typeManagementUseSave"));
   if (node.type === "table" && node.connectionId && node.database) {
     const config = connectionStore.getConfig(node.connectionId);
     return buildDropTableSql({
@@ -3396,6 +3438,23 @@ async function refreshBatchEmptyPreviewSql(targets: TreeNode[]) {
 function requestBatchDrop() {
   const targets = selectedBatchDropTargets();
   if (!targets.length) return;
+  const managed = targets.filter(isManagedTypeNode);
+  if (managed.length) {
+    void (async () => {
+      const unique = managed.filter(
+        (node) => node.type !== "type-body" || !managed.some((other) => other.type === "type" && other.connectionId === node.connectionId && other.database === node.database && other.schema === node.schema && (other.objectName || other.label) === (node.objectName || node.label)),
+      );
+      for (const node of unique) if (!(await manageTypeDropNode(node))) return;
+      const remaining = targets.filter((node) => !managed.includes(node));
+      if (!remaining.length) return;
+      batchDropTargets.value = remaining;
+      batchDropCascade.value = false;
+      batchDropProgress.value = { completed: 0, total: 0 };
+      await refreshBatchDropPreviewSql();
+      showBatchDropConfirm.value = true;
+    })().catch((error) => toast(t("contextMenu.tableOperationFailed", { message: String(error) }), 5000));
+    return;
+  }
   batchDropTargets.value = targets.slice();
   batchDropCascade.value = false;
   batchDropProgress.value = { completed: 0, total: 0 };
@@ -4204,6 +4263,10 @@ async function confirmRenameObject() {
 
 async function confirmDropObject() {
   const node = sidebarDangerTarget.value ?? activeNode.value;
+  if (isManagedTypeNode(node)) {
+    await manageTypeDropNode(node);
+    return;
+  }
   if (!node.connectionId || !node.database) return;
   const options = dropObjectSqlOptionsForNode(node);
   if (!options) return;
@@ -7737,6 +7800,10 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
   if (node.type === "type" || node.type === "type-body") {
     if (supportsTypeObjectSource(currentDatabaseType())) {
       items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
+      if (supportsOracleFamilyTypeManagement(currentDatabaseType())) {
+        items.push({ label: t("contextMenu.editObject"), action: () => openObjectSourceDialog(true), icon: Pencil });
+        items.push({ label: deleteMenuLabel(t("contextMenu.dropObject")), action: deleteMenuAction(requestDropObject), icon: Trash2, shortcut: shortcutDelete, variant: "destructive" });
+      }
       items.push(copyNameMenuItem());
       if (currentDatabaseType() === "xugu") {
         items.push({ label: t("contextMenu.changeOpenMode"), action: () => emit("open-settings", "navigation"), icon: Settings2 });

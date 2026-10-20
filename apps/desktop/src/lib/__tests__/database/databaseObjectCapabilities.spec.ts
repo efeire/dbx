@@ -5,6 +5,7 @@ import {
   normalizeSidebarObjectKind,
   schemaDiffRoutineObjectTypes,
   schemaDiffRoutineObjectTypesIntersection,
+  supportsOracleFamilyTypeManagement,
   sidebarObjectKindsForDatabase,
   supportsPackageMemberExpansion,
   supportsSchemaDiffRoutines,
@@ -133,6 +134,15 @@ describe("databaseObjectCapabilities", () => {
     }
     for (const dbType of ["postgres", "opengauss", "gaussdb", "kingbase", "vastbase", undefined] as const) {
       expect(supportsTypeObjectSource(dbType), String(dbType)).toBe(false);
+    }
+  });
+
+  it("limits controlled type management to Oracle, OceanBase Oracle, and Dameng", () => {
+    for (const dbType of ["oracle", "oceanbase-oracle", "dameng"] as const) {
+      expect(supportsOracleFamilyTypeManagement(dbType), dbType).toBe(true);
+    }
+    for (const dbType of ["xugu", "postgres", "jdbc", undefined] as const) {
+      expect(supportsOracleFamilyTypeManagement(dbType), String(dbType)).toBe(false);
     }
   });
 

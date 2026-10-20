@@ -10,11 +10,28 @@ use std::time::Duration;
 const SCRIPT: &str = r#"#!/usr/bin/env python3
 import json, pathlib, sys
 oceanbase = 'oceanbase' in pathlib.Path(__file__).stem
+migration = 'migration' in pathlib.Path(__file__).stem
+persisted = 'persisted' in pathlib.Path(__file__).stem
+missing = 'missing' in pathlib.Path(__file__).stem
+invalid_body = 'invalid-body' in pathlib.Path(__file__).stem
+large_values = 'large-values' in pathlib.Path(__file__).stem
 if '--agent' in sys.argv or pathlib.Path(__file__).name in ('agent', 'agent.exe'):
     print(json.dumps({'ready': True}), flush=True)
 def query(sql):
+    if sql == 'SELECT USER AS ACTING_USER FROM DUAL':
+        return ['ACTING_USER'], [['APP']]
+    if 'SELECT OBJECT_ID, STATUS FROM ALL_OBJECTS' in sql:
+        if missing and "'Detached Caller'" not in sql:
+            rows = []
+        elif "OBJECT_TYPE='TYPE BODY'" in sql:
+            rows = [[12,'INVALID']] if invalid_body and "'Mixed Type'" in sql else []
+        else:
+            rows = [[2 if "'COLL'" in sql else 1, 'VALID']]
+        return ['OBJECT_ID', 'STATUS'], rows
     if 'FROM ALL_OBJECTS ' in sql:
-        return ['OWNER', 'OBJECT_NAME', 'OBJECT_TYPE', 'STATUS'], [['APP', 'Mixed Type', 'TYPE', 'VALID']]
+        rows = [['APP', 'Mixed Type', 'TYPE', 'VALID']]
+        if invalid_body: rows.append(['APP','Mixed Type','TYPE BODY','INVALID'])
+        return ['OWNER', 'OBJECT_NAME', 'OBJECT_TYPE', 'STATUS'], rows
     if 'FROM ALL_TYPES ' in sql:
         return ['OWNER', 'TYPE_NAME', 'TYPECODE', 'ATTRIBUTES', 'METHODS', 'FINAL', 'INSTANTIABLE', 'SUPERTYPE_OWNER', 'SUPERTYPE_NAME'], [['APP', 'Mixed Type', 'OBJECT', 2 if oceanbase else 0, 1 if oceanbase else 0, 'YES', 'YES', None, None]]
     if 'FROM ALL_TYPE_ATTRS ' in sql:
@@ -25,6 +42,21 @@ def query(sql):
         return ['OWNER', 'TYPE_NAME', 'METHOD_NAME', 'METHOD_NO', 'METHOD_TYPE', 'PARAMETERS', 'RESULTS'], []
     if 'FROM ALL_COLL_TYPES ' in sql:
         return ['OWNER', 'TYPE_NAME', 'COLL_TYPE', 'ELEM_TYPE_OWNER', 'ELEM_TYPE_NAME', 'LENGTH', 'PRECISION', 'SCALE'], []
+    if 'FROM ALL_DEPENDENCIES ' in sql:
+        rows = [['APP', 'COLL', 'TYPE', 'APP', 'Mixed Type', 'TYPE', None]] if migration and "REFERENCED_TYPE = 'TYPE'" in sql and "'Mixed Type'" in sql else []
+        return ['OWNER', 'NAME', 'TYPE', 'REFERENCED_OWNER', 'REFERENCED_NAME', 'REFERENCED_TYPE', 'REFERENCED_LINK_NAME'], rows
+    if 'FROM ALL_TAB_COLUMNS ' in sql:
+        rows = [['APP','DATA','VALUE','APP','COLL','NO']] if persisted and "C.DATA_TYPE = 'COLL'" in sql else []
+        return ['OWNER', 'TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE_OWNER', 'DATA_TYPE', 'READ_ONLY'], rows
+    if 'FROM ALL_ERRORS ' in sql:
+        typed = 'TEXT, ATTRIBUTE' in sql
+        rows = [[1,74,'Identifier was not declared'] + (['ERROR'] if typed else [])] if invalid_body and "TYPE='TYPE BODY'" in sql else []
+        return ['LINE','POSITION','TEXT'] + (['ATTRIBUTE'] if typed else []), rows
+    if 'FROM ALL_TAB_PRIVS ' in sql:
+        rows = [['APP', 'MIG_OTHER', 'EXECUTE', 'YES', 'NO']] if migration else []
+        return ['GRANTOR', 'GRANTEE', 'PRIVILEGE', 'GRANTABLE', 'HIERARCHY'], rows
+    if 'DBMS_METADATA.GET_DDL' in sql:
+        return ['DDL'], [['CREATE TYPE APP.\\"Mixed Type\\" AS OBJECT (ID NUMBER);']]
     raise Exception('unexpected query')
 for line in sys.stdin:
     request = json.loads(line)
@@ -41,6 +73,14 @@ for line in sys.stdin:
         else:
             columns, rows = query(params['sql'])
             result = {'columns': columns, 'rows': rows, 'affected_rows': 0, 'execution_time_ms': 0}
+            if large_values and rows and 'FROM ALL_ERRORS ' in params['sql']:
+                result['large_value_cells'] = [{'row_index':0,'column_index':2,'original_bytes':4096}]
+    elif method == 'get_object_source':
+        quoted_name = '"' + params['name'].replace('"','""') + '"'
+        source = 'CREATE TYPE APP.' + quoted_name + (' AS TABLE OF APP."Mixed Type";' if params['name']=='COLL' else ' AS OBJECT (ID NUMBER);')
+        if params['object_type'] == 'FUNCTION': source = 'CREATE FUNCTION APP.' + quoted_name + '(P NUMBER) RETURN NUMBER IS BEGIN RETURN P; END;'
+        if params['object_type'] == 'TYPE_BODY': source = 'CREATE TYPE BODY APP.' + quoted_name + ' AS MEMBER FUNCTION F RETURN NUMBER IS BEGIN RETURN NO_SUCH_IDENTIFIER; END; END;'
+        result = {'name': params['name'], 'object_type': params['object_type'], 'schema': params['schema'], 'source': source}
     elif method == 'list_objects':
         result = [{'name': 'Mixed Type', 'object_type': kind, 'schema': params['schema']} for kind in ('TYPE', 'TYPE_BODY')]
         if params.get('object_types'):
@@ -57,6 +97,39 @@ for line in sys.stdin:
 
 async fn state(dir: &std::path::Path) -> AppState {
     AppState::new(crate::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap())
+}
+
+#[tokio::test]
+async fn type_management_native_endpoint_denies_ob_and_dm_without_starting_a_query_transport() {
+    for (db_type, url) in [
+        (DatabaseType::OceanbaseOracle, "jdbc:oracle:thin:@127.0.0.1:1521/app"),
+        (DatabaseType::Dameng, "jdbc:dm://127.0.0.1:5236"),
+        (DatabaseType::Jdbc, "jdbc:oceanbase:oracle://127.0.0.1:2881/app"),
+        (DatabaseType::Jdbc, "jdbc:dm://127.0.0.1:5236"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path()).await;
+        let mut config = config(db_type);
+        config.connection_string = Some(url.into());
+        state.configs.write().await.insert(config.id.clone(), config);
+        let result = super::prepare_oracle_type_evolution_core(
+            &state,
+            crate::db::OracleTypeEvolutionRequest {
+                target: crate::db::OracleTypeManagementTarget {
+                    connection_id: "type-transport".into(),
+                    database: "app".into(),
+                    owner: "APP".into(),
+                    name: "ROOT".into(),
+                },
+                source_before: "CREATE TYPE APP.ROOT AS OBJECT(ID NUMBER);".into(),
+                source_after: "CREATE TYPE APP.ROOT AS OBJECT(ID NUMBER, EXTRA RAW(8));".into(),
+                manifest: None,
+            },
+        )
+        .await;
+        assert!(result.unwrap_err().contains("not enabled for this database dialect"));
+        assert!(!dir.path().join("calls.jsonl").exists());
+    }
 }
 
 fn config(db_type: DatabaseType) -> ConnectionConfig {
@@ -277,5 +350,216 @@ async fn external_driver_type_details_return_the_same_dictionary_result_via_exec
         }
         assert_queries(dir.path(), "executeQuery");
         state.shutdown(Duration::from_secs(2)).await;
+    }
+}
+
+#[tokio::test]
+async fn type_management_snapshot_keeps_out_of_band_large_cell_previews_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("type-management-large-values-invalid-body-agent.py");
+    std::fs::write(&script, SCRIPT).unwrap();
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let runtime = AgentRuntimeClient::spawn(
+        AgentLaunchSpec::new(python).with_args([script.to_string_lossy().to_string(), "--agent".into()]),
+        "test",
+    )
+    .await
+    .unwrap();
+    runtime.increment_session_count();
+    let state = state(dir.path()).await;
+    let config = config(DatabaseType::Oracle);
+    state.configs.write().await.insert(config.id.clone(), config);
+    state
+        .update_connection_pools(|pools| {
+            pools.insert(
+                "type-transport:role:metadata".into(),
+                PoolKind::agent(AgentDriverClient::shared_session(runtime.clone(), "metadata-session".into())),
+            );
+        })
+        .await;
+    let snapshot =
+        super::get_oracle_type_management_snapshot_core(&state, "type-transport", "app", "APP", "Mixed Type")
+            .await
+            .unwrap();
+    let body = snapshot.objects.iter().find(|object| object.object_type == "TYPE BODY").unwrap();
+    let actual = body.errors_read.state.clone();
+    state.shutdown(Duration::from_secs(2)).await;
+    runtime.kill();
+    assert_eq!(
+        actual,
+        crate::db::TypeMetadataState::Incomplete,
+        "A deferred string preview is not a complete compilation diagnostic or scalar value"
+    );
+}
+
+#[tokio::test]
+async fn type_management_snapshot_uses_the_existing_query_transport_and_keeps_sections_independent() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("type-management-agent.py");
+    std::fs::write(&script, SCRIPT).unwrap();
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let runtime = AgentRuntimeClient::spawn(
+        AgentLaunchSpec::new(python).with_args([script.to_string_lossy().to_string(), "--agent".to_string()]),
+        "test",
+    )
+    .await
+    .unwrap();
+    runtime.increment_session_count();
+    let state = state(dir.path()).await;
+    let config = config(DatabaseType::Oracle);
+    state.configs.write().await.insert(config.id.clone(), config);
+    state
+        .update_connection_pools(|pools| {
+            pools.insert(
+                "type-transport:role:metadata".into(),
+                PoolKind::agent(AgentDriverClient::shared_session(runtime.clone(), "metadata-session".into())),
+            );
+        })
+        .await;
+    let snapshot =
+        super::get_oracle_type_management_snapshot_core(&state, "type-transport", "app", "APP", "Mixed Type")
+            .await
+            .unwrap();
+    assert_eq!(snapshot.target.owner, "APP");
+    assert!(
+        snapshot.type_source.as_deref().is_some_and(|source| source.contains("CREATE TYPE")),
+        "unexpected type source read: {:?}",
+        snapshot.type_source_read
+    );
+    assert_eq!(snapshot.type_source_read.state, crate::db::TypeMetadataState::Available);
+    assert!(snapshot.body_source.is_none());
+    assert_eq!(snapshot.body_source_read.state, crate::db::TypeMetadataState::Available);
+    assert!(snapshot.dependencies.is_empty());
+    assert_eq!(snapshot.dependencies_read.state, crate::db::TypeMetadataState::Available);
+    assert_eq!(snapshot.persistent_references_read.state, crate::db::TypeMetadataState::Available);
+    assert_eq!(snapshot.privileges_read.state, crate::db::TypeMetadataState::Available);
+    let requests: Vec<Value> = std::fs::read_to_string(dir.path().join("calls.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(requests.iter().all(|request| !matches!(
+        request["method"].as_str(),
+        Some("getCustomTypeDetails" | "get_custom_type_details")
+    )));
+    let queries: Vec<_> = requests.iter().filter(|request| request["method"] == "execute_query").collect();
+    assert!(queries.iter().any(|query| query["params"]["sql"].as_str().unwrap().contains("ALL_DEPENDENCIES")));
+    assert!(queries.iter().any(|query| query["params"]["sql"].as_str().unwrap().contains("TABLE_SCHEMA")));
+    assert!(requests.iter().any(|request| request["method"] == "get_object_source"));
+    let root = snapshot.objects.iter().find(|object| object.object_type == "TYPE").unwrap();
+    assert_eq!(root.exists, Some(true));
+    assert_eq!(root.object_id.as_deref(), Some("1"));
+    assert_eq!(root.status.as_deref(), Some("VALID"));
+    assert!(root.errors.is_empty());
+    state.shutdown(Duration::from_secs(2)).await;
+    runtime.kill();
+}
+
+#[tokio::test]
+async fn snapshot_reads_direct_grants_for_a_dependent_type_that_may_be_rebuilt() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("type-management-migration-agent.py");
+    std::fs::write(&script, SCRIPT).unwrap();
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let runtime = AgentRuntimeClient::spawn(
+        AgentLaunchSpec::new(python).with_args([script.to_string_lossy().to_string(), "--agent".to_string()]),
+        "test",
+    )
+    .await
+    .unwrap();
+    runtime.increment_session_count();
+    let state = state(dir.path()).await;
+    let config = config(DatabaseType::Oracle);
+    state.configs.write().await.insert(config.id.clone(), config);
+    state
+        .update_connection_pools(|pools| {
+            pools.insert(
+                "type-transport:role:metadata".into(),
+                PoolKind::agent(AgentDriverClient::shared_session(runtime.clone(), "metadata-session".into())),
+            );
+        })
+        .await;
+    let snapshot =
+        super::get_oracle_type_management_snapshot_core(&state, "type-transport", "app", "APP", "Mixed Type")
+            .await
+            .unwrap();
+    assert_eq!(snapshot.direct_privileges.len(), 1);
+    let dependent = snapshot.objects.iter().find(|object| object.name == "COLL").unwrap();
+    assert_eq!(dependent.object_type, "TYPE");
+    assert_eq!(dependent.privileges_read.state, crate::db::TypeMetadataState::Available);
+    assert_eq!(dependent.direct_privileges.len(), 1);
+    assert_eq!(dependent.direct_privileges[0].grantee, "MIG_OTHER");
+    assert_eq!(dependent.direct_privileges[0].privilege, "EXECUTE");
+    assert_eq!(dependent.direct_privileges[0].grantable, Some(true));
+    state.shutdown(Duration::from_secs(2)).await;
+    runtime.kill();
+}
+
+#[tokio::test]
+async fn type_management_snapshot_retains_diagnostics_indirect_values_and_known_recovery_targets() {
+    use crate::db::{OracleTypeManagementObjectKey, TypeMetadataState};
+    for scenario in ["invalid-body", "persisted-migration", "missing"] {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join(format!("type-management-{scenario}-agent.py"));
+        std::fs::write(&script, SCRIPT).unwrap();
+        let runtime = AgentRuntimeClient::spawn(
+            AgentLaunchSpec::new(if cfg!(windows) { "python" } else { "python3" })
+                .with_args([script.to_string_lossy().to_string(), "--agent".into()]),
+            "test",
+        )
+        .await
+        .unwrap();
+        runtime.increment_session_count();
+        let state = state(dir.path()).await;
+        state.configs.write().await.insert("type-transport".into(), config(DatabaseType::Oracle));
+        state
+            .update_connection_pools(|pools| {
+                pools.insert(
+                    "type-transport:role:metadata".into(),
+                    PoolKind::agent(AgentDriverClient::shared_session(runtime.clone(), "metadata-session".into())),
+                );
+            })
+            .await;
+        let known = if scenario == "missing" {
+            vec![OracleTypeManagementObjectKey {
+                owner: "APP".into(),
+                name: "Detached Caller".into(),
+                object_type: "FUNCTION".into(),
+            }]
+        } else {
+            vec![]
+        };
+        let snapshot = super::get_oracle_type_management_snapshot_with_objects_core(
+            &state,
+            "type-transport",
+            "app",
+            "APP",
+            "Mixed Type",
+            &known,
+        )
+        .await
+        .unwrap();
+        if scenario == "invalid-body" {
+            let body = snapshot.objects.iter().find(|object| object.object_type == "TYPE BODY").unwrap();
+            assert_eq!(body.status.as_deref(), Some("INVALID"));
+            assert_eq!(body.errors_read.state, TypeMetadataState::Available);
+            assert_eq!(body.errors[0].position, 74);
+            assert!(snapshot.body_source.as_deref().unwrap().contains("NO_SUCH_IDENTIFIER"));
+        } else if scenario == "persisted-migration" {
+            assert_eq!(snapshot.persistent_references.len(), 1);
+            assert_eq!(snapshot.persistent_references[0].data_type.as_deref(), Some("COLL"));
+            assert_eq!(snapshot.persistent_references_read.state, TypeMetadataState::Available);
+        } else {
+            assert!(snapshot.details.is_none());
+            assert!(snapshot.type_source.is_none());
+            assert_eq!(snapshot.details_read.state, TypeMetadataState::Available);
+            let root = snapshot.objects.iter().find(|object| object.object_type == "TYPE").unwrap();
+            assert_eq!(root.exists, Some(false));
+            let caller = snapshot.objects.iter().find(|object| object.name == "Detached Caller").unwrap();
+            assert_eq!(caller.exists, Some(true));
+            assert!(caller.source.as_deref().unwrap().contains("CREATE FUNCTION"));
+        }
+        state.shutdown(Duration::from_secs(2)).await;
+        runtime.kill();
     }
 }

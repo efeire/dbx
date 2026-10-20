@@ -1295,6 +1295,12 @@ pub async fn build_executable_object_source_statements(
     dbx_core::object_source_sql::build_executable_object_source_statements(req.input).map(Json).map_err(AppError::from)
 }
 
+pub async fn build_oracle_type_management_sql(
+    Json(input): Json<dbx_core::db::OracleTypeManagementSqlInput>,
+) -> Result<Json<dbx_core::db::OracleTypeManagementSqlResult>, AppError> {
+    dbx_core::schema::build_oracle_type_management_sql(input).map(Json).map_err(AppError::from)
+}
+
 pub async fn validate_oracle_executable_object_source(
     Json(req): Json<ValidateOracleExecutableObjectSourceRequest>,
 ) -> Result<Json<()>, AppError> {

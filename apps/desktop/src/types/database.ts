@@ -1279,6 +1279,189 @@ export interface CustomTypeDetails {
   oracleMetadata?: OracleTypeMetadata | null;
 }
 
+export interface OracleTypeManagementTarget {
+  connectionId: string;
+  database: string;
+  owner: string;
+  name: string;
+}
+
+export interface OracleTypeManagementObjectKey {
+  owner: string;
+  name: string;
+  objectType: string;
+}
+
+export interface OracleTypeDataRelationKey {
+  owner: string;
+  name: string;
+}
+export interface OracleTypeDataField {
+  sourcePath: string[];
+  objectNull: boolean;
+  oldColumn: string;
+  expectedColumn: string;
+  targetPath: string[];
+  targetObjectNull?: boolean;
+  unchanged: boolean;
+}
+export interface OracleTypeDataMappingInput {
+  id: string;
+  source: OracleTypeDataRelationKey;
+  old: OracleTypeDataRelationKey;
+  expected: OracleTypeDataRelationKey;
+  target: OracleTypeDataRelationKey;
+  fields: OracleTypeDataField[];
+}
+export interface OracleTypeDataProjection {
+  path: string[];
+  objectNull: boolean;
+  dataType: string;
+}
+export interface OracleTypeDataRelation {
+  relation: OracleTypeDataRelationKey;
+  objectId: string;
+  readOnly: boolean | null;
+  structure: string;
+  projection: OracleTypeDataProjection[];
+}
+export interface OracleTypeDataBaseline {
+  relation: OracleTypeDataRelation;
+  rowCount: number;
+  fingerprint: string;
+}
+export interface OracleTypeDataManifest {
+  mapping: OracleTypeDataMappingInput;
+  original: OracleTypeDataBaseline;
+  old: OracleTypeDataBaseline;
+  expected: OracleTypeDataBaseline;
+  preparedTarget?: OracleTypeDataBaseline | null;
+  verifiedTarget?: OracleTypeDataBaseline | null;
+}
+export interface OracleTypeDataRequest {
+  target: OracleTypeManagementTarget;
+  action: "describe" | "register" | "verify" | "validate_insert";
+  relation?: OracleTypeDataRelationKey;
+  mapping?: OracleTypeDataMappingInput;
+  manifest?: OracleTypeDataManifest;
+  sql?: string;
+}
+export interface OracleTypeDataResult {
+  relation?: OracleTypeDataRelation | null;
+  manifest?: OracleTypeDataManifest | null;
+  insertSql?: string | null;
+}
+
+/** Database-native evolution keeps data in place. These guards contain no row values. */
+export interface OracleTypeEvolutionManifest {
+  target: OracleTypeManagementTarget;
+  sourceBefore: string;
+  sourceAfter: string;
+  statements: string[];
+  metadata: string;
+  phase: number;
+}
+export interface OracleTypeEvolutionRequest {
+  target: OracleTypeManagementTarget;
+  sourceBefore: string;
+  sourceAfter: string;
+  manifest?: OracleTypeEvolutionManifest;
+}
+
+export interface OracleTypeManagementPrivilege {
+  grantee: string;
+  privilege: string;
+  grantable?: boolean | null;
+  hierarchy?: boolean | null;
+  grantor?: string | null;
+  privilegeId?: string | null;
+  privilegeType?: string | null;
+  columnId?: string | null;
+}
+
+export interface OracleTypeManagementObject {
+  owner: string;
+  name: string;
+  objectType: string;
+  exists?: boolean | null;
+  objectId?: string | null;
+  status?: string | null;
+  statusRead: TypeMetadataRead;
+  triggerEnabled?: boolean | null;
+  triggerEnabledRead?: TypeMetadataRead | null;
+  source?: string | null;
+  sourceRead: TypeMetadataRead;
+  sourceFingerprint?: string | null;
+  errors: OracleTypeManagementError[];
+  errorsRead: TypeMetadataRead;
+  directPrivileges: OracleTypeManagementPrivilege[];
+  privilegesRead: TypeMetadataRead;
+}
+
+export interface OracleTypeManagementError {
+  line: number;
+  position: number;
+  text: string;
+}
+
+export interface OracleTypeManagementDependency {
+  owner: string;
+  name: string;
+  objectType: string;
+  referencedOwner: string;
+  referencedName: string;
+  referencedType: string;
+  referencedLink?: string | null;
+}
+
+export interface OracleTypeManagementReference {
+  owner: string;
+  tableName: string;
+  columnName?: string | null;
+  dataTypeOwner?: string | null;
+  dataType?: string | null;
+  tableStatus?: string | null;
+  tableReadOnly?: boolean | null;
+}
+
+export interface OracleTypeManagementSnapshot {
+  target: OracleTypeManagementTarget;
+  visibilityScope: string;
+  actingUser?: string | null;
+  actingUserRead: TypeMetadataRead;
+  details?: CustomTypeDetails | null;
+  detailsRead: TypeMetadataRead;
+  typeSource?: string | null;
+  typeSourceRead: TypeMetadataRead;
+  bodySource?: string | null;
+  bodySourceRead: TypeMetadataRead;
+  objects: OracleTypeManagementObject[];
+  dependencies: OracleTypeManagementDependency[];
+  dependenciesRead: TypeMetadataRead;
+  persistentReferences: OracleTypeManagementReference[];
+  persistentReferencesRead: TypeMetadataRead;
+  directPrivileges: OracleTypeManagementPrivilege[];
+  privilegesRead: TypeMetadataRead;
+}
+
+export type OracleTypeManagementSqlOperation = "save_spec" | "save_body" | "drop_spec" | "drop_body" | "grant_execute" | "grant_privilege" | "rebuild_source" | "compile_spec" | "compile_trigger";
+export interface OracleTypeManagementSqlInput {
+  databaseType: DatabaseType;
+  operation: OracleTypeManagementSqlOperation;
+  owner: string;
+  name: string;
+  source?: string | null;
+  grantee?: string | null;
+  grantable?: boolean;
+  objectType?: ObjectSourceKind;
+  privilege?: string;
+  triggerEnabled?: boolean;
+}
+export interface OracleTypeManagementSqlResult {
+  statements: string[];
+  sourceFingerprint?: string | null;
+}
+
 export interface ColumnInfo {
   name: string;
   data_type: string;
@@ -2471,6 +2654,10 @@ export interface QueryTab {
     objectType: ObjectSourceKind;
     signature?: string;
   };
+  /** Durable TYPE definitions and step records; restored plans require fresh verification. */
+  typeManagementDraft?: import("@/lib/table/oracleTypeManagement").OracleTypeManagementDraft;
+  /** Explicit edit mode; TYPE source opens read-only and restores read-only. */
+  typeSourceEditing?: boolean;
   /**
    * 「先出 UI 再加载」的中间态：源码 tab 已经可见，但源码还在路上
    * （ensureConnected + getObjectSource）。让 tab 栏与编辑区在等待期间就有反馈，
