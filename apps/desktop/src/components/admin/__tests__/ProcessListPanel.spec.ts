@@ -13,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   executeQuery: vi.fn(),
   executeMulti: vi.fn(),
   closeClientConnectionSession: vi.fn(),
+  cancelQuery: vi.fn(),
+  readLargeValueChunk: vi.fn(),
+  diagnosticGate: null as null | (() => Promise<void>),
   contextGuard: vi.fn(),
   contextGuardGate: null as null | (() => Promise<void>),
   toast: vi.fn(),
@@ -82,7 +85,8 @@ function dialogSurface(): Component {
   });
 }
 
-vi.mock("vue-i18n", () => ({
+vi.mock("vue-i18n", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("vue-i18n")>()),
   useI18n: () => ({
     t: (key: string, values?: Record<string, unknown>) => {
       const message = mocks.localeMessages?.[key.split(".")[0]!] as Record<string, unknown> | undefined;
@@ -97,7 +101,7 @@ vi.mock("vue-i18n", () => ({
 }));
 vi.mock("@lucide/vue", () => {
   const Icon = passthrough("span");
-  return { Activity: Icon, AlertTriangle: Icon, ArrowDown: Icon, ArrowUp: Icon, Ban: Icon, Copy: Icon, Loader2: Icon, PlugZap: Icon, RefreshCcw: Icon, Search: Icon };
+  return { Activity: Icon, AlertTriangle: Icon, ArrowDown: Icon, ArrowUp: Icon, Ban: Icon, Copy: Icon, Loader2: Icon, PlugZap: Icon, RefreshCcw: Icon, Search: Icon, AlertCircle: Icon, Braces: Icon, Check: Icon, Download: Icon, GitBranch: Icon, Table2: Icon, FileText: Icon, Workflow: Icon };
 });
 vi.mock("@/components/ui/button", () => ({ Button: passthrough("button") }));
 vi.mock("@/components/ui/badge", () => ({ Badge: passthrough("span") }));
@@ -113,7 +117,7 @@ vi.mock("@/stores/connectionStore", () => ({
   useConnectionStore: () => ({ ensureConnected: mocks.ensureConnected }),
 }));
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
-vi.mock("@/lib/backend/api", () => ({ executeQuery: mocks.executeQuery, executeMulti: mocks.executeMulti, closeClientConnectionSession: mocks.closeClientConnectionSession }));
+vi.mock("@/lib/backend/api", () => ({ executeQuery: mocks.executeQuery, executeMulti: mocks.executeMulti, closeClientConnectionSession: mocks.closeClientConnectionSession, cancelQuery: mocks.cancelQuery, readLargeValueChunk: mocks.readLargeValueChunk }));
 vi.mock("@/lib/database/productionExecutionGuard", () => ({
   executeWithProductionSqlGuard: (options: { execute: () => Promise<unknown> }) => options.execute(),
   executeWithProductionContextGuard: async (options: { execute: () => Promise<unknown> }) => {
@@ -193,7 +197,7 @@ let oracleTerminated = false;
 let oracleTerminateError = "";
 function oracleListResult() {
   const rows: unknown[][] = [["5", "30", "1", "3", "APP", "ACTIVE", "localhost", "DBX", "selfsql", null, null, null, "500", "2026-10-20 09:00:00"]];
-  if (!oracleTerminated) rows.push(["21", "42", "2", "3", "OTHER", "INACTIVE", "apphost", "worker", null, "SQL*Net message from client", null, null, "700", "2026-10-20 08:00:00"]);
+  if (!oracleTerminated) rows.push(["21", "42", "2", "3", "OTHER", "INACTIVE", "apphost", "worker", "0123456789abc", "SQL*Net message from client", null, null, "700", "2026-10-20 08:00:00"]);
   return { columns: [], rows };
 }
 
@@ -227,6 +231,51 @@ function postgresListResult() {
       [22, "app", "shop", "10.0.0.3", "worker", "idle", "", 30, "SELECT 2"],
     ],
   };
+}
+
+function diagnosticResult(row: Record<string, unknown>) {
+  return { columns: Object.keys(row), rows: [Object.values(row)], affected_rows: 0, execution_time_ms: 1 };
+}
+
+async function diagnosticReply(sql: string) {
+  if (sql.includes("FROM GV$SESSION_LONGOPS") || sql.includes("FROM SYS.GV$SESSION_LONGOPS")) return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 1 };
+  if (sql.includes("FROM GV$SESSION s WHERE") || sql.includes("FROM SYS.GV$OB_PROCESSLIST WHERE")) {
+    const gate = mocks.diagnosticGate;
+    mocks.diagnosticGate = null;
+    if (gate) await gate();
+    return diagnosticResult(
+      sql.includes("OB_PROCESSLIST")
+        ? { SID: "21", SESSION_USER: "OTHER", TENANT: "tenant_a", SVR_IP: "127.0.0.1", SVR_PORT: "2882", PROXY_SESSID: null, DB_NAME: "db", SQL_ID: "A".repeat(32), TRACE_ID: "trace-1", STATE: "ACTIVE", SQL_TEXT: "SELECT 2" }
+        : { SQL_ID: "0123456789abc", CHILD_NUMBER: "1", SQL_EXEC_ID: "2", SQL_EXEC_START: "2026-10-21T20:00:00", STATE: "WAITING", EVENT: "fixture wait", WAIT_CLASS: "Other", SECONDS_IN_WAIT: "0" },
+    );
+  }
+  if (sql.includes(" AS NOW_US")) return diagnosticResult({ NOW_US: "1792593313000000" });
+  if (sql.includes("FROM GV$SQL_PLAN_STATISTICS_ALL")) return diagnosticResult({ STARTS: "1", OUTPUT_ROWS: "2" });
+  if (sql.includes("FROM GV$SQL_PLAN p")) return diagnosticResult({ ID: "0", PARENT_ID: null, OPERATION: "SELECT STATEMENT", COST: "1", ESTIMATED_ROWS: "2" });
+  if (sql.includes("FROM GV$SQL s")) return diagnosticResult({ SQL_ID: "0123456789abc", CHILD_NUMBER: "1", CHILD_ADDRESS: "000000001234ABCD", FIRST_LOAD_TIME: "2026-10-21/19:00:00", PLAN_HASH: "9", SQL_TEXT: "SELECT 2", SOURCE_LENGTH: "8", EXECUTIONS: "2", ELAPSED_TIME: "0" });
+  if (sql.includes("FROM SYS.GV$OB_SQL_AUDIT"))
+    return diagnosticResult({
+      TENANT_ID: "7",
+      TENANT_NAME: "tenant_a",
+      SVR_IP: "127.0.0.1",
+      SVR_PORT: "2882",
+      SID: "21",
+      TRACE_ID: "trace-1",
+      SQL_ID: "A".repeat(32),
+      REQUEST_ID: "99",
+      REQUEST_TIME: "1792593313123456",
+      SQL_EXEC_ID: "2",
+      PLAN_ID: "9",
+      RET_CODE: "0",
+      QUERY_SQL: "SELECT 2",
+      ELAPSED_TIME: "0",
+      RETURN_ROWS: "2",
+      STATE: "WAITED SHORT TIME",
+      EVENT: "fixture request wait",
+      WAIT_CLASS: "Other",
+    });
+  if (sql.includes("FROM SYS.GV$OB_PLAN_CACHE_PLAN_STAT")) return diagnosticResult({ TENANT_ID: "7", SVR_IP: "127.0.0.1", SVR_PORT: "2882", PLAN_ID: "9", SQL_ID: "A".repeat(32), FIRST_LOAD_TIME: "2026-10-21 20:00:00 +08:00", PLAN_HASH: "10", EXECUTIONS: "2" });
+  if (sql.includes("FROM SYS.GV$OB_PLAN_CACHE_PLAN_EXPLAIN")) return diagnosticResult({ PLAN_DEPTH: "0", PLAN_LINE_ID: "0", OPERATOR: "PHY_EXPR_VALUES", NAME: "NULL", COST: "0", ESTIMATED_ROWS: "2" });
 }
 
 let app: App<Element> | null = null;
@@ -289,10 +338,13 @@ beforeEach(() => {
       mocks.oceanbaseTerminated = true;
       return { columns: [], rows: [] };
     }
-    return { columns: [], rows: [] };
+    return (await diagnosticReply(sql)) ?? { columns: [], rows: [] };
   });
   mocks.executeMulti.mockReset().mockResolvedValue([{ columns: [], rows: [] }]);
   mocks.closeClientConnectionSession.mockReset().mockResolvedValue(undefined);
+  mocks.cancelQuery.mockReset().mockResolvedValue(true);
+  mocks.readLargeValueChunk.mockReset();
+  mocks.diagnosticGate = null;
   mocks.contextGuard.mockReset();
   mocks.contextGuardGate = null;
   mocks.toast.mockReset();
@@ -300,7 +352,7 @@ beforeEach(() => {
   oracleTerminateError = "";
   mocks.oceanbaseRows = [
     ["5", "APP", "tenant_a", "localhost", "db", "Query", "0", "active", "SELECT 1", null, "127.0.0.1", "2882"],
-    ["21", "OTHER", "tenant_a", "apphost", "db", "Sleep", "4", "idle", "SELECT 2", null, "127.0.0.1", "2882"],
+    ["21", "OTHER", "tenant_a", "apphost", "db", "Sleep", "4", "idle", "SELECT 2", null, "127.0.0.1", "2882", "A".repeat(32), "trace-1"],
     ["22", "PROXY", "tenant_a", "proxyhost", "db", "Query", "5", "active", "SELECT 3", "99", "127.0.0.2", "2882"],
   ];
   mocks.oceanbaseTerminated = false;
@@ -985,5 +1037,110 @@ describe("ProcessListPanel batch terminate", () => {
     expect(gridButtons().filter((button) => button.textContent?.trim() === "processList.transactionKill")).toHaveLength(0);
     expect(root?.textContent).not.toContain("processList.transactionEmpty");
     expect(root?.textContent).not.toContain("processList.transactionCount:0");
+  });
+});
+
+describe("ProcessListPanel linked diagnostics", () => {
+  it.each([
+    ["Oracle", oracleConnection, "游标累计"],
+    ["OceanBase Oracle", oceanbaseConnection, "计划缓存累计"],
+  ])("opens the complete %s diagnostic workflow from the existing session row", async (_label, connection, cumulativeLabel) => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    if (connection.db_type === "oracle") await mountOraclePanel();
+    else await mountOceanbasePanel();
+    const open = [...processRow("21").querySelectorAll("button")].find((button) => button.textContent?.trim() === "诊断");
+    expect(open?.disabled).toBe(false);
+    open?.click();
+    await vi.waitFor(() => expect(root?.querySelector("[data-dialog] pre")?.textContent, root?.textContent ?? "").toBe("SELECT 2"), { timeout: 5000 });
+    expect(root?.textContent).toContain("会话 21 诊断");
+    const selectTab = async (label: string) => {
+      const button = [...(root?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])].find((tab) => tab.textContent?.trim() === label);
+      expect(button).toBeDefined();
+      button?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      await nextTick();
+    };
+    await selectTab("已有计划");
+    await vi.waitFor(() => expect(root?.textContent).toContain(connection.db_type === "oracle" ? "已有游标计划" : "已关联原请求的缓存计划"));
+    await vi.waitFor(() => expect(root?.textContent).toContain(connection.db_type === "oracle" ? "ORACLE" : "OCEANBASE-ORACLE"), { timeout: 5000 });
+    expect(root?.textContent).not.toContain("MYSQL");
+    await selectTab("统计与等待");
+    await vi.waitFor(() => expect(root?.textContent).toContain(cumulativeLabel));
+    expect(root?.textContent).toContain("等待与会话状态");
+    await selectTab("长操作");
+    await vi.waitFor(() => expect(root?.textContent).toContain("本次未观察到长操作"));
+    expect(root?.textContent).not.toContain("SQL 已完成");
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+    const calls = mocks.executeQuery.mock.calls.filter((call) => String((call[5] as { clientSessionId?: string })?.clientSessionId).startsWith("session-diagnostics:"));
+    expect(calls.length).toBeGreaterThan(4);
+    expect(calls.every((call) => String(call[2]).startsWith("SELECT "))).toBe(true);
+    expect(calls.some((call) => call[2] === "SELECT 2")).toBe(false);
+    findDialogButton("关闭")?.click();
+    await vi.waitFor(() => expect(root?.textContent).not.toContain("会话 21 诊断"));
+    expect(processRow("21").textContent).toContain("OTHER");
+  });
+
+  it("offers no diagnostic action for an unrelated engine", async () => {
+    await mountPanel(mysqlConnection);
+    expect(gridButtons().some((button) => button.textContent?.trim() === "sessionDiagnostics.open")).toBe(false);
+    expect(findGridButton("processList.batchTerminate")).toBeDefined();
+  });
+
+  it("shows the original missing SID and trace-level association for an OB long operation", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    const execute = mocks.executeQuery.getMockImplementation()!;
+    mocks.executeQuery.mockImplementation(async (...args: unknown[]) =>
+      String(args[2]).includes("FROM SYS.GV$SESSION_LONGOPS") ? diagnosticResult({ SID: "-1", TRACE_ID: "trace-1", SVR_IP: "127.0.0.1", SVR_PORT: "2882", OPNAME: "create index", TARGET: "table_id=42", ELAPSED_SECONDS: "2", TIME_REMAINING: "3" }) : execute(...args),
+    );
+    await mountOceanbasePanel();
+    [...processRow("21").querySelectorAll("button")].find((button) => button.textContent?.trim() === "诊断")?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("会话 21 诊断"), { timeout: 5000 });
+    const tab = [...(root?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])].find((value) => value.textContent?.trim() === "长操作");
+    tab?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    await vi.waitFor(() => expect(root?.textContent).toContain("请求 trace 关联（未提供会话 ID）"));
+    const panel = root?.querySelector('[role="tabpanel"][data-state="active"]');
+    expect(panel?.textContent).toContain("-1");
+    expect(panel?.textContent).toContain("create index");
+    expect(panel?.textContent).not.toContain("%");
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+
+  it("stops local reading from the actual dialog while cancellation remains pending", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    let release!: () => void;
+    mocks.diagnosticGate = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    mocks.cancelQuery.mockReturnValue(new Promise(() => {}));
+    await mountOraclePanel();
+    [...processRow("21").querySelectorAll("button")].find((button) => button.textContent?.trim() === "诊断")?.click();
+    await vi.waitFor(() => expect(findDialogButton("停止读取")).toBeDefined());
+    findDialogButton("停止读取")?.click();
+    await vi.waitFor(() => expect(findDialogButton("停止读取")).toBeUndefined());
+    expect(root?.textContent).toContain("已停止本地读取");
+    expect(findDialogButton("刷新")?.disabled).toBe(false);
+    expect(mocks.cancelQuery).toHaveBeenCalledOnce();
+    release();
+    await nextTick();
+    const calls = mocks.executeQuery.mock.calls.filter((call) => String((call[5] as { clientSessionId?: string })?.clientSessionId).startsWith("session-diagnostics:"));
+    expect(calls).toHaveLength(1);
+  });
+
+  it("closes diagnostics on connection changes without sampling the old row on the new connection", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    let release!: () => void;
+    mocks.diagnosticGate = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const connection = await mountReactivePanel(oracleConnection);
+    [...processRow("21").querySelectorAll("button")].find((button) => button.textContent?.trim() === "诊断")?.click();
+    await vi.waitFor(() => expect(findDialogButton("停止读取")).toBeDefined());
+    connection.id = "oracle-next";
+    await vi.waitFor(() => expect(root?.textContent).not.toContain("会话 21 诊断"));
+    release();
+    await nextTick();
+    expect(mocks.executeQuery.mock.calls.filter((call) => String((call[5] as { clientSessionId?: string })?.clientSessionId).startsWith("session-diagnostics:")).every((call) => call[0] === "oracle-1")).toBe(true);
+    expect(mocks.cancelQuery).toHaveBeenCalledOnce();
   });
 });
