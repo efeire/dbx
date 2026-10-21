@@ -105,7 +105,7 @@ import { buildEditableObjectSource } from "@/lib/table/objectSourceEditor";
 import { saveObjectSourceTab } from "@/lib/table/objectSourceTabSave";
 import { loadEditableObjectSourceForEditor } from "@/lib/table/objectSourceLoad";
 import { schemaAfterConnectionSwitch } from "@/lib/schema/connectionSchemaInitialization";
-import { resolveHistorySqlRestoreTarget } from "@/lib/history/historyRestoreTarget";
+import { canReuseTabForHistoryRestore, resolveHistorySqlRestoreTarget } from "@/lib/history/historyRestoreTarget";
 import { resolveExecutableSql, resolveExecutableSqlWithBackend, type SqlExecutionOverride, type SqlExecutionSnapshot } from "@/lib/sql/sqlExecutionTarget";
 import { uuid } from "@/lib/common/utils";
 import { getPlatform, isMacOS, isWindows } from "@/lib/backend/platform";
@@ -989,21 +989,26 @@ async function refreshAgentDriverUpdateCount() {
 }
 
 function restoreHistorySql(sql: string, entry: HistoryEntry) {
-  const tab = activeTab.value;
-  if (tab?.mode === "query") {
-    queryStore.updateSql(tab.id, sql);
-    return;
-  }
-
   const target = resolveHistorySqlRestoreTarget({
     entry,
-    activeTab: tab,
+    activeTab: activeTab.value,
     firstConnectionId: connectionStore.connections[0]?.id,
+    connections: connectionStore.connections,
     getConfig: (connectionId) => connectionStore.getConfig(connectionId),
   });
   if (!target) return;
-  const tabId = queryStore.createTab(target.connectionId, target.database, t("tabs.sql"), "query", target.schema);
-  queryStore.updateSql(tabId, sql);
+
+  const tab = activeTab.value;
+  if (tab && canReuseTabForHistoryRestore(tab, target)) {
+    queryStore.updateSql(tab.id, sql);
+  } else {
+    queryStore.createTab(target.connectionId, target.database, undefined, "query", target.schema, sql, undefined, { forceNew: true });
+  }
+
+  if (target.connectionId) {
+    connectionStore.activeConnectionId = target.connectionId;
+    connectionStore.ensureConnected(target.connectionId).catch(() => {});
+  }
 }
 
 const executableSql = computed(() => {
@@ -3283,6 +3288,7 @@ async function newQuery(options: NewQueryOptions = {}) {
     identifierQuote: connectionStore.connectionIdentifierQuote?.(target.connectionId),
     includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
     quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
+    keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
   });
   const tabId = queryStore.createTab(conn.id, target.database, undefined, "query", target.schema, initialSql, target.catalog, { schemaQualifiesSql: target.schemaQualifiesSql === true });
   if (initialSql) {
