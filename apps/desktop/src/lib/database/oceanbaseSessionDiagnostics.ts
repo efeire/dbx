@@ -13,6 +13,7 @@ import {
   diagnosticUnavailable,
   type DiagnosticChoice,
   type DiagnosticMetric,
+  type DiagnosticPlan,
   type DiagnosticPublish,
   type DiagnosticSection,
   type DiagnosticSelection,
@@ -342,10 +343,16 @@ async function readPlan(target: OceanbaseDiagnosticTarget, reader: SessionDiagno
   }
   const chosen = identities[index];
   const exact = `${where} AND PLAN_ID=${chosen.planId}`;
-  const raw = await reader.query(
-    `SELECT TO_CHAR(PLAN_DEPTH) AS PLAN_DEPTH,TO_CHAR(PLAN_LINE_ID) AS PLAN_LINE_ID,OPERATOR,NAME,TO_CHAR("ROWS") AS ESTIMATED_ROWS,TO_CHAR(COST) AS COST,PROPERTY FROM ${EXPLAIN_SOURCE} p WHERE TENANT_ID=${chosen.tenantId} AND ${nodeWhere(target)} AND PLAN_ID=${chosen.planId} ORDER BY p.PLAN_LINE_ID`,
-    501,
-  );
+  let raw: QueryResult | undefined;
+  let planFailure: DiagnosticSection<DiagnosticPlan> | undefined;
+  try {
+    raw = await reader.query(
+      `SELECT TO_CHAR(PLAN_DEPTH) AS PLAN_DEPTH,TO_CHAR(PLAN_LINE_ID) AS PLAN_LINE_ID,OPERATOR,NAME,TO_CHAR("ROWS") AS ESTIMATED_ROWS,TO_CHAR(COST) AS COST,PROPERTY FROM ${EXPLAIN_SOURCE} p WHERE TENANT_ID=${chosen.tenantId} AND ${nodeWhere(target)} AND PLAN_ID=${chosen.planId} ORDER BY p.PLAN_LINE_ID`,
+      501,
+    );
+  } catch (error) {
+    planFailure = diagnosticFailure(EXPLAIN_SOURCE, error);
+  }
   const after = await reader.query(`SELECT ${PLAN_COLUMNS} FROM ${PLAN_SOURCE} WHERE ${exact}`, 2);
   const afterRows = diagnosticRows(after);
   if (afterRows.length !== 1 || !diagnosticResultComplete(after) || planKey(planIdentity(afterRows[0])) !== planKey(chosen)) {
@@ -353,14 +360,17 @@ async function readPlan(target: OceanbaseDiagnosticTarget, reader: SessionDiagno
     return;
   }
   target.plan = chosen;
-  const parsed = parseOceanbaseCachedPlan(raw);
-  publish({ plan: { ...diagnosticSection(EXPLAIN_SOURCE, { plan: parsed.plan, table: raw, binding: target.request ? ("request" as const) : ("same_sql" as const) }, parsed.incomplete), ...(raw.rows.length === 0 ? { state: "empty" as const, reason: "not_collected" as const } : {}) } });
   publish({
     metrics: {
       ...diagnosticSection(`${requestMetrics.length || requestIssue ? `${AUDIT_SOURCE}; ` : ""}${PLAN_SOURCE}`, [...requestMetrics, ...metrics(rows[index], PLAN_METRICS, PLAN_SOURCE, "plan_cumulative")]),
       ...(requestIssue ? { reason: requestIssue.reason, error: requestIssue.error, incomplete: requestIssue.incomplete } : {}),
     },
   });
+  if (planFailure) publish({ plan: planFailure });
+  else if (raw) {
+    const parsed = parseOceanbaseCachedPlan(raw);
+    publish({ plan: { ...diagnosticSection(EXPLAIN_SOURCE, { plan: parsed.plan, table: raw, binding: target.request ? ("request" as const) : ("same_sql" as const) }, parsed.incomplete), ...(raw.rows.length === 0 ? { state: "empty" as const, reason: "not_collected" as const } : {}) } });
+  }
 }
 
 export async function collectOceanbaseSessionDiagnostics(target: OceanbaseDiagnosticTarget, reader: SessionDiagnosticReader, publish: DiagnosticPublish, selection: DiagnosticSelection = {}): Promise<void> {

@@ -43,6 +43,7 @@ function fixture(
     audits?: Record<string, unknown>[];
     planAfter?: Record<string, unknown>;
     auditError?: string;
+    explainError?: string;
     liveErrorOnCollect?: string;
     changeAfterLongops?: boolean;
     changeBeforeLongops?: boolean;
@@ -66,7 +67,10 @@ function fixture(
     }
     if (sql.includes("FROM SYS.GV$OB_SESS_TIME_MODEL")) return result([{ TENANT_ID: audit.TENANT_ID }]);
     if (sql.includes("FROM SYS.GV$OB_PLAN_CACHE_PLAN_STAT")) return result([++planReads > 1 && options.planAfter ? options.planAfter : planStat]);
-    if (sql.includes("FROM SYS.GV$OB_PLAN_CACHE_PLAN_EXPLAIN")) return result(planRows);
+    if (sql.includes("FROM SYS.GV$OB_PLAN_CACHE_PLAN_EXPLAIN")) {
+      if (options.explainError) throw new Error(options.explainError);
+      return result(planRows);
+    }
     if (sql.includes("FROM SYS.GV$SESSION_LONGOPS")) {
       if (options.requireLongopsPredicate && !sql.includes(`WHERE (SID=${session.id} OR SID=-1) AND TRACE_ID='${traceId}' AND SVR_IP='${session.serverIp}' AND SVR_PORT=2882`)) return result([]);
       return result(options.longops ?? [], { truncated: options.longopsTruncated });
@@ -123,6 +127,27 @@ describe("OceanBase session-linked diagnostics", () => {
     await collectOceanbaseSessionDiagnostics(target, f.reader, f.publish);
     expect(f.snapshot.plan?.state).toBe("ready");
     expect(f.snapshot.metrics).toMatchObject({ state: "ready", reason: "permission_denied", error: expect.stringContaining("ORA-01031") });
+  });
+
+  it.each(["ORA-01031: insufficient privileges", "ORA-00942: inaccessible"])("preserves verified cache measurements when plan details fail with %s", async (explainError) => {
+    for (const auditError of [undefined, "ORA-01031: audit denied"]) {
+      const f = fixture({ explainError, auditError });
+      const target = await captureOceanbaseDiagnosticTarget(session, f.reader);
+      await collectOceanbaseSessionDiagnostics(target, f.reader, f.publish);
+      expect(f.snapshot.plan).toMatchObject({ state: "unavailable", source: "SYS.GV$OB_PLAN_CACHE_PLAN_EXPLAIN", error: explainError });
+      expect(f.snapshot.metrics).toMatchObject({ state: "ready" });
+      expect(f.snapshot.metrics?.data).toContainEqual(expect.objectContaining({ name: "executions", value: planStat.EXECUTIONS, scope: "plan_cumulative" }));
+      expect(f.snapshot.metrics?.data?.some((metric) => metric.scope === "request")).toBe(!auditError);
+      if (auditError) expect(f.snapshot.metrics?.reason).toBe("permission_denied");
+    }
+  });
+
+  it("does not publish cache measurements from a changed generation even when plan details failed", async () => {
+    const f = fixture({ explainError: "ORA-01031: denied", planAfter: { ...planStat, FIRST_LOAD_TIME: "changed" } });
+    const target = await captureOceanbaseDiagnosticTarget(session, f.reader);
+    await collectOceanbaseSessionDiagnostics(target, f.reader, f.publish);
+    expect(f.snapshot.plan).toMatchObject({ state: "unavailable", reason: "target_changed" });
+    expect(f.snapshot.metrics?.data?.every((metric) => metric.scope === "request")).toBe(true);
   });
 
   it("keeps a bound original request readable when a later live-session read is unavailable", async () => {

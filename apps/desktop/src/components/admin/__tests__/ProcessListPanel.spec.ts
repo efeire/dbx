@@ -1041,6 +1041,37 @@ describe("ProcessListPanel batch terminate", () => {
 });
 
 describe("ProcessListPanel linked diagnostics", () => {
+  it("labels retained waits with their original sample time while refreshed metrics succeed", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    const oldTime = "2026-10-21T10:00:00.000Z",
+      newTime = "2026-10-21T11:00:00.000Z";
+    const clock = vi.spyOn(Date.prototype, "toISOString").mockReturnValue(oldTime);
+    try {
+      await mountOraclePanel();
+      [...processRow("21").querySelectorAll("button")].find((button) => button.textContent?.trim() === "诊断")?.click();
+      await vi.waitFor(() => expect(findDialogButton("刷新")?.disabled).toBe(false), { timeout: 5000 });
+      const tab = [...(root?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])].find((value) => value.textContent?.trim() === "统计与等待");
+      tab?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      await vi.waitFor(() => expect(root?.textContent).toContain("fixture wait"));
+      clock.mockReturnValue(newTime);
+      const execute = mocks.executeQuery.getMockImplementation()!;
+      mocks.executeQuery.mockImplementation(async (...args: unknown[]) => {
+        if (String(args[2]).includes("FROM GV$SESSION s WHERE")) throw new Error("ORA-01031: waits denied");
+        return execute(...args);
+      });
+      findDialogButton("刷新")?.click();
+      await vi.waitFor(() => expect(root?.textContent).toContain("ORA-01031: waits denied"));
+      await vi.waitFor(() => expect(findDialogButton("刷新")?.disabled).toBe(false));
+      const panel = root?.querySelector('[role="tabpanel"][data-state="active"]');
+      expect(panel?.textContent).toContain("fixture wait");
+      expect(panel?.textContent).toContain("游标累计");
+      expect(panel?.textContent).toContain(zhCN.sessionDiagnostics.previousSample.replace("{time}", new Date(oldTime).toLocaleString()));
+      expect(panel?.textContent).not.toContain(zhCN.sessionDiagnostics.previousSample.replace("{time}", new Date(newTime).toLocaleString()));
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it.each([
     ["Oracle", oracleConnection, "游标累计"],
     ["OceanBase Oracle", oceanbaseConnection, "计划缓存累计"],

@@ -196,6 +196,8 @@ function tableRows(result?: QueryResult) {
           <div v-for="table in tables" :key="table.key" class="space-y-2">
             <p class="text-xs text-muted-foreground">{{ table.section.source }} · {{ formattedTime(table.section.sampledAt) }}</p>
             <p v-if="sectionStatus(table.section)" class="text-xs text-muted-foreground">{{ sectionStatus(table.section) }}</p>
+            <p v-if="table.section.data && table.section.dataSampledAt && table.section.dataSampledAt !== table.section.sampledAt" class="text-xs text-muted-foreground">{{ t("sessionDiagnostics.previousSample", { time: formattedTime(table.section.dataSampledAt) }) }}</p>
+            <p v-if="table.section.incomplete" class="text-xs text-muted-foreground">{{ t("sessionDiagnostics.incomplete") }}</p>
             <p v-if="table.section.error" class="break-words text-xs text-destructive">{{ table.section.error }}</p>
             <div v-if="table.section.data" class="overflow-auto rounded-md border">
               <table class="w-full text-left text-xs">
