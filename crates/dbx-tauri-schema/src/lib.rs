@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn handles_only_schema_commands() {
-        assert_eq!(COMMANDS.len(), 55);
+        assert_eq!(COMMANDS.len(), 56);
         assert!(handles("list_databases"));
         assert!(handles("load_schema_diff_routines"));
         assert!(handles("prepare_oracle_routine_save"));
