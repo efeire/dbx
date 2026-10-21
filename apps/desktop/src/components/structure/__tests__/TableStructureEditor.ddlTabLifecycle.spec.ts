@@ -269,6 +269,8 @@ describe("TableStructureEditor DDL tab lifecycle", () => {
     app.mount(root);
     const content = () => root.querySelector(".cm-content")?.textContent ?? "";
     const toggle = () => root.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    // The first editor awaits cold CodeMirror imports; use the same readiness
+    // budget as the other initial editor mounts below, not waitFor's 1s default.
     await vi.waitFor(() => expect(content()).toMatch(/PARTITION BY\s+HASH/), { timeout: 5000 });
     expect(content()).not.toContain("PCTFREE");
     expect(toggle().getAttribute("aria-checked")).toBe("true");
