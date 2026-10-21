@@ -867,6 +867,7 @@ pub struct AgentDriverClient {
     stdout: Option<BufReader<ChildStdout>>,
     stderr_tail: Arc<Mutex<StderrTail>>,
     handshake: Option<AgentHandshake>,
+    session_exact_metadata_identity: Option<bool>,
     next_id: u64,
     shared_runtime: Option<Arc<AgentRuntimeClient>>,
     agent_session_id: Option<String>,
@@ -1737,6 +1738,7 @@ impl AgentDriverClient {
             stdout: Some(stdout),
             stderr_tail,
             handshake: None,
+            session_exact_metadata_identity: None,
             next_id: 0,
             shared_runtime: None,
             agent_session_id: None,
@@ -1753,6 +1755,7 @@ impl AgentDriverClient {
             stdout: None,
             stderr_tail: runtime.stderr_tail.clone(),
             handshake: Some(runtime.handshake().clone()),
+            session_exact_metadata_identity: None,
             next_id: 0,
             shared_runtime: Some(runtime),
             agent_session_id: Some(agent_session_id),
@@ -2137,7 +2140,13 @@ impl AgentDriverClient {
     }
 
     pub async fn connect(&mut self, params: Value) -> Result<Value, String> {
-        self.call_method(AgentMethod::Connect, params).await
+        let result = self.call_method(AgentMethod::Connect, params).await?;
+        self.apply_connect_result(&result);
+        Ok(result)
+    }
+
+    pub(crate) fn apply_connect_result(&mut self, result: &Value) {
+        self.session_exact_metadata_identity = result.get("exactMetadataIdentity").and_then(Value::as_bool);
     }
 
     pub async fn open_session(&mut self, agent_session_id: &str, mut params: Value) -> Result<Value, String> {
@@ -3192,6 +3201,8 @@ impl AgentDriverClient {
 
     pub fn supports_capability(&self, capability: AgentCapability) -> bool {
         agent_supports_capability(self.handshake.as_ref(), capability)
+            && (capability != AgentCapability::ExactMetadataIdentityV1
+                || self.session_exact_metadata_identity != Some(false))
     }
 
     /// Send a shutdown message to the agent and wait for the process to exit.
@@ -3798,6 +3809,7 @@ impl AgentDriverClient {
             stdout: None,
             stderr_tail: Arc::new(Mutex::new(StderrTail::default())),
             handshake: None,
+            session_exact_metadata_identity: None,
             next_id: 0,
             shared_runtime: None,
             agent_session_id: None,
@@ -3869,6 +3881,7 @@ mod tests {
             stdout: None,
             stderr_tail: Arc::new(Mutex::new(StderrTail::default())),
             handshake: None,
+            session_exact_metadata_identity: None,
             next_id: 0,
             shared_runtime: None,
             agent_session_id: None,
@@ -3879,6 +3892,70 @@ mod tests {
         let pool = super::PooledAgentClient::new(client).with_compatibility_mode(info.compatibility_mode);
         assert_eq!(pool.compatibility_mode(), Some("oracle"));
         assert!(pool.with_compatibility_mode(Some(" ".into())).compatibility_mode().is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_narrows_exact_identity_only_for_the_connected_database() {
+        let script = std::env::temp_dir().join(format!("dbx-exact-connect-{}.py", uuid::Uuid::new_v4()));
+        std::fs::write(&script, r#"import json, sys
+print(json.dumps({'ready': True}), flush=True)
+for line in sys.stdin:
+    req = json.loads(line)
+    params = req.get('params', {})
+    if params.get('database') == 'failed':
+        print(json.dumps({'jsonrpc': '2.0', 'id': req['id'], 'error': {'code': -1, 'message': 'connect failed'}}), flush=True)
+        continue
+    if req['method'] == 'handshake':
+        result = {'protocolVersion': 2, 'agentProtocolVersion': 2, 'capabilities': ['multi_session', 'exact_metadata_identity_v1']}
+    else:
+        result = {'ok': True}
+        if params.get('database') in ('legacy', 'modern'):
+            result['exactMetadataIdentity'] = params['database'] == 'modern'
+    print(json.dumps({'jsonrpc': '2.0', 'id': req['id'], 'result': result}), flush=True)
+"#).unwrap();
+        let launch = AgentLaunchSpec::new(test_python()).with_args([script.to_string_lossy().to_string()]);
+        let mut client = AgentDriverClient::spawn(launch.clone()).await.unwrap();
+        client.try_optional_handshake("test").await.unwrap();
+        assert!(client.supports_capability(AgentCapability::ExactMetadataIdentityV1));
+        client.connect(serde_json::json!({"database": "legacy"})).await.unwrap();
+        assert!(!client.supports_capability(AgentCapability::ExactMetadataIdentityV1));
+        assert!(client.connect(serde_json::json!({"database": "failed"})).await.is_err());
+        assert!(!client.supports_capability(AgentCapability::ExactMetadataIdentityV1));
+        client.connect(serde_json::json!({"database": "modern"})).await.unwrap();
+        assert!(client.supports_capability(AgentCapability::ExactMetadataIdentityV1));
+        client.connect(serde_json::json!({"database": "legacy"})).await.unwrap();
+        client.connect(serde_json::json!({"database": "old-response"})).await.unwrap();
+        assert!(client.supports_capability(AgentCapability::ExactMetadataIdentityV1));
+        client.handshake.as_mut().unwrap().capabilities.retain(|capability| capability != "exact_metadata_identity_v1");
+        client.connect(serde_json::json!({"database": "modern"})).await.unwrap();
+        assert!(!client.supports_capability(AgentCapability::ExactMetadataIdentityV1));
+        client.shutdown().await;
+
+        let runtime = AgentRuntimeClient::spawn(launch, "test").await.unwrap();
+        let mut legacy = AgentDriverClient::shared_session(runtime.clone(), "legacy".into());
+        let mut modern = AgentDriverClient::shared_session(runtime.clone(), "modern".into());
+        for (database, session) in [("legacy", &mut legacy), ("modern", &mut modern)] {
+            let result = runtime
+                .call::<serde_json::Value>(
+                    "open_session",
+                    serde_json::json!({"database": database, "agentSessionId": database}),
+                    Some(Duration::from_secs(2)),
+                    None,
+                )
+                .await
+                .unwrap();
+            session.apply_connect_result(&result);
+        }
+        assert!(!legacy.supports_capability(AgentCapability::ExactMetadataIdentityV1));
+        assert!(modern.supports_capability(AgentCapability::ExactMetadataIdentityV1));
+        assert!(runtime.handshake().supports(AgentCapability::ExactMetadataIdentityV1));
+        let ordinary = legacy
+            .call::<serde_json::Value>("get_columns", serde_json::json!({"schema": "APP", "table": "T"}))
+            .await
+            .unwrap();
+        assert_eq!(ordinary["ok"], true);
+        runtime.kill_and_wait().await;
+        std::fs::remove_file(script).unwrap();
     }
 
     #[cfg(unix)]
@@ -4653,6 +4730,7 @@ for line in sys.stdin:
             stdout: None,
             stderr_tail: Arc::new(Mutex::new(StderrTail::default())),
             handshake: None,
+            session_exact_metadata_identity: None,
             next_id: 0,
             shared_runtime: None,
             agent_session_id: None,

@@ -1934,6 +1934,7 @@ export interface TreeNode {
   meta?: ColumnInfo | IndexInfo | ForeignKeyInfo | TriggerInfo | ConstraintInfo | PartitionInfo | SubpartitionInfo | ExtensionInfo | EventTriggerInfo | VectorCollectionMeta | MongoCollectionMeta | CustomTypeTreeMemberMeta;
   loadMore?: {
     parentId: string;
+    objectType?: "INDEX";
     offset: number;
     pageSize: number;
     /** Backend filter and global-search identity for OceanBase metadata pages. */

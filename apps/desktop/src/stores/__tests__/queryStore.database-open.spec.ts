@@ -69,6 +69,21 @@ describe("queryStore database open state", () => {
     expect(kind === "create" ? next.indexCreateRequestId : next.initialViewRequestId).toBeGreaterThan(firstRequest!);
   });
 
+  it.each(["create", "view"] as const)("supersedes an unconsumed Schema index %s request in the reused tab", async (first) => {
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const view = { schema: "APP", name: "IX_A", parentSchema: "OTHER", parentName: "T" };
+    const id = store.openObjectBrowser("ob", "service", "APP", undefined, undefined, false, "indexes", undefined, first === "create" ? { create: true } : { view });
+    const sequence = store.tabs.find((tab) => tab.id === id)!.objectBrowser!.indexRequestSequence!;
+    expect(store.openObjectBrowser("ob", "service", "APP", undefined, undefined, false, "indexes", undefined, first === "create" ? { view } : { create: true })).toBe(id);
+    const state = store.tabs.find((tab) => tab.id === id)!.objectBrowser!;
+    expect(state.indexRequestSequence).toBeGreaterThan(sequence);
+    expect(state.indexCreateRequestId).toBe(first === "view" ? state.indexRequestSequence : undefined);
+    expect(state.initialViewRequestId).toBe(first === "create" ? state.indexRequestSequence : undefined);
+    expect(state.initialViewTarget).toEqual(first === "create" ? view : undefined);
+    expect(store.tabs.filter((tab) => tab.mode === "objects")).toHaveLength(1);
+  });
+
   it("retargets a connection-scoped driver workspace to a database branch", async () => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();

@@ -433,7 +433,7 @@ export function appendTableTreeLoadMoreNode(children: TreeNode[], loadMoreNode: 
 
 export function withoutTableTreeLoadMoreNodes(nodes: TreeNode[] | undefined): TreeNode[] {
   return (nodes ?? [])
-    .filter((node) => node.type !== "load-more")
+    .filter((node) => node.type !== "load-more" || node.loadMore?.objectType === "INDEX")
     .map((node) => {
       if (node.children) node.children = withoutTableTreeLoadMoreNodes(node.children);
       if (node.hiddenChildren) node.hiddenChildren = withoutTableTreeLoadMoreNodes(node.hiddenChildren);

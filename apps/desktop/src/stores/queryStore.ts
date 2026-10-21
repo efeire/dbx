@@ -3589,8 +3589,8 @@ export const useQueryStore = defineStore("query", () => {
           initialObjectFilter: "indexes",
           filter: "indexes",
           ...(indexRequest?.create || indexRequest?.view ? { indexRequestSequence: requestId } : {}),
-          ...(indexRequest?.create ? { indexCreateRequestId: requestId } : {}),
-          ...(indexRequest?.view ? { initialViewTarget: indexRequest.view, initialViewRequestId: requestId } : {}),
+          ...(indexRequest?.create ? { indexCreateRequestId: requestId, initialViewTarget: undefined, initialViewRequestId: undefined } : {}),
+          ...(indexRequest?.view ? { initialViewTarget: indexRequest.view, initialViewRequestId: requestId, indexCreateRequestId: undefined } : {}),
         };
       }
       switchTab(existing.id);

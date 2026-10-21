@@ -218,6 +218,28 @@ describe("schema index browsing and draft navigation", () => {
     expect(mocks.listObjects).toHaveBeenCalledTimes(1);
   });
 
+  it("retains selected indexes across append and refresh, but removes disappeared selections", async () => {
+    let indexes = [index("I1"), index("I2"), index("I3"), index("I4")];
+    mocks.listObjects.mockImplementation(async (...args: unknown[]) => indexes.slice(Number(args[6] ?? 0), Number(args[6] ?? 0) + Number(args[5] ?? indexes.length)));
+    const { host } = await mountBrowser();
+    await vi.waitFor(() => expect(host.querySelector('[title="I2"]')).not.toBeNull());
+    host.querySelector('[title="I1"]')!.parentElement!.parentElement!.querySelector<HTMLButtonElement>("button")!.click();
+    await nextTick();
+    expect(host.textContent).toContain("objects.dropSelected");
+    host.querySelector<HTMLButtonElement>("[data-object-load-more]")!.click();
+    await vi.waitFor(() => expect(host.querySelector('[title="I4"]')).not.toBeNull());
+    expect(host.textContent).toContain("objects.dropSelected");
+    host.querySelector<HTMLButtonElement>('[title^="grid.refresh"]')!.click();
+    await vi.waitFor(() => expect(mocks.listObjects).toHaveBeenCalledTimes(3));
+    await nextTick();
+    expect(host.textContent).toContain("objects.dropSelected");
+    indexes = indexes.filter((object) => object.name !== "I1");
+    host.querySelector<HTMLButtonElement>('[title^="grid.refresh"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[title="I1"]')).toBeNull());
+    expect(host.textContent).not.toContain("objects.dropSelected");
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+  });
+
   it.each(["oracle", "oceanbase-oracle", "dameng"] as const)("%s requests exact typed pages before rendering INDEX rows", async (type) => {
     connection.db_type = type;
     mocks.listObjects.mockResolvedValue([index(" Ix(a) "), index("IX_A_2"), index("third")]);

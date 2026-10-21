@@ -193,7 +193,10 @@ public final class JsonRpcServer {
             agent.connect(connectParams);
             lastConnectParams = connectParams;
             lastConnectionValidationTimeMillis = 0L;
-            return Collections.singletonMap("ok", true);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("exactMetadataIdentity", agent.supportsExactMetadataIdentity());
+            return result;
         }
         if (AgentProtocol.METHOD_TEST_CONNECTION.equals(method)) {
             Map<String, Object> result = agent.testConnectionWithInfo(gson.fromJson(params, ConnectParams.class));

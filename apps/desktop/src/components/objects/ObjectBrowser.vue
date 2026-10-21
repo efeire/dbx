@@ -4290,8 +4290,8 @@ function objectBrowserRowsCacheScope(schema: string): ObjectBrowserRowsCacheScop
 
 function applyObjectBrowserRows(nextRows: ObjectBrowserRow[]) {
   rows.value = nextRows;
-  const availableTableIds = new Set(rows.value.filter((row) => row.type === "TABLE").map((row) => row.id));
-  setSelectedTableIds(new Set([...selectedTableIds.value].filter((id) => availableTableIds.has(id))));
+  const availableIds = new Set(selectableRows.value.map((row) => row.id));
+  setSelectedTableIds(new Set([...selectedTableIds.value].filter((id) => availableIds.has(id))));
   expandedPartitionParentIds.value = new Set([...expandedPartitionParentIds.value].filter((id) => rows.value.some((row) => row.id === id && row.partitionCount)));
 }
 

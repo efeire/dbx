@@ -158,6 +158,28 @@ class CommonJavaCompatibilityTest {
     }
 
     @Test
+    void connectedSessionReportsItsOwnExactIdentitySupport() {
+        try (MultiSessionJsonRpcServer server = new MultiSessionJsonRpcServer(() -> new MinimalAgent() {
+            private boolean exactIdentity = true;
+            @Override
+            public void connect(ConnectParams params) { exactIdentity = !"legacy".equals(params.getDatabase()); }
+            @Override
+            public boolean supportsExactMetadataIdentity() { return exactIdentity; }
+        }).withExactMetadataIdentity()) {
+            JsonObject legacy = JsonParser.parseString(server.handleRequest("{\"id\":1,\"method\":\"open_session\",\"params\":{\"agentSessionId\":\"legacy\",\"database\":\"legacy\"}} ")).getAsJsonObject();
+            JsonObject current = JsonParser.parseString(server.handleRequest("{\"id\":2,\"method\":\"open_session\",\"params\":{\"agentSessionId\":\"current\",\"database\":\"current\"}} ")).getAsJsonObject();
+            assertTrue(legacy.getAsJsonObject("result").get("ok").getAsBoolean());
+            assertTrue(legacy.getAsJsonObject("result").has("exactMetadataIdentity"));
+            assertFalse(legacy.getAsJsonObject("result").get("exactMetadataIdentity").getAsBoolean());
+            assertTrue(current.getAsJsonObject("result").get("exactMetadataIdentity").getAsBoolean());
+            JsonObject ordinary = JsonParser.parseString(server.handleRequest("{\"id\":3,\"method\":\"get_columns\",\"params\":{\"agentSessionId\":\"legacy\",\"schema\":\"APP\",\"table\":\"T\"}} ")).getAsJsonObject();
+            assertTrue(ordinary.has("result"), ordinary.toString());
+            JsonObject exact = JsonParser.parseString(server.handleRequest("{\"id\":4,\"method\":\"get_columns\",\"params\":{\"agentSessionId\":\"legacy\",\"schema\":\"APP\",\"table\":\"T\",\"exact_identity\":true}} ")).getAsJsonObject();
+            assertTrue(exact.has("error"), exact.toString());
+        }
+    }
+
+    @Test
     void constraintMetadataUnsupportedIsNotAnEmptySuccess() {
         JsonRpcServer server = new JsonRpcServer(new MinimalAgent());
         JsonObject response = JsonParser.parseString(server.handleRequest(

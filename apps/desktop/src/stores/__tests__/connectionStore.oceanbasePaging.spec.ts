@@ -89,9 +89,150 @@ describe("OceanBase Oracle sidebar paging (#11418)", () => {
     schema.children = [];
     await store.loadTables(connection.id, "APP", " Mixed ", { force: true });
     await vi.waitFor(() => expect(schema.children?.find((node) => node.type === "index")).toMatchObject({ objectName: " Ix(a) ", schema: " Mixed ", parentSchema: " Other ", parentName: " T(a) ", objectScope: "schema" }));
-    expect(listObjects).toHaveBeenCalledWith(connection.id, "APP", " Mixed ", ["INDEX"], undefined, undefined, undefined, undefined, undefined, undefined, true);
+    expect(listObjects).toHaveBeenCalledWith(connection.id, "APP", " Mixed ", ["INDEX"], undefined, 3, 0, undefined, undefined, undefined, true);
     const api = await import("@/lib/backend/api");
     expect(vi.mocked(api.saveSchemaCache).mock.calls.every((call) => !JSON.stringify(call[1]).includes('"objectScope":"schema"'))).toBe(true);
+  });
+
+  it.each(["table-first", "index-first"])("pages flat indexes and tables independently (%s)", async (order) => {
+    const indexes: ObjectInfo[] = ["I1", "I2", "I3", "I4"].map((name) => ({ name, object_type: "INDEX", schema: "APP", parent_schema: "OTHER", parent_name: "T" }));
+    const tables = ["T1", "T2", "T3", "T4"].map((name) => ({ name, table_type: "TABLE" }));
+    const listObjects = vi.fn(async (...args: unknown[]) => (args[10] === true ? indexes.slice(Number(args[6] ?? 0), Number(args[6] ?? 0) + Number(args[5] ?? indexes.length)) : []));
+    const listTables = vi.fn(async (...args: unknown[]) => tables.slice(Number(args[5] ?? 0), Number(args[5] ?? 0) + Number(args[4] ?? tables.length)));
+    const { store } = await setup(listObjects, listTables);
+    store.connections = [{ ...connection, db_type: "oracle" }];
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    useSettingsStore().editorSettings.sidebarObjectDisplay = "simple";
+    const schema = store.treeNodes[0].children![0].children![0];
+    schema.children = [];
+    await store.loadTables(connection.id, "APP", "APP", { force: true });
+    await vi.waitFor(() => expect(schema.children?.filter((node) => node.type === "load-more")).toHaveLength(2));
+    const markers = schema.children!.filter((node) => node.type === "load-more");
+    expect(new Set(markers.map((node) => node.id)).size).toBe(2);
+    const indexMore = markers.find((node) => node.loadMore?.objectType === "INDEX")!;
+    const tableMore = markers.find((node) => node.loadMore?.objectType !== "INDEX")!;
+    await store.loadMoreObjectGroupChildren(order === "table-first" ? tableMore : indexMore);
+    expect(schema.children?.filter((node) => node.type === "load-more").map((node) => node.id)).toEqual([order === "table-first" ? indexMore.id : tableMore.id]);
+    await store.loadMoreObjectGroupChildren(order === "table-first" ? indexMore : tableMore);
+    expect(schema.children?.some((node) => node.type === "load-more")).toBe(false);
+    expect(schema.children?.filter((node) => node.type === "index").map((node) => node.objectName)).toEqual(indexes.map((object) => object.name));
+    expect(schema.children?.filter((node) => node.type === "table").map((node) => node.label)).toEqual(tables.map((table) => table.name));
+    expect(listObjects.mock.calls.filter((args) => args[10] === true).map((args) => args.slice(5, 7))).toEqual([
+      [3, 0],
+      [3, 2],
+    ]);
+    const api = await import("@/lib/backend/api");
+    expect(vi.mocked(api.saveSchemaCache).mock.calls.every((call) => !JSON.stringify(call[1]).includes('"objectType":"INDEX"'))).toBe(true);
+  });
+
+  it("keeps the captured flat index search on later pages and clears it on refresh", async () => {
+    const indexes: ObjectInfo[] = ["needle1", "needle2", "needle3", "other"].map((name) => ({ name, object_type: "INDEX", schema: "APP", parent_schema: "APP", parent_name: "T" }));
+    const listObjects = vi.fn(async (...args: unknown[]) => {
+      if (args[10] !== true) return [];
+      const filtered = indexes.filter((object) => !args[4] || object.name.includes(String(args[4])));
+      return filtered.slice(Number(args[6] ?? 0), Number(args[6] ?? 0) + Number(args[5]));
+    });
+    const { store } = await setup(listObjects);
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    useSettingsStore().editorSettings.sidebarObjectDisplay = "simple";
+    const schema = store.treeNodes[0].children![0].children![0];
+    schema.children = [];
+    store.sidebarSearchQuery = "needle";
+    await store.loadTables(connection.id, "APP", "APP", { force: true, searchFilter: "needle", expectedSidebarSearchQuery: "needle" });
+    await vi.waitFor(() => expect(schema.children?.find((node) => node.loadMore?.objectType === "INDEX")).toBeDefined());
+    await store.loadMoreObjectGroupChildren(schema.children!.find((node) => node.loadMore?.objectType === "INDEX")!);
+    expect(listObjects.mock.calls.filter((args) => args[10] === true).map((args) => args.slice(4, 7))).toEqual([
+      ["needle", 3, 0],
+      ["needle", 3, 2],
+    ]);
+    expect(schema.children?.filter((node) => node.type === "index").map((node) => node.objectName)).toEqual(["needle1", "needle2", "needle3"]);
+    store.sidebarSearchQuery = "";
+    await store.loadTables(connection.id, "APP", "APP", { force: true, searchFilter: "", expectedSidebarSearchQuery: "" });
+    await vi.waitFor(() => expect(schema.children?.find((node) => node.loadMore?.objectType === "INDEX")).toBeDefined());
+    expect(
+      listObjects.mock.calls
+        .filter((args) => args[10] === true)
+        .at(-1)
+        ?.slice(4, 7),
+    ).toEqual([undefined, 3, 0]);
+  });
+
+  it("rejects a late supplemental index page after the parent is refreshed", async () => {
+    let release!: (objects: ObjectInfo[]) => void;
+    let exactCalls = 0;
+    const listObjects = vi.fn((...args: unknown[]) => {
+      if (args[10] !== true) return Promise.resolve([]);
+      if (++exactCalls === 1)
+        return new Promise<ObjectInfo[]>((resolve) => {
+          release = resolve;
+        });
+      return Promise.resolve([{ name: "CURRENT", object_type: "INDEX", schema: "APP", parent_schema: "APP", parent_name: "T" }]);
+    });
+    const { store } = await setup(listObjects);
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    useSettingsStore().editorSettings.sidebarObjectDisplay = "simple";
+    const schema = store.treeNodes[0].children![0].children![0];
+    schema.children = [];
+    await store.loadTables(connection.id, "APP", "APP", { force: true });
+    await vi.waitFor(() => expect(exactCalls).toBe(1));
+    await store.loadTables(connection.id, "APP", "APP", { force: true });
+    await vi.waitFor(() => expect(schema.children?.some((node) => node.objectName === "CURRENT")).toBe(true));
+    release([{ name: "STALE", object_type: "INDEX", schema: "APP", parent_schema: "APP", parent_name: "T" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(schema.children?.some((node) => node.objectName === "STALE")).toBe(false);
+    expect(schema.children?.some((node) => node.objectName === "CURRENT")).toBe(true);
+  });
+
+  it("does not start an exact page from a retired ordinary supplement", async () => {
+    let release!: (objects: ObjectInfo[]) => void;
+    let ordinaryCalls = 0;
+    let exactCalls = 0;
+    const listObjects = vi.fn((...args: unknown[]) => {
+      if (args[10] === true) {
+        exactCalls++;
+        return Promise.resolve([{ name: "CURRENT", object_type: "INDEX", schema: "APP", parent_schema: "APP", parent_name: "T" }]);
+      }
+      if (++ordinaryCalls === 1)
+        return new Promise<ObjectInfo[]>((resolve) => {
+          release = resolve;
+        });
+      return Promise.resolve([]);
+    });
+    const { store } = await setup(listObjects);
+    store.connections = [{ ...connection, db_type: "oracle" }];
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    useSettingsStore().editorSettings.sidebarObjectDisplay = "simple";
+    const schema = store.treeNodes[0].children![0].children![0];
+    schema.children = [];
+    await store.loadTables(connection.id, "APP", "APP", { force: true });
+    await vi.waitFor(() => expect(ordinaryCalls).toBe(1));
+    await store.loadTables(connection.id, "APP", "APP", { force: true });
+    await vi.waitFor(() => expect(exactCalls).toBe(1));
+    release([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(exactCalls).toBe(1);
+  });
+
+  it("replaces only the index window when a flat index page anchor moves", async () => {
+    const index = (name: string): ObjectInfo => ({ name, object_type: "INDEX", schema: "APP", parent_schema: "APP", parent_name: "T" });
+    const pages = [[index("I1"), index("I2"), index("I3")], [index("I4")], [index("I2"), index("I3"), index("I4")]];
+    const listObjects = vi.fn(async (...args: unknown[]) => (args[10] === true ? pages.shift()! : []));
+    const { store } = await setup(listObjects, vi.fn().mockResolvedValue([{ name: "TABLE_KEPT", table_type: "TABLE" }]));
+    store.connections = [{ ...connection, db_type: "oracle" }];
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    useSettingsStore().editorSettings.sidebarObjectDisplay = "simple";
+    const schema = store.treeNodes[0].children![0].children![0];
+    schema.children = [];
+    await store.loadTables(connection.id, "APP", "APP", { force: true });
+    await vi.waitFor(() => expect(schema.children?.find((node) => node.loadMore?.objectType === "INDEX")).toBeDefined());
+    await store.loadMoreObjectGroupChildren(schema.children!.find((node) => node.loadMore?.objectType === "INDEX")!);
+    expect(schema.children?.filter((node) => node.type === "index").map((node) => node.objectName)).toEqual(["I2", "I3", "I4"]);
+    expect(schema.children?.some((node) => node.label === "TABLE_KEPT")).toBe(true);
+    expect(listObjects.mock.calls.filter((args) => args[10] === true).map((args) => args.slice(5, 7))).toEqual([
+      [3, 0],
+      [3, 2],
+      [5, 0],
+    ]);
   });
 
   it("keeps flat legacy objects usable while exposing an exact-index read error", async () => {

@@ -2796,9 +2796,9 @@ export const useConnectionStore = defineStore("connection", () => {
     return fetchPage(0, offset + pageSize);
   }
 
-  function buildLoadMoreNode(parent: TreeNode, offset: number, pageSize: number, anchor?: string, searchFilter?: string): TreeNode {
+  function buildLoadMoreNode(parent: TreeNode, offset: number, pageSize: number, anchor?: string, searchFilter?: string, objectType?: "INDEX"): TreeNode {
     return {
-      id: `${parent.id}:__load_more:${offset}`,
+      id: `${parent.id}:__load_more:${objectType ? `${objectType}:` : ""}${offset}`,
       label: "tree.loadMore",
       type: "load-more",
       connectionId: parent.connectionId,
@@ -2807,6 +2807,7 @@ export const useConnectionStore = defineStore("connection", () => {
       isLoading: false,
       loadMore: {
         parentId: parent.id,
+        ...(objectType ? { objectType } : {}),
         offset,
         pageSize,
         ...(searchFilter !== undefined ? { searchFilter, searchQuery: sidebarSearchQuery.value || "" } : {}),
@@ -2983,12 +2984,23 @@ export const useConnectionStore = defineStore("connection", () => {
     };
   }
 
-  async function loadPagedObjectGroupChildren(options: { node: TreeNode; parentNodeId: string; querySchema: string; effectiveSchema?: string; objectTypes: DatabaseObjectTreeKind[]; offset: number; pageSize: number; searchFilter?: string; force?: boolean }): Promise<PagedTableWindow> {
+  async function loadPagedObjectGroupChildren(options: {
+    node: TreeNode;
+    parentNodeId: string;
+    querySchema: string;
+    effectiveSchema?: string;
+    objectTypes: DatabaseObjectTreeKind[];
+    offset: number;
+    pageSize: number;
+    searchFilter?: string;
+    force?: boolean;
+    simpleIndexes?: boolean;
+  }): Promise<PagedTableWindow> {
     if (!options.node.connectionId || options.node.database == null) {
       return { children: [], objectCount: 0, hasMore: false, nextOffset: options.offset };
     }
     const searchFilter = options.searchFilter || undefined;
-    const exactIdentity = isSchemaIndexGroup(options.node);
+    const exactIdentity = options.simpleIndexes || isSchemaIndexGroup(options.node);
     const querySchema = exactIdentity ? (options.node.schema ?? options.node.database) : options.querySchema;
     const userTableNameFilter = activeTableNameFilterForScope({
       connectionId: options.node.connectionId,
@@ -3008,7 +3020,7 @@ export const useConnectionStore = defineStore("connection", () => {
         connectionId: options.node.connectionId,
         database: options.node.database,
         schema: querySchema,
-        nodeKind: options.node.type,
+        nodeKind: options.simpleIndexes ? "simple-indexes" : options.node.type,
         objectTypes: options.objectTypes,
         searchFilter,
         limit: fetchLimit,
@@ -3026,13 +3038,15 @@ export const useConnectionStore = defineStore("connection", () => {
     );
     const hasMore = paginate && objects.length > options.pageSize;
     const pageObjects = hasMore ? objects.slice(0, options.pageSize) : objects;
-    const children = objectGroupChildrenFromObjects({
-      node: options.node,
-      parentNodeId: options.parentNodeId,
-      effectiveSchema: options.effectiveSchema,
-      objectTypes: options.objectTypes,
-      objects: pageObjects,
-    });
+    const children = options.simpleIndexes
+      ? buildSimpleObjectTreeNodes({ nodeId: options.parentNodeId, connectionId: options.node.connectionId, database: options.node.database, schema: options.effectiveSchema, objects: pageObjects, databaseType: effectiveDatabaseTypeForConnection(getConfig(options.node.connectionId)) })
+      : objectGroupChildrenFromObjects({
+          node: options.node,
+          parentNodeId: options.parentNodeId,
+          effectiveSchema: options.effectiveSchema,
+          objectTypes: options.objectTypes,
+          objects: pageObjects,
+        });
     return {
       children,
       objectCount: children.length,
@@ -3160,7 +3174,31 @@ export const useConnectionStore = defineStore("connection", () => {
     const queries = [...(!searchFilter && ordinaryTypes.length ? [{ objectTypes: ordinaryTypes, exactIdentity: false }] : []), ...(exactIndexes ? [{ objectTypes: ["INDEX"] as DatabaseObjectTreeKind[], exactIdentity: true }] : [])];
     for (const query of queries) {
       try {
-        const querySchema = query.exactIdentity ? (options.node.schema ?? options.database) : options.querySchema;
+        if (query.exactIdentity) {
+          if (!options.load.isCurrent() || isTreeLoadSearchChanged(searchFilter, options.loadOptions)) return;
+          const pageSize = sidebarObjectGroupPageSize();
+          const page = await loadPagedObjectGroupChildren({
+            node: options.node,
+            parentNodeId: options.nodeId,
+            querySchema: options.querySchema,
+            effectiveSchema: options.effectiveSchema,
+            objectTypes: ["INDEX"],
+            offset: 0,
+            pageSize,
+            searchFilter,
+            force: options.loadOptions?.force,
+            simpleIndexes: true,
+          });
+          if (isTreeLoadSearchChanged(searchFilter, options.loadOptions)) return;
+          const targetNode = treeNodeLoadTarget(options.load);
+          if (!targetNode) return;
+          const currentChildren = (targetNode.children || []).filter((child) => !(child.type === "index" && child.objectScope === "schema") && child.loadMore?.objectType !== "INDEX");
+          const mergedChildren = mergeLocatedTreeChildren(targetNode, currentChildren, page.children, options.connectionId, options.database);
+          setChildren(targetNode, page.hasMore ? [...mergedChildren, buildLoadMoreNode(targetNode, page.nextOffset, pageSize, page.nextAnchor, searchFilter || "", "INDEX")] : mergedChildren);
+          targetNode.objectCount = mergedChildren.filter((child) => child.type !== "load-more").length;
+          continue;
+        }
+        const querySchema = options.querySchema;
         const objects = await loadCachedMetadataListPage<ObjectInfo[]>(
           metadataListCacheScope({
             kind: "object-list-page",
@@ -3171,11 +3209,9 @@ export const useConnectionStore = defineStore("connection", () => {
             objectTypes: query.objectTypes,
             searchFilter,
             sidebarDisplayMode: "simple",
-            ...(query.exactIdentity ? { extra: { exactIdentity: true } } : {}),
           }),
-          () =>
-            query.exactIdentity ? api.listObjects(options.connectionId, options.database, querySchema, query.objectTypes, searchFilter || undefined, undefined, undefined, undefined, undefined, undefined, true) : api.listObjects(options.connectionId, options.database, querySchema, query.objectTypes),
-          { force: options.loadOptions?.force, isCurrent: query.exactIdentity ? () => options.load.isCurrent() : undefined },
+          () => api.listObjects(options.connectionId, options.database, querySchema, query.objectTypes),
+          { force: options.loadOptions?.force },
         );
         const supplementalObjects = filterSimpleSidebarSupplementalObjects(objects);
         if (supplementalObjects.length === 0) continue;
@@ -3240,7 +3276,7 @@ export const useConnectionStore = defineStore("connection", () => {
   // restored from the live tree (restoreExpandedChildren) within a session.
   function stripTreeNodeExpansionState(nodes: TreeNode[]): TreeNode[] {
     return nodes
-      .filter((node) => node.type !== "index" || node.objectScope !== "schema")
+      .filter((node) => (node.type !== "index" || node.objectScope !== "schema") && node.loadMore?.objectType !== "INDEX")
       .map((node) => ({
         ...node,
         isExpanded: false,
@@ -7272,7 +7308,7 @@ export const useConnectionStore = defineStore("connection", () => {
     if (!parent?.connectionId || !hasTreeNodeDatabaseContext(parent)) return;
     const parentConnectionId = parent.connectionId;
     const configForScope = getConfig(parentConnectionId);
-    const objectTypesForScope = objectTypesForGroupNode(parent.type);
+    const objectTypesForScope = loadMore.objectType === "INDEX" ? (["INDEX"] as DatabaseObjectTreeKind[]) : objectTypesForGroupNode(parent.type);
     const searchFilter = loadMore.searchFilter ?? options?.searchFilter;
     const globalSearchQuery = sidebarSearchQuery.value || "";
     const scopedSearchQuery = sidebarTableSearchQueries.value[parent.id]?.trim() || "";
@@ -7292,6 +7328,7 @@ export const useConnectionStore = defineStore("connection", () => {
         searchFilter,
         limit: loadMore.pageSize + 1,
         offset: loadMore.offset,
+        ...(loadMore.objectType ? { extra: { objectType: loadMore.objectType } } : {}),
         sidebarDisplayMode: useSettingsStore().editorSettings.sidebarObjectDisplay,
         driverProfile: metadataDriverProfile(configForScope),
       },
@@ -7306,6 +7343,22 @@ export const useConnectionStore = defineStore("connection", () => {
           await ensureConnected(parentConnectionId);
           if (!searchIsCurrent()) return;
           load = reclaimTreeNodeLoad(load, node);
+          if (loadMore.objectType === "INDEX") {
+            if (!parentEpoch.isCurrent() || !load.isCurrent() || !searchIsCurrent()) return;
+            const config = getConfig(parentConnectionId);
+            const querySchema = parent.schema ?? parent.database;
+            const page = await loadTablePageCheckingAnchor(loadMore.anchor, loadMore.offset, loadMore.pageSize, (offset, pageSize) =>
+              loadPagedObjectGroupChildren({ node: parent, parentNodeId: parent.id, querySchema, effectiveSchema: connectionObjectTreeNodeSchema(config, parent.database, parent.schema), objectTypes: ["INDEX"], offset, pageSize, searchFilter, force: options?.force, simpleIndexes: true }),
+            );
+            const targetParent = treeNodeLoadRelatedTarget(load, parent);
+            if (!targetParent || !parentEpoch.isCurrent() || !searchIsCurrent()) return;
+            const replacedWindow = loadMore.anchor && page.firstAnchor !== loadMore.anchor;
+            const currentChildren = (targetParent.children || []).filter((child) => child.loadMore?.objectType !== "INDEX" && !(replacedWindow && child.type === "index" && child.objectScope === "schema"));
+            const mergedChildren = mergeLocatedTreeChildren(targetParent, currentChildren, page.children, parentConnectionId, parent.database);
+            setChildren(targetParent, page.hasMore ? [...mergedChildren, buildLoadMoreNode(targetParent, page.nextOffset, loadMore.pageSize, page.nextAnchor, loadMore.searchFilter, "INDEX")] : mergedChildren);
+            targetParent.objectCount = mergedChildren.filter((child) => child.type !== "load-more").length;
+            return;
+          }
           if (parent.type === "database" || parent.type === "schema" || parent.type === "linked-server-schema") {
             const parentDatabase = parent.database;
             if (!hasTreeNodeDatabaseContext(parent)) return;
