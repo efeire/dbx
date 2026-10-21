@@ -163,6 +163,29 @@ describe("OceanBase Oracle constraint information", () => {
     expect(host.textContent).toContain("SLOW_CONSTRAINT");
     expect(mocks.toast).not.toHaveBeenCalledWith(expect.stringContaining("Metadata loading timed out"), 5000);
   });
+
+  it("reads a requested index relation rather than substituting its parent table", async () => {
+    mocks.executeQuery.mockResolvedValue({ columns: ["CHILD_OWNER", "CHILD_NAME", "CHILD_TYPE", "PARENT_OWNER", "PARENT_NAME", "PARENT_TYPE"], rows: [["Index.Owner", "Idx.Dot", "INDEX", "TESTER", "Parent.Table", "TABLE"]], affected_rows: 0, execution_time_ms: 1 });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const consumed = vi.fn();
+    const app = createApp(ObjectBrowser, {
+      connection,
+      database: "TESTER",
+      schema: "TESTER",
+      propertyRequest: { requestId: "index-request", connectionId: connection.id, database: "TESTER", schema: "TESTER", name: "Parent.Table", objectType: "TABLE", initialTab: "relations", focusObject: { owner: "Index.Owner", name: "Idx.Dot", type: "INDEX" } },
+      onPropertyRequestConsumed: consumed,
+    });
+    mountedApps.push({ app, host });
+    app.mount(host);
+    await vi.waitFor(() => expect(mocks.executeQuery).toHaveBeenCalledTimes(1));
+    const [connectionId, database, sql, schema] = mocks.executeQuery.mock.calls[0]!;
+    expect([connectionId, database, schema]).toEqual([connection.id, "TESTER", "Index.Owner"]);
+    expect(sql).toContain("i.OWNER = 'Index.Owner' AND i.INDEX_NAME = 'Idx.Dot'");
+    expect(host.textContent).toContain("Index.Owner.Idx.Dot");
+    expect(host.querySelector('[data-object-section="foreignKeys"]')).toBeNull();
+    expect(consumed).toHaveBeenCalledWith("index-request");
+  });
   it.each(["overview", "partitions"])("ends a stalled %s metadata wait through the actual detail tab", async (kind) => {
     // Partition tabs are currently PostgreSQL-only; keep their shared lifecycle bounded too.
     if (kind === "partitions") connection.db_type = "postgres";

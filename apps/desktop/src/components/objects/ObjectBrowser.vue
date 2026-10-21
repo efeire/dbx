@@ -369,6 +369,8 @@ const tableRelationsSection = ref<ObjectDetailsSection>("dependencies");
 const propertyFocus = ref<NonNullable<QueryTab["objectPropertiesRequest"]>["focusObject"]>();
 const dependencyTarget = computed(() => {
   const row = sidePanelRow.value;
+  if (row && sidePanelMode.value === "table-info" && propertyFocus.value)
+    return objectDependencyTarget({ connectionId: props.connection.id, database: props.database, catalog: props.catalog, schema: propertyFocus.value.owner, name: propertyFocus.value.name, objectType: propertyFocus.value.type }, effectiveDatabaseType.value);
   return row ? objectDependencyTarget({ connectionId: props.connection.id, database: props.database, catalog: props.catalog, schema: row.schema || selectedSchema.value || props.database, name: row.name, objectType: row.type }, effectiveDatabaseType.value) : undefined;
 });
 function viewRelationSql(context: ObjectDependencyTarget, sql: string) {
@@ -1420,7 +1422,7 @@ const filteredTableDdlContent = computed(() => {
   });
 });
 
-async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
+async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab, focusObject?: NonNullable<QueryTab["objectPropertiesRequest"]>["focusObject"]) {
   selectedTableInfoColumns.value = [];
   selectedRowId.value = row.id;
   // Toggle off if clicking the same table
@@ -1433,7 +1435,7 @@ async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
   }
   sidePanelRow.value = row;
   sidePanelMode.value = "table-info";
-  propertyFocus.value = undefined;
+  propertyFocus.value = focusObject;
   sourceRow.value = null;
   const epoch = sidePanelGuard.start();
   // Reset state
@@ -1459,7 +1461,7 @@ async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
   tableTriggersLoaded.value = false;
   tableConstraintsLoaded.value = false;
   tableInfoSearchQuery.value = "";
-  tableRelationsSection.value = "dependencies";
+  tableRelationsSection.value = focusObject ? "ownership" : "dependencies";
   // Determine initial tab: explicit request > previously activated. Resolve the
   // partition status first so a persisted `partitions` tab is not rejected (and
   // overwritten) before the probe lands.
@@ -2080,9 +2082,8 @@ async function openRequestedProperties() {
     return;
   }
   const row: ObjectBrowserRow = { id: JSON.stringify([request.objectType, request.schema, request.name]), name: request.name, displayName: request.name, schema: request.schema, type: request.objectType };
-  await openTableInfo(row, request.initialTab);
+  await openTableInfo(row, request.initialTab, request.focusObject);
   if (props.propertyRequest?.requestId !== request.requestId) return;
-  propertyFocus.value = request.focusObject;
   emit("propertyRequestConsumed", request.requestId);
 }
 
@@ -5426,7 +5427,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
           <div v-if="tableInfoTab === 'ddl' && effectiveDatabaseType === 'oceanbase-oracle'" class="border-b px-3 py-2">
             <DdlStorageToggle :database-type="effectiveDatabaseType" :disabled="tableDdlLoading" />
           </div>
-          <p v-if="tableInfoTab === 'indexes' && propertyFocus" class="break-all border-b px-3 py-2 font-mono text-sm text-muted-foreground">{{ propertyFocus.owner }}.{{ propertyFocus.name }}</p>
+          <p v-if="propertyFocus && (tableInfoTab === 'indexes' || tableInfoTab === 'relations')" class="break-all border-b px-3 py-2 font-mono text-sm text-muted-foreground">{{ propertyFocus.owner }}.{{ propertyFocus.name }}</p>
           <ObjectDependenciesPanel v-if="tableInfoTab === 'relations'" :target="dependencyTarget" v-model:section="tableRelationsSection" :include-source="false" @view-sql="viewRelationSql" @open-object="openRelationObject" />
           <div v-else-if="tableInfoTab === 'info'" class="flex-1 min-h-0 overflow-auto">
             <div v-if="tableOverviewLoading" class="h-full flex items-center justify-center">

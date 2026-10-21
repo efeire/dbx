@@ -46,7 +46,7 @@ function mountLoader(enabled = true) {
   document.body.append(host);
   app.mount(host);
   mounted.push({ app, host, pinia });
-  return { loader, target, active, app };
+  return { loader, target, active, app, connections };
 }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -88,6 +88,35 @@ describe("independent object dependency lifecycle", () => {
     expect(loader.error.value).toBe("");
     expect(loader.rows.value).toEqual([]);
     expect(loader.truncated.value).toBe(true);
+  });
+
+  it("keeps an initial rejection distinct from a confirmed empty retry", async () => {
+    backend.executeQuery.mockRejectedValueOnce(new Error("permission denied")).mockResolvedValueOnce({ ...result(), rows: [] });
+    const { loader } = mountLoader();
+    await vi.waitFor(() => expect(loader.error.value).toBe("permission denied"));
+    expect(loader.loaded.value).toBe(false);
+    await loader.refresh();
+    expect(loader.error.value).toBe("");
+    expect(loader.loaded.value).toBe(true);
+    expect(loader.rows.value).toEqual([]);
+    expect(loader.truncated.value).toBe(false);
+  });
+
+  it("does not dispatch after a hidden connection wait completes and can reopen", async () => {
+    const pending = deferred<void>();
+    const { loader, active, connections } = mountLoader(false);
+    vi.spyOn(connections, "ensureConnected").mockReturnValueOnce(pending.promise);
+    backend.executeQuery.mockResolvedValue(result("REOPENED"));
+    active.value = true;
+    await vi.waitFor(() => expect(connections.ensureConnected).toHaveBeenCalledTimes(1));
+    active.value = false;
+    await nextTick();
+    pending.resolve();
+    await nextTick();
+    expect(backend.executeQuery).not.toHaveBeenCalled();
+    expect(loader.loaded.value).toBe(false);
+    active.value = true;
+    await vi.waitFor(() => expect(loader.rows.value[0]?.name).toBe("REOPENED"));
   });
 
   it("rejects stale refresh responses and cancels only its own execution id", async () => {

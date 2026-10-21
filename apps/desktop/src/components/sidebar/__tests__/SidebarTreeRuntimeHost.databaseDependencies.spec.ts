@@ -115,6 +115,16 @@ describe("routine dependency context-menu action", () => {
     expect(queryTab?.result).toBeUndefined();
   });
 
+  it("retains an index identity inside its parent property request", async () => {
+    const { host, queries } = await mountContextMenu("oceanbase-oracle");
+    const node: TreeNode = { id: "I", type: "index", label: "Idx.Dot", objectName: "Idx.Dot", schema: "Index.Owner", parentSchema: "Parent.Owner", parentName: "Parent.Table", parentType: "table", connectionId: "dependency-test", database: "APP" };
+    const action = host.buildContextMenu(node).find((item) => item.label === i18n.global.t("contextMenu.viewDependencies"))?.action;
+    expect(action).toBeDefined();
+    await action?.();
+    expect(queries.tabs[0]?.objectPropertiesRequest).toMatchObject({ schema: "Parent.Owner", name: "Parent.Table", objectType: "TABLE", initialTab: "relations", focusObject: { owner: "Index.Owner", name: "Idx.Dot", type: "INDEX" } });
+    expect(backend.executeMulti).not.toHaveBeenCalled();
+  });
+
   it("preserves the existing dialog preference and forwards its initial section", async () => {
     const { host, queries, onOpenObjectSource } = await mountContextMenu("oracle", "dialog");
     const node: TreeNode = { id: "P", type: "procedure", label: "P", schema: "APP", connectionId: "dependency-test", database: "APP" };
