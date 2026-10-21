@@ -132,6 +132,83 @@ describe("connectionStore one_time runtime cleanup", () => {
     expect(store.getConfig("deeplink-1")).toMatchObject({ name: "Deeplink", one_time: true });
   });
 
+  it("retains the response-only dialect identity when loading saved connections", async () => {
+    installApiMocks();
+    const { loadConnections } = await import("@/lib/backend/api");
+    const { effectiveDatabaseTypeForConnection } = await import("@/lib/database/jdbcDialect");
+    const saved = previewConnection({
+      id: "jdbc-oracle-mode",
+      one_time: false,
+      db_type: "jdbc",
+      connection_string: "__DBX_SAVED_CREDENTIAL__:opaque",
+      jdbc_dialect: "oceanbase-oracle",
+    });
+    vi.mocked(loadConnections).mockResolvedValue([saved]);
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+
+    await store.initFromDisk();
+
+    expect(store.getConfig(saved.id)?.jdbc_dialect).toBe("oceanbase-oracle");
+    expect(effectiveDatabaseTypeForConnection(store.getConfig(saved.id))).toBe("oceanbase-oracle");
+  });
+
+  it("does not let an in-flight connection response replace an edit made after the load began", async () => {
+    installApiMocks();
+    const { loadConnections } = await import("@/lib/backend/api");
+    let finishLoad!: (connections: ConnectionConfig[]) => void;
+    vi.mocked(loadConnections).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishLoad = resolve;
+      }),
+    );
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    const saved = previewConnection({
+      id: "jdbc-oracle-mode",
+      one_time: false,
+      db_type: "jdbc",
+      connection_string: "__DBX_SAVED_CREDENTIAL__:opaque",
+      jdbc_dialect: "oceanbase-oracle",
+    });
+    store.connections = [saved];
+
+    const loading = store.initFromDisk();
+    await vi.waitFor(() => expect(loadConnections).toHaveBeenCalledOnce());
+    const edited = { ...saved, connection_string: "jdbc:oracle:thin:@host/service", jdbc_dialect: undefined };
+    store.connections = [edited];
+    finishLoad([saved]);
+    await loading;
+
+    expect(store.getConfig(saved.id)?.connection_string).toBe(edited.connection_string);
+    expect(store.getConfig(saved.id)?.jdbc_dialect).toBeUndefined();
+    const { effectiveDatabaseTypeForConnection } = await import("@/lib/database/jdbcDialect");
+    expect(effectiveDatabaseTypeForConnection(store.getConfig(saved.id))).toBe("oracle");
+  });
+
+  it("does not reconnect for response-only dialect changes and omits the hint from saves", async () => {
+    installApiMocks();
+    const { saveConnections } = await import("@/lib/backend/api");
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    const connection = previewConnection({
+      id: "jdbc-oracle-mode",
+      one_time: false,
+      db_type: "jdbc",
+      connection_string: "__DBX_SAVED_CREDENTIAL__:opaque",
+      jdbc_dialect: "oceanbase-oracle",
+    });
+    store.connections = [connection];
+    store.connectedIds.add(connection.id);
+
+    await store.updateConnection({ ...connection, jdbc_dialect: undefined });
+
+    expect(store.connectedIds.has(connection.id)).toBe(true);
+    expect(saveConnections).toHaveBeenCalledOnce();
+    const savedConfigs = vi.mocked(saveConnections).mock.calls[0]![0];
+    expect(savedConfigs[0]).not.toHaveProperty("jdbc_dialect");
+  });
+
   it("does not retain a stale saved connection removed from persisted storage", async () => {
     installApiMocks();
     const { loadConnections } = await import("@/lib/backend/api");

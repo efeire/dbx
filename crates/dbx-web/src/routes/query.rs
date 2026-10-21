@@ -47,6 +47,7 @@ pub struct ExecuteQueryRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CancelRequest {
     pub execution_id: String,
+    pub cancel: Option<bool>,
 }
 
 const CONDITIONAL_UPDATE_CANCEL_WAIT: Duration = Duration::from_secs(10);
@@ -588,8 +589,8 @@ pub async fn execute_conditional_update(
             },
         )
         .await;
+        registered.finish_with_database_result(&result);
         let _ = result_tx.send(result);
-        drop(registered);
     });
 
     let result = match response_timeout {
@@ -754,7 +755,11 @@ pub async fn cancel_conditional_update(
     State(state): State<Arc<WebState>>,
     Json(req): Json<CancelRequest>,
 ) -> Json<dbx_core::query_cancel::CancellationWaitResult> {
-    Json(state.app.running_queries.cancel_and_wait(&req.execution_id, CONDITIONAL_UPDATE_CANCEL_WAIT).await)
+    Json(if req.cancel == Some(false) {
+        state.app.running_queries.wait_for_completion(&req.execution_id, CONDITIONAL_UPDATE_CANCEL_WAIT).await
+    } else {
+        state.app.running_queries.cancel_and_wait(&req.execution_id, CONDITIONAL_UPDATE_CANCEL_WAIT).await
+    })
 }
 
 pub async fn read_large_value_chunk(
@@ -1295,6 +1300,12 @@ pub async fn build_executable_object_source_statements(
     dbx_core::object_source_sql::build_executable_object_source_statements(req.input).map(Json).map_err(AppError::from)
 }
 
+pub async fn build_oracle_type_management_sql(
+    Json(input): Json<dbx_core::db::OracleTypeManagementSqlInput>,
+) -> Result<Json<dbx_core::db::OracleTypeManagementSqlResult>, AppError> {
+    dbx_core::schema::build_oracle_type_management_sql(input).map(Json).map_err(AppError::from)
+}
+
 pub async fn validate_oracle_executable_object_source(
     Json(req): Json<ValidateOracleExecutableObjectSourceRequest>,
 ) -> Result<Json<()>, AppError> {
@@ -1596,6 +1607,44 @@ mod tests {
         let app = Arc::new(AppState::new_with_plugin_dir(storage, dir.join("plugins")));
         let state = Arc::new(WebState::for_tests(app, dir.clone()));
         (state, dir)
+    }
+
+    #[tokio::test]
+    async fn conditional_update_wait_only_preserves_the_running_statement_and_reads_completion() {
+        let (state, _dir) = test_web_state().await;
+        let registered = state
+            .app
+            .running_queries
+            .register_task_for_terminal_confirmation("type-step".to_string(), Default::default());
+        let token = registered.token();
+        let request = serde_json::from_value(serde_json::json!({"executionId":"type-step", "cancel":false})).unwrap();
+        let wait = cancel_conditional_update(AxumState(state), Json(request));
+        tokio::pin!(wait);
+        assert!(tokio::time::timeout(Duration::from_millis(5), &mut wait).await.is_err());
+        assert!(!token.is_cancelled());
+        registered.finish_with_database_result(&Ok::<_, dbx_core::query::QueryExecutionError>(()));
+        let result = wait.await.0;
+        assert!(!result.requested && result.terminal);
+        assert_eq!(result.database_terminal, Some(true));
+    }
+
+    #[tokio::test]
+    async fn conditional_update_omitted_cancel_keeps_the_existing_cancellation_contract() {
+        let (state, _dir) = test_web_state().await;
+        let registered = state
+            .app
+            .running_queries
+            .register_task_for_terminal_confirmation("old-caller".to_string(), Default::default());
+        let token = registered.token();
+        let completion = tokio::spawn(async move {
+            token.cancelled().await;
+            drop(registered);
+        });
+        let request = serde_json::from_value(serde_json::json!({"executionId":"old-caller"})).unwrap();
+        let result = cancel_conditional_update(AxumState(state), Json(request)).await.0;
+        completion.await.unwrap();
+        assert!(result.requested && result.terminal);
+        assert_eq!(result.database_terminal, Some(false));
     }
 
     fn deploy_result(status: &str, statement_count: usize) -> dbx_core::query::SchemaDiffDeployResult {

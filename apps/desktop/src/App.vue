@@ -102,6 +102,8 @@ import {
 } from "@/lib/sql/sqlNavigation";
 import { isObjectDependencySection, type ObjectDependencyTarget } from "@/lib/database/objectDependencyDetails";
 import { buildEditableObjectSource, buildExecutableObjectSourceStatements, executeObjectSourceSave } from "@/lib/table/objectSourceEditor";
+import { isOracleFamilyTypeSource } from "@/lib/database/databaseObjectCapabilities";
+import { oracleTypeManagementRequest, requestOracleTypeManagement } from "@/lib/table/oracleTypeManagementRequest";
 import { assertSourceIdentity, beginSourceSave } from "@/lib/table/objectSourceIdentity";
 import { loadEditableObjectSourceForEditor } from "@/lib/table/objectSourceLoad";
 import { schemaAfterConnectionSwitch } from "@/lib/schema/connectionSchemaInitialization";
@@ -248,6 +250,7 @@ const QuickOpenDialog = defineAsyncComponent(() => import("@/components/quick-op
 const TabSwitcherDialog = defineAsyncComponent(() => import("@/components/tabs/TabSwitcherDialog.vue"));
 const QueryEditorDdlViewDialog = defineAsyncComponent(() => import("@/components/objects/DdlViewDialog.vue"));
 const QueryEditorObjectSourceDialog = defineAsyncComponent(() => import("@/components/objects/ObjectSourceDialog.vue"));
+const OracleTypeManagementDialog = defineAsyncComponent(() => import("@/components/objects/OracleTypeManagementDialog.vue"));
 
 type AiAssistantHandle = {
   openPluginConversation: (request: AiPluginConversationRequest) => void;
@@ -2724,12 +2727,28 @@ async function saveActiveObjectSource(tab: QueryTab): Promise<boolean> {
   if (!connection || !source) return false;
 
   try {
+    const databaseType = effectiveDatabaseTypeForConnection(connection) ?? connection.db_type;
+    if (isOracleFamilyTypeSource(databaseType, source.objectType)) {
+      if (!tab.typeSourceEditing && (!tab.typeManagementDraft || tab.typeManagementDraft.state === "complete")) return false;
+      if (!tab.typeManagementDraft || tab.typeManagementDraft.state === "complete") assertSourceIdentity(queryStore.getObjectSourceIdentitySnapshot(tab)!);
+      const { connectionId, database, sql } = tab;
+      const owner = source.schema || tab.schema || database;
+      const result = await requestOracleTypeManagement({
+        target: { connectionId, database, owner, name: source.name, databaseType: databaseType as "oracle" | "oceanbase-oracle" | "dameng" },
+        operation: source.objectType === "TYPE_BODY" ? "save-body" : "save-spec",
+        source: sql,
+        baseSource: tab.originalSql,
+        tabId: tab.id,
+        isCurrent: () => queryStore.tabs.includes(tab) && tab.objectSource === source && tab.connectionId === connectionId && tab.database === database && (source.schema || tab.schema || database) === owner && tab.sql === sql,
+      });
+      if (result.complete) toast(t("objects.sourceSaved"), 2000);
+      return result.complete;
+    }
     const identity = queryStore.getObjectSourceIdentitySnapshot(tab)!;
     assertSourceIdentity(identity);
     const { connectionId, database } = tab;
     const schema = source.schema || tab.schema || database;
     const sql = tab.sql;
-    const databaseType = effectiveDatabaseTypeForConnection(connection) ?? connection.db_type;
     const statements = await buildExecutableObjectSourceStatements({
       databaseType,
       objectType: source.objectType,
@@ -4164,6 +4183,10 @@ async function handleQuickOpenSelect(item: any) {
       const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(item.connectionId));
       if (!databaseType) throw new Error("Connection type is unavailable.");
       const objectName = item.objectName || item.tableName;
+      if (isOracleFamilyTypeSource(databaseType, objectType)) {
+        queryStore.openObjectSourceTabPending({ connectionId: item.connectionId, database: item.database, schema, title: `Source - ${objectName}`, initialEditing: false, request: { name: objectName, objectType, signature: item.signature } });
+        return;
+      }
       const { editableSource, objectType: resolvedType } = await loadEditableObjectSourceForEditor(api.getObjectSource, buildEditableObjectSource, {
         connectionId: item.connectionId,
         database: item.database,
@@ -5806,6 +5829,7 @@ onUnmounted(() => {
         <CloseActionPromptDialog v-if="isDesktop && showCloseActionPrompt" :open="showCloseActionPrompt" @update:open="handleCloseActionPromptOpenChange" @quit="chooseQuit" @minimize="chooseMinimize" />
         <AiRunsClosePromptDialog v-if="isDesktop && showAiRunsClosePrompt" v-model:open="showAiRunsClosePrompt" :count="blockingAiRunCount" @cancel="cancelPendingAppClose" @quit="confirmQuitWithActiveAiRuns" />
         <QuickOpenDialog :open="showQuickOpen" :initial-content-mode="quickOpenForceContent" @update:open="showQuickOpen = $event" @select="handleQuickOpenSelect" />
+        <OracleTypeManagementDialog v-if="oracleTypeManagementRequest" />
         <TabSwitcherDialog :open="showTabSwitcher" :tabs="tabSwitcherTabs" :selected-index="tabSwitcherIndex" :shortcut-hint="tabSwitcherShortcutHint" @update:open="handleTabSwitcherOpenChange" @update:selected-index="tabSwitcherIndex = $event" @select="handleTabSwitcherSelect" />
       </div>
       <Teleport to="body">

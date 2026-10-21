@@ -169,8 +169,8 @@ pub async fn execute_conditional_update(
             },
         )
         .await;
+        registered.finish_with_database_result(&result);
         let _ = result_tx.send(result);
-        drop(registered);
     });
 
     let result = match response_timeout {
@@ -328,8 +328,13 @@ pub async fn cancel_query(state: State<'_, Arc<AppState>>, execution_id: String)
 pub async fn cancel_conditional_update(
     state: State<'_, Arc<AppState>>,
     execution_id: String,
+    cancel: Option<bool>,
 ) -> Result<dbx_core::query_cancel::CancellationWaitResult, String> {
-    Ok(state.running_queries.cancel_and_wait(&execution_id, Duration::from_secs(10)).await)
+    Ok(if cancel == Some(false) {
+        state.running_queries.wait_for_completion(&execution_id, Duration::from_secs(10)).await
+    } else {
+        state.running_queries.cancel_and_wait(&execution_id, Duration::from_secs(10)).await
+    })
 }
 
 #[tauri::command]

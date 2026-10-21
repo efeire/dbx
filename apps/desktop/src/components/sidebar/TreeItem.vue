@@ -110,7 +110,7 @@ import { useDragSort } from "@/composables/useDragSort";
 import { sidebarTreeRuntimeKey } from "@/lib/sidebar/sidebarTreeRuntime";
 import { treeNodePinKey } from "@/lib/app/pinnedItems";
 import { isTreeGroupNodeType } from "@/lib/sidebar/treeNodeGroup";
-import { customTypeCapabilities } from "@/lib/database/databaseObjectCapabilities";
+import { customTypeCapabilities, supportsOracleTypeAttributeExpansion } from "@/lib/database/databaseObjectCapabilities";
 import { shouldActivateTreeNodeOnSingleClick } from "@/lib/sidebar/treeNodeClick";
 
 const { t } = useI18n();
@@ -472,7 +472,11 @@ function displayLabel(node: TreeNode): string {
 }
 
 function treeNodeSecondaryValue(node: TreeNode): string | undefined {
-  if (node.type === "type" && node.customTypeKind) return t(`customType.kinds.${node.customTypeKind}`);
+  if (node.type === "type" && node.customTypeKind) {
+    const databaseType = node.connectionId ? effectiveDatabaseTypeForConnection(connectionStore.getConfig(node.connectionId)) : undefined;
+    const kindKey = supportsOracleTypeAttributeExpansion(databaseType) ? `oracleType.kinds.${node.customTypeKind in { object: true, collection: true } ? node.customTypeKind : "other"}` : `customType.kinds.${node.customTypeKind}`;
+    return t(kindKey);
+  }
   if (node.type === "type-member") return (node.meta as CustomTypeTreeMemberMeta | undefined)?.displayValue;
   if (node.type === "datafile") return node.xuguDatafilePath;
   if (node.type === "elasticsearch-index") return elasticsearchIndexAliasLabel(node);
@@ -854,7 +858,7 @@ const canExpand = computed(() => {
   // loadable members; types without members (enum/domain/range/base) do not
   // expand even if the catalog row lists child metadata.
   if (activeNode.value.type === "type" && customTypeCapabilities(currentDatabaseType()).details) {
-    return activeNode.value.hasMembers === true;
+    return activeNode.value.hasMembers === true || (activeNode.value.hasMembers === undefined && supportsOracleTypeAttributeExpansion(currentDatabaseType()));
   }
   return canTreeNodeShowExpander({
     type: activeNode.value.type,
