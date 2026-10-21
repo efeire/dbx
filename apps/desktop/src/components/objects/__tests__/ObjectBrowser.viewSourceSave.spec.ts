@@ -6,6 +6,7 @@ import ObjectBrowser from "@/components/objects/ObjectBrowser.vue";
 import { getCachedObjectBrowserRows, invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
 import { freezeSourceIdentities } from "@/lib/table/objectSourceIdentity";
 import type { ConnectionConfig } from "@/types/database";
+import type { OracleRoutineOperation } from "@/types/schemaDiff";
 
 const mocks = vi.hoisted(() => ({
   listObjects: vi.fn(),
@@ -14,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   buildEditableObjectSource: vi.fn(),
   buildExecutableObjectSourceStatements: vi.fn(),
   executeQuery: vi.fn(),
+  prepareOracleRoutineSave: vi.fn(),
+  executeOracleRoutineOperation: vi.fn(),
   ensureConnected: vi.fn(),
   toast: vi.fn(),
   sourceTabs: [] as Array<{ id: string; sourceLoad?: { error?: string }; objectSource?: unknown }>,
@@ -36,6 +39,8 @@ vi.mock("@/lib/backend/api", () => ({
   buildEditableObjectSource: (...args: unknown[]) => mocks.buildEditableObjectSource(...args),
   buildExecutableObjectSourceStatements: (...args: unknown[]) => mocks.buildExecutableObjectSourceStatements(...args),
   executeQuery: (...args: unknown[]) => mocks.executeQuery(...args),
+  prepareOracleRoutineSave: (...args: unknown[]) => mocks.prepareOracleRoutineSave(...args),
+  executeOracleRoutineOperation: (...args: unknown[]) => mocks.executeOracleRoutineOperation(...args),
   deleteSchemaCachePrefix: (...args: unknown[]) => mocks.deleteSchemaCachePrefix(...args),
 }));
 vi.mock("@/lib/database/productionExecutionGuard", () => ({
@@ -245,6 +250,42 @@ async function clickRow(host: HTMLElement, name: string) {
 }
 
 describe("ObjectBrowser view source save", () => {
+  it.each([false, true])("counts a routine save only after complete verification (valid=%s)", async (valid) => {
+    const source = 'CREATE OR REPLACE FUNCTION "APP"."v_demo" RETURN NUMBER AS BEGIN RETURN 1; END;';
+    const identity = { owner: "APP", name: VIEW_NAME, kind: "FUNCTION" as const };
+    const operation: OracleRoutineOperation = {
+      operationId: `browser-routine-${valid}`,
+      target: { connectionId: oracleConnection.id, database: "ORCL", schema: "APP", databaseType: "oracle", generation: 0 },
+      identity,
+      lifecycle: "terminal",
+      dispatched: true,
+      acknowledged: true,
+      readback: { identity, state: valid ? "verified" : "invalid", exists: true, source, version: null, definitionMatches: true, compilerMessages: valid ? [] : [{ attribute: "ERROR", line: 1, position: 72, text: "missing identifier" }], issues: [] },
+      error: null,
+    };
+    mocks.listObjects.mockResolvedValue([{ name: VIEW_NAME, schema: "APP", object_type: "FUNCTION" }]);
+    mocks.getObjectSource.mockResolvedValue({ name: VIEW_NAME, schema: "APP", object_type: "FUNCTION", source, editable: true });
+    mocks.buildExecutableObjectSourceStatements.mockResolvedValue([source]);
+    mocks.prepareOracleRoutineSave.mockResolvedValue({ ...operation, lifecycle: "prepared", dispatched: false, acknowledged: false, readback: null });
+    mocks.executeOracleRoutineOperation.mockResolvedValue(operation);
+    const host = await mountBrowser(oracleConnection, "ORCL");
+    vi.useFakeTimers();
+    await clickRow(host, VIEW_NAME);
+    click(saveButton(host)!);
+    await settle();
+    expect(mocks.prepareOracleRoutineSave).toHaveBeenCalledWith({ connectionId: oracleConnection.id, database: "ORCL", identity, sql: source });
+    expect(mocks.executeOracleRoutineOperation).toHaveBeenCalledExactlyOnceWith(operation.operationId, source);
+    expect(mocks.executeQuery).not.toHaveBeenCalled();
+    if (valid) {
+      expect(mocks.toast).toHaveBeenCalledWith("objects.sourceSaved", 2000);
+      expect(saveButton(host)).toBeUndefined();
+    } else {
+      expect(host.textContent).toContain("ERROR 1:72 missing identifier");
+      expect(mocks.toast).not.toHaveBeenCalledWith("objects.sourceSaved", 2000);
+      expect(mocks.getObjectSource).toHaveBeenCalledTimes(1);
+      expect(saveButton(host)).toBeDefined();
+    }
+  });
   it("invalidates completed compile caches but does not refresh an unmounted browser", async () => {
     let release!: () => void;
     mocks.listSchemas.mockResolvedValue(["APP_A", "APP_B"]);
@@ -440,7 +481,7 @@ describe("ObjectBrowser view source save", () => {
     click(save!);
     await settle();
     expect(mocks.executeQuery).toHaveBeenCalledWith("mysql-views", "app", ALTER_SQL, "app");
-    expect(mocks.toast).toHaveBeenCalledWith("objects.sourceSaved");
+    expect(mocks.toast).toHaveBeenCalledWith("objects.sourceSaved", 2000);
     // The success path closes the panel (same row + source mode).
     expect(saveButton(host)).toBeUndefined();
 

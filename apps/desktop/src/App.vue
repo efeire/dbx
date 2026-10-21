@@ -101,7 +101,7 @@ import {
   type SqlObjectNavigationTarget,
 } from "@/lib/sql/sqlNavigation";
 import { isObjectDependencySection, type ObjectDependencyTarget } from "@/lib/database/objectDependencyDetails";
-import { buildEditableObjectSource, buildExecutableObjectSourceStatements, executeObjectSourceSave } from "@/lib/table/objectSourceEditor";
+import { buildEditableObjectSource, buildExecutableObjectSourceStatements, prepareObjectSourceSave, objectSourceSaveSuccessMessage } from "@/lib/table/objectSourceEditor";
 import { assertSourceIdentity, beginSourceSave } from "@/lib/table/objectSourceIdentity";
 import { loadEditableObjectSourceForEditor } from "@/lib/table/objectSourceLoad";
 import { schemaAfterConnectionSwitch } from "@/lib/schema/connectionSchemaInitialization";
@@ -2732,31 +2732,34 @@ async function saveActiveObjectSource(tab: QueryTab): Promise<boolean> {
       name: source.name,
       source: sql,
     });
+    const save = await prepareObjectSourceSave(connectionId, database, databaseType, statements, schema, { objectType: source.objectType, name: source.name });
+    const targetIsCurrent = () => queryStore.tabs.includes(tab) && tab.objectSource === source && tab.connectionId === connectionId && tab.database === database && (source.schema || tab.schema || database) === schema;
     const execute = async () => {
-      if (!queryStore.tabs.includes(tab) || tab.objectSource !== source || tab.connectionId !== connectionId || tab.database !== database || (source.schema || tab.schema || database) !== schema) return false;
+      if (!targetIsCurrent()) return;
       const release = beginSourceSave(identity);
       try {
-        await executeObjectSourceSave(connectionId, database, databaseType, statements, schema);
-        return true;
+        return { operation: await save() };
       } finally {
         release();
       }
     };
     const executableSql = statements.filter((sql) => sql.trim()).join(";\n");
+    let result;
     if (executableSql.trim()) {
-      const saved = await executeWithProductionSqlGuard({
+      result = await executeWithProductionSqlGuard({
         connection,
         database,
         sql: executableSql,
         source: t("production.sourceObjectSource"),
         execute,
       });
-      if (!saved) return false;
     } else {
-      if (!(await execute())) return false;
+      result = await execute();
     }
+    if (!result) return false;
+    if (!targetIsCurrent()) return false;
     if (tab.sql === sql) queryStore.markTabClean(tab);
-    toast(t("objects.sourceSaved"), 2000);
+    toast(objectSourceSaveSuccessMessage(t("objects.sourceSaved"), result.operation), result.operation?.readback?.compilerMessages.length ? 6000 : 2000);
     return true;
   } catch (e: any) {
     toast(t("objects.sourceSaveFailed", { message: e?.message || String(e) }), 5000);

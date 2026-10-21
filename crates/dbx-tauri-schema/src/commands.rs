@@ -663,6 +663,68 @@ pub async fn list_functions(
 }
 
 #[tauri::command]
+pub async fn load_schema_diff_routines(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+    schema: String,
+) -> Result<dbx_core::schema::oracle_routines::RoutineSnapshot, String> {
+    dbx_core::schema::oracle_routines::load_schema_diff_routines_core(&state, &connection_id, &database, &schema).await
+}
+
+#[tauri::command]
+pub async fn prepare_oracle_routine_save(
+    state: State<'_, Arc<AppState>>,
+    input: dbx_core::schema::oracle_routines::OracleRoutineSaveInput,
+) -> Result<dbx_core::schema::oracle_routines::RoutineOperationRecord, String> {
+    dbx_core::schema::oracle_routines::prepare_oracle_routine_save_core(&state, input).await
+}
+
+#[tauri::command]
+pub async fn prepare_oracle_routine_plan(
+    state: State<'_, Arc<AppState>>,
+    input: dbx_core::schema::oracle_routines::OracleRoutinePlanInput,
+) -> Result<dbx_core::schema::oracle_routines::OracleRoutinePlan, String> {
+    dbx_core::schema::oracle_routines::prepare_oracle_routine_plan_core(&state, input).await
+}
+
+#[tauri::command]
+pub async fn prepare_oracle_routine_recovery(
+    state: State<'_, Arc<AppState>>,
+    operation_id: String,
+) -> Result<dbx_core::schema::oracle_routines::OracleRoutinePlan, String> {
+    dbx_core::schema::oracle_routines::prepare_oracle_routine_recovery_core(&state, &operation_id).await
+}
+
+#[tauri::command]
+pub async fn execute_oracle_routine_operation(
+    state: State<'_, Arc<AppState>>,
+    operation_id: String,
+    approved_sql: String,
+) -> Result<dbx_core::schema::oracle_routines::RoutineOperationRecord, String> {
+    dbx_core::schema::oracle_routines::execute_oracle_routine_operation_core(
+        state.inner().clone(),
+        operation_id,
+        approved_sql,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn observe_oracle_routine_operation(
+    state: State<'_, Arc<AppState>>,
+    operation_id: String,
+    refresh_readback: Option<bool>,
+) -> Result<dbx_core::schema::oracle_routines::RoutineOperationObservation, String> {
+    Ok(dbx_core::schema::oracle_routines::observe_oracle_routine_operation_core(
+        &state,
+        &operation_id,
+        refresh_readback.unwrap_or(false),
+    )
+    .await)
+}
+
+#[tauri::command]
 pub async fn list_sequences(
     state: State<'_, Arc<AppState>>,
     connection_id: String,
