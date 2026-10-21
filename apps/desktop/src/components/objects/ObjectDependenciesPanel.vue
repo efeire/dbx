@@ -184,7 +184,7 @@ async function copyName(row: ObjectDependencyRow) {
         </div>
       </div>
       <div v-else-if="loaded" class="min-h-0 flex-1 overflow-auto border-t">
-        <table class="w-full text-left text-sm">
+        <table class="w-max min-w-full text-left text-sm">
           <thead class="sticky top-0 z-10 bg-muted">
             <tr class="border-b">
               <th class="px-4 py-2 font-medium">{{ t("objects.name") }}</th>
