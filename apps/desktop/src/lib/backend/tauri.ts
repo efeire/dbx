@@ -2798,8 +2798,8 @@ export async function listFunctions(connectionId: string, database: string, sche
   return (await invoke<FunctionInfoWire[]>("list_functions", { connectionId, database, schema })).map(functionInfoFromWire);
 }
 
-export function loadSchemaDiffRoutines(connectionId: string, database: string, schema: string): Promise<OracleRoutineSnapshot> {
-  return invoke("load_schema_diff_routines", { connectionId, database, schema });
+export function loadSchemaDiffRoutines(connectionId: string, database: string, schema: string, selectedRoutines?: string[]): Promise<OracleRoutineSnapshot> {
+  return invoke("load_schema_diff_routines", { connectionId, database, schema, ...(selectedRoutines === undefined ? {} : { selectedRoutines }) });
 }
 
 export function prepareOracleRoutineSave(input: OracleRoutineSaveInput): Promise<OracleRoutineOperation> {
@@ -2820,6 +2820,10 @@ export function executeOracleRoutineOperation(operationId: string, approvedSql: 
 
 export function observeOracleRoutineOperation(operationId: string, refreshReadback = false): Promise<OracleRoutineOperationObservation> {
   return invoke("observe_oracle_routine_operation", { operationId, refreshReadback });
+}
+
+export function updateOracleRoutineOperationReferences(retainOperationIds: string[], releaseOperationIds: string[]): Promise<void> {
+  return invoke("update_oracle_routine_operation_references", { retainOperationIds, releaseOperationIds });
 }
 
 export async function listSequences(connectionId: string, database: string, schema: string, withLastValues: boolean): Promise<SequenceInfo[]> {

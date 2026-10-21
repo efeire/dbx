@@ -15,7 +15,7 @@ import { convertToSchemaDiffObjects, databaseTypeToDialectKind, normalizeDialect
 import { normalizeSchemaDiffCompareOptions, type OracleRoutineCompareContext, type OracleRoutineSnapshot, type SchemaDiffCompareOptions } from "@/types/schemaDiff";
 import type { DatabaseType, FunctionInfo, TableInfo } from "@/types/database";
 import type { SchemaDiffPreparation } from "@/lib/schema/schemaDiff";
-import type { OracleRoutineDeployment } from "@/lib/schema/oracleRoutineDeploy";
+import { disposeOracleRoutineDeployment, type OracleRoutineDeployment } from "@/lib/schema/oracleRoutineDeploy";
 
 export interface SchemaDiffSessionProgress {
   phase: SchemaDiffProgressPhase;
@@ -116,7 +116,7 @@ async function loadSessionRoutines(session: SchemaDiffSession, side: "source" | 
   const schema = side === "source" ? input.sourceSchema : input.targetSchema;
   const engine = side === "source" ? (input.sourceEngineDbType ?? input.sourceDbType) : (input.targetEngineDbType ?? input.targetDbType);
   if (!isOracleRoutineEngine(engine)) return api.listFunctions(connectionId, database, schema);
-  const snapshot = await api.loadSchemaDiffRoutines(connectionId, database, schema);
+  const snapshot = await api.loadSchemaDiffRoutines(connectionId, database, schema, input.options?.selectedRoutines);
   signal.throwIfAborted();
   if (snapshot.endpoint.connectionId !== connectionId || snapshot.endpoint.database !== database || snapshot.endpoint.schema !== schema || snapshot.endpoint.databaseType !== engine) {
     throw new Error("Routine snapshot endpoint does not match this comparison");
@@ -372,6 +372,7 @@ export function getSchemaDiffSession(id: string | null | undefined): SchemaDiffS
 export function removeSchemaDiffSession(id: string): boolean {
   const session = sessions.get(id);
   if (session?.status === "running") return false;
+  if (session?.routineDeployment) void disposeOracleRoutineDeployment(session.routineDeployment);
   return sessions.delete(id);
 }
 

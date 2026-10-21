@@ -4,8 +4,13 @@ use crate::models::connection::ConnectionConfig;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Instant;
 
-#[derive(Clone)]
+mod retention;
+use retention::RegistryLimits;
+pub(super) use retention::{PreparedRoutineWrite, RoutineOperationPin};
+
+#[derive(Clone, Serialize)]
 pub(super) struct RoutineWriteBinding {
     pub target: RoutineEndpoint,
     pub identity: RoutineIdentity,
@@ -82,19 +87,22 @@ struct StoredOperation {
     verified_post_state: Option<RoutineReadback>,
     // Web session tokens remain private, in memory, and outside Debug/Serialize.
     owner_scope: Option<String>,
+    client_retained: bool,
+    unclaimed_until: Option<Instant>,
+    inflight: usize,
+    charge: usize,
+    receipt_floor: usize,
 }
 
-impl StoredOperation {
-    fn capture_verified_post_state(&mut self) {
-        if self.verified_post_state.is_none() && self.record.verified() {
-            self.verified_post_state = self.record.readback.clone();
-        }
-    }
-}
-
-#[derive(Default)]
 pub struct RoutineOperationRegistry {
     operations: Mutex<HashMap<String, StoredOperation>>,
+    limits: RegistryLimits,
+}
+
+impl Default for RoutineOperationRegistry {
+    fn default() -> Self {
+        Self { operations: Mutex::new(HashMap::new()), limits: RegistryLimits::default() }
+    }
 }
 
 pub(super) enum BeginRoutineOperation {
@@ -144,43 +152,15 @@ impl RoutineOperationRegistry {
         binding: RoutineWriteBinding,
         supersedes: Option<&str>,
     ) -> Result<RoutineOperationRecord, String> {
-        let owner_scope = current_credential_owner();
-        let mut operations = self.operations.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(id) = supersedes {
-            let original = operations
-                .get_mut(id)
-                .filter(|operation| operation.owner_scope == owner_scope)
-                .ok_or("Original routine approval is unavailable; do not replace its ID")?;
-            if !same_namespace_target(&binding, &original.binding) {
-                return Err("A new routine draft cannot supersede another target".into());
-            }
-            if matches!(
-                original.record.lifecycle,
-                RoutineOperationLifecycle::Running | RoutineOperationLifecycle::Unproven
-            ) {
-                return Err("Original routine request may still be running; only observe its original ID".into());
-            }
-            if original.record.lifecycle == RoutineOperationLifecycle::Prepared {
-                original.record.lifecycle = RoutineOperationLifecycle::Terminal;
-                original.record.error = Some("Approval was superseded before dispatch".into());
-            }
-        }
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let record = RoutineOperationRecord {
-            operation_id: operation_id.clone(),
-            target: binding.target.clone(),
-            identity: binding.identity.clone(),
-            lifecycle: RoutineOperationLifecycle::Prepared,
-            dispatched: false,
-            acknowledged: false,
-            readback: None,
-            error: None,
-        };
-        operations.insert(
-            operation_id,
-            StoredOperation { binding, record: record.clone(), verified_post_state: None, owner_scope },
-        );
-        Ok(record)
+        let mut records = self.prepare_batch(
+            vec![PreparedRoutineWrite {
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                binding,
+                supersedes: supersedes.map(str::to_owned),
+            }],
+            0,
+        )?;
+        Ok(records.remove(0))
     }
 
     pub fn observe(&self, operation_id: &str) -> RoutineOperationObservation {
@@ -216,10 +196,11 @@ impl RoutineOperationRegistry {
                 prerequisite.owner_scope == operation.owner_scope && prerequisite.record.verified()
             })
         }) {
-            let operation = operations.get_mut(operation_id).expect("checked under this lock");
-            operation.record.lifecycle = RoutineOperationLifecycle::Terminal;
-            operation.record.error = Some("A prerequisite routine step is not verified; validate the remaining draft without replaying completed steps".into());
-            return Ok(BeginRoutineOperation::Existing(operation.record.clone()));
+            self.update_record_locked(&mut operations, operation_id, |record| {
+                record.lifecycle = RoutineOperationLifecycle::Terminal;
+                record.error = Some("A prerequisite routine step is not verified; validate the remaining draft without replaying completed steps".into());
+            });
+            return Ok(BeginRoutineOperation::Existing(operations[operation_id].record.clone()));
         }
         if let Some(active) = operations.values().find(|other| {
             matches!(other.record.lifecycle, RoutineOperationLifecycle::Running | RoutineOperationLifecycle::Unproven)
@@ -233,14 +214,20 @@ impl RoutineOperationRegistry {
             } else {
                 "Routine target has an unresolved operation in another authenticated session".into()
             };
-            let operation = operations.get_mut(operation_id).expect("checked under this lock");
-            operation.record.lifecycle = RoutineOperationLifecycle::Terminal;
-            operation.record.error = Some(error);
-            return Ok(BeginRoutineOperation::Existing(operation.record.clone()));
+            self.update_record_locked(&mut operations, operation_id, |record| {
+                record.lifecycle = RoutineOperationLifecycle::Terminal;
+                record.error = Some(error);
+            });
+            return Ok(BeginRoutineOperation::Existing(operations[operation_id].record.clone()));
         }
         let operation = operations.get_mut(operation_id).expect("operation was checked under this lock");
-        operation.record.lifecycle = RoutineOperationLifecycle::Running;
-        Ok(BeginRoutineOperation::Dispatch(operation.binding.clone()))
+        // One pin belongs to the independent worker, one to its response waiter.
+        operation.inflight = operation.inflight.checked_add(2).ok_or("Too many routine operation waiters")?;
+        let binding = operation.binding.clone();
+        self.update_record_locked(&mut operations, operation_id, |record| {
+            record.lifecycle = RoutineOperationLifecycle::Running
+        });
+        Ok(BeginRoutineOperation::Dispatch(binding))
     }
 
     pub(super) fn binding_for_readback(&self, operation_id: &str) -> Result<RoutineWriteBinding, String> {
@@ -277,11 +264,11 @@ impl RoutineOperationRegistry {
 
     pub(super) fn mark_dispatched(&self, operation_id: &str) -> Result<(), String> {
         let mut operations = self.operations.lock().unwrap_or_else(|error| error.into_inner());
-        let operation = operations.get_mut(operation_id).ok_or("Routine operation record is unavailable")?;
+        let operation = operations.get(operation_id).ok_or("Routine operation record is unavailable")?;
         if operation.record.lifecycle != RoutineOperationLifecycle::Running || operation.record.dispatched {
             return Err("Routine operation is not awaiting its first dispatch".into());
         }
-        operation.record.dispatched = true;
+        self.update_record_locked(&mut operations, operation_id, |record| record.dispatched = true);
         Ok(())
     }
 
@@ -292,46 +279,40 @@ impl RoutineOperationRegistry {
         readback: Option<RoutineReadback>,
         error: Option<String>,
     ) {
-        if let Some(operation) = self.operations.lock().unwrap_or_else(|error| error.into_inner()).get_mut(operation_id)
-        {
-            operation.record.lifecycle = RoutineOperationLifecycle::Terminal;
-            operation.record.acknowledged = acknowledged;
-            operation.record.readback = readback;
-            operation.record.error = error;
-            operation.capture_verified_post_state();
-        }
+        self.update_record(operation_id, |record| {
+            record.lifecycle = RoutineOperationLifecycle::Terminal;
+            record.acknowledged = acknowledged;
+            record.readback = readback;
+            record.error = error;
+        });
     }
 
     pub(super) fn not_started(&self, operation_id: &str, error: String) {
-        if let Some(operation) = self.operations.lock().unwrap_or_else(|error| error.into_inner()).get_mut(operation_id)
-        {
-            operation.record.lifecycle = RoutineOperationLifecycle::Terminal;
-            operation.record.dispatched = false;
-            operation.record.error = Some(error);
-        }
+        self.update_record(operation_id, |record| {
+            record.lifecycle = RoutineOperationLifecycle::Terminal;
+            record.dispatched = false;
+            record.error = Some(error);
+        });
     }
 
     pub(super) fn waiting_lost(&self, operation_id: &str, error: String) {
-        if let Some(operation) = self.operations.lock().unwrap_or_else(|error| error.into_inner()).get_mut(operation_id)
-        {
-            if operation.record.lifecycle != RoutineOperationLifecycle::Terminal {
-                operation.record.lifecycle = if operation.record.dispatched {
+        self.update_record(operation_id, |record| {
+            if record.lifecycle != RoutineOperationLifecycle::Terminal {
+                record.lifecycle = if record.dispatched {
                     RoutineOperationLifecycle::Unproven
                 } else {
                     RoutineOperationLifecycle::Terminal
                 };
-                operation.record.error = Some(error);
+                record.error = Some(error);
             }
-        }
+        });
     }
 
     pub(super) fn update_readback(&self, operation_id: &str, readback: RoutineReadback) {
-        if let Some(operation) = self.operations.lock().unwrap_or_else(|error| error.into_inner()).get_mut(operation_id)
-        {
+        self.update_record(operation_id, |record| {
             // Current object contents are not evidence that the original request ended.
-            operation.record.readback = Some(readback);
-            operation.capture_verified_post_state();
-        }
+            record.readback = Some(readback);
+        });
     }
 }
 
@@ -341,13 +322,13 @@ mod tests {
     use crate::db::ObjectSourceKind;
     use crate::models::connection::DatabaseType;
 
-    fn binding() -> RoutineWriteBinding {
+    pub(super) fn binding() -> RoutineWriteBinding {
         RoutineWriteBinding { target: RoutineEndpoint { connection_id: "target".into(), database: "tenant".into(), schema: "OWNER".into(), database_type: DatabaseType::OceanbaseOracle, generation: 1 },
             identity: RoutineIdentity { owner: "OWNER".into(), name: "Shared.Name".into(), kind: ObjectSourceKind::Function }, sql: "approved SQL".into(), goal: RoutineReadbackGoal::Inspect,
             expected_config: serde_json::from_value(serde_json::json!({"id":"target", "name":"test", "db_type": DatabaseType::OceanbaseOracle, "host":"localhost", "port":2881, "username":"OWNER", "password":"", "database":null})).unwrap(), require_absent: false, compare: None, prerequisite_operation_ids: Vec::new() }
     }
 
-    fn verified_readback() -> RoutineReadback {
+    pub(super) fn verified_readback() -> RoutineReadback {
         RoutineReadback {
             identity: binding().identity,
             state: RoutineReadbackState::Verified,
@@ -358,6 +339,15 @@ mod tests {
             compiler_messages: Vec::new(),
             issues: Vec::new(),
         }
+    }
+
+    #[test]
+    fn oversized_approval_is_rejected_without_retaining_its_payload() {
+        let registry = RoutineOperationRegistry::default();
+        let mut input = binding();
+        input.sql = "x".repeat(16 * 1024 * 1024);
+        assert!(registry.prepare_replacing(input, None).is_err());
+        assert!(registry.operations.lock().unwrap().is_empty());
     }
 
     #[test]

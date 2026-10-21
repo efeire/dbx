@@ -63,7 +63,7 @@ pub struct OracleRoutinePlan {
     pub ready: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub(super) enum ExpectedRoutine {
     Absent(RoutineIdentity),
     Present(RoutineObjectSnapshot),
@@ -78,14 +78,14 @@ impl ExpectedRoutine {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub(super) struct SourcePreflight {
     pub endpoint: RoutineEndpoint,
     pub config: ConnectionConfig,
     pub expected: ExpectedRoutine,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub(super) struct ComparePreflight {
     pub source: Option<SourcePreflight>,
     pub target: ExpectedRoutine,
@@ -320,6 +320,12 @@ pub async fn prepare_oracle_routine_plan_core(
     state: &AppState,
     input: OracleRoutinePlanInput,
 ) -> Result<OracleRoutinePlan, String> {
+    let _input_pins = input
+        .drafts
+        .iter()
+        .flat_map(|draft| draft.baseline_operation_id.iter().chain(draft.supersedes_operation_id.iter()))
+        .map(|id| state.routine_operations.pin(id))
+        .collect::<Result<Vec<_>, _>>()?;
     if input.source.endpoint.database_type != input.target.endpoint.database_type {
         return Err("Cross-product Oracle routine conversion is read-only".into());
     }
@@ -351,6 +357,8 @@ pub async fn prepare_oracle_routine_plan_core(
         return Ok(built.plan);
     }
     let mut operations: BTreeMap<usize, String> = BTreeMap::new();
+    let mut requests = Vec::new();
+    let mut indices = Vec::new();
     for index in built.order {
         let step = &mut built.plan.steps[index];
         let dependencies = built.dependencies[index]
@@ -363,8 +371,10 @@ pub async fn prepare_oracle_routine_plan_core(
             config: source_config.clone(),
             expected: built.source_expected[index].clone().ok_or("Source snapshot is unavailable")?,
         };
-        let operation = state.routine_operations.prepare_replacing(
-            RoutineWriteBinding {
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        requests.push(super::operations::PreparedRoutineWrite {
+            operation_id: operation_id.clone(),
+            binding: RoutineWriteBinding {
                 target: input.target.endpoint.clone(),
                 identity: step.identity.clone(),
                 sql: step.sql.clone(),
@@ -378,10 +388,14 @@ pub async fn prepare_oracle_routine_plan_core(
                 compare: Some(ComparePreflight { source: Some(source_preflight), ..preflight }),
                 prerequisite_operation_ids: dependencies,
             },
-            input.drafts[index].supersedes_operation_id.as_deref(),
-        )?;
-        operations.insert(index, operation.operation_id.clone());
-        step.operation = Some(operation);
+            supersedes: input.drafts[index].supersedes_operation_id.clone(),
+        });
+        operations.insert(index, operation_id);
+        indices.push(index);
+    }
+    let prepared = state.routine_operations.prepare_batch(requests, 0)?;
+    for (index, operation) in indices.into_iter().zip(prepared) {
+        built.plan.steps[index].operation = Some(operation);
     }
     // Present the actual server-enforced order, not merely frontend sorting.
     built.plan.steps.sort_by_key(|step| {

@@ -507,7 +507,7 @@ test.each(["oracle", "oceanbase-oracle"] as const)("loads %s strict snapshots th
       targetSchema: "Target",
       sourceDbType: databaseType,
       targetDbType: databaseType,
-      options: { tables: false, views: false, functions: true },
+      options: { tables: false, views: false, functions: true, selectedRoutines: ["Quoted.Proc"] },
       ignoreComments: false,
       label: "strict routines",
     },
@@ -517,6 +517,9 @@ test.each(["oracle", "oceanbase-oracle"] as const)("loads %s strict snapshots th
   assert.equal(session.status, "completed");
   assert.equal(apiMock.listFunctions.mock.calls.length, 0);
   assert.equal(apiMock.loadSchemaDiffRoutines.mock.calls.length, 2);
+  assert.equal(apiMock.loadSchemaDiffRoutines.mock.calls[0].length, 4);
+  assert.deepEqual(apiMock.loadSchemaDiffRoutines.mock.calls[0][3], ["Quoted.Proc"]);
+  assert.deepEqual(apiMock.loadSchemaDiffRoutines.mock.calls[1][3], ["Quoted.Proc"]);
   const payload = apiMock.prepareSchemaDiff.mock.calls[0][0];
   assert.equal(payload.sourceFunctions[0].function_type, "PROCEDURE");
   assert.equal(payload.sourceFunctions[0].definition, raw);

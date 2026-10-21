@@ -541,10 +541,8 @@ impl Analysis<'_> {
                 Token::RParen => depth -= 1,
                 _ => {}
             }
-            if depth == 0 && token_unquoted_word_is(&token.token, "INTO") {
-                if into.replace(index).is_some() {
-                    return Err("SELECT has more than one INTO scope".into());
-                }
+            if depth == 0 && token_unquoted_word_is(&token.token, "INTO") && into.replace(index).is_some() {
+                return Err("SELECT has more than one INTO scope".into());
             }
             if depth == 0 && token_unquoted_word_is(&token.token, "FROM") && from.replace(index).is_some() {
                 return Err("SELECT has more than one FROM scope".into());
@@ -575,7 +573,7 @@ impl Analysis<'_> {
             }
             count += 1;
         }
-        if targets.len() % 2 == 0 {
+        if targets.len().is_multiple_of(2) {
             return Err("SELECT INTO target list is incomplete".into());
         }
         let query_tokens = tokens[..into].iter().chain(&tokens[from..]).cloned().collect();

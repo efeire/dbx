@@ -14,7 +14,16 @@ import { freezeSourceIdentities } from "@/lib/table/objectSourceIdentity";
 
 const ddl = 'CREATE SEQUENCE "APP"."SEQ" START WITH 40 INCREMENT BY 1 NOCACHE;';
 const alter = 'ALTER SEQUENCE "APP"."SEQ" INCREMENT BY 1 NOCACHE;';
-const mocks = vi.hoisted(() => ({ getObjectSource: vi.fn(), buildEditableObjectSource: vi.fn(), buildExecutableObjectSourceStatements: vi.fn(), executeQuery: vi.fn(), prepareOracleRoutineSave: vi.fn(), executeOracleRoutineOperation: vi.fn(), observeOracleRoutineOperation: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  getObjectSource: vi.fn(),
+  buildEditableObjectSource: vi.fn(),
+  buildExecutableObjectSourceStatements: vi.fn(),
+  executeQuery: vi.fn(),
+  prepareOracleRoutineSave: vi.fn(),
+  updateOracleRoutineOperationReferences: vi.fn(async () => {}),
+  executeOracleRoutineOperation: vi.fn(),
+  observeOracleRoutineOperation: vi.fn(),
+}));
 // The Rust/backend boundary is mocked; the dialog, CodeMirror editor and shared
 // save/production-guard pipeline remain real. Rust builder tests cover the SQL.
 vi.mock("@/lib/backend/api", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/backend/api")>()), ...mocks }));

@@ -59,6 +59,7 @@ define_registry![
     prepare_oracle_routine_recovery,
     execute_oracle_routine_operation,
     observe_oracle_routine_operation,
+    update_oracle_routine_operation_references,
     list_sequences,
     list_rules,
     list_owners,
@@ -99,6 +100,7 @@ mod tests {
         assert!(handles("prepare_oracle_routine_recovery"));
         assert!(handles("execute_oracle_routine_operation"));
         assert!(handles("observe_oracle_routine_operation"));
+        assert!(handles("update_oracle_routine_operation_references"));
         assert!(handles("list_event_triggers"));
         assert!(!handles("prepare_schema_diff"));
         assert!(!handles("load_connections"));

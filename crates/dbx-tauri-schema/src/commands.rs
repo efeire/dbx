@@ -668,8 +668,16 @@ pub async fn load_schema_diff_routines(
     connection_id: String,
     database: String,
     schema: String,
+    selected_routines: Option<Vec<String>>,
 ) -> Result<dbx_core::schema::oracle_routines::RoutineSnapshot, String> {
-    dbx_core::schema::oracle_routines::load_schema_diff_routines_core(&state, &connection_id, &database, &schema).await
+    dbx_core::schema::oracle_routines::load_selected_schema_diff_routines_core(
+        &state,
+        &connection_id,
+        &database,
+        &schema,
+        selected_routines.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -722,6 +730,15 @@ pub async fn observe_oracle_routine_operation(
         refresh_readback.unwrap_or(false),
     )
     .await)
+}
+
+#[tauri::command]
+pub fn update_oracle_routine_operation_references(
+    state: State<'_, Arc<AppState>>,
+    retain_operation_ids: Vec<String>,
+    release_operation_ids: Vec<String>,
+) -> Result<(), String> {
+    state.routine_operations.update_references(&retain_operation_ids, &release_operation_ids)
 }
 
 #[tauri::command]

@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
 import type { OracleRoutineOperation, OracleRoutineSaveInput } from "@/types/schemaDiff";
+import type { ConnectionConfig } from "@/types/database";
 import * as api from "@/lib/backend/api";
 
 vi.mock("@/i18n", () => ({ default: { global: { t: (key: string, values?: Record<string, unknown>) => `${key} ${values?.operationId ?? ""}` } } }));
-vi.mock("@/lib/backend/api", () => ({ prepareOracleRoutineSave: vi.fn(), executeOracleRoutineOperation: vi.fn(), observeOracleRoutineOperation: vi.fn(), executeQuery: vi.fn(), executeScript: vi.fn(), executeInTransaction: vi.fn() }));
+vi.mock("@/lib/backend/api", () => ({ prepareOracleRoutineSave: vi.fn(), updateOracleRoutineOperationReferences: vi.fn(async () => {}), executeOracleRoutineOperation: vi.fn(), observeOracleRoutineOperation: vi.fn(), executeQuery: vi.fn(), executeScript: vi.fn(), executeInTransaction: vi.fn() }));
 
 const input = (): OracleRoutineSaveInput => ({ connectionId: "target", database: "tenant", identity: { owner: "Owner.Mixed", name: "Mixed.Func", kind: "FUNCTION" }, sql: 'CREATE OR REPLACE FUNCTION "Owner.Mixed"."Mixed.Func" RETURN NUMBER AS BEGIN RETURN 1; END;' });
 const record = (changes: Partial<OracleRoutineOperation> = {}): OracleRoutineOperation => ({
@@ -26,14 +28,40 @@ beforeEach(() => {
 });
 
 describe("Oracle routine source save", () => {
-  it("prepares before confirmation and dispatches only the exact approved SQL", async () => {
+  it("prepares before the real production confirmation and dispatches only the exact approved SQL", async () => {
     const { prepareObjectSourceSave } = await import("@/lib/table/objectSourceEditor");
+    const { executeWithProductionSqlGuard } = await import("@/lib/database/productionExecutionGuard");
+    const { useProductionSafetyStore } = await import("@/stores/productionSafetyStore");
+    setActivePinia(createPinia());
     const source = input();
     const execute = await prepareObjectSourceSave(source.connectionId, source.database, "oceanbase-oracle", [source.sql], source.identity.owner, { objectType: source.identity.kind, name: source.identity.name });
     expect(api.prepareOracleRoutineSave).toHaveBeenCalledWith(source);
     expect(api.executeOracleRoutineOperation).not.toHaveBeenCalled();
-    await execute();
+    const pending = executeWithProductionSqlGuard({ connection: { id: source.connectionId, name: "target", db_type: "oceanbase-oracle", is_production: true } as ConnectionConfig, database: source.database, sql: source.sql, source: "Object source", execute });
+    await vi.waitFor(() => expect(useProductionSafetyStore().pending).toMatchObject({ sql: source.sql, database: source.database, source: "Object source" }));
+    expect(api.executeOracleRoutineOperation).not.toHaveBeenCalled();
+    useProductionSafetyStore().confirm();
+    await expect(pending).resolves.toMatchObject({ operationId: "original-operation", lifecycle: "terminal" });
     expect(api.executeOracleRoutineOperation).toHaveBeenCalledExactlyOnceWith("original-operation", source.sql);
+    expect(api.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it("canceling the real production confirmation leaves the prepared save undispatched", async () => {
+    const { prepareObjectSourceSave } = await import("@/lib/table/objectSourceEditor");
+    const { executeWithProductionSqlGuard } = await import("@/lib/database/productionExecutionGuard");
+    const { useProductionSafetyStore } = await import("@/stores/productionSafetyStore");
+    setActivePinia(createPinia());
+    const source = input();
+    const execute = await prepareObjectSourceSave(source.connectionId, source.database, "oceanbase-oracle", [source.sql], source.identity.owner, { objectType: source.identity.kind, name: source.identity.name });
+    const pending = executeWithProductionSqlGuard({ connection: { id: source.connectionId, name: "target", db_type: "oceanbase-oracle", is_production: true } as ConnectionConfig, database: source.database, sql: source.sql, source: "Object source", execute });
+    await vi.waitFor(() => expect(useProductionSafetyStore().pending).toBeDefined());
+    useProductionSafetyStore().cancel();
+    await expect(pending).resolves.toBeUndefined();
+    await execute.dispose?.();
+    expect(api.updateOracleRoutineOperationReferences).toHaveBeenCalledWith(["original-operation"], []);
+    expect(api.updateOracleRoutineOperationReferences).toHaveBeenLastCalledWith([], ["original-operation"]);
+    expect(api.prepareOracleRoutineSave).toHaveBeenCalledExactlyOnceWith(source);
+    expect(api.executeOracleRoutineOperation).not.toHaveBeenCalled();
     expect(api.executeQuery).not.toHaveBeenCalled();
   });
 
@@ -52,7 +80,10 @@ describe("Oracle routine source save", () => {
     vi.mocked(api.executeOracleRoutineOperation).mockRejectedValue(new Error("HTTP wait ended"));
     const unresolved = record({ lifecycle: "unproven", acknowledged: false });
     vi.mocked(api.observeOracleRoutineOperation).mockResolvedValue({ operation: unresolved, lifecycle: "unproven", error: null });
-    await expect((await prepareOracleRoutineSourceSave(input()))()).rejects.toMatchObject({ operationId: "original-operation" });
+    const first = await prepareOracleRoutineSourceSave(input());
+    await expect(first()).rejects.toMatchObject({ operationId: "original-operation" });
+    await first.dispose?.();
+    expect(api.updateOracleRoutineOperationReferences).not.toHaveBeenCalledWith([], ["original-operation"]);
     const edited = { ...input(), sql: input().sql.replace("RETURN 1", "RETURN 2") };
     await expect((await prepareOracleRoutineSourceSave(edited))()).rejects.toMatchObject({ operationId: "original-operation" });
     expect(api.prepareOracleRoutineSave).toHaveBeenCalledTimes(1);
@@ -103,8 +134,26 @@ describe("Oracle routine source save", () => {
     const execute = await prepareOracleRoutineSourceSave(edited);
     expect(api.prepareOracleRoutineSave).toHaveBeenLastCalledWith({ ...edited, supersedesOperationId: "original-operation" });
     expect(api.executeOracleRoutineOperation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.updateOracleRoutineOperationReferences).mock.calls).toEqual([
+      [["original-operation"], []],
+      [["new-approval"], []],
+      [[], ["original-operation"]],
+    ]);
     await execute();
     expect(api.executeOracleRoutineOperation).toHaveBeenLastCalledWith("new-approval", edited.sql);
+  });
+
+  it("retains the original pending ID if replacement admission fails", async () => {
+    const { prepareOracleRoutineSourceSave } = await import("@/lib/table/oracleRoutineWrite");
+    const original = record({ lifecycle: "prepared", dispatched: false, acknowledged: false, readback: null });
+    vi.mocked(api.executeOracleRoutineOperation).mockRejectedValue(new Error("response lost"));
+    vi.mocked(api.observeOracleRoutineOperation).mockResolvedValue({ operation: original, lifecycle: "prepared", error: null });
+    const execute = await prepareOracleRoutineSourceSave(input());
+    await expect(execute()).rejects.toMatchObject({ operationId: original.operationId });
+    vi.mocked(api.prepareOracleRoutineSave).mockRejectedValue(new Error("registry capacity exceeded"));
+    await expect(prepareOracleRoutineSourceSave({ ...input(), sql: input().sql.replace("RETURN 1", "RETURN 2") })).rejects.toMatchObject({ operationId: original.operationId });
+    expect(api.executeOracleRoutineOperation).toHaveBeenCalledTimes(1);
+    expect(api.updateOracleRoutineOperationReferences).not.toHaveBeenCalledWith([], [original.operationId]);
   });
 
   it("preserves WARNING locations in a successful source-save message", async () => {

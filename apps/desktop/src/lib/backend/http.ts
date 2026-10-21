@@ -1386,8 +1386,8 @@ export async function listFunctions(connectionId: string, database: string, sche
   return (await get<FunctionInfoWire[]>(`/api/schema/functions?${qs({ connection_id: connectionId, database, schema })}`)).map(functionInfoFromWire);
 }
 
-export function loadSchemaDiffRoutines(connectionId: string, database: string, schema: string): Promise<OracleRoutineSnapshot> {
-  return get(`/api/schema/diff-routines?${qs({ connection_id: connectionId, database, schema })}`);
+export function loadSchemaDiffRoutines(connectionId: string, database: string, schema: string, selectedRoutines?: string[]): Promise<OracleRoutineSnapshot> {
+  return get(`/api/schema/diff-routines?${qs({ connection_id: connectionId, database, schema, selected_routines: selectedRoutines === undefined ? undefined : JSON.stringify(selectedRoutines) })}`);
 }
 
 export function prepareOracleRoutineSave(input: OracleRoutineSaveInput): Promise<OracleRoutineOperation> {
@@ -1408,6 +1408,10 @@ export function executeOracleRoutineOperation(operationId: string, approvedSql: 
 
 export function observeOracleRoutineOperation(operationId: string, refreshReadback = false): Promise<OracleRoutineOperationObservation> {
   return get(`/api/schema/routine-operation?${qs({ operation_id: operationId, refresh_readback: refreshReadback })}`);
+}
+
+export function updateOracleRoutineOperationReferences(retainOperationIds: string[], releaseOperationIds: string[]): Promise<void> {
+  return post("/api/schema/routine-operation-references", { retainOperationIds, releaseOperationIds });
 }
 
 export async function listSequences(connectionId: string, database: string, schema: string, withLastValues: boolean): Promise<SequenceInfo[]> {

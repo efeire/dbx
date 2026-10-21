@@ -159,6 +159,62 @@ async fn collect(catalog: &FakeCatalog) -> RoutineSnapshot {
 }
 
 #[tokio::test]
+async fn explicit_selection_enriches_only_exact_names_and_retains_complete_paged_inventory() {
+    let name = "lower.Dot,Name";
+    let source = format!("CREATE OR REPLACE FUNCTION \"{name}\" RETURN NUMBER IS BEGIN RETURN 1; END");
+    let mut objects = (1..=600).map(|id| object_row(id, &format!("Other{id}"), "FUNCTION")).collect::<Vec<_>>();
+    objects.push(object_row(601, name, "FUNCTION"));
+    let catalog = FakeCatalog { objects, length: source.encode_utf16().count() as u64, ..Default::default() };
+    let snapshot =
+        collect_selected_snapshot(&catalog, endpoint(), SourceOrigin::OracleMetadata, Some(&[name.into()])).await;
+    assert!(snapshot.enumeration_complete);
+    assert_eq!(snapshot.objects.len(), 601);
+    assert_eq!(catalog.inventory_calls.load(Ordering::SeqCst), 6);
+    assert_eq!(catalog.source_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        snapshot.objects.iter().filter(|object| object.source_complete && object.dependencies_complete).count(),
+        1
+    );
+    let selected = snapshot.objects.iter().find(|object| object.version.identity.name == name).unwrap();
+    assert_eq!(selected.source.as_deref(), Some(source.as_str()));
+    let queries = catalog.queries.lock().unwrap();
+    assert_eq!(queries.iter().filter(|sql| sql.contains("DBMS_METADATA.GET_DDL")).count(), 1);
+    assert_eq!(queries.iter().filter(|sql| sql.contains("ALL_DEPENDENCIES")).count(), 1);
+    assert_eq!(snapshot.state, RoutineReadState::Partial);
+}
+
+#[tokio::test]
+async fn empty_or_absent_selection_keeps_inventory_without_reading_definitions() {
+    for names in [Vec::new(), vec!["quoted.func".into()], vec!["Missing".into()]] {
+        let catalog = FakeCatalog::default();
+        let snapshot =
+            collect_selected_snapshot(&catalog, endpoint(), SourceOrigin::OceanBaseDictionary, Some(&names)).await;
+        assert!(snapshot.enumeration_complete);
+        assert_eq!(snapshot.objects.len(), 1);
+        assert_eq!(snapshot.objects[0].version.identity.name, "Quoted.Func");
+        assert!(!snapshot.objects[0].source_complete);
+        assert_eq!(catalog.source_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(catalog.queries.lock().unwrap().len(), 3);
+    }
+}
+
+#[tokio::test]
+async fn scoped_reads_do_not_turn_failed_inventory_pagination_into_absence() {
+    let catalog = FakeCatalog {
+        objects: (1..=PAGE_SIZE as u64).map(|id| object_row(id, &format!("Other{id}"), "PROCEDURE")).collect(),
+        fail_second_page: true,
+        ..Default::default()
+    };
+    let snapshot =
+        collect_selected_snapshot(&catalog, endpoint(), SourceOrigin::OceanBaseDictionary, Some(&["Missing".into()]))
+            .await;
+    assert!(!snapshot.enumeration_complete);
+    assert_eq!(snapshot.objects.len(), PAGE_SIZE);
+    assert_eq!(catalog.source_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(snapshot.state, RoutineReadState::Partial);
+}
+
+#[tokio::test]
 async fn exact_quoted_identity_keeps_raw_body_and_validates_without_final_semicolon() {
     let catalog = FakeCatalog::default();
     let snapshot = collect(&catalog).await;

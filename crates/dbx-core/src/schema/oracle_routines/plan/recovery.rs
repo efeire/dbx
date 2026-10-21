@@ -6,6 +6,7 @@ pub async fn prepare_oracle_routine_recovery_core(
     state: &AppState,
     operation_id: &str,
 ) -> Result<OracleRoutinePlan, String> {
+    let _original_pin = state.routine_operations.pin(operation_id)?;
     let original = state
         .routine_operations
         .observe(operation_id)

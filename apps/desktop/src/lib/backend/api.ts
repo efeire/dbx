@@ -247,6 +247,7 @@ export const getTableDdl = forward("getTableDdl");
 export const getTableDisplayDdl = forward("getTableDisplayDdl");
 export const listFunctions = forward("listFunctions");
 export const loadSchemaDiffRoutines = forward("loadSchemaDiffRoutines");
+export const updateOracleRoutineOperationReferences = forward("updateOracleRoutineOperationReferences");
 export const prepareOracleRoutineSave = forward("prepareOracleRoutineSave");
 export const prepareOracleRoutinePlan = forward("prepareOracleRoutinePlan");
 export const prepareOracleRoutineRecovery = forward("prepareOracleRoutineRecovery");

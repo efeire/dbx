@@ -210,6 +210,7 @@ async function saveSource() {
   const schema = props.schema || props.database;
   saving.value = true;
   saveError.value = "";
+  let save: Awaited<ReturnType<typeof prepareObjectSourceSave>> | undefined;
   try {
     if (!sourceIdentity) return;
     const identity = sourceIdentity;
@@ -222,13 +223,14 @@ async function saveSource() {
       source: draft.value,
     });
     if (serial !== loadSerial) return;
-    const save = await prepareObjectSourceSave(connectionId, database, databaseType, statements, schema, { objectType, name });
+    save = await prepareObjectSourceSave(connectionId, database, databaseType, statements, schema, { objectType, name });
+    const preparedSave = save;
     const executableSql = statements.filter((sql) => sql.trim()).join(";\n");
     const execute = async () => {
       if (serial !== loadSerial || !props.open) return;
       const release = beginSourceSave(identity);
       try {
-        return { operation: await save() };
+        return { operation: await preparedSave() };
       } finally {
         release();
       }
@@ -252,6 +254,7 @@ async function saveSource() {
   } catch (e: unknown) {
     if (serial === loadSerial) saveError.value = formatObjectSourceSaveError(e, databaseType, objectType, t("objects.postgresViewColumnChangeHint"));
   } finally {
+    await save?.dispose?.();
     if (serial === loadSerial) saving.value = false;
   }
 }

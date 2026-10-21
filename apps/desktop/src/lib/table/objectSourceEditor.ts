@@ -111,7 +111,9 @@ export function objectSourceSaveExecutionMode(_databaseType: DatabaseType): Obje
   return "single";
 }
 
-export async function prepareObjectSourceSave(connectionId: string, database: string, databaseType: DatabaseType, statements: string[], schema: string, identity: { objectType: ObjectSourceKind; name: string }): Promise<() => Promise<OracleRoutineOperation | undefined>> {
+export type PreparedObjectSourceSave = (() => Promise<OracleRoutineOperation | undefined>) & { dispose?: () => Promise<void> };
+
+export async function prepareObjectSourceSave(connectionId: string, database: string, databaseType: DatabaseType, statements: string[], schema: string, identity: { objectType: ObjectSourceKind; name: string }): Promise<PreparedObjectSourceSave> {
   if ((databaseType === "oracle" || databaseType === "oceanbase-oracle") && (identity.objectType === "PROCEDURE" || identity.objectType === "FUNCTION")) {
     const nonEmpty = statements.filter((sql) => sql.trim());
     if (nonEmpty.length !== 1) throw new Error(i18n.global.t("objects.routineSaveSingleDefinition"));

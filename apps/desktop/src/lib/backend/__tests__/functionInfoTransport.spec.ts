@@ -76,6 +76,12 @@ describe.each(["http", "tauri"] as const)("FunctionInfo %s transport", (transpor
     await expect(backend.loadSchemaDiffRoutines("connection", "database", "Owner.With.Dot")).resolves.toEqual(response);
   });
 
+  it.each([{ names: [] }, { names: ["Quoted.Proc", "Dot.Name,WithComma", "lowerCase"] }])("transports exact selected routine names without broadening the read: $names", async ({ names }) => {
+    await backend.loadSchemaDiffRoutines("connection", "database", "Owner.With.Dot", names);
+    if (transport === "tauri") expect(mocks.invoke).toHaveBeenLastCalledWith("load_schema_diff_routines", { connectionId: "connection", database: "database", schema: "Owner.With.Dot", selectedRoutines: names });
+    else expect(JSON.parse(new URL(String(fetchMock.mock.calls.at(-1)![0]), "http://localhost").searchParams.get("selected_routines")!)).toEqual(names);
+  });
+
   it("prepares the exact routine identity and SQL without dispatching it", async () => {
     const input = { connectionId: "connection", database: "database", identity: { owner: "Owner.With.Dot", name: "Mixed.Proc", kind: "PROCEDURE" as const }, sql: wireProcedure.definition };
     response = { operationId: "bound-operation", lifecycle: "prepared", dispatched: false };
@@ -104,6 +110,12 @@ describe.each(["http", "tauri"] as const)("FunctionInfo %s transport", (transpor
     await expect(backend.prepareOracleRoutineRecovery("original-operation")).resolves.toEqual(response);
     expect(sent()).toEqual({ operationId: "original-operation" });
     if (transport === "tauri") expect(mocks.invoke).toHaveBeenLastCalledWith("prepare_oracle_routine_recovery", { operationId: "original-operation" });
+  });
+
+  it("transports atomic operation retain and release through the same ownership boundary", async () => {
+    await backend.updateOracleRoutineOperationReferences(["current"], ["abandoned"]);
+    expect(sent()).toEqual({ retainOperationIds: ["current"], releaseOperationIds: ["abandoned"] });
+    if (transport === "tauri") expect(mocks.invoke).toHaveBeenLastCalledWith("update_oracle_routine_operation_references", { retainOperationIds: ["current"], releaseOperationIds: ["abandoned"] });
   });
 
   it("retains unproven when the original backend operation record is missing", async () => {

@@ -7,7 +7,7 @@ use dbx_sql::object_source_sql::{
 };
 use std::collections::BTreeSet;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub(super) struct CatalogReadProof {
     pub sql: String,
     pub columns: Vec<String>,

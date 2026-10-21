@@ -36,6 +36,7 @@ vi.mock("@/lib/backend/api", () => ({
   loadSchemaDiffRoutines: calls.load,
   prepareSchemaDiff: calls.compare,
   prepareOracleRoutinePlan: calls.prepare,
+  updateOracleRoutineOperationReferences: vi.fn(async () => {}),
   executeOracleRoutineOperation: calls.execute,
   observeOracleRoutineOperation: calls.observe,
   generateSchemaSyncPlan: calls.genericPlan,

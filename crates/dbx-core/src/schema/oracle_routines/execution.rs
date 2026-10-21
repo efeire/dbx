@@ -28,6 +28,18 @@ pub async fn prepare_oracle_routine_save_core(
     prepare_definition(state, input, false).await
 }
 
+pub(super) fn prepare_bound_definition_pinned(
+    state: &AppState,
+    input: OracleRoutineSaveInput,
+    config: ConnectionConfig,
+    generation: u64,
+    require_absent: bool,
+) -> Result<(RoutineOperationRecord, operations::RoutineOperationPin<'_>), String> {
+    let record = prepare_bound_definition_with_pins(state, input, config, generation, require_absent, 1)?;
+    let pin = state.routine_operations.adopt_pin(&record.operation_id);
+    Ok((record, pin))
+}
+
 pub(super) async fn prepare_definition(
     state: &AppState,
     input: OracleRoutineSaveInput,
@@ -44,6 +56,17 @@ pub(super) fn prepare_bound_definition(
     config: ConnectionConfig,
     generation: u64,
     require_absent: bool,
+) -> Result<RoutineOperationRecord, String> {
+    prepare_bound_definition_with_pins(state, input, config, generation, require_absent, 0)
+}
+
+fn prepare_bound_definition_with_pins(
+    state: &AppState,
+    input: OracleRoutineSaveInput,
+    config: ConnectionConfig,
+    generation: u64,
+    require_absent: bool,
+    pins: usize,
 ) -> Result<RoutineOperationRecord, String> {
     let (database_type, _) = routine_source_origin(&config)?;
     if input.identity.owner.is_empty() || input.identity.name.is_empty() {
@@ -66,19 +89,24 @@ pub(super) fn prepare_bound_definition(
         database_type,
         generation,
     };
-    state.routine_operations.prepare_replacing(
-        RoutineWriteBinding {
-            target,
-            identity: input.identity,
-            goal: RoutineReadbackGoal::Definition { sql: input.sql.clone() },
-            sql: input.sql,
-            expected_config: config,
-            require_absent,
-            compare: None,
-            prerequisite_operation_ids: Vec::new(),
-        },
-        input.supersedes_operation_id.as_deref(),
-    )
+    let mut records = state.routine_operations.prepare_batch(
+        vec![operations::PreparedRoutineWrite {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            binding: RoutineWriteBinding {
+                target,
+                identity: input.identity,
+                goal: RoutineReadbackGoal::Definition { sql: input.sql.clone() },
+                sql: input.sql,
+                expected_config: config,
+                require_absent,
+                compare: None,
+                prerequisite_operation_ids: Vec::new(),
+            },
+            supersedes: input.supersedes_operation_id,
+        }],
+        pins,
+    )?;
+    Ok(records.remove(0))
 }
 
 /// The caller already knows operationId from preparation. Dropping its HTTP or
@@ -93,10 +121,12 @@ pub async fn execute_oracle_routine_operation_core(
         BeginRoutineOperation::Dispatch(binding) => binding,
     };
     let owner_scope = current_credential_owner();
+    let _response_pin = state.routine_operations.adopt_pin(&operation_id);
     let app = state.clone();
     let id = operation_id.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(with_credential_owner(owner_scope, async move {
+        let _worker_pin = app.routine_operations.adopt_pin(&id);
         perform_write(&app, &id, binding).await;
         let _ = tx.send(());
     }));
@@ -153,10 +183,13 @@ pub(super) async fn execute_prepared_inline(
     operation_id: &str,
     approved_sql: &str,
 ) -> Result<RoutineOperationRecord, String> {
-    match state.routine_operations.begin(operation_id, approved_sql)? {
+    let binding = match state.routine_operations.begin(operation_id, approved_sql)? {
         BeginRoutineOperation::Existing(record) => return Ok(record),
-        BeginRoutineOperation::Dispatch(binding) => perform_write(state, operation_id, binding).await,
-    }
+        BeginRoutineOperation::Dispatch(binding) => binding,
+    };
+    let _response_pin = state.routine_operations.adopt_pin(operation_id);
+    let _worker_pin = state.routine_operations.adopt_pin(operation_id);
+    perform_write(state, operation_id, binding).await;
     state
         .routine_operations
         .observe(operation_id)
@@ -169,7 +202,8 @@ pub async fn observe_oracle_routine_operation_core(
     operation_id: &str,
     refresh_readback: bool,
 ) -> RoutineOperationObservation {
-    if refresh_readback {
+    let _readback_pin = refresh_readback.then(|| state.routine_operations.pin(operation_id).ok()).flatten();
+    if _readback_pin.is_some() {
         if let Ok(binding) = state.routine_operations.binding_for_readback(operation_id) {
             let catalog = LiveCatalog { state, endpoint: &binding.target, config: &binding.expected_config };
             if let Ok((_, origin)) = routine_source_origin(&binding.expected_config) {

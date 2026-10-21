@@ -119,7 +119,7 @@ pub(crate) async fn transfer_oracle_routine_core(
         source: adapted,
         replace: false,
     })?;
-    let prepared = execution::prepare_bound_definition(
+    let (prepared, _transfer_pin) = execution::prepare_bound_definition_pinned(
         state,
         OracleRoutineSaveInput {
             connection_id: input.target_connection_id,

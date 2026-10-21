@@ -267,6 +267,16 @@ pub async fn load_schema_diff_routines_core(
     database: &str,
     schema: &str,
 ) -> Result<RoutineSnapshot, String> {
+    load_selected_schema_diff_routines_core(state, connection_id, database, schema, None).await
+}
+
+pub async fn load_selected_schema_diff_routines_core(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    schema: &str,
+    selected_routines: Option<&[String]>,
+) -> Result<RoutineSnapshot, String> {
     if schema.is_empty() {
         return Err("Select an exact Oracle routine owner".into());
     }
@@ -281,7 +291,7 @@ pub async fn load_schema_diff_routines_core(
         generation: lifecycle.generation(),
     };
     let catalog = LiveCatalog { state, endpoint: &endpoint, config: &config };
-    let mut snapshot = collect_snapshot(&catalog, endpoint.clone(), origin).await;
+    let mut snapshot = collect_selected_snapshot(&catalog, endpoint.clone(), origin, selected_routines).await;
     if !state.connection_lifecycle_is_current(connection_id, &lifecycle) {
         invalidate_snapshot_endpoint(&mut snapshot);
     }
@@ -530,10 +540,20 @@ async fn dependencies(
     }
 }
 
+#[cfg(test)]
 async fn collect_snapshot(
     catalog: &impl RoutineCatalog,
     endpoint: RoutineEndpoint,
     origin: SourceOrigin,
+) -> RoutineSnapshot {
+    collect_selected_snapshot(catalog, endpoint, origin, None).await
+}
+
+async fn collect_selected_snapshot(
+    catalog: &impl RoutineCatalog,
+    endpoint: RoutineEndpoint,
+    origin: SourceOrigin,
+    selected_routines: Option<&[String]>,
 ) -> RoutineSnapshot {
     let mut snapshot = RoutineSnapshot {
         endpoint,
@@ -584,6 +604,10 @@ async fn collect_snapshot(
             dependencies_complete: false,
             issues: Vec::new(),
         };
+        if selected_routines.is_some_and(|names| !names.contains(&object.version.identity.name)) {
+            snapshot.objects.push(object);
+            continue;
+        }
         match catalog.source(&object.version.identity).await {
             Ok(reply) => {
                 object.source = Some(reply.object.source.clone());

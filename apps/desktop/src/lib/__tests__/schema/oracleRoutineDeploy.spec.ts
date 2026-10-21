@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createOracleRoutineDeployment,
+  disposeOracleRoutineDeployment,
   editOracleRoutineDraft,
   executeOracleRoutineDeployment,
   observeOracleRoutineDeployment,
@@ -13,8 +14,15 @@ import {
 import type { SchemaDiffObject } from "@/lib/schema/schemaDiff";
 import type { OracleRoutineOperation, OracleRoutinePlan, OracleRoutineSnapshot } from "@/types/schemaDiff";
 
-const calls = vi.hoisted(() => ({ prepare: vi.fn(), execute: vi.fn(), observe: vi.fn(), recovery: vi.fn(), load: vi.fn(), invalidate: vi.fn() }));
-vi.mock("@/lib/backend/api", () => ({ prepareOracleRoutinePlan: calls.prepare, executeOracleRoutineOperation: calls.execute, observeOracleRoutineOperation: calls.observe, prepareOracleRoutineRecovery: calls.recovery, loadSchemaDiffRoutines: calls.load }));
+const calls = vi.hoisted(() => ({ prepare: vi.fn(), execute: vi.fn(), observe: vi.fn(), recovery: vi.fn(), load: vi.fn(), invalidate: vi.fn(), refs: vi.fn() }));
+vi.mock("@/lib/backend/api", () => ({
+  prepareOracleRoutinePlan: calls.prepare,
+  executeOracleRoutineOperation: calls.execute,
+  observeOracleRoutineOperation: calls.observe,
+  prepareOracleRoutineRecovery: calls.recovery,
+  loadSchemaDiffRoutines: calls.load,
+  updateOracleRoutineOperationReferences: calls.refs,
+}));
 vi.mock("@/lib/metadata/objectDdlCache", () => ({ invalidateObjectDdlCache: calls.invalidate }));
 vi.mock("@/lib/table/objectBrowserRowsCache", () => ({ invalidateObjectBrowserRowsCache: calls.invalidate }));
 
@@ -64,10 +72,91 @@ const authorize = async (_: string, run: () => Promise<void>) => run();
 beforeEach(() => {
   vi.clearAllMocks();
   calls.invalidate.mockResolvedValue(undefined);
+  calls.refs.mockResolvedValue(undefined);
   calls.observe.mockImplementation(async (id: string) => ({ operation: operation(id.replace(/-approved$/, ""), id), lifecycle: "prepared", error: null }));
 });
 
 describe("Oracle routine deployment in the existing comparison session", () => {
+  it("preserves the existing approved plan when revalidation is rejected by capacity admission", async () => {
+    const session = state("F");
+    calls.prepare.mockResolvedValueOnce(plan("F"));
+    await validateOracleRoutineDeployment(session);
+    const approved = session.plan;
+    calls.prepare.mockRejectedValueOnce(new Error("Routine operation registry capacity exceeded"));
+    await validateOracleRoutineDeployment(session);
+    expect(session.plan).toBe(approved);
+    expect(session.plan?.ready).toBe(true);
+    expect(session.drafts[0].operation?.operationId).toBe("F-approved");
+    expect(calls.refs).not.toHaveBeenCalledWith([], ["F-approved"]);
+  });
+  it("keeps approval ownership across a stopped view, releasing only when the session is removed", async () => {
+    const session = state("F");
+    calls.prepare.mockResolvedValue(plan("F"));
+    await validateOracleRoutineDeployment(session);
+    expect(calls.refs).toHaveBeenCalledWith(["F-approved"], []);
+    session.stopRequested = true;
+    expect(calls.refs).not.toHaveBeenCalledWith([], ["F-approved"]);
+    await disposeOracleRoutineDeployment(session);
+    expect(calls.refs).toHaveBeenLastCalledWith([], ["F-approved"]);
+    expect(session.retainedOperationIds).toEqual([]);
+    await executeOracleRoutineDeployment(session, authorize);
+    expect(calls.execute).not.toHaveBeenCalled();
+  });
+
+  it("releases a late plan instead of reviving a removed session", async () => {
+    const session = state("F");
+    let resolve!: (plan: OracleRoutinePlan) => void;
+    calls.prepare.mockReturnValue(
+      new Promise<OracleRoutinePlan>((done) => {
+        resolve = done;
+      }),
+    );
+    const pending = validateOracleRoutineDeployment(session);
+    await vi.waitFor(() => expect(calls.prepare).toHaveBeenCalled());
+    await disposeOracleRoutineDeployment(session);
+    resolve(plan("F"));
+    await pending;
+    expect(session.plan).toBeNull();
+    expect(session.retainedOperationIds).toEqual([]);
+    expect(calls.refs).toHaveBeenLastCalledWith([], ["F-approved"]);
+  });
+
+  it("reclaims superseded unsubmitted approvals after the replacement has been retained", async () => {
+    const session = state("F");
+    calls.prepare.mockResolvedValueOnce(plan("F"));
+    await validateOracleRoutineDeployment(session);
+    editOracleRoutineDraft(session, "func-F", "changed draft");
+    const replacement = plan("F");
+    replacement.steps[0].operation = operation("F", "replacement");
+    calls.prepare.mockResolvedValueOnce(replacement);
+    await validateOracleRoutineDeployment(session);
+    expect(session.records.map((record) => record.operationId)).toEqual(["replacement"]);
+    expect(session.retainedOperationIds).toEqual(["replacement"]);
+    expect(calls.refs.mock.calls.slice(-2)).toEqual([
+      [["replacement"], []],
+      [[], ["F-approved"]],
+    ]);
+  });
+
+  it("does not forget a submitted execute temporarily observed as Prepared during edit and refresh", async () => {
+    const session = state("F");
+    calls.prepare.mockResolvedValue(plan("F"));
+    await validateOracleRoutineDeployment(session);
+    calls.execute.mockRejectedValue(new Error("response lost before arrival is known"));
+    await executeOracleRoutineDeployment(session, authorize);
+    expect(session.attemptedOperationIds).toEqual(["F-approved"]);
+    editOracleRoutineDraft(session, "func-F", "new draft");
+    calls.load.mockImplementation(async (id: string) => (id === "source" ? session.source : session.target));
+    await refreshOracleRoutineDeployment(session);
+    calls.prepare.mockRejectedValue(new Error("capacity exceeded"));
+    await validateOracleRoutineDeployment(session);
+    expect(session.retainedOperationIds).toContain("F-approved");
+    expect(session.records.some((record) => record.operationId === "F-approved")).toBe(true);
+    expect(calls.prepare.mock.calls.at(-1)![0].drafts[0].supersedesOperationId).toBe("F-approved");
+    expect(calls.refs).not.toHaveBeenCalledWith([], ["F-approved"]);
+    expect(calls.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("retains raw snapshots and drafts while final validation replaces only the approved plan", async () => {
     const session = state("F");
     calls.prepare.mockResolvedValue(plan("F"));
@@ -251,6 +340,54 @@ describe("Oracle routine deployment in the existing comparison session", () => {
     expect(session.drafts[0].operation).toBeUndefined();
     expect(session.records).toHaveLength(1);
     expect(session.target.objects).toHaveLength(1);
+    expect(calls.load).toHaveBeenCalledWith("source", session.source.endpoint.database, session.source.endpoint.schema, ["F"]);
+    expect(calls.load).toHaveBeenCalledWith(snapshot.endpoint.connectionId, snapshot.endpoint.database, snapshot.endpoint.schema, ["F"]);
+  });
+
+  it("refresh verifies an acknowledged deletion by its original ID and resumes only unfinished steps", async () => {
+    const session = state("F", "G");
+    session.drafts[0].action = "delete";
+    const approved = plan("F", "G");
+    approved.steps[0].action = "delete";
+    approved.steps[0].sql = 'DROP FUNCTION "Target.With.Dot"."F";';
+    calls.prepare.mockResolvedValueOnce(approved).mockResolvedValueOnce(plan("G"));
+    await validateOracleRoutineDeployment(session);
+    const failedReadback = { ...finished("F"), readback: null, error: "Readback unavailable" };
+    calls.execute.mockResolvedValueOnce(failedReadback).mockResolvedValueOnce(finished("G"));
+    await executeOracleRoutineDeployment(session, authorize);
+    const absent = finished("F");
+    absent.readback = { ...absent.readback!, exists: false, source: null };
+    calls.observe.mockImplementation(async (id: string, refresh: boolean) => ({ operation: id === "G-approved" ? operation("G") : refresh ? absent : failedReadback, lifecycle: id === "G-approved" ? "prepared" : "terminal", error: null }));
+    calls.load.mockImplementation(async (id: string) => (id === "source" ? session.source : snapshot));
+    await refreshOracleRoutineDeployment(session);
+    expect(calls.observe).toHaveBeenCalledWith("F-approved", true);
+    expect(session.drafts[0].operation).toMatchObject({ operationId: "F-approved", readback: { state: "verified", exists: false } });
+    await validateOracleRoutineDeployment(session);
+    expect(calls.prepare.mock.calls.at(-1)![0].drafts.map((draft: { identity: { name: string } }) => draft.identity.name)).toEqual(["G"]);
+    await executeOracleRoutineDeployment(session, authorize);
+    expect(calls.execute.mock.calls.map((call) => call[0])).toEqual(["F-approved", "G-approved"]);
+    expect(session.records.find((record) => record.operationId === "F-approved")?.readback?.exists).toBe(false);
+  });
+
+  it.each(["unacknowledged", "readback-failed", "still-exists"] as const)("refresh retains the original deletion when completion is not proven (%s)", async (scenario) => {
+    const session = state("F");
+    session.drafts[0].action = "delete";
+    const record = finished("F");
+    if (scenario === "unacknowledged") {
+      record.acknowledged = false;
+      record.readback = { ...record.readback!, exists: false, source: null };
+    } else if (scenario === "readback-failed") record.readback = null;
+    else record.readback!.state = "invalid";
+    session.drafts[0].operation = record;
+    calls.observe.mockResolvedValue({ operation: record, lifecycle: "terminal", error: null });
+    calls.load.mockImplementation(async (id: string) => (id === "source" ? session.source : snapshot));
+    await refreshOracleRoutineDeployment(session);
+    expect(session.drafts[0].operation).toEqual(record);
+    calls.prepare.mockResolvedValue({ ...plan("F"), ready: false });
+    await validateOracleRoutineDeployment(session);
+    expect(calls.prepare.mock.calls.at(-1)![0].drafts).toHaveLength(1);
+    expect(calls.prepare.mock.calls.at(-1)![0].drafts[0]).toMatchObject({ action: "delete", baselineOperationId: "F-approved" });
+    expect(calls.execute).not.toHaveBeenCalled();
   });
 
   it("selects the recovery's own object and leaves recovery preview when another draft is selected", async () => {

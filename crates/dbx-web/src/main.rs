@@ -819,6 +819,7 @@ async fn serve() -> Result<(), String> {
         .route("/schema/routine-recovery", post(routes::schema::prepare_oracle_routine_recovery))
         .route("/schema/routine-execute", post(routes::schema::execute_oracle_routine_operation))
         .route("/schema/routine-operation", get(routes::schema::observe_oracle_routine_operation))
+        .route("/schema/routine-operation-references", post(routes::schema::update_oracle_routine_operation_references))
         .route("/schema/sequences", get(routes::schema::list_sequences))
         .route("/schema/rules", get(routes::schema::list_rules))
         .route("/schema/owners", get(routes::schema::list_owners))

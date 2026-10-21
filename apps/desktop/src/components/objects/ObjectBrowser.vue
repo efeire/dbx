@@ -4013,6 +4013,7 @@ async function saveSource() {
   const databaseType = effectiveDatabaseType.value;
   sourceSaving.value = true;
   sourceSaveError.value = "";
+  let save: Awaited<ReturnType<typeof prepareObjectSourceSave>> | undefined;
   try {
     if (!sourceIdentity) return;
     const identity = sourceIdentity;
@@ -4024,12 +4025,13 @@ async function saveSource() {
       name: row.name,
       source: sourceDraft.value,
     });
-    const save = await prepareObjectSourceSave(connectionId, database, databaseType, statements, schema, { objectType: row.type as ObjectSourceKind, name: row.name });
+    save = await prepareObjectSourceSave(connectionId, database, databaseType, statements, schema, { objectType: row.type as ObjectSourceKind, name: row.name });
+    const preparedSave = save;
     const execute = async () => {
       if (sidePanelGuard.isStale(epoch) || sourceRow.value !== row) return;
       const release = beginSourceSave(identity);
       try {
-        return { operation: await save() };
+        return { operation: await preparedSave() };
       } finally {
         release();
       }
@@ -4056,6 +4058,7 @@ async function saveSource() {
     if (sidePanelGuard.isStale(epoch)) return;
     sourceSaveError.value = formatObjectSourceSaveError(e, databaseType, row.type as ObjectSourceKind, t("objects.postgresViewColumnChangeHint"));
   } finally {
+    await save?.dispose?.();
     if (sidePanelGuard.isFresh(epoch)) sourceSaving.value = false;
   }
 }

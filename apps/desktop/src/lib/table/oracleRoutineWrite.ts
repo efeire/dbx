@@ -1,6 +1,9 @@
 import i18n from "@/i18n";
 import * as api from "@/lib/backend/api";
 import type { OracleRoutineOperation, OracleRoutineSaveInput } from "@/types/schemaDiff";
+import { releaseOracleRoutineOperations, retainOracleRoutineOperations } from "./oracleRoutineOperationReferences";
+
+export type PreparedOracleRoutineSave = (() => Promise<OracleRoutineOperation>) & { dispose?: () => Promise<void> };
 
 // A lost client wait keeps its original ID, including after closing/reopening a
 // source editor. Database readback alone must not release an unresolved write.
@@ -39,7 +42,7 @@ export function requireVerifiedOracleRoutine(operation: OracleRoutineOperation):
 
 /** Prepare BEFORE production confirmation, execute the exact approved draft
  * afterwards. Keeping these phases separate binds confirmation to its endpoint. */
-export async function prepareOracleRoutineSourceSave(input: OracleRoutineSaveInput): Promise<() => Promise<OracleRoutineOperation>> {
+export async function prepareOracleRoutineSourceSave(input: OracleRoutineSaveInput): Promise<PreparedOracleRoutineSave> {
   input = { ...input, identity: { ...input.identity } };
   const key = JSON.stringify([input.connectionId, input.database, input.identity.owner, input.identity.name]);
   const pending = pendingSaves.get(key);
@@ -56,10 +59,13 @@ export async function prepareOracleRoutineSourceSave(input: OracleRoutineSaveInp
       // racing the edited approval. Running/unproven cannot take this path.
       try {
         prepared = await api.prepareOracleRoutineSave({ ...input, supersedesOperationId: pending.operation.operationId });
+        await retainOracleRoutineOperations([prepared.operationId]);
       } catch {
+        if (prepared) await releaseOracleRoutineOperations([prepared.operationId]);
         throw new OracleRoutineWriteError(pending.operation.operationId, latest.operation, i18n.global.t("objects.routineWritePending", { operationId: pending.operation.operationId }));
       }
       if (pendingSaves.get(key) === pending) pendingSaves.delete(key);
+      await releaseOracleRoutineOperations([pending.operation.operationId]);
     } else {
       // A new Save click is only a status check while an earlier write is pending.
       return async () => {
@@ -70,7 +76,10 @@ export async function prepareOracleRoutineSourceSave(input: OracleRoutineSaveInp
           throw new OracleRoutineWriteError(pending.operation.operationId, pending.operation, i18n.global.t("objects.routineWritePending", { operationId: pending.operation.operationId }));
         }
         if (!observed.operation) throw new OracleRoutineWriteError(pending.operation.operationId, null, i18n.global.t("objects.routineWritePending", { operationId: pending.operation.operationId }));
-        if (observed.operation.lifecycle === "terminal" && pendingSaves.get(key) === pending) pendingSaves.delete(key);
+        if (observed.operation.lifecycle === "terminal" && pendingSaves.get(key) === pending) {
+          pendingSaves.delete(key);
+          await releaseOracleRoutineOperations([pending.operation.operationId]);
+        }
         requireVerifiedOracleRoutine(observed.operation);
         // Reconciliation of the previous SQL must never mark a newer draft clean.
         if (input.sql !== pending.input.sql || input.identity.kind !== pending.input.identity.kind) throw new OracleRoutineWriteError(pending.operation.operationId, observed.operation, i18n.global.t("objects.routineWriteDraftChanged"));
@@ -79,11 +88,23 @@ export async function prepareOracleRoutineSourceSave(input: OracleRoutineSaveInp
     }
   }
   const approval = prepared ?? (await api.prepareOracleRoutineSave(input));
-  return async () => {
+  if (!prepared) {
+    try {
+      await retainOracleRoutineOperations([approval.operationId]);
+    } catch (error) {
+      await releaseOracleRoutineOperations([approval.operationId]);
+      throw error;
+    }
+  }
+  let transferred = false;
+  let disposed = false;
+  const execute = async () => {
     // Different source editors may have prepared concurrently. The Core target
     // hold is authoritative; this map also retains the first unresolved ID.
     const active = pendingSaves.get(key);
     if (active) throw new OracleRoutineWriteError(active.operation.operationId, active.operation, i18n.global.t("objects.routineWritePending", { operationId: active.operation.operationId }));
+    if (disposed || transferred) throw new OracleRoutineWriteError(approval.operationId, approval, i18n.global.t("objects.routineWritePending", { operationId: approval.operationId }));
+    transferred = true;
     pendingSaves.set(key, { input, operation: approval });
     let operation: OracleRoutineOperation;
     try {
@@ -99,10 +120,19 @@ export async function prepareOracleRoutineSourceSave(input: OracleRoutineSaveInp
       }
     }
     if (pendingSaves.get(key)?.operation.operationId === approval.operationId) {
-      if (operation.lifecycle === "terminal") pendingSaves.delete(key);
-      else pendingSaves.set(key, { input, operation });
+      if (operation.lifecycle === "terminal") {
+        pendingSaves.delete(key);
+        await releaseOracleRoutineOperations([approval.operationId]);
+      } else pendingSaves.set(key, { input, operation });
     }
     requireVerifiedOracleRoutine(operation);
     return operation;
   };
+  return Object.assign(execute, {
+    dispose: async () => {
+      if (transferred || disposed) return;
+      disposed = true;
+      await releaseOracleRoutineOperations([approval.operationId]);
+    },
+  });
 }

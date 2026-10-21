@@ -5,6 +5,7 @@ import { invalidateObjectDdlCache } from "@/lib/metadata/objectDdlCache";
 import { invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
 import type { SchemaDiffObject } from "@/lib/schema/schemaDiff";
 import type { OracleRoutineIdentity, OracleRoutineOperation, OracleRoutinePlan, OracleRoutinePlanDraft, OracleRoutinePlanStep, OracleRoutineSnapshot } from "@/types/schemaDiff";
+import { releaseOracleRoutineOperations, retainOracleRoutineOperations } from "@/lib/table/oracleRoutineOperationReferences";
 
 export interface OracleRoutineDeployDraft extends OracleRoutinePlanDraft {
   objectId: string;
@@ -28,6 +29,9 @@ export interface OracleRoutineDeployment {
   stopRequested: boolean;
   reviewOpen: boolean;
   error: string | null;
+  retainedOperationIds: string[];
+  attemptedOperationIds: string[];
+  disposed: boolean;
 }
 
 export function routineIdentityKey(identity: OracleRoutineIdentity): string {
@@ -35,10 +39,54 @@ export function routineIdentityKey(identity: OracleRoutineIdentity): string {
 }
 
 export function createOracleRoutineDeployment(source: OracleRoutineSnapshot, target: OracleRoutineSnapshot): OracleRoutineDeployment {
-  return { source, target, drafts: [], selectedObjectId: null, revision: 0, plan: null, recoveryPlan: null, records: [], validating: false, executing: false, pendingOperationId: null, stopRequested: false, reviewOpen: false, error: null };
+  return {
+    source,
+    target,
+    drafts: [],
+    selectedObjectId: null,
+    revision: 0,
+    plan: null,
+    recoveryPlan: null,
+    records: [],
+    validating: false,
+    executing: false,
+    pendingOperationId: null,
+    stopRequested: false,
+    reviewOpen: false,
+    error: null,
+    retainedOperationIds: [],
+    attemptedOperationIds: [],
+    disposed: false,
+  };
+}
+
+const referenceUpdates = new WeakMap<OracleRoutineDeployment, Promise<void>>();
+function planOperationIds(plan: OracleRoutinePlan | null): string[] {
+  return plan?.steps.flatMap((step) => (step.operation ? [step.operation.operationId] : [])) ?? [];
+}
+
+function pruneOperationReferences(state: OracleRoutineDeployment): Promise<void> {
+  const update = (referenceUpdates.get(state) ?? Promise.resolve()).then(async () => {
+    const used = new Set([...planOperationIds(state.plan), ...planOperationIds(state.recoveryPlan), ...state.drafts.flatMap((draft) => (draft.operation ? [draft.operation.operationId] : [])), ...state.attemptedOperationIds, ...(state.pendingOperationId ? [state.pendingOperationId] : [])]);
+    state.records = state.records.filter((record) => record.dispatched || used.has(record.operationId));
+    state.records.forEach((record) => used.add(record.operationId));
+    const released = state.retainedOperationIds.filter((id) => state.disposed || !used.has(id));
+    await releaseOracleRoutineOperations(released);
+    state.retainedOperationIds = state.retainedOperationIds.filter((id) => !released.includes(id));
+  });
+  referenceUpdates.set(state, update);
+  return update;
+}
+
+export function disposeOracleRoutineDeployment(state: OracleRoutineDeployment): Promise<void> {
+  state.disposed = true;
+  state.stopRequested = true;
+  state.revision++;
+  return pruneOperationReferences(state);
 }
 
 export function synchronizeOracleRoutineSelection(state: OracleRoutineDeployment, objects: SchemaDiffObject[]): void {
+  if (state.disposed) return;
   let changed = false;
   for (const draft of state.drafts) {
     const included = objects.some((object) => object.id === draft.objectId && object.selected && object.operationType !== "none");
@@ -63,6 +111,10 @@ export function synchronizeOracleRoutineSelection(state: OracleRoutineDeployment
     state.revision++;
     state.plan = null;
     state.recoveryPlan = null;
+    for (const draft of state.drafts) {
+      if (!draft.included && draft.operation?.lifecycle === "prepared" && !state.attemptedOperationIds.includes(draft.operation.operationId)) draft.operation = undefined;
+    }
+    void pruneOperationReferences(state);
   }
   if (!state.drafts.some((draft) => draft.objectId === state.selectedObjectId && draft.included)) {
     state.selectedObjectId = state.drafts.find((draft) => draft.included)?.objectId ?? null;
@@ -70,6 +122,7 @@ export function synchronizeOracleRoutineSelection(state: OracleRoutineDeployment
 }
 
 export function editOracleRoutineDraft(state: OracleRoutineDeployment, objectId: string, sql: string): void {
+  if (state.disposed) return;
   const draft = state.drafts.find((draft) => draft.objectId === objectId);
   if (!draft || draft.sql === sql || state.executing || (draft.operation && oracleRoutineOperationVerified(draft.operation))) return;
   draft.sql = sql;
@@ -84,11 +137,13 @@ function errorText(error: unknown): string {
 }
 
 export function selectOracleRoutineDraft(state: OracleRoutineDeployment, objectId: string): void {
+  if (state.disposed) return;
   if (!state.drafts.some((draft) => draft.objectId === objectId && draft.included)) return;
   if (state.selectedObjectId !== objectId && state.recoveryPlan) {
     if (state.executing) return;
     state.recoveryPlan = null;
     state.revision++;
+    void pruneOperationReferences(state);
   }
   state.selectedObjectId = objectId;
 }
@@ -97,6 +152,7 @@ function sameTarget(left: OracleRoutinePlan["target"], right: OracleRoutinePlan[
 }
 
 function remember(state: OracleRoutineDeployment, operation: OracleRoutineOperation): void {
+  if (state.disposed) return;
   const index = state.records.findIndex((record) => record.operationId === operation.operationId);
   if (index < 0) state.records.push(operation);
   else state.records[index] = operation;
@@ -113,6 +169,7 @@ async function invalidateTarget(operation: OracleRoutineOperation): Promise<void
 }
 
 export async function observeOracleRoutineDeployment(state: OracleRoutineDeployment, operationId: string): Promise<void> {
+  if (state.disposed) return;
   try {
     const observed = await api.observeOracleRoutineOperation(operationId, true);
     if (!observed.operation) {
@@ -129,7 +186,9 @@ export async function observeOracleRoutineDeployment(state: OracleRoutineDeploym
 /** Final text + exact identities are sent to Core; old database dependencies are
  * not reused as proof of a manually edited draft. */
 export async function validateOracleRoutineDeployment(state: OracleRoutineDeployment): Promise<void> {
-  if (state.validating || state.executing) return;
+  if (state.disposed || state.validating || state.executing) return;
+  const previousPlan = state.plan;
+  let replacementPrepared = false;
   state.validating = true;
   state.error = null;
   state.recoveryPlan = null;
@@ -156,8 +215,21 @@ export async function validateOracleRoutineDeployment(state: OracleRoutineDeploy
       return;
     }
     const plan = await api.prepareOracleRoutinePlan({ source: state.source, target: state.target, drafts });
-    if (revision !== state.revision) return;
-    if (!sameTarget(plan.target, state.target.endpoint)) throw new Error("Routine plan belongs to another comparison target");
+    const ids = planOperationIds(plan);
+    replacementPrepared = plan.ready && ids.length > 0;
+    try {
+      await retainOracleRoutineOperations(ids);
+      if (revision !== state.revision || state.disposed) {
+        await releaseOracleRoutineOperations(ids.filter((id) => !state.retainedOperationIds.includes(id)));
+        return;
+      }
+      if (!sameTarget(plan.target, state.target.endpoint)) throw new Error("Routine plan belongs to another comparison target");
+      if (plan.steps.some((step) => !state.drafts.some((draft) => routineIdentityKey(draft.identity) === routineIdentityKey(step.identity)))) throw new Error("Routine plan returned an unselected object");
+    } catch (error) {
+      await releaseOracleRoutineOperations(ids.filter((id) => !state.retainedOperationIds.includes(id)));
+      throw error;
+    }
+    state.retainedOperationIds = [...new Set([...state.retainedOperationIds, ...ids])];
     state.plan = plan;
     for (const step of plan.steps) {
       const draft = state.drafts.find((draft) => routineIdentityKey(draft.identity) === routineIdentityKey(step.identity));
@@ -170,18 +242,20 @@ export async function validateOracleRoutineDeployment(state: OracleRoutineDeploy
     }
   } catch (error) {
     if (revision === state.revision) {
-      state.plan = null;
+      state.plan = previousPlan;
+      if (replacementPrepared && previousPlan) previousPlan.ready = false;
       state.error = errorText(error);
     }
   } finally {
     state.validating = false;
+    await pruneOperationReferences(state);
   }
 }
 
 /** Explicit refresh replaces only read baselines. Drafts and execution history
  * remain attached to the original session; unresolved writes cannot be erased. */
 export async function refreshOracleRoutineDeployment(state: OracleRoutineDeployment): Promise<void> {
-  if (state.validating || state.executing) return;
+  if (state.disposed || state.validating || state.executing) return;
   state.validating = true;
   state.error = null;
   state.plan = null;
@@ -190,13 +264,15 @@ export async function refreshOracleRoutineDeployment(state: OracleRoutineDeploym
   try {
     for (const draft of state.drafts) {
       if (!draft.operation || oracleRoutineOperationVerified(draft.operation)) continue;
-      const observed = await api.observeOracleRoutineOperation(draft.operation.operationId, false);
+      const observed = await api.observeOracleRoutineOperation(draft.operation.operationId, draft.action === "delete");
       if (!observed.operation || observed.lifecycle === "running" || observed.lifecycle === "unproven") throw new Error(`${draft.operation.operationId}: establish the original request's termination before refreshing this write baseline`);
       remember(state, observed.operation);
     }
-    const read = (snapshot: OracleRoutineSnapshot) => api.loadSchemaDiffRoutines(snapshot.endpoint.connectionId, snapshot.endpoint.database, snapshot.endpoint.schema);
-    const [source, target] = await Promise.all([read(state.source), read(state.target)]);
-    if (revision !== state.revision) return;
+    const sourceNames = [...new Set(state.drafts.map((draft) => draft.sourceName ?? draft.identity.name))];
+    const targetNames = [...new Set(state.drafts.map((draft) => draft.identity.name))];
+    const read = (snapshot: OracleRoutineSnapshot, names: string[]) => api.loadSchemaDiffRoutines(snapshot.endpoint.connectionId, snapshot.endpoint.database, snapshot.endpoint.schema, names);
+    const [source, target] = await Promise.all([read(state.source, sourceNames), read(state.target, targetNames)]);
+    if (revision !== state.revision || state.disposed) return;
     const sameReadTarget = (current: OracleRoutineSnapshot, before: OracleRoutineSnapshot) =>
       current.endpoint.connectionId === before.endpoint.connectionId && current.endpoint.database === before.endpoint.database && current.endpoint.schema === before.endpoint.schema && current.endpoint.databaseType === before.endpoint.databaseType;
     if (!sameReadTarget(source, state.source) || !sameReadTarget(target, state.target)) throw new Error("Refreshed snapshots do not match this comparison's original endpoints");
@@ -204,13 +280,14 @@ export async function refreshOracleRoutineDeployment(state: OracleRoutineDeploym
     state.target = target;
     for (const draft of state.drafts) {
       if (draft.operation && oracleRoutineOperationVerified(draft.operation)) continue;
-      if (draft.operation?.lifecycle === "terminal") draft.operation = undefined;
+      if (draft.operation?.lifecycle === "terminal" && draft.action !== "delete") draft.operation = undefined;
       if (draft.action !== "delete") draft.action = target.objects.some((object) => object.version.identity.owner === draft.identity.owner && object.version.identity.name === draft.identity.name) ? "replace" : "create";
     }
   } catch (error) {
     state.error = errorText(error);
   } finally {
     state.validating = false;
+    await pruneOperationReferences(state);
   }
 }
 
@@ -224,14 +301,26 @@ export function oracleRoutineActiveStep(state: OracleRoutineDeployment): OracleR
 }
 
 export async function prepareOracleRoutineRecovery(state: OracleRoutineDeployment, operationId: string): Promise<void> {
-  if (state.validating || state.executing) return;
+  if (state.disposed || state.validating || state.executing) return;
   state.validating = true;
   state.error = null;
   const revision = state.revision;
   try {
     const plan = await api.prepareOracleRoutineRecovery(operationId);
-    if (revision !== state.revision) return;
-    if (!sameTarget(plan.target, state.target.endpoint)) throw new Error("Recovery belongs to another target");
+    const ids = planOperationIds(plan);
+    try {
+      await retainOracleRoutineOperations(ids);
+      if (revision !== state.revision || state.disposed) {
+        await releaseOracleRoutineOperations(ids.filter((id) => !state.retainedOperationIds.includes(id)));
+        return;
+      }
+      if (!sameTarget(plan.target, state.target.endpoint)) throw new Error("Recovery belongs to another target");
+      if (!state.drafts.some((draft) => draft.included && plan.steps.some((step) => routineIdentityKey(step.identity) === routineIdentityKey(draft.identity)))) throw new Error("Recovery does not belong to an included routine");
+    } catch (error) {
+      await releaseOracleRoutineOperations(ids.filter((id) => !state.retainedOperationIds.includes(id)));
+      throw error;
+    }
+    state.retainedOperationIds = [...new Set([...state.retainedOperationIds, ...ids])];
     const draft = state.drafts.find((draft) => draft.included && plan.steps.some((step) => routineIdentityKey(step.identity) === routineIdentityKey(draft.identity)));
     if (!draft) throw new Error("Recovery does not belong to an included routine");
     state.selectedObjectId = draft.objectId;
@@ -241,6 +330,7 @@ export async function prepareOracleRoutineRecovery(state: OracleRoutineDeploymen
     state.error = errorText(error);
   } finally {
     state.validating = false;
+    await pruneOperationReferences(state);
   }
 }
 
@@ -248,7 +338,7 @@ export async function prepareOracleRoutineRecovery(state: OracleRoutineDeploymen
  * run. Closing the view stops the NEXT step, never the server's current worker. */
 export async function executeOracleRoutineDeployment(state: OracleRoutineDeployment, authorize: (sql: string, run: () => Promise<void>) => Promise<unknown>): Promise<void> {
   const plan = state.recoveryPlan ?? state.plan;
-  if (state.executing || state.validating || !plan?.ready || !plan.steps.length) return;
+  if (state.disposed || state.executing || state.validating || !plan?.ready || !plan.steps.length) return;
   const revision = state.revision;
   state.executing = true;
   state.stopRequested = false;
@@ -256,7 +346,7 @@ export async function executeOracleRoutineDeployment(state: OracleRoutineDeploym
   let attempted = false;
   try {
     await authorize(oracleRoutinePlanSql(state), async () => {
-      if (revision !== state.revision || (state.recoveryPlan ?? state.plan) !== plan) throw new Error("Draft changed during confirmation; validate it again");
+      if (state.disposed || revision !== state.revision || (state.recoveryPlan ?? state.plan) !== plan) throw new Error("Draft changed during confirmation; validate it again");
       for (const step of plan.steps) {
         if (state.stopRequested) break;
         const operation = step.operation;
@@ -269,6 +359,7 @@ export async function executeOracleRoutineDeployment(state: OracleRoutineDeploym
         try {
           attempted = true;
           state.pendingOperationId = operation.operationId;
+          if (!state.attemptedOperationIds.includes(operation.operationId)) state.attemptedOperationIds.push(operation.operationId);
           try {
             result = await api.executeOracleRoutineOperation(operation.operationId, step.sql);
           } catch (error) {
@@ -277,7 +368,7 @@ export async function executeOracleRoutineDeployment(state: OracleRoutineDeploym
             const observed = await api.observeOracleRoutineOperation(operation.operationId, false).catch(() => null);
             result = observed?.operation ?? { ...operation, lifecycle: "unproven", error: errorText(error) };
           }
-          step.operation = result;
+          if (!state.disposed) step.operation = result;
           remember(state, result);
           await invalidateTarget(result);
         } finally {
@@ -292,5 +383,6 @@ export async function executeOracleRoutineDeployment(state: OracleRoutineDeploym
   } finally {
     state.executing = false;
     if (attempted) plan.ready = false;
+    await pruneOperationReferences(state);
   }
 }

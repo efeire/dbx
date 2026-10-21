@@ -5,6 +5,145 @@ use std::sync::Mutex;
 
 const SOURCE: &str = "CREATE OR REPLACE FUNCTION \"Read.Func\" RETURN NUMBER AS BEGIN RETURN 1; END";
 
+#[tokio::test]
+async fn actual_execute_entry_pins_terminal_readback_through_cancel_or_final_response() {
+    use crate::db::agent_driver::{AgentDriverClient, AgentLaunchSpec, AgentRuntimeClient};
+    struct RuntimeGuard(Arc<AgentRuntimeClient>);
+    impl Drop for RuntimeGuard {
+        fn drop(&mut self) {
+            self.0.kill();
+        }
+    }
+    async fn wait_for(path: &std::path::Path) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !path.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake Agent did not reach the controlled readback barrier");
+    }
+    for cancel_waiter in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("routine-agent.py");
+        let root = serde_json::to_string(&dir.path().to_string_lossy()).unwrap();
+        let source = serde_json::to_string(SOURCE).unwrap();
+        std::fs::write(&script, r#"import json, pathlib, sys, time
+root = pathlib.Path(__ROOT__)
+source = __SOURCE__
+writes = 0
+print(json.dumps({'ready': True}), flush=True)
+for line in sys.stdin:
+    req = json.loads(line)
+    method = req['method']
+    params = req.get('params', {})
+    sql = params.get('sql', '')
+    if method == 'handshake':
+        result = {'protocolVersion': 2, 'agentProtocolVersion': 2, 'capabilities': ['multi_session']}
+    elif method in ('validate_session', 'validate_connection', 'close_session', 'set_schema'):
+        result = {}
+    elif method.replace('_', '').lower() == 'getobjectsource':
+        result = {'name': 'Read.Func', 'schema': 'OWNER', 'object_type': 'FUNCTION', 'source': source}
+    elif sql:
+        if sql.lstrip().upper().startswith('CREATE'):
+            writes += 1
+            (root / 'writes').write_text(str(writes))
+            result = {'columns': [], 'rows': [], 'affected_rows': 0, 'execution_time_ms': 1}
+        else:
+            if writes and not (root / 'release').exists():
+                (root / 'readback-entered').touch()
+                while not (root / 'release').exists(): time.sleep(0.01)
+            if 'LOGIN_OWNER' in sql:
+                columns, rows = ['LOGIN_OWNER'], [['OWNER']]
+            elif 'ALL_ERRORS' in sql:
+                columns, rows = ['SEQUENCE', 'ATTRIBUTE', 'LINE', 'POSITION', 'TEXT'], []
+            elif 'SOURCE_ROWS' in sql:
+                columns = ['SOURCE_ROWS', 'FIRST_LINE', 'LAST_LINE', 'SOURCE_CHARS', 'HEAD_TRIM', 'TAIL_TRIM', 'SOURCE_HEAD']
+                rows = [[1, 1, 1, len(source.removeprefix('CREATE OR REPLACE ')), 0, 0, 'FUNCTION']]
+            elif 'ALL_OBJECTS' in sql:
+                columns = ['OWNER', 'OBJECT_NAME', 'OBJECT_TYPE', 'OBJECT_ID', 'STATUS', 'LAST_DDL_TIME']
+                rows = [['OWNER', 'Read.Func', 'FUNCTION', 12, 'VALID', '2026-10-21T08:30:00']]
+            else:
+                raise RuntimeError('unexpected fake metadata query')
+            result = {'columns': columns, 'rows': rows}
+    else:
+        (root / 'unexpected-method').write_text(method)
+        print(json.dumps({'jsonrpc': '2.0', 'id': req['id'], 'error': {'code': -1, 'message': 'unexpected fake Agent method'}}), flush=True)
+        continue
+    print(json.dumps({'jsonrpc': '2.0', 'id': req['id'], 'result': result}), flush=True)
+"#.replace("__ROOT__", &root).replace("__SOURCE__", &source)).unwrap();
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        let runtime = AgentRuntimeClient::spawn(
+            AgentLaunchSpec::new(python).with_args([script.to_string_lossy().to_string()]),
+            "test",
+        )
+        .await
+        .unwrap();
+        let _runtime_guard = RuntimeGuard(runtime.clone());
+        let storage = crate::persistence::test_storage::open(&dir.path().join("storage.db")).await.unwrap();
+        let state = Arc::new(AppState::new(storage));
+        let bound = binding();
+        state.configs.write().await.insert("target".into(), bound.expected_config);
+        state
+            .update_connection_pools(|pools| {
+                for key in ["target:tenant", "target:tenant:role:metadata"] {
+                    runtime.increment_session_count();
+                    pools.insert(
+                        key.into(),
+                        PoolKind::agent(AgentDriverClient::shared_session(runtime.clone(), "routine-test".into())),
+                    );
+                }
+            })
+            .await;
+        let approval = prepare_oracle_routine_save_core(
+            &state,
+            OracleRoutineSaveInput {
+                connection_id: "target".into(),
+                database: "tenant".into(),
+                identity: bound.identity,
+                sql: SOURCE.into(),
+                supersedes_operation_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        state.routine_operations.update_references(&[approval.operation_id.clone()], &[]).unwrap();
+        let waiter = tokio::spawn(execute_oracle_routine_operation_core(
+            state.clone(),
+            approval.operation_id.clone(),
+            SOURCE.into(),
+        ));
+        wait_for(&dir.path().join("readback-entered")).await;
+        let paused = state.routine_operations.observe(&approval.operation_id).operation.unwrap();
+        assert_eq!(paused.lifecycle, RoutineOperationLifecycle::Terminal);
+        assert!(paused.dispatched && paused.acknowledged && paused.readback.is_none());
+        state.routine_operations.update_references(&[], &[approval.operation_id.clone()]).unwrap();
+        assert!(state.routine_operations.observe(&approval.operation_id).operation.is_some());
+        let waiter = if cancel_waiter {
+            waiter.abort();
+            assert!(waiter.await.unwrap_err().is_cancelled());
+            state.routine_operations.update_references(&[], &[]).unwrap();
+            assert!(state.routine_operations.observe(&approval.operation_id).operation.is_some());
+            None
+        } else {
+            Some(waiter)
+        };
+        std::fs::write(dir.path().join("release"), b"").unwrap();
+        if let Some(waiter) = waiter {
+            let final_record = waiter.await.unwrap().unwrap();
+            assert!(final_record.verified());
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while state.routine_operations.observe(&approval.operation_id).operation.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("operation was not reclaimed after the last worker/response pin");
+        assert_eq!(std::fs::read_to_string(dir.path().join("writes")).unwrap(), "1");
+    }
+}
+
 struct Io {
     name: String,
     source_text: String,

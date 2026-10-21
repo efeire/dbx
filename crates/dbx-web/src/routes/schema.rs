@@ -848,15 +848,30 @@ pub async fn list_functions(
     Ok(Json(serde_json::to_value(result).map_err(|e| AppError::from(e.to_string()))?))
 }
 
+#[derive(Deserialize)]
+pub struct RoutineSnapshotQuery {
+    #[serde(flatten)]
+    scope: SchemaQuery,
+    selected_routines: Option<String>,
+}
+
 pub async fn load_schema_diff_routines(
     State(state): State<Arc<WebState>>,
-    Query(q): Query<SchemaQuery>,
+    Query(query): Query<RoutineSnapshotQuery>,
 ) -> Result<Json<dbx_core::schema::oracle_routines::RoutineSnapshot>, AppError> {
-    let snapshot = dbx_core::schema::oracle_routines::load_schema_diff_routines_core(
+    let selected_routines = query
+        .selected_routines
+        .as_deref()
+        .map(serde_json::from_str::<Vec<String>>)
+        .transpose()
+        .map_err(|error| AppError::from(format!("Invalid selected routine names: {error}")))?;
+    let q = query.scope;
+    let snapshot = dbx_core::schema::oracle_routines::load_selected_schema_diff_routines_core(
         &state.app,
         &q.connection_id,
         q.database.as_deref().unwrap_or(""),
         q.schema.as_deref().unwrap_or(""),
+        selected_routines.as_deref(),
     )
     .await
     .map_err(AppError::from)?;
@@ -958,6 +973,25 @@ pub async fn observe_oracle_routine_operation(
         )
         .await,
     )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutineOperationReferences {
+    retain_operation_ids: Vec<String>,
+    release_operation_ids: Vec<String>,
+}
+
+pub async fn update_oracle_routine_operation_references(
+    State(state): State<Arc<WebState>>,
+    Json(input): Json<RoutineOperationReferences>,
+) -> Result<Json<()>, AppError> {
+    state
+        .app
+        .routine_operations
+        .update_references(&input.retain_operation_ids, &input.release_operation_ids)
+        .map_err(AppError::from)?;
+    Ok(Json(()))
 }
 
 #[derive(Deserialize)]
