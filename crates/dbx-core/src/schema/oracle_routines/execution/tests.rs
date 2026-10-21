@@ -107,7 +107,7 @@ for line in sys.stdin:
         )
         .await
         .unwrap();
-        state.routine_operations.update_references(&[approval.operation_id.clone()], &[]).unwrap();
+        state.routine_operations.update_references(std::slice::from_ref(&approval.operation_id), &[]).unwrap();
         let waiter = tokio::spawn(execute_oracle_routine_operation_core(
             state.clone(),
             approval.operation_id.clone(),
@@ -117,7 +117,7 @@ for line in sys.stdin:
         let paused = state.routine_operations.observe(&approval.operation_id).operation.unwrap();
         assert_eq!(paused.lifecycle, RoutineOperationLifecycle::Terminal);
         assert!(paused.dispatched && paused.acknowledged && paused.readback.is_none());
-        state.routine_operations.update_references(&[], &[approval.operation_id.clone()]).unwrap();
+        state.routine_operations.update_references(&[], std::slice::from_ref(&approval.operation_id)).unwrap();
         assert!(state.routine_operations.observe(&approval.operation_id).operation.is_some());
         let waiter = if cancel_waiter {
             waiter.abort();

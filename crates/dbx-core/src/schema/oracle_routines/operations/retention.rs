@@ -358,29 +358,32 @@ mod tests {
         let registry = RoutineOperationRegistry::default();
         let first = with_credential_owner(Some("first".into()), async {
             let record = registry.prepare(binding());
-            registry.update_references(&[record.operation_id.clone()], &[]).unwrap();
+            registry.update_references(std::slice::from_ref(&record.operation_id), &[]).unwrap();
             record
         })
         .await;
         with_credential_owner(Some("second".into()), async {
             let second = registry.prepare(binding());
             let third = registry.prepare(binding());
-            registry.update_references(&[second.operation_id.clone()], &[]).unwrap();
+            registry.update_references(std::slice::from_ref(&second.operation_id), &[]).unwrap();
             assert!(registry
                 .update_references(
                     &[third.operation_id.clone(), first.operation_id.clone()],
-                    &[second.operation_id.clone()]
+                    std::slice::from_ref(&second.operation_id)
                 )
                 .is_err());
             assert!(registry
-                .update_references(&[third.operation_id.clone(), "missing".into()], &[second.operation_id.clone()])
+                .update_references(
+                    &[third.operation_id.clone(), "missing".into()],
+                    std::slice::from_ref(&second.operation_id)
+                )
                 .is_err());
             {
                 let operations = registry.operations.lock().unwrap();
                 assert!(operations[&second.operation_id].client_retained);
                 assert!(!operations[&third.operation_id].client_retained);
             }
-            registry.update_references(&[], &[first.operation_id.clone()]).unwrap();
+            registry.update_references(&[], std::slice::from_ref(&first.operation_id)).unwrap();
             assert!(registry.observe(&first.operation_id).operation.is_none());
         })
         .await;
@@ -395,7 +398,7 @@ mod tests {
     fn release_reclaims_unused_approval_and_missing_id_never_replays() {
         let registry = RoutineOperationRegistry::default();
         let record = registry.prepare(binding());
-        registry.update_references(&[], &[record.operation_id.clone()]).unwrap();
+        registry.update_references(&[], std::slice::from_ref(&record.operation_id)).unwrap();
         assert!(registry.observe(&record.operation_id).operation.is_none());
         assert!(registry.begin(&record.operation_id, "approved SQL").is_err());
     }
@@ -407,9 +410,11 @@ mod tests {
         let mut next = binding();
         next.prerequisite_operation_ids.push(first.operation_id.clone());
         let second = registry.prepare(next);
-        registry.update_references(&[second.operation_id.clone()], &[first.operation_id.clone()]).unwrap();
+        registry
+            .update_references(std::slice::from_ref(&second.operation_id), std::slice::from_ref(&first.operation_id))
+            .unwrap();
         assert!(registry.observe(&first.operation_id).operation.is_some());
-        registry.update_references(&[], &[second.operation_id.clone()]).unwrap();
+        registry.update_references(&[], std::slice::from_ref(&second.operation_id)).unwrap();
         assert!(registry.operations.lock().unwrap().is_empty());
     }
 
@@ -418,7 +423,7 @@ mod tests {
         let registry = RoutineOperationRegistry::default();
         let orphan = registry.prepare(binding());
         let retained = registry.prepare(binding());
-        registry.update_references(&[retained.operation_id.clone()], &[]).unwrap();
+        registry.update_references(std::slice::from_ref(&retained.operation_id), &[]).unwrap();
         {
             let mut operations = registry.operations.lock().unwrap();
             operations.get_mut(&orphan.operation_id).unwrap().unclaimed_until =
@@ -441,7 +446,7 @@ mod tests {
         let response = registry.adopt_pin(&record.operation_id);
         registry.mark_dispatched(&record.operation_id).unwrap();
         registry.terminal(&record.operation_id, true, None, None);
-        registry.update_references(&[], &[record.operation_id.clone()]).unwrap();
+        registry.update_references(&[], std::slice::from_ref(&record.operation_id)).unwrap();
         assert!(registry.observe(&record.operation_id).operation.is_some());
         registry.update_readback(&record.operation_id, verified_readback());
         drop(worker);
@@ -461,7 +466,7 @@ mod tests {
         let response = registry.adopt_pin(&record.operation_id);
         registry.mark_dispatched(&record.operation_id).unwrap();
         registry.waiting_lost(&record.operation_id, "outcome unknown".into());
-        registry.update_references(&[], &[record.operation_id.clone()]).unwrap();
+        registry.update_references(&[], std::slice::from_ref(&record.operation_id)).unwrap();
         drop(worker);
         drop(response);
         assert_eq!(registry.observe(&record.operation_id).lifecycle, RoutineOperationLifecycle::Unproven);

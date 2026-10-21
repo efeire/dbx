@@ -117,8 +117,8 @@ pub async fn execute_oracle_routine_operation_core(
     approved_sql: String,
 ) -> Result<RoutineOperationRecord, String> {
     let binding = match state.routine_operations.begin(&operation_id, &approved_sql)? {
-        BeginRoutineOperation::Existing(record) => return Ok(record),
-        BeginRoutineOperation::Dispatch(binding) => binding,
+        BeginRoutineOperation::Existing(record) => return Ok(*record),
+        BeginRoutineOperation::Dispatch(binding) => *binding,
     };
     let owner_scope = current_credential_owner();
     let _response_pin = state.routine_operations.adopt_pin(&operation_id);
@@ -184,8 +184,8 @@ pub(super) async fn execute_prepared_inline(
     approved_sql: &str,
 ) -> Result<RoutineOperationRecord, String> {
     let binding = match state.routine_operations.begin(operation_id, approved_sql)? {
-        BeginRoutineOperation::Existing(record) => return Ok(record),
-        BeginRoutineOperation::Dispatch(binding) => binding,
+        BeginRoutineOperation::Existing(record) => return Ok(*record),
+        BeginRoutineOperation::Dispatch(binding) => *binding,
     };
     let _response_pin = state.routine_operations.adopt_pin(operation_id);
     let _worker_pin = state.routine_operations.adopt_pin(operation_id);

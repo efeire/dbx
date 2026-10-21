@@ -106,8 +106,8 @@ impl Default for RoutineOperationRegistry {
 }
 
 pub(super) enum BeginRoutineOperation {
-    Dispatch(RoutineWriteBinding),
-    Existing(RoutineOperationRecord),
+    Dispatch(Box<RoutineWriteBinding>),
+    Existing(Box<RoutineOperationRecord>),
 }
 
 fn same_namespace_target(left: &RoutineWriteBinding, right: &RoutineWriteBinding) -> bool {
@@ -189,7 +189,7 @@ impl RoutineOperationRegistry {
             return Err("Routine approval does not match the edited SQL; validate a new draft".into());
         }
         if operation.record.lifecycle != RoutineOperationLifecycle::Prepared {
-            return Ok(BeginRoutineOperation::Existing(operation.record.clone()));
+            return Ok(BeginRoutineOperation::Existing(Box::new(operation.record.clone())));
         }
         if operation.binding.prerequisite_operation_ids.iter().any(|id| {
             !operations.get(id).is_some_and(|prerequisite| {
@@ -200,7 +200,7 @@ impl RoutineOperationRegistry {
                 record.lifecycle = RoutineOperationLifecycle::Terminal;
                 record.error = Some("A prerequisite routine step is not verified; validate the remaining draft without replaying completed steps".into());
             });
-            return Ok(BeginRoutineOperation::Existing(operations[operation_id].record.clone()));
+            return Ok(BeginRoutineOperation::Existing(Box::new(operations[operation_id].record.clone())));
         }
         if let Some(active) = operations.values().find(|other| {
             matches!(other.record.lifecycle, RoutineOperationLifecycle::Running | RoutineOperationLifecycle::Unproven)
@@ -218,7 +218,7 @@ impl RoutineOperationRegistry {
                 record.lifecycle = RoutineOperationLifecycle::Terminal;
                 record.error = Some(error);
             });
-            return Ok(BeginRoutineOperation::Existing(operations[operation_id].record.clone()));
+            return Ok(BeginRoutineOperation::Existing(Box::new(operations[operation_id].record.clone())));
         }
         let operation = operations.get_mut(operation_id).expect("operation was checked under this lock");
         // One pin belongs to the independent worker, one to its response waiter.
@@ -227,7 +227,7 @@ impl RoutineOperationRegistry {
         self.update_record_locked(&mut operations, operation_id, |record| {
             record.lifecycle = RoutineOperationLifecycle::Running
         });
-        Ok(BeginRoutineOperation::Dispatch(binding))
+        Ok(BeginRoutineOperation::Dispatch(Box::new(binding)))
     }
 
     pub(super) fn binding_for_readback(&self, operation_id: &str) -> Result<RoutineWriteBinding, String> {
