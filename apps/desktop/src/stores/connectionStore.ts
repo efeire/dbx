@@ -1830,7 +1830,6 @@ export const useConnectionStore = defineStore("connection", () => {
       docs_notes_path: config.docs_notes_path?.trim() ? config.docs_notes_path.trim() : undefined,
       transport_layers: Array.isArray(config.transport_layers) ? config.transport_layers : [],
       show_system_schemas: config.show_system_schemas === true,
-      show_database_links: config.show_database_links !== false,
       sidebar_auto_load_all_tables: config.sidebar_auto_load_all_tables === true,
       connect_timeout_secs: connectTimeoutInherit ? settingsStore.editorSettings.globalConnectTimeoutSecs : config.connect_timeout_secs || 10,
       connect_timeout_inherit: connectTimeoutInherit,
@@ -7196,8 +7195,10 @@ export const useConnectionStore = defineStore("connection", () => {
       if (!targetNode) return;
       const children = buildCustomTypeTreeChildren(targetNode, details);
       targetNode.customTypeKind = details.kind;
-      targetNode.hasMembers = children.length > 0;
+      const attributesRead = details.oracleMetadata?.attributesRead;
+      targetNode.hasMembers = attributesRead && attributesRead.state !== "available" ? undefined : children.length > 0;
       setChildren(targetNode, children);
+      if (attributesRead && attributesRead.state !== "available") clearLoadedChildrenCache(targetNode.id);
       targetNode.isExpanded = children.length > 0;
     } catch (error) {
       recordMetadataLoadError(node.connectionId, error, load);
@@ -9975,7 +9976,12 @@ export const useConnectionStore = defineStore("connection", () => {
   }
 
   async function persistConnections(nextConnections: ConnectionConfig[] = connections.value, removedIds: string[] = []) {
-    const configs = nextConnections.filter((connection) => connection.one_time !== true);
+    const configs = nextConnections
+      .filter((connection) => connection.one_time !== true)
+      .map((connection) => {
+        const { jdbc_dialect: _jdbcDialect, ...persistedConfig } = connection;
+        return persistedConfig;
+      });
     if (removedIds.length) {
       await api.saveConnections(configs, removedIds);
       return;
@@ -10773,13 +10779,21 @@ export const useConnectionStore = defineStore("connection", () => {
     await settingsStore.initEditorSettings();
     if (!initFromDiskPromise) {
       initFromDiskPromise = (async () => {
+        const startingConfigFingerprints = new Map(connections.value.map((connection) => [connection.id, connectionConfigFingerprint(connection)]));
         // 整体覆盖内存布局前，先落盘窗口内未写盘的分组编辑（防止 300ms 防抖窗口
         // 内的编辑被备份轮询/重载带回的旧快照静默回滚）。
         await flushTableVGroupPersist();
         const [pinnedOrder, saved, , loadedTableVGroups] = await Promise.all([loadPinnedTreeNodeOrder(), api.loadConnections(), tunnelProfileStore.init(), api.loadTableVGroups()]);
         setPinnedTreeNodeOrder(pinnedOrder);
         await migrateTimeoutInheritance(saved);
-        const loadedConnections = saved.map(normalizeConnection);
+        const loadedConnections = saved.map(normalizeConnection).map((loadedConfig) => {
+          const currentConfig = connections.value.find((connection) => connection.id === loadedConfig.id);
+          const startingFingerprint = startingConfigFingerprints.get(loadedConfig.id);
+          if (currentConfig && (startingFingerprint === undefined || connectionConfigFingerprint(currentConfig) !== startingFingerprint)) {
+            return currentConfig;
+          }
+          return loadedConfig;
+        });
         const loadedIds = new Set(loadedConnections.map((connection) => connection.id));
         // One-time deep-link connections are intentionally filtered from disk
         // persistence. Keep them in the live list when an unrelated disk reload

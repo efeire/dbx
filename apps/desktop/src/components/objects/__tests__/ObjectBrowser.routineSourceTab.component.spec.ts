@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   ensureConnected: vi.fn(),
   openObjectSourceTabPending: vi.fn(),
   toast: vi.fn(),
+  typePanelRefresh: vi.fn(),
   editorSettings: {
     shortcuts: { refreshData: "F5" },
     objectBrowserViewMode: "list",
@@ -77,7 +78,15 @@ vi.mock("@/components/ui/CustomContextMenu.vue", () => ({
 vi.mock("@/components/editor/QueryEditor.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/editor/DangerConfirmDialog.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/objects/ProcedureExecutionDialog.vue", () => ({ default: { render: () => null } }));
-vi.mock("@/components/objects/CustomTypeInfoPanel.vue", () => ({ default: { render: () => null } }));
+vi.mock("@/components/objects/CustomTypeInfoPanel.vue", () => ({
+  default: defineComponent({
+    props: { name: { type: String, default: "" } },
+    setup(props, { expose }) {
+      expose({ selectTab: vi.fn(), refresh: mocks.typePanelRefresh });
+      return () => h("div", { "data-custom-type-panel": true }, props.name);
+    },
+  }),
+}));
 vi.mock("@/components/export/XlsxHeaderDialog.vue", () => ({ default: { render: () => null } }));
 
 const connection = {
@@ -120,13 +129,13 @@ afterEach(() => {
   invalidateObjectBrowserRowsCache({});
 });
 
-async function mountBrowser() {
+async function mountBrowser(browserConnection: ConnectionConfig = connection, readyName = "sp_daily_report") {
   const host = document.createElement("div");
   document.body.append(host);
-  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection, database: "app" }) });
+  const app = createApp({ setup: () => () => h(ObjectBrowser, { connection: browserConnection, database: "app" }) });
   mountedApps.push({ app, host });
   app.mount(host);
-  await vi.waitFor(() => expect(host.textContent).toContain("sp_daily_report"));
+  await vi.waitFor(() => expect(host.textContent).toContain(readyName));
   return host;
 }
 
@@ -141,6 +150,26 @@ function click(row: HTMLElement, detail: number) {
 }
 
 describe("ObjectBrowser routine double click", () => {
+  it("opens Oracle TYPE details and reads TYPE_BODY through the existing source panel", async () => {
+    const oracleConnection = { ...connection, id: "oracle-1", db_type: "oracle" } as ConnectionConfig;
+    mocks.listObjects.mockResolvedValue([
+      { name: "address_type", schema: "app", object_type: "TYPE" },
+      { name: "address_type_body", schema: "app", object_type: "TYPE_BODY" },
+    ]);
+    mocks.getObjectSource.mockResolvedValue({ source: "CREATE TYPE BODY app.address_type_body AS ...;", editable: false });
+    const host = await mountBrowser(oracleConnection, "address_type");
+
+    click(rowFor(host, "address_type"), 1);
+    await vi.waitFor(() => expect(host.textContent).toContain("address_type"));
+    const refresh = host.querySelector<HTMLButtonElement>('button[title^="grid.refresh"]');
+    refresh?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => expect(mocks.typePanelRefresh).toHaveBeenCalledTimes(1));
+
+    click(rowFor(host, "address_type_body"), 1);
+    await vi.waitFor(() => expect(mocks.getObjectSource).toHaveBeenCalledWith("oracle-1", "app", "app", "address_type_body", "TYPE_BODY", undefined));
+    expect(mocks.buildEditableObjectSource).not.toHaveBeenCalled();
+  });
+
   it("keeps a reopened source panel independent of the previous late response", async () => {
     const host = await mountBrowser();
     vi.useFakeTimers();

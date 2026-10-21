@@ -80,6 +80,14 @@ import type {
   CompletionAssistantResponse,
   ObjectStatistics,
   CustomTypeDetails,
+  OracleTypeManagementSnapshot,
+  OracleTypeManagementObjectKey,
+  OracleTypeManagementSqlInput,
+  OracleTypeManagementSqlResult,
+  OracleTypeDataRequest,
+  OracleTypeDataResult,
+  OracleTypeEvolutionRequest,
+  OracleTypeEvolutionManifest,
   ObjectSource,
   ObjectSourceKind,
   MysqlEventInfo,
@@ -1871,6 +1879,18 @@ export async function listSchemaInfos(connectionId: string, database: string): P
 export async function getCustomTypeDetails(connectionId: string, database: string, schema: string, name: string): Promise<CustomTypeDetails> {
   return invoke("get_custom_type_details", { connectionId, database, schema, name });
 }
+export async function getOracleTypeManagementSnapshot(connectionId: string, database: string, owner: string, name: string, knownObjects: OracleTypeManagementObjectKey[] = []): Promise<OracleTypeManagementSnapshot> {
+  return invoke("get_oracle_type_management_snapshot", { connectionId, database, owner, name, knownObjects });
+}
+export function buildOracleTypeManagementSql(input: OracleTypeManagementSqlInput): Promise<OracleTypeManagementSqlResult> {
+  return invoke("build_oracle_type_management_sql", { input });
+}
+export function verifyOracleTypeData(input: OracleTypeDataRequest): Promise<OracleTypeDataResult> {
+  return invoke("verify_oracle_type_data", { input });
+}
+export function prepareOracleTypeEvolution(input: OracleTypeEvolutionRequest): Promise<OracleTypeEvolutionManifest> {
+  return invoke("prepare_oracle_type_evolution", { input });
+}
 export async function getColumns(connectionId: string, database: string, schema: string, table: string, catalog?: string, clientSessionId?: string, currentSchema?: string): Promise<ColumnInfo[]> {
   return invoke("get_columns", {
     connectionId,
@@ -2104,10 +2124,11 @@ export async function cancelQuery(executionId: string): Promise<boolean> {
 export interface ConditionalUpdateCancellationResult {
   requested: boolean;
   terminal: boolean;
+  databaseTerminal?: boolean;
 }
 
-export async function cancelConditionalUpdate(executionId: string): Promise<ConditionalUpdateCancellationResult> {
-  return invoke("cancel_conditional_update", { executionId });
+export async function cancelConditionalUpdate(executionId: string, options?: { cancel?: boolean }): Promise<ConditionalUpdateCancellationResult> {
+  return invoke("cancel_conditional_update", { executionId, ...options });
 }
 
 export async function readLargeValueChunk(request: import("./http").LargeValueRequest): Promise<import("./http").LargeValueChunk> {

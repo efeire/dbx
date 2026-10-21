@@ -186,7 +186,8 @@ import {
 } from "@/lib/table/objectBrowserRows";
 import { isSourceOnlyObjectBrowserRow, resolveRowClickAction, shouldDeferSingleClick, singleClickRowAction, type ObjectBrowserRowAction } from "@/lib/table/objectBrowserRowAction";
 import { objectBrowserTableSelectionAnchor, objectBrowserTableSelectionRange } from "@/lib/table/objectBrowserSelection";
-import { customTypeCapabilities, supportsTypeObjectSource, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
+import { customTypeCapabilities, isOracleFamilyTypeSource, supportsOracleFamilyTypeManagement, supportsTypeObjectSource, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
+import { requestOracleTypeManagement } from "@/lib/table/oracleTypeManagementRequest";
 import { filterObjectBrowserTableColumns } from "@/lib/table/objectBrowserTableInfo";
 import { visibleMongoCollections } from "@/lib/sidebar/mongoCollectionMutation";
 import { createSidePanelRequestGuard } from "@/lib/table/sidePanelRequestGuard";
@@ -1718,6 +1719,10 @@ async function refreshActiveTableInfo() {
     await refreshActiveSource();
     return;
   }
+  if (sidePanelMode.value === "type-info") {
+    await sidePanelRef.value?.refresh();
+    return;
+  }
   if (sidePanelMode.value !== "table-info" || !sidePanelRow.value) return;
   sidePanelGuard.bump();
 
@@ -1918,7 +1923,7 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
     props.database === database &&
     props.catalog === catalog &&
     (selectedSchema.value || props.database) === schema;
-  if (objectType === "TYPE" || objectType === "TYPE_BODY" || objectType === "TRIGGER") {
+  if (objectType === "TRIGGER") {
     try {
       const source = await api.getObjectSource(connection.id, database, object.owner, object.name, objectType);
       if (!isCurrentRequest()) return;
@@ -2005,7 +2010,7 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
   try {
     const result = await sidePanelGuard.wait(epoch, api.getObjectSource(connectionId, database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined), metadataLoadBudgetMs(props.connection.query_timeout_secs));
     if (sidePanelGuard.isStale(epoch)) return;
-    sourceCanEdit.value = result.editable !== false && !["TRIGGER", "TYPE", "TYPE_BODY"].includes(row.type) && (row.type !== "SEQUENCE" || effectiveDatabaseType.value === "oceanbase-oracle");
+    sourceCanEdit.value = result.editable !== false && (!["TRIGGER", "TYPE", "TYPE_BODY"].includes(row.type) || isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type)) && (row.type !== "SEQUENCE" || effectiveDatabaseType.value === "oceanbase-oracle");
     const editable = sourceCanEdit.value
       ? await sidePanelGuard.wait(
           epoch,
@@ -2027,7 +2032,7 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
     sourceContent.value = row.type === "SEQUENCE" ? result.source : editable;
     sourceDraft.value = editable;
     // Fresh open always enters edit when allowed; refresh preserves prior edit mode.
-    const enterEditing = sourceCanEdit.value && row.type !== "SEQUENCE" && (options?.preserveEditing ? preserveEditing : true);
+    const enterEditing = sourceCanEdit.value && row.type !== "SEQUENCE" && (options?.preserveEditing ? preserveEditing : !isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type));
     sourceEditing.value = enterEditing;
     if (!sourceCanEdit.value && row.type !== "SEQUENCE") {
       toast(t("objects.sourceReadOnly"), 3000);
@@ -2116,11 +2121,46 @@ async function executeProcedureSql(sql: string) {
 }
 
 function requestDrop(row: ObjectBrowserRow) {
+  if (isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type)) {
+    void manageTypeDrop(row);
+    return;
+  }
   dropTarget.value = row;
   dropPreviewSql.value = "";
   dropTableCascade.value = false;
   showDropConfirm.value = true;
   void refreshDropPreviewSql();
+}
+
+async function manageTypeDrop(row: ObjectBrowserRow): Promise<boolean> {
+  const connectionId = props.connection.id;
+  const database = props.database;
+  const owner = row.schema || selectedSchema.value || database;
+  const selectedOwner = selectedSchema.value;
+  const databaseType = effectiveDatabaseType.value as "oracle" | "oceanbase-oracle" | "dameng";
+  try {
+    const outcome = await requestOracleTypeManagement({
+      target: { connectionId, database, owner, name: row.name, databaseType },
+      operation: row.type === "TYPE_BODY" ? "delete-body" : "delete-spec",
+      isCurrent: () => props.connection.id === connectionId && props.database === database && selectedSchema.value === selectedOwner && effectiveDatabaseType.value === databaseType,
+    });
+    if (!outcome.complete) return false;
+    if (props.connection.id === connectionId && props.database === database && selectedSchema.value === selectedOwner) {
+      const removed = rows.value.filter((item) => (item.schema || selectedOwner || database) === owner && item.name === row.name && (item.type === row.type || (row.type === "TYPE" && item.type === "TYPE_BODY")));
+      removePinnedObjectBrowserRows(removed);
+      rows.value = rows.value.filter((item) => !removed.includes(item));
+      if (removed.some((item) => item.id === sourceRow.value?.id)) closeSource();
+      try {
+        await reload();
+      } catch (error) {
+        toast(t("objects.typeManagementRefreshFailed", { message: String(error) }), 5000);
+      }
+    }
+    return true;
+  } catch (error) {
+    toast(t("contextMenu.tableOperationFailed", { message: String(error) }), 5000);
+    return false;
+  }
 }
 
 function requestRename(row: ObjectBrowserRow) {
@@ -2619,6 +2659,11 @@ async function confirmRename() {
 async function confirmDrop() {
   if (!dropTarget.value) return;
   const row = dropTarget.value;
+  if (isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type)) {
+    await manageTypeDrop(row);
+    dropTarget.value = null;
+    return;
+  }
   let executedSql = "";
   const start = Date.now();
   let successRecorded = false;
@@ -2667,6 +2712,8 @@ async function confirmDrop() {
 }
 
 async function buildDropSqlForRow(row: ObjectBrowserRow, options?: { cascade?: boolean }): Promise<string> {
+  if (isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type)) throw new Error(t("objects.typeManagementUseSave"));
+  if (row.type === "TYPE" || row.type === "TYPE_BODY") throw new Error(t("objects.sourceReadOnly"));
   if (row.type === "TABLE") {
     return buildDropTableSql(tableAdminSqlOptions(row, { cascade: options?.cascade && supportsDropTableCascade(effectiveDatabaseType.value) }));
   }
@@ -2893,6 +2940,18 @@ async function refreshBatchDropPreviewSql() {
 
 function requestBatchDropTables() {
   if (selectedTableCount.value === 0) return;
+  const selected = [...selectedTableRows.value];
+  const managed = selected.filter((row) => isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type));
+  if (managed.length) {
+    void (async () => {
+      const unique = managed.filter((row) => row.type !== "TYPE_BODY" || !managed.some((other) => other.type === "TYPE" && other.name === row.name && other.schema === row.schema));
+      for (const row of unique) if (!(await manageTypeDrop(row))) return;
+      const remaining = selected.filter((row) => !managed.includes(row));
+      selectedTableIds.value = new Set(remaining.map((row) => row.id));
+      if (remaining.length) requestBatchDropTables();
+    })();
+    return;
+  }
   batchDropCascade.value = false;
   batchDropProgress.value = { completed: 0, total: 0 };
   batchDropPreviewSql.value = "";
@@ -4017,6 +4076,22 @@ async function saveSource() {
     if (!sourceIdentity) return;
     const identity = sourceIdentity;
     assertSourceIdentity(identity);
+    if (isOracleFamilyTypeSource(databaseType, row.type)) {
+      const source = sourceDraft.value;
+      const result = await requestOracleTypeManagement({
+        target: { connectionId, database, owner: schema, name: row.name, databaseType: databaseType as "oracle" | "oceanbase-oracle" | "dameng" },
+        operation: row.type === "TYPE_BODY" ? "save-body" : "save-spec",
+        source,
+        baseSource: sourceEditableText.value,
+        isCurrent: () => sidePanelGuard.isFresh(epoch) && sourceRow.value === row && sourceDraft.value === source,
+      });
+      if (!result.complete || sidePanelGuard.isStale(epoch)) return;
+      toast(t("objects.sourceSaved"));
+      sourceEditing.value = false;
+      sourceDraft.value = "";
+      await loadSourcePanel(row);
+      return;
+    }
     const statements = await buildExecutableObjectSourceStatements({
       databaseType,
       objectType: row.type as ObjectSourceKind,
@@ -4768,12 +4843,16 @@ function getPackageMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
 function getTypeMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
   const items: ContextMenuItem[] = [];
   const capabilities = customTypeCapabilities(effectiveDatabaseType.value);
-  // Verified PG-family types open the read-only details panel; Xugu keeps its
-  // “view source” entry for TYPE/TYPE_BODY rows.
+  // Oracle-family types expose source alongside read-only TYPE details; Xugu
+  // keeps its source entry for TYPE/TYPE_BODY rows.
   if (supportsTypeObjectSource(effectiveDatabaseType.value)) {
     items.push({ label: t("contextMenu.viewSource"), action: () => openSource(item), icon: Code2 });
   }
-  if (capabilities.details) {
+  if (supportsOracleFamilyTypeManagement(effectiveDatabaseType.value)) {
+    items.push({ label: t("contextMenu.editObject"), action: () => openSourceTab(item), icon: PencilLine });
+    items.push({ label: t("contextMenu.dropObject"), action: () => requestDrop(item), icon: Trash2, variant: "destructive" });
+  }
+  if (capabilities.details && item.type === "TYPE") {
     items.push({ label: t("contextMenu.viewDetails"), action: () => void openTypeInfo(item), icon: Info });
     if (capabilities.ddl) {
       items.push({ label: t("contextMenu.viewDdl"), action: () => openTypeDdl(item), icon: FileCode });
@@ -5552,7 +5631,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
         </template>
         <!-- Type info mode (read-only user-defined type details) -->
         <template v-else-if="sidePanelMode === 'type-info'">
-          <CustomTypeInfoPanel ref="sidePanelRef" :connection="props.connection" :database="props.database" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name || ''" :catalog="props.catalog" @close="closeSidePanel" />
+          <CustomTypeInfoPanel ref="sidePanelRef" :connection="props.connection" :database="props.database" :database-type="effectiveDatabaseType" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name || ''" :catalog="props.catalog" @close="closeSidePanel" />
         </template>
         <template v-else-if="sidePanelMode === 'event-editor'">
           <MySqlEventEditor :key="eventEditorKey" :connection="props.connection" :database="props.database" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name" :read-only="props.initialEventReadOnly" @saved="onEventSaved" @close="closeSidePanel" />

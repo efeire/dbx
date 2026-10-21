@@ -33,9 +33,9 @@ const KINGBASE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VI
 const VASTBASE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "TYPE"];
 
 const POSTGRES_LIKE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION"];
-const ORACLE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY"];
-const OCEANBASE_ORACLE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY"];
-const DAMENG_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "PACKAGE", "PACKAGE_BODY"];
+const ORACLE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY", "TYPE", "TYPE_BODY"];
+const OCEANBASE_ORACLE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY", "TYPE", "TYPE_BODY"];
+const DAMENG_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "PACKAGE", "PACKAGE_BODY", "TYPE", "TYPE_BODY"];
 const XUGU_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY", "TYPE", "TYPE_BODY"];
 const FIREBIRD_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "PROCEDURE", "FUNCTION_INTERNAL", "FUNCTION_UDF", "TRIGGER", "SEQUENCE", "INDEX", "PACKAGE"];
 const PACKAGE_MEMBER_EXPANSION_DATABASES = new Set<DatabaseType>(["oracle", "oceanbase-oracle", "xugu"]);
@@ -116,8 +116,8 @@ const DATABASE_TYPE_OBJECTS = new Map<DatabaseType, SidebarObjectKind[]>([
 ]);
 /**
  * Whether a kind is readable as object source for the given connection type.
- * TYPE/TYPE_BODY only have a real source implementation on Xugu; PostgreSQL-
- * family databases list types without a CREATE TYPE getter this cycle.
+ * TYPE/TYPE_BODY have source getters on Oracle-family databases and Xugu;
+ * PostgreSQL-family databases list types without a CREATE TYPE getter.
  */
 function isSourceReadableObjectKind(kind: SidebarObjectKind, dbType?: DatabaseType): boolean {
   if (kind === "TABLE" || kind === "INDEX") return false;
@@ -193,7 +193,15 @@ export function sidebarObjectKindsForDatabase(dbType?: DatabaseType, compatibili
  * before dispatching getObjectSource.
  */
 export function supportsTypeObjectSource(dbType?: DatabaseType): boolean {
-  return dbType === "xugu";
+  return dbType === "oracle" || dbType === "oceanbase-oracle" || dbType === "dameng" || dbType === "xugu";
+}
+
+export function supportsOracleFamilyTypeManagement(dbType?: DatabaseType): boolean {
+  return dbType === "oracle" || dbType === "oceanbase-oracle" || dbType === "dameng";
+}
+
+export function isOracleFamilyTypeSource(dbType: DatabaseType | undefined, objectType: string | undefined): boolean {
+  return supportsOracleFamilyTypeManagement(dbType) && (objectType === "TYPE" || objectType === "TYPE_BODY");
 }
 
 export type CustomTypeCapabilities = {
@@ -202,7 +210,9 @@ export type CustomTypeCapabilities = {
   ddl: boolean;
 };
 
-const VERIFIED_CUSTOM_TYPE_DATABASES = new Set<DatabaseType>(["postgres", "opengauss", "gaussdb", "kingbase", "vastbase"]);
+const VERIFIED_CUSTOM_TYPE_DATABASES = new Set<DatabaseType>(["postgres", "opengauss", "gaussdb", "kingbase", "vastbase", "oracle", "oceanbase-oracle", "dameng"]);
+const ORACLE_TYPE_ATTRIBUTE_DATABASES = new Set<DatabaseType>(["oracle", "oceanbase-oracle", "dameng"]);
+const CUSTOM_TYPE_DDL_DATABASES = new Set<DatabaseType>(["postgres", "opengauss", "gaussdb", "kingbase", "vastbase"]);
 
 /**
  * Whether a connection may open read-only custom type details (phase 2).
@@ -211,7 +221,12 @@ const VERIFIED_CUSTOM_TYPE_DATABASES = new Set<DatabaseType>(["postgres", "openg
  */
 export function customTypeCapabilities(dbType?: DatabaseType): CustomTypeCapabilities {
   const supported = !!dbType && VERIFIED_CUSTOM_TYPE_DATABASES.has(dbType);
-  return { details: supported, members: supported, ddl: supported };
+  const hasDdl = !!dbType && CUSTOM_TYPE_DDL_DATABASES.has(dbType);
+  return { details: supported, members: supported, ddl: hasDdl };
+}
+
+export function supportsOracleTypeAttributeExpansion(dbType?: DatabaseType): boolean {
+  return !!dbType && ORACLE_TYPE_ATTRIBUTE_DATABASES.has(dbType);
 }
 
 export function supportsPackageMemberExpansion(dbType?: DatabaseType, compatibilityMode?: string): boolean {
