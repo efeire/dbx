@@ -71,6 +71,8 @@ const closeConfirmDirtyCount = computed(() => queryStore.closeConfirmDirtyTabIds
 const showCloseConfirmBulkActions = computed(() => closeConfirmDirtyCount.value > 1);
 const closeConfirmDirtyTabs = computed(() => queryStore.closeConfirmDirtyTabIds.map((id) => queryStore.tabs.find((tab) => tab.id === id)).filter((tab): tab is NonNullable<ReturnType<typeof queryStore.tabs.find>> => !!tab));
 const closeHasTypeRecovery = computed(() => closeConfirmDirtyTabs.value.some((tab) => tab.typeManagementDraft && tab.typeManagementDraft.state !== "complete"));
+const closeConfirmCurrentTab = computed(() => closeConfirmDirtyTabs.value.find((tab) => tab.id === queryStore.pendingCloseTabId) ?? closeConfirmDirtyTabs.value[0]);
+const closeCurrentHasTypeRecovery = computed(() => closeConfirmCurrentTab.value?.typeManagementDraft && closeConfirmCurrentTab.value.typeManagementDraft.state !== "complete");
 // Numbered across every open tab so unsaved-change confirmations show the
 // same suffixed titles as the tab strip.
 const tabTitles = computed(() => tabDisplayTitles(queryStore.tabs, t));
@@ -78,7 +80,7 @@ function closeConfirmTabTitle(tab: QueryTab): string {
   return tabTitles.value.get(tab.id) ?? tabDisplayTitle(tab, t);
 }
 const closeConfirmCurrentTitle = computed(() => {
-  const focusedTab = closeConfirmDirtyTabs.value.find((tab) => tab.id === queryStore.pendingCloseTabId) ?? closeConfirmDirtyTabs.value[0];
+  const focusedTab = closeConfirmCurrentTab.value;
   return focusedTab ? closeConfirmTabTitle(focusedTab) : "";
 });
 const closeConfirmMessage = computed(() => {
@@ -274,8 +276,8 @@ function handleCancelClose() {
         <Button variant="outline" @click="handleCancelClose">{{ t("common.cancel") }}</Button>
         <Button v-if="showCloseConfirmBulkActions" variant="secondary" class="border-border" @click="handleDiscardAllAndClose">{{ t("editor.discardAllChanges") }}</Button>
         <Button v-if="showCloseConfirmBulkActions && !closeHasTypeRecovery" @click="handleSaveAllAndClose">{{ t("editor.saveAllChanges") }}</Button>
-        <Button variant="secondary" class="border-border" @click="handleDiscardAndClose">{{ t(closeHasTypeRecovery ? "objects.typeManagementDiscardClose" : "editor.discardChanges") }}</Button>
-        <Button v-if="!closeHasTypeRecovery" @click="handleSaveAndClose">{{ t("savedSql.save") }}</Button>
+        <Button variant="secondary" class="border-border" @click="handleDiscardAndClose">{{ t(closeCurrentHasTypeRecovery ? "objects.typeManagementDiscardClose" : "editor.discardChanges") }}</Button>
+        <Button v-if="!closeCurrentHasTypeRecovery" @click="handleSaveAndClose">{{ t("savedSql.save") }}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>
