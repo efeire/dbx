@@ -1116,6 +1116,30 @@ describe("ProcessListPanel linked diagnostics", () => {
     expect(findGridButton("processList.batchTerminate")).toBeDefined();
   });
 
+  it("treats the exact-request placeholder as a prompt rather than an action that clears a bound request", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    const execute = mocks.executeQuery.getMockImplementation()!;
+    mocks.executeQuery.mockImplementation(async (...args: unknown[]) => {
+      const value = await execute(...args);
+      if (!String(args[2]).includes("FROM SYS.GV$OB_SQL_AUDIT")) return value;
+      const other = [...value.rows[0]];
+      other[value.columns.indexOf("REQUEST_ID")] = "100";
+      return { ...value, rows: [...value.rows, other] };
+    });
+    await mountOceanbasePanel();
+    [...processRow("21").querySelectorAll("button")].find((button) => button.textContent?.trim() === "诊断")?.click();
+    await vi.waitFor(() => expect(root?.querySelector("select")?.options.length).toBe(3), { timeout: 5000 });
+    await vi.waitFor(() => expect(findDialogButton("刷新")?.disabled).toBe(false));
+    const select = root?.querySelector("select")!;
+    expect(select.options[0]?.disabled).toBe(true);
+    select.value = select.options[1]!.value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(root?.textContent).toContain("SYS.GV$OB_SQL_AUDIT.QUERY_SQL"));
+    await vi.waitFor(() => expect(findDialogButton("刷新")?.disabled).toBe(false));
+    expect(root?.querySelector("select")?.options[0]?.disabled).toBe(true);
+    expect(root?.querySelector("select")?.value).toBe(select.options[1]!.value);
+  });
+
   it("keeps explicit plan selection available when the captured audit narrows earlier cache candidates", async () => {
     mocks.localeMessages = zhCN as Record<string, unknown>;
     let auditAvailable = false;
@@ -1139,6 +1163,7 @@ describe("ProcessListPanel linked diagnostics", () => {
     const tab = [...(root?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])].find((value) => value.textContent?.trim() === "已有计划");
     tab?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
     await vi.waitFor(() => expect(root?.querySelector("select")?.options.length).toBe(3));
+    expect(root?.querySelector("select")?.options[0]?.disabled).toBe(true);
     const choose = (id: string) => {
       const select = root?.querySelector("select")!;
       select.value = [...select.options].find((option) => option.textContent?.startsWith(`计划 ${id} ·`))!.value;

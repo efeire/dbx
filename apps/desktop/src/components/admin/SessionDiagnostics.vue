@@ -133,7 +133,7 @@ function tableRows(result?: QueryResult) {
       <label v-if="snapshot.requestChoices.length > 1" class="flex shrink-0 flex-wrap items-center gap-2 border-b px-5 py-3 text-sm">
         {{ t("sessionDiagnostics.chooseRequest") }}
         <select :value="selection.requestKey ?? ''" class="h-8 max-w-full rounded-md border bg-background px-2 text-xs focus-visible:outline focus-visible:outline-ring" :disabled="busy" @change="chooseRequest">
-          <option value="">{{ t("sessionDiagnostics.selectRequest") }}</option>
+          <option value="" disabled>{{ t("sessionDiagnostics.selectRequest") }}</option>
           <option v-for="choice in snapshot.requestChoices" :key="choice.key" :value="choice.key">{{ t("sessionDiagnostics.requestOption", { ...choice.identity, requestTime: formattedMicros(choice.identity.requestTime) }) }}</option>
         </select>
       </label>
@@ -164,7 +164,7 @@ function tableRows(result?: QueryResult) {
           <label v-if="snapshot.planChoices.length > 1 || (snapshot.planChoices.length > 0 && snapshot.plan.reason === 'target_changed')" class="flex shrink-0 flex-wrap items-center gap-2 px-5 py-3 text-sm"
             >{{ t("sessionDiagnostics.choosePlan")
             }}<select :value="selection.planKey ?? ''" class="h-8 max-w-full rounded-md border bg-background px-2 text-xs focus-visible:outline focus-visible:outline-ring" :disabled="busy" @change="choosePlan">
-              <option value="">{{ t("sessionDiagnostics.selectPlan") }}</option>
+              <option value="" disabled>{{ t("sessionDiagnostics.selectPlan") }}</option>
               <option v-for="choice in snapshot.planChoices" :key="choice.key" :value="choice.key">{{ t("sessionDiagnostics.planOption", choice.identity) }}</option>
             </select></label
           >
