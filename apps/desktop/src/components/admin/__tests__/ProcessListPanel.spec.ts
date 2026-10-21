@@ -1116,6 +1116,48 @@ describe("ProcessListPanel linked diagnostics", () => {
     expect(findGridButton("processList.batchTerminate")).toBeDefined();
   });
 
+  it("keeps explicit plan selection available when the captured audit narrows earlier cache candidates", async () => {
+    mocks.localeMessages = zhCN as Record<string, unknown>;
+    let auditAvailable = false;
+    const execute = mocks.executeQuery.getMockImplementation()!;
+    mocks.executeQuery.mockImplementation(async (...args: unknown[]) => {
+      const sql = String(args[2]);
+      if (sql.includes("FROM SYS.GV$OB_SQL_AUDIT") && !auditAvailable) return { columns: [], rows: [], affected_rows: 0, execution_time_ms: 1 };
+      if (sql.includes("FROM SYS.GV$OB_SESS_TIME_MODEL")) return diagnosticResult({ TENANT_ID: "7" });
+      const value = await execute(...args);
+      if (!sql.includes("FROM SYS.GV$OB_PLAN_CACHE_PLAN_STAT")) return value;
+      const original = Object.fromEntries(value.columns.map((column: string, index: number) => [column, value.rows[0][index]]));
+      const alternative = { ...original, PLAN_ID: "10", PLAN_HASH: "11" };
+      if (sql.includes("AND PLAN_ID=10")) return diagnosticResult(alternative);
+      if (sql.includes("AND PLAN_ID=9") || auditAvailable) return diagnosticResult(original);
+      const other = diagnosticResult(alternative);
+      return { ...value, rows: [...other.rows, ...value.rows] };
+    });
+    await mountOceanbasePanel();
+    [...processRow("21").querySelectorAll("button")].find((button) => button.textContent?.trim() === "诊断")?.click();
+    await vi.waitFor(() => expect(root?.querySelector('[role="tab"]')).not.toBeNull(), { timeout: 5000 });
+    const tab = [...(root?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])].find((value) => value.textContent?.trim() === "已有计划");
+    tab?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    await vi.waitFor(() => expect(root?.querySelector("select")?.options.length).toBe(3));
+    const choose = (id: string) => {
+      const select = root?.querySelector("select")!;
+      select.value = [...select.options].find((option) => option.textContent?.startsWith(`计划 ${id} ·`))!.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    choose("10");
+    await vi.waitFor(() => expect(root?.textContent).toContain("同 SQL 的缓存计划，未证实用于本次执行"));
+    await vi.waitFor(() => expect(findDialogButton("刷新")?.disabled).toBe(false));
+    auditAvailable = true;
+    findDialogButton("刷新")?.click();
+    await vi.waitFor(() => expect(root?.textContent).toContain("目标身份或缓存代际已变化"));
+    await vi.waitFor(() => expect(findDialogButton("刷新")?.disabled).toBe(false));
+    expect(root?.querySelector("select")?.options.length).toBe(2);
+    expect(root?.textContent).not.toContain("已关联原请求的缓存计划");
+    choose("9");
+    await vi.waitFor(() => expect(root?.textContent).toContain("已关联原请求的缓存计划"));
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+  });
+
   it("shows the original missing SID and trace-level association for an OB long operation", async () => {
     mocks.localeMessages = zhCN as Record<string, unknown>;
     const execute = mocks.executeQuery.getMockImplementation()!;
