@@ -86,7 +86,10 @@ let readOnlyCompartment: any;
 const routineDraft = computed(() => props.routineDeployment?.drafts.find((draft) => draft.objectId === props.routineDeployment?.selectedObjectId));
 const routineStep = computed(() => (props.routineDeployment ? oracleRoutineActiveStep(props.routineDeployment) : undefined));
 const routineRecord = computed(() => (props.routineDeployment?.recoveryPlan ? routineStep.value?.operation : routineDraft.value?.operation));
-const routineHistory = computed(() => props.routineDeployment?.records.filter((record) => routineDraft.value && routineIdentityKey(record.identity) === routineIdentityKey(routineDraft.value.identity)) ?? []);
+const routineHistory = computed(() => {
+  const records = props.routineDeployment?.records.filter((record) => routineDraft.value && routineIdentityKey(record.identity) === routineIdentityKey(routineDraft.value.identity)) ?? [];
+  return routineRecord.value && !records.some((record) => record.operationId === routineRecord.value?.operationId) ? [...records, routineRecord.value] : records;
+});
 const editorReadOnly = computed(() => !!props.routineDeployment && (props.executing || !!props.routineDeployment.recoveryPlan || (!!routineDraft.value?.operation && oracleRoutineOperationVerified(routineDraft.value.operation))));
 
 function routineStatus(record?: OracleRoutineOperation | null, compact = false): string {
