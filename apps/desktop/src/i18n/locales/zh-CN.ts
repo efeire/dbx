@@ -5145,8 +5145,6 @@ export default withEnglishFallback({
     waits: "等待与会话状态",
     longOperationsEmpty: "本次未观察到长操作。",
     obLongOperations: "显示已用时间与预计剩余时间；此视图不提供工作量百分比。",
-    oracleLongOperations: "关联范围见“范围”列；进度按字典提供的工作量计算。",
-    readOnly: "仅读取已有证据",
     stop: "停止读取",
     tabs: {
       sql: "SQL",

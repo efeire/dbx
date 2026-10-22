@@ -4732,8 +4732,6 @@ export default withEnglishFallback({
     waits: "대기 및 세션 상태",
     longOperationsEmpty: "이 샘플에서 장시간 작업이 관찰되지 않았습니다.",
     obLongOperations: "경과 시간과 예상 남은 시간을 표시합니다. 이 보기에서는 작업 완료율을 제공하지 않습니다.",
-    oracleLongOperations: "연결 범위는 범위 열을 확인하세요. 진행률은 딕셔너리가 보고한 작업 단위를 사용합니다.",
-    readOnly: "기존 증거만 읽음",
     stop: "읽기 중지",
     tabs: {
       sql: "SQL",

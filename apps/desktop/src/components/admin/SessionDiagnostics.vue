@@ -216,7 +216,7 @@ function tableRows(result?: QueryResult) {
           </div>
         </TabsContent>
         <TabsContent value="longOperations" class="min-h-0 overflow-auto p-5">
-          <p class="mb-3 text-xs text-muted-foreground">{{ t(engine === "oceanbase-oracle" ? "sessionDiagnostics.obLongOperations" : "sessionDiagnostics.oracleLongOperations") }}</p>
+          <p v-if="engine === 'oceanbase-oracle'" class="mb-3 text-xs text-muted-foreground">{{ t("sessionDiagnostics.obLongOperations") }}</p>
           <div v-if="snapshot.longOperations.data?.rows.length" class="overflow-auto rounded-md border">
             <table class="w-max min-w-full text-left text-xs">
               <thead class="bg-muted/30">
@@ -241,7 +241,6 @@ function tableRows(result?: QueryResult) {
         </TabsContent>
       </Tabs>
       <DialogFooter class="shrink-0 items-center border-t px-5 py-3">
-        <span class="mr-auto text-xs text-muted-foreground">{{ t("sessionDiagnostics.readOnly") }}</span>
         <Button v-if="busy" variant="outline" @click="stop">{{ t("sessionDiagnostics.stop") }}</Button>
         <Button variant="outline" class="gap-1.5" :disabled="busy" @click="refresh()"><RefreshCcw class="h-3.5 w-3.5" />{{ t("grid.refresh") }}</Button>
         <Button variant="secondary" @click="emit('close')">{{ t("common.close") }}</Button>

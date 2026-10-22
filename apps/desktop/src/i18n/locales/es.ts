@@ -11348,8 +11348,6 @@ export default withEnglishFallback({
     waits: "Esperas y estado de la sesión",
     longOperationsEmpty: "No se observaron operaciones largas en esta muestra.",
     obLongOperations: "Muestra el tiempo transcurrido y el tiempo restante estimado. Esta vista no ofrece porcentajes de trabajo completado.",
-    oracleLongOperations: "Consulte el alcance de la asociación en la columna «Alcance». El progreso se calcula con las unidades de trabajo del diccionario.",
-    readOnly: "Solo lee evidencias existentes",
     stop: "Detener lectura",
     tabs: {
       sql: "SQL",

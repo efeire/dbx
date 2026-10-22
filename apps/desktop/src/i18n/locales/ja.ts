@@ -11128,8 +11128,6 @@ export default withEnglishFallback({
     waits: "待機とセッション状態",
     longOperationsEmpty: "このサンプルでは長時間操作は観測されませんでした。",
     obLongOperations: "経過時間と推定残り時間を表示します。このビューでは作業完了率は表示されません。",
-    oracleLongOperations: "関連付け範囲は「範囲」列を参照してください。進捗はディクショナリが報告する作業単位に基づきます。",
-    readOnly: "既存の証拠のみを読み取ります",
     stop: "読み取りを停止",
     tabs: {
       sql: "SQL",

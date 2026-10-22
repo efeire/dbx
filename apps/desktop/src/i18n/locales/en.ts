@@ -5217,8 +5217,6 @@ export default {
     waits: "Waits and session state",
     longOperationsEmpty: "No long operations observed in this sample.",
     obLongOperations: "Shows elapsed and estimated remaining time. This view does not provide work-completion percentages.",
-    oracleLongOperations: "See Scope for the association. Progress uses work units reported by the dictionary.",
-    readOnly: "Reads existing evidence only",
     stop: "Stop reading",
     tabs: {
       sql: "SQL",

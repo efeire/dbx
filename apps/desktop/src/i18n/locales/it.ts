@@ -11092,8 +11092,6 @@ export default withEnglishFallback({
     waits: "Attese e stato della sessione",
     longOperationsEmpty: "Nessuna operazione lunga osservata in questo campionamento.",
     obLongOperations: "Mostra il tempo trascorso e il tempo rimanente stimato. Questa vista non fornisce percentuali di completamento del lavoro.",
-    oracleLongOperations: "Per l'associazione consulta la colonna Ambito. L'avanzamento usa le unità di lavoro indicate dal dizionario.",
-    readOnly: "Legge solo evidenze esistenti",
     stop: "Interrompi lettura",
     tabs: { sql: "SQL", plan: "Piano esistente", statistics: "Statistiche e attese", longOperations: "Operazioni lunghe" },
     states: { cancelled: "Lettura locale interrotta. La cancellazione sul server non è confermata.", timeout: "Tempo di lettura scaduto. I campionamenti completati sono conservati." },

@@ -5137,8 +5137,6 @@ export default withEnglishFallback({
     waits: "Wait และสถานะ Session",
     longOperationsEmpty: "ไม่พบการทำงานระยะยาวในตัวอย่างนี้",
     obLongOperations: "แสดงเวลาที่ผ่านไปและเวลาที่เหลือโดยประมาณ มุมมองนี้ไม่มีเปอร์เซ็นต์ความคืบหน้าของงาน",
-    oracleLongOperations: "ดูขอบเขตการเชื่อมโยงในคอลัมน์ Scope ความคืบหน้าคำนวณจากหน่วยงานที่ Data Dictionary รายงาน",
-    readOnly: "อ่านเฉพาะหลักฐานที่มีอยู่",
     stop: "หยุดอ่าน",
     tabs: {
       sql: "SQL",

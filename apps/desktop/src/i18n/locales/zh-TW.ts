@@ -11098,8 +11098,6 @@ export default withEnglishFallback({
     waits: "等待與工作階段狀態",
     longOperationsEmpty: "此取樣未觀察到長時間作業。",
     obLongOperations: "顯示已用時間和預估剩餘時間；此檢視不提供工作完成百分比。",
-    oracleLongOperations: "關聯範圍請參閱「範圍」欄。進度依據字典提供的工作單位計算。",
-    readOnly: "僅讀取既有證據",
     stop: "停止讀取",
     tabs: {
       sql: "SQL",
