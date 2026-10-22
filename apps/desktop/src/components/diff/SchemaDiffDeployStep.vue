@@ -89,12 +89,12 @@ const routineRecord = computed(() => (props.routineDeployment?.recoveryPlan ? ro
 const routineHistory = computed(() => props.routineDeployment?.records.filter((record) => routineDraft.value && routineIdentityKey(record.identity) === routineIdentityKey(routineDraft.value.identity)) ?? []);
 const editorReadOnly = computed(() => !!props.routineDeployment && (props.executing || !!props.routineDeployment.recoveryPlan || (!!routineDraft.value?.operation && oracleRoutineOperationVerified(routineDraft.value.operation))));
 
-function routineStatus(record?: OracleRoutineOperation | null): string {
+function routineStatus(record?: OracleRoutineOperation | null, compact = false): string {
   if (!record) return t("diff.routineNeedsValidation");
   if (props.routineDeployment?.pendingOperationId === record.operationId || record.lifecycle === "running" || record.lifecycle === "unproven") return t("diff.routinePending");
   if (oracleRoutineOperationVerified(record)) return t("diff.routineVerified");
   if (record.lifecycle === "prepared") return t("diff.routinePrepared");
-  if (record.readback?.state === "invalid") return t("objects.routineReadbackInvalid");
+  if (record.readback?.state === "invalid") return t(compact ? "objects.invalid" : "objects.routineReadbackInvalid");
   return t("diff.routineUnverified");
 }
 
@@ -450,7 +450,7 @@ function getObjectIconColor(kind: DiffObjectKind): string {
             <span class="text-[10px] text-muted-foreground shrink-0 ml-auto">
               {{ getOperationLabel(obj.operationType) }}
             </span>
-            <span v-if="routineDeployment" class="basis-full pl-5 text-xs text-muted-foreground">{{ routineStatus(routineDeployment.drafts.find((draft) => draft.objectId === obj.id)?.operation) }}</span>
+            <span v-if="routineDeployment" class="basis-full pl-5 text-xs text-muted-foreground">{{ routineStatus(routineDeployment.drafts.find((draft) => draft.objectId === obj.id)?.operation, true) }}</span>
           </div>
           <div v-if="topLevelObjects.length === 0" class="text-xs text-muted-foreground text-center py-4">
             {{ t("diff.noObjectsSelected") }}
@@ -483,7 +483,6 @@ function getObjectIconColor(kind: DiffObjectKind): string {
               <p v-for="(caller, index) in routineStep.incomingCallers" :key="index" class="mt-1 break-all font-mono">{{ caller.owner }}.{{ caller.name }} · {{ caller.kind }}</p>
             </details>
             <div v-if="routineRecord" class="max-h-56 space-y-1 overflow-auto break-words" aria-live="polite">
-              <p class="font-mono text-muted-foreground">{{ routineRecord.operationId }}</p>
               <p v-if="routineRecord.dispatched">{{ routineRecord.acknowledged ? t("objects.routineWriteAcknowledged") : t("diff.routineDispatched") }}</p>
               <p v-if="routineRecord.error" class="whitespace-pre-wrap text-destructive">{{ routineRecord.error }}</p>
               <p v-for="(issue, index) in routineRecord.readback?.issues ?? []" :key="index" class="text-destructive">{{ issue.message }}</p>
@@ -504,9 +503,9 @@ function getObjectIconColor(kind: DiffObjectKind): string {
               }}</Button>
             </div>
             <p v-if="routineDeployment.stopRequested" class="text-muted-foreground">{{ t("diff.routineStopped") }}</p>
-            <details v-if="routineHistory.length > 1" class="text-muted-foreground">
+            <details v-if="routineHistory.length" class="text-muted-foreground">
               <summary class="cursor-pointer">{{ t("diff.routineHistory", { count: routineHistory.length }) }}</summary>
-              <p v-for="record in routineHistory" :key="record.operationId" class="mt-1 break-all font-mono">{{ record.operationId }} — {{ routineStatus(record) }}</p>
+              <p v-for="record in routineHistory" :key="record.operationId" class="mt-1 break-all font-mono">{{ record.operationId }} — {{ routineStatus(record, true) }}</p>
             </details>
           </div>
           <div ref="editorContainer" class="deploy-sql-editor min-h-0 w-full flex-1" />
