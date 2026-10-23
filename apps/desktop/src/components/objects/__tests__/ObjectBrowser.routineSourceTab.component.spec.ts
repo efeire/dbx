@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   listSchemas: vi.fn(),
   getObjectSource: vi.fn(),
   buildEditableObjectSource: vi.fn(),
+  buildDropObjectSql: vi.fn(),
+  contextMenuAction: "",
   ensureConnected: vi.fn(),
   openObjectSourceTabPending: vi.fn(),
   toast: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock("@/lib/backend/api", () => ({
   listObjectStatistics: vi.fn().mockResolvedValue([]),
   getObjectSource: (...args: unknown[]) => mocks.getObjectSource(...args),
   buildEditableObjectSource: (...args: unknown[]) => mocks.buildEditableObjectSource(...args),
+  buildDropObjectSql: (...args: unknown[]) => mocks.buildDropObjectSql(...args),
 }));
 vi.mock("@/stores/connectionStore", () => ({
   useConnectionStore: () => ({
@@ -70,8 +73,16 @@ vi.mock("@/components/ui/searchable-select", () => ({ SearchableSelect: { render
 vi.mock("@/components/ui/ToolbarOverflowMenu.vue", () => ({ default: { render: () => null } }));
 vi.mock("@/components/ui/CustomContextMenu.vue", () => ({
   default: defineComponent({
-    setup(_, { slots }) {
-      return () => slots.default?.({ onContextMenu: () => undefined, isOpen: false });
+    props: { items: { type: [Array, Function], default: () => [] } },
+    setup(props, { slots }) {
+      return () =>
+        slots.default?.({
+          onContextMenu: () => {
+            const items = typeof props.items === "function" ? props.items() : props.items;
+            items.find((item: { label?: string }) => item.label === mocks.contextMenuAction)?.action?.();
+          },
+          isOpen: false,
+        });
     },
   }),
 }));
@@ -106,6 +117,9 @@ const mountedApps: Array<{ app: App; host: HTMLElement }> = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  connection.db_type = "mysql";
+  mocks.contextMenuAction = "";
+  mocks.buildDropObjectSql.mockResolvedValue('DROP PROCEDURE "app"."sp_daily_report"();');
   mocks.listObjects.mockResolvedValue([
     { name: "sp_daily_report", schema: "app", object_type: "PROCEDURE", signature: "IN day DATE" },
     { name: "fn_total", schema: "app", object_type: "FUNCTION", signature: "" },
@@ -168,6 +182,27 @@ describe("ObjectBrowser routine double click", () => {
     click(rowFor(host, "address_type_body"), 1);
     await vi.waitFor(() => expect(mocks.getObjectSource).toHaveBeenCalledWith("oracle-1", "app", "app", "address_type_body", "TYPE_BODY", undefined));
     expect(mocks.buildEditableObjectSource).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "v integer", "v INOUT integer"])("keeps the selected Kingbase overload in its DROP preview (%j)", async (signature) => {
+    connection.db_type = "kingbase";
+    mocks.listObjects.mockResolvedValue([{ name: "sp_daily_report", schema: "app", object_type: "PROCEDURE", signature }]);
+    mocks.contextMenuAction = "contextMenu.dropProcedure";
+    const host = await mountBrowser();
+
+    rowFor(host, "sp_daily_report").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+
+    await vi.waitFor(() =>
+      expect(mocks.buildDropObjectSql).toHaveBeenCalledWith(
+        expect.objectContaining({
+          databaseType: "kingbase",
+          objectType: "PROCEDURE",
+          schema: "app",
+          name: "sp_daily_report",
+          signature,
+        }),
+      ),
+    );
   });
 
   it("keeps a reopened source panel independent of the previous late response", async () => {
