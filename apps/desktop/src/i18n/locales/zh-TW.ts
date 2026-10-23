@@ -1,3 +1,4 @@
+import { tableColumnPasteZhTW as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuZhTW as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogZhTW as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { redisGroupingZhTW as redisGrouping } from "./redisGrouping";
@@ -66,6 +67,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "依賴物件",
     dependents: "被依賴物件",
@@ -195,7 +197,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "請將 Oracle 系索引修改與其他資料表結構修改分開套用。" },
+  schemaIndex: {
+    crossOwnerReadOnly: "索引「{owner}.{name}」在此編輯器中為唯讀。",
+    editIndividually: "索引需逐項管理",
+    parentUnavailable: "缺少父資料表資訊，可複製名稱或重新整理清單。",
+    focusUnavailable: "無法精確定位所選索引；以下為父資料表可讀取的索引。",
+    targetMissing: "無法精確定位索引「{name}」。請重新整理後重試。",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "已套用，重新整理未完成",
+    refreshPending: "中繼資料重新整理未完成。重試重新整理不會再次執行 DDL。",
     resultTitle: "操作結果",
     executionFailed: "操作未完整完成，請核對逐條結果和資料庫狀態。",
     readbackFailed: "讀回失敗或與預期結果不一致",
@@ -11584,8 +11595,20 @@ export default withEnglishFallback({
     runDirectoryPattern: "執行目錄範本",
     runDirectoryPatternHint: "相對於備份目錄的路徑。可使用 {'{'}schedule{'}'}、{'{'}date{'}'}、{'{'}timestamp{'}'} 和 {'{'}runId{'}'}。預設範本保留 {'{'}runId{'}'} 以獲得更好的隔離性。例如：{'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: "請輸入不含 . 或 .. 路徑段的相對路徑。",
-    compression: "壓縮",
+    backupFormat: "備份格式",
     compressionGzip: "Gzip 壓縮（.sql.gz）",
+    formatSql: "SQL（.sql）",
+    formatNb3: "Navicat 備份（.nb3）",
+    formatNb3Hint: "適用於 MySQL 與 PostgreSQL 的 Navicat 備份格式，DBX 可像一般 SQL 備份一樣還原。",
+    restoreFromFile: "從檔案還原",
+    restoreFromFileHint: "從任意位置還原 .sql、.sql.gz 或 .nb3 備份檔案",
+    importBackup: "匯入備份",
+    importBackupHint: "將在 DBX 之外建立的備份檔案（如 Navicat .nb3 封存檔）加入備份歷史",
+    importedTrigger: "已匯入",
+    externalFile: "外部檔案",
+    backupsImported: "已將 {count} 個備份加入歷史",
+    deleteImportedConfirm: "要從歷史中移除 {count} 個匯入的備份嗎？檔案會保留在磁碟上。",
+    importedFilesKept: "匯入的備份只會從歷史中移除，檔案仍保留在磁碟上。",
     searchConnections: "搜尋連線…",
     noMatchingConnections: "找不到相符的連線",
     connectionsSelected: "已選取 {count} 個連線",

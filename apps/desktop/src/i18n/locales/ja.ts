@@ -1,3 +1,4 @@
+import { tableColumnPasteJa as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuJa as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogJa as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
@@ -65,6 +66,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "依存先",
     dependents: "依存元",
@@ -195,7 +197,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Oracle 系インデックスの変更は、他のテーブル構造の変更と分けて適用してください。" },
+  schemaIndex: {
+    crossOwnerReadOnly: "インデックス「{owner}.{name}」はこのエディターでは読み取り専用です。",
+    editIndividually: "インデックスは個別に管理してください",
+    parentUnavailable: "親テーブルの情報がありません。名前をコピーするか一覧を更新してください。",
+    focusUnavailable: "選択したインデックスを正確に特定できません。親テーブルの読み取り可能なインデックスを表示しています。",
+    targetMissing: "インデックス「{name}」を正確に特定できません。更新して再試行してください。",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "適用済み・更新未完了",
+    refreshPending: "メタデータの更新が完了していません。更新の再試行で DDL は再実行されません。",
     resultTitle: "操作結果",
     executionFailed: "操作が完全には完了しませんでした。各ステートメントとデータベースの状態を確認してください。",
     readbackFailed: "読み戻しに失敗したか、想定した結果と一致しません",
@@ -11615,8 +11626,20 @@ export default withEnglishFallback({
     runDirectoryPatternHint:
       "バックアップ先配下の相対パスです。{'{'}schedule{'}'}、{'{'}date{'}'}、{'{'}timestamp{'}'}、{'{'}runId{'}'} を使用できます。既定のテンプレートには、より確実に分離するため {'{'}runId{'}'} が含まれます。例：{'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: ". または .. を含まない相対パスを入力してください。",
-    compression: "圧縮",
+    backupFormat: "バックアップ形式",
     compressionGzip: "Gzip 圧縮（.sql.gz）",
+    formatSql: "SQL（.sql）",
+    formatNb3: "Navicat バックアップ（.nb3）",
+    formatNb3Hint: "MySQL と PostgreSQL 向けの Navicat バックアップ形式です。DBX では通常の SQL バックアップと同様に復元できます。",
+    restoreFromFile: "ファイルから復元",
+    restoreFromFileHint: "任意の場所にある .sql、.sql.gz、.nb3 のバックアップファイルを復元します",
+    importBackup: "バックアップをインポート",
+    importBackupHint: "Navicat の .nb3 など、DBX 以外で作成したバックアップファイルを履歴に追加します",
+    importedTrigger: "インポート",
+    externalFile: "外部ファイル",
+    backupsImported: "{count} 件のバックアップを履歴に追加しました",
+    deleteImportedConfirm: "インポートした {count} 件のバックアップを履歴から削除しますか？ファイルはディスクに残ります。",
+    importedFilesKept: "インポートしたバックアップは履歴から削除されるだけで、ファイルはディスクに残ります。",
     searchConnections: "接続を検索…",
     noMatchingConnections: "一致する接続がありません",
     connectionsSelected: "{count} 件の接続を選択中",

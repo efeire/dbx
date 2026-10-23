@@ -1,3 +1,4 @@
+import { tableColumnPasteZhCN as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuZhCN as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogZhCN as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { redisGroupingZhCN as redisGrouping } from "./redisGrouping";
@@ -10,6 +11,7 @@ import { mongodbDatabaseDumpZhCN as mongoDump } from "./mongodbDatabaseDump";
 import { damengDumpZhCN as damengDump } from "./damengDump";
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "依赖对象",
     dependents: "被依赖对象",
@@ -139,7 +141,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "请将 Oracle 系索引修改与其他表结构修改分开应用。" },
+  schemaIndex: {
+    crossOwnerReadOnly: "索引「{owner}.{name}」在此编辑器中为只读。",
+    editIndividually: "索引需逐项管理",
+    parentUnavailable: "缺少父表信息，可复制名称或刷新列表。",
+    focusUnavailable: "无法精确定位所选索引；以下为父表可读取的索引。",
+    targetMissing: "无法精确定位索引「{name}」。请刷新后重试。",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "已应用，刷新未完成",
+    refreshPending: "元数据刷新未完成。重试刷新不会重新执行 DDL。",
     resultTitle: "操作结果",
     executionFailed: "操作未完整完成，请核对逐条结果和数据库状态。",
     readbackFailed: "读回失败或与预期结果不一致",
@@ -11092,8 +11103,20 @@ export default withEnglishFallback({
     runDirectoryPattern: "运行目录模板",
     runDirectoryPatternHint: "相对于备份目录的路径。可使用 {'{'}schedule{'}'}、{'{'}date{'}'}、{'{'}timestamp{'}'} 和 {'{'}runId{'}'}。默认模板保留 {'{'}runId{'}'} 以获得更好的隔离性。例如：{'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: "请输入不含 . 或 .. 路径段的相对路径。",
-    compression: "压缩",
+    backupFormat: "备份格式",
     compressionGzip: "Gzip 压缩（.sql.gz）",
+    formatSql: "SQL（.sql）",
+    formatNb3: "Navicat 备份（.nb3）",
+    formatNb3Hint: "适用于 MySQL 和 PostgreSQL 的 Navicat 备份格式，DBX 可像普通 SQL 备份一样恢复。",
+    restoreFromFile: "从文件恢复",
+    restoreFromFileHint: "从任意位置恢复 .sql、.sql.gz 或 .nb3 备份文件",
+    importBackup: "导入备份",
+    importBackupHint: "将在 DBX 之外创建的备份文件（如 Navicat .nb3 归档）添加到备份历史",
+    importedTrigger: "已导入",
+    externalFile: "外部文件",
+    backupsImported: "已将 {count} 个备份添加到历史",
+    deleteImportedConfirm: "要从历史中移除 {count} 个导入的备份吗？文件会保留在磁盘上。",
+    importedFilesKept: "导入的备份只会从历史中移除，文件仍保留在磁盘上。",
     searchConnections: "搜索连接…",
     noMatchingConnections: "未找到匹配的连接",
     connectionsSelected: "已选择 {count} 个连接",

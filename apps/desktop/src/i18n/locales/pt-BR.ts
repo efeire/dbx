@@ -1,3 +1,4 @@
+import { tableColumnPastePtBR as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuPtBR as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogPtBR as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
@@ -65,6 +66,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "Dependências",
     dependents: "Objetos dependentes",
@@ -195,7 +197,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Aplique as alterações de índices Oracle separadamente das demais alterações na estrutura da tabela." },
+  schemaIndex: {
+    crossOwnerReadOnly: "O índice “{owner}.{name}” é somente leitura neste editor.",
+    editIndividually: "Gerencie os índices individualmente",
+    parentUnavailable: "As informações da tabela pai não estão disponíveis. Copie o nome ou atualize a lista.",
+    focusUnavailable: "Não é possível localizar exatamente o índice selecionado. Os índices legíveis da tabela pai são exibidos abaixo.",
+    targetMissing: "Não foi possível localizar exatamente o índice “{name}”. Atualize e tente novamente.",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "Aplicado; atualização incompleta",
+    refreshPending: "A atualização dos metadados está incompleta. Tentar atualizar novamente não executa o DDL outra vez.",
     resultTitle: "Resultado da operação",
     executionFailed: "A operação não foi concluída por completo. Verifique cada instrução e o estado do banco de dados.",
     readbackFailed: "A releitura falhou ou não correspondeu ao resultado esperado",
@@ -11587,8 +11598,20 @@ export default withEnglishFallback({
     runDirectoryPatternHint:
       "Um caminho relativo dentro do diretório de destino. Use {'{'}schedule{'}'}, {'{'}date{'}'}, {'{'}timestamp{'}'} e {'{'}runId{'}'}. O modelo padrão inclui {'{'}runId{'}'} para maior isolamento. Exemplo: {'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: "Use um caminho relativo sem segmentos . ou ..",
-    compression: "Compactação",
+    backupFormat: "Formato do backup",
     compressionGzip: "Compactação Gzip (.sql.gz)",
+    formatSql: "SQL (.sql)",
+    formatNb3: "Backup do Navicat (.nb3)",
+    formatNb3Hint: "Formato de backup do Navicat para MySQL e PostgreSQL. O DBX o restaura como qualquer backup SQL.",
+    restoreFromFile: "Restaurar de arquivo",
+    restoreFromFileHint: "Restaure um arquivo de backup .sql, .sql.gz ou .nb3 de qualquer local",
+    importBackup: "Importar backup",
+    importBackupHint: "Adicione ao histórico arquivos de backup criados fora do DBX, como arquivos .nb3 do Navicat",
+    importedTrigger: "Importado",
+    externalFile: "Arquivo externo",
+    backupsImported: "{count} backups adicionados ao histórico",
+    deleteImportedConfirm: "Remover {count} backups importados do histórico? Os arquivos permanecem no disco.",
+    importedFilesKept: "Backups importados são apenas removidos do histórico; os arquivos permanecem no disco.",
     searchConnections: "Pesquisar conexões…",
     noMatchingConnections: "Nenhuma conexão correspondente",
     connectionsSelected: "{count} conexões selecionadas",

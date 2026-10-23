@@ -1,3 +1,4 @@
+import { tableColumnPasteKo as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuKo as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogKo as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
@@ -64,6 +65,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "의존하는 객체",
     dependents: "의존받는 객체",
@@ -193,7 +195,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Oracle 계열 인덱스 변경은 다른 테이블 구조 변경과 분리해 적용하세요." },
+  schemaIndex: {
+    crossOwnerReadOnly: "이 편집기에서 인덱스 ‘{owner}.{name}’은 읽기 전용입니다.",
+    editIndividually: "인덱스를 개별적으로 관리하세요",
+    parentUnavailable: "상위 테이블 정보가 없습니다. 이름을 복사하거나 목록을 새로 고치세요.",
+    focusUnavailable: "선택한 인덱스를 정확히 식별할 수 없습니다. 상위 테이블에서 읽을 수 있는 인덱스를 표시합니다.",
+    targetMissing: "인덱스 ‘{name}’을 정확히 찾을 수 없습니다. 새로 고친 후 다시 시도하세요.",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "적용됨; 새로 고침 미완료",
+    refreshPending: "메타데이터 새로 고침이 완료되지 않았습니다. 새로 고침을 다시 시도해도 DDL은 재실행되지 않습니다.",
     resultTitle: "작업 결과",
     executionFailed: "작업이 완전히 완료되지 않았습니다. 각 문과 데이터베이스 상태를 확인하세요.",
     readbackFailed: "다시 읽기에 실패했거나 예상한 결과와 일치하지 않습니다",
@@ -9909,8 +9920,20 @@ export default withEnglishFallback({
       friday: "금요일",
       saturday: "토요일",
     },
-    compression: "압축",
+    backupFormat: "백업 형식",
     compressionGzip: "Gzip 압축(.sql.gz)",
+    formatSql: "SQL(.sql)",
+    formatNb3: "Navicat 백업(.nb3)",
+    formatNb3Hint: "MySQL 및 PostgreSQL용 Navicat 백업 형식입니다. DBX에서는 일반 SQL 백업처럼 복원할 수 있습니다.",
+    restoreFromFile: "파일에서 복원",
+    restoreFromFileHint: "어느 위치에 있든 .sql, .sql.gz, .nb3 백업 파일을 복원합니다",
+    importBackup: "백업 가져오기",
+    importBackupHint: "Navicat .nb3 아카이브처럼 DBX 외부에서 만든 백업 파일을 백업 기록에 추가합니다",
+    importedTrigger: "가져옴",
+    externalFile: "외부 파일",
+    backupsImported: "백업 {count}개를 기록에 추가했습니다",
+    deleteImportedConfirm: "가져온 백업 {count}개를 기록에서 제거할까요? 파일은 디스크에 그대로 남습니다.",
+    importedFilesKept: "가져온 백업은 기록에서만 제거되며 파일은 디스크에 남습니다.",
     searchConnections: "연결 검색…",
     noMatchingConnections: "일치하는 연결을 찾을 수 없습니다.",
     connectionsSelected: "연결 {count}개 선택됨",

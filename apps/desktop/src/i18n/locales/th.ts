@@ -1,3 +1,4 @@
+import { tableColumnPasteTh as tableColumnPaste } from "./tableColumnPaste";
 import { withEnglishFallback } from "./fallback";
 import docs from "./docs/th";
 
@@ -49,6 +50,7 @@ const damengDump = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "วัตถุที่พึ่งพา",
     dependents: "วัตถุที่อ้างอิงวัตถุนี้",
@@ -164,7 +166,16 @@ export default withEnglishFallback({
     },
   },
   oracleIndex: { mixedDraft: "กรุณาแยกการแก้ไข Index ของตระกูล Oracle ออกจากการแก้ไขโครงสร้างตารางอื่น" },
+  schemaIndex: {
+    crossOwnerReadOnly: "ดัชนี “{owner}.{name}” เป็นแบบอ่านอย่างเดียวในตัวแก้ไขนี้",
+    editIndividually: "จัดการดัชนีทีละรายการ",
+    parentUnavailable: "ไม่มีข้อมูลตารางแม่ คัดลอกชื่อหรือรีเฟรชรายการ",
+    focusUnavailable: "ไม่สามารถระบุดัชนีที่เลือกได้อย่างแน่ชัด ด้านล่างคือดัชนีของตารางแม่ที่อ่านได้",
+    targetMissing: "ไม่สามารถระบุดัชนี “{name}” ได้อย่างแน่ชัด โปรดรีเฟรชแล้วลองอีกครั้ง",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "นำไปใช้แล้ว แต่รีเฟรชยังไม่เสร็จ",
+    refreshPending: "การรีเฟรชเมทาดาทายังไม่เสร็จ การลองรีเฟรชอีกครั้งจะไม่เรียกใช้ DDL ซ้ำ",
     resultTitle: "ผลลัพธ์การดำเนินการ",
     executionFailed: "การดำเนินการไม่เสร็จสมบูรณ์ กรุณาตรวจสอบผลลัพธ์แต่ละรายการและสถานะฐานข้อมูล",
     readbackFailed: "การอ่านกลับล้มเหลวหรือไม่ตรงกับผลลัพธ์ที่ต้องการ",
@@ -11704,8 +11715,20 @@ export default withEnglishFallback({
     runDirectoryPattern: "เทมเพลตไดเรกทอรีการเรียกใช้",
     runDirectoryPatternHint: "Path สัมพัทธ์ใต้ปลายทาง ใช้ {'{'}schedule{'}'}, {'{'}date{'}'}, {'{'}timestamp{'}'} และ {'{'}runId{'}'} ค่าเริ่มต้นรวม {'{'}runId{'}'} เพื่อแยกข้อมูลเพิ่มเติม ตัวอย่าง: {'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: "ใช้ Path สัมพัทธ์โดยไม่มีส่วน . หรือ ..",
-    compression: "การบีบอัด",
+    backupFormat: "รูปแบบการสำรองข้อมูล",
     compressionGzip: "Gzip (.sql.gz)",
+    formatSql: "SQL (.sql)",
+    formatNb3: "ไฟล์สำรอง Navicat (.nb3)",
+    formatNb3Hint: "รูปแบบไฟล์สำรองของ Navicat สำหรับ MySQL และ PostgreSQL โดย DBX กู้คืนได้เหมือนไฟล์สำรอง SQL ทั่วไป",
+    restoreFromFile: "กู้คืนจากไฟล์",
+    restoreFromFileHint: "กู้คืนไฟล์สำรอง .sql, .sql.gz หรือ .nb3 จากตำแหน่งใดก็ได้",
+    importBackup: "นำเข้าไฟล์สำรอง",
+    importBackupHint: "เพิ่มไฟล์สำรองที่สร้างนอก DBX เช่น ไฟล์ .nb3 ของ Navicat ลงในประวัติการสำรอง",
+    importedTrigger: "นำเข้า",
+    externalFile: "ไฟล์ภายนอก",
+    backupsImported: "เพิ่มไฟล์สำรอง {count} รายการลงในประวัติแล้ว",
+    deleteImportedConfirm: "ลบไฟล์สำรองที่นำเข้า {count} รายการออกจากประวัติหรือไม่ ไฟล์จะยังอยู่บนดิสก์",
+    importedFilesKept: "ไฟล์สำรองที่นำเข้าจะถูกลบออกจากประวัติเท่านั้น ไฟล์ยังอยู่บนดิสก์",
     searchConnections: "ค้นหาการเชื่อมต่อ…",
     noMatchingConnections: "ไม่มีการเชื่อมต่อที่ตรงกัน",
     connectionsSelected: "เลือกการเชื่อมต่อแล้ว {count} รายการ",

@@ -5476,8 +5476,7 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
         }
         preserveExistingShowDatabaseLinks = keepsExistingTarget && !supportsOracleDatabaseLinks(config.db_type);
         if (preserveExistingShowDatabaseLinks) {
-          // Generic JDBC has no DB-link toggle. Preserve the stored value instead of
-          // replacing it with the checkbox's presentation default.
+          // Generic JDBC has no DB-link toggle; retain the saved target setting.
           config.show_database_links = props.editConfig?.show_database_links;
         }
         config.connection_string = config.connection_string?.trim() || "";

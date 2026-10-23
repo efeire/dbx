@@ -1,3 +1,4 @@
+import { tableColumnPasteEs as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuEs as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogEs as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
@@ -66,6 +67,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "Dependencias",
     dependents: "Objetos dependientes",
@@ -196,7 +198,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Aplica los cambios de índices Oracle por separado de los demás cambios de estructura de tabla." },
+  schemaIndex: {
+    crossOwnerReadOnly: "El índice «{owner}.{name}» es de solo lectura en este editor.",
+    editIndividually: "Gestionar los índices por separado",
+    parentUnavailable: "No hay información de la tabla principal. Copie el nombre o actualice la lista.",
+    focusUnavailable: "No se puede localizar exactamente el índice seleccionado. Se muestran los índices accesibles de su tabla principal.",
+    targetMissing: "No se puede localizar exactamente el índice «{name}». Actualice e inténtelo de nuevo.",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "Aplicado; actualización incompleta",
+    refreshPending: "La actualización de metadatos está incompleta. Reintentar la actualización no vuelve a ejecutar DDL.",
     resultTitle: "Resultado de la operación",
     executionFailed: "La operación no se completó por completo. Revisa cada sentencia y el estado de la base de datos.",
     readbackFailed: "La lectura de vuelta falló o no coincide con el resultado previsto",
@@ -12027,8 +12038,20 @@ export default withEnglishFallback({
     runDirectoryPatternHint:
       "Ruta relativa dentro del directorio de destino. Use {'{'}schedule{'}'}, {'{'}date{'}'}, {'{'}timestamp{'}'} y {'{'}runId{'}'}. La plantilla predeterminada incluye {'{'}runId{'}'} para un mejor aislamiento. Ejemplo: {'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: "Use una ruta relativa sin segmentos . ni ..",
-    compression: "Compresión",
+    backupFormat: "Formato de copia de seguridad",
     compressionGzip: "Compresión Gzip (.sql.gz)",
+    formatSql: "SQL (.sql)",
+    formatNb3: "Copia de seguridad de Navicat (.nb3)",
+    formatNb3Hint: "Formato de copia de seguridad de Navicat para MySQL y PostgreSQL. DBX lo restaura como cualquier copia SQL.",
+    restoreFromFile: "Restaurar desde archivo",
+    restoreFromFileHint: "Restaura un archivo de copia de seguridad .sql, .sql.gz o .nb3 desde cualquier ubicación",
+    importBackup: "Importar copia de seguridad",
+    importBackupHint: "Añade al historial archivos de copia de seguridad creados fuera de DBX, como archivos .nb3 de Navicat",
+    importedTrigger: "Importada",
+    externalFile: "Archivo externo",
+    backupsImported: "Se añadieron {count} copias de seguridad al historial",
+    deleteImportedConfirm: "¿Quitar {count} copias de seguridad importadas del historial? Los archivos permanecen en el disco.",
+    importedFilesKept: "Las copias de seguridad importadas solo se quitan del historial; los archivos permanecen en el disco.",
     searchConnections: "Buscar conexiones…",
     noMatchingConnections: "No hay conexiones coincidentes",
     connectionsSelected: "{count} conexiones seleccionadas",

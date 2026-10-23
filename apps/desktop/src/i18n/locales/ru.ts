@@ -1,3 +1,4 @@
+import { tableColumnPasteRu as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuRu as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogRu as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
@@ -7,6 +8,7 @@ import { meilisearchManagementRu } from "./meilisearchManagement";
 
 // Russian locale. Entries omitted here fall back to English at runtime.
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "Зависимости",
     dependents: "Зависимые объекты",
@@ -137,7 +139,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Применяйте изменения индексов Oracle отдельно от других изменений структуры таблицы." },
+  schemaIndex: {
+    crossOwnerReadOnly: "Индекс «{owner}.{name}» в этом редакторе доступен только для чтения.",
+    editIndividually: "Управляйте индексами по отдельности",
+    parentUnavailable: "Сведения о родительской таблице недоступны. Скопируйте имя или обновите список.",
+    focusUnavailable: "Невозможно точно определить выбранный индекс. Показаны доступные для чтения индексы родительской таблицы.",
+    targetMissing: "Не удалось точно найти индекс «{name}». Обновите список и повторите попытку.",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "Применено; обновление не завершено",
+    refreshPending: "Обновление метаданных не завершено. Повторное обновление не выполняет DDL заново.",
     resultTitle: "Результат операции",
     executionFailed: "Операция завершилась не полностью. Проверьте каждый оператор и состояние базы данных.",
     readbackFailed: "Обратное чтение не удалось или не совпало с ожидаемым результатом",
@@ -11323,8 +11334,20 @@ export default withEnglishFallback({
     runDirectoryPatternHint:
       "Относительный путь внутри каталога назначения. Используйте {'{'}schedule{'}'}, {'{'}date{'}'}, {'{'}timestamp{'}'} и {'{'}runId{'}'}. По умолчанию добавляется {'{'}runId{'}'} для дополнительной изоляции. Пример: {'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: "Используйте относительный путь без сегментов . или ..",
-    compression: "Сжатие",
+    backupFormat: "Формат резервной копии",
     compressionGzip: "Gzip (.sql.gz)",
+    formatSql: "SQL (.sql)",
+    formatNb3: "Резервная копия Navicat (.nb3)",
+    formatNb3Hint: "Формат резервной копии Navicat для MySQL и PostgreSQL. DBX восстанавливает его так же, как обычную SQL-копию.",
+    restoreFromFile: "Восстановить из файла",
+    restoreFromFileHint: "Восстановить резервную копию из файла .sql, .sql.gz или .nb3 в любом месте",
+    importBackup: "Импортировать копию",
+    importBackupHint: "Добавить в историю резервные копии, созданные вне DBX, например архивы Navicat .nb3",
+    importedTrigger: "Импортировано",
+    externalFile: "Внешний файл",
+    backupsImported: "Добавлено резервных копий в историю: {count}",
+    deleteImportedConfirm: "Удалить импортированные резервные копии из истории ({count})? Файлы останутся на диске.",
+    importedFilesKept: "Импортированные резервные копии только удаляются из истории; файлы остаются на диске.",
     searchConnections: "Поиск подключений…",
     noMatchingConnections: "Подходящие подключения не найдены",
     connectionsSelected: "Выбрано подключений: {count}",

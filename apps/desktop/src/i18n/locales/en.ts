@@ -1,3 +1,4 @@
+import { tableColumnPasteEn as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuEn as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogEn as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { redisGroupingEn as redisGrouping } from "./redisGrouping";
@@ -64,6 +65,7 @@ const consul = {
 };
 
 export default {
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "Dependencies",
     dependents: "Dependents",
@@ -194,7 +196,16 @@ export default {
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Apply Oracle-family index changes separately from other table structure changes." },
+  schemaIndex: {
+    crossOwnerReadOnly: "Index “{owner}.{name}” is read-only in this editor.",
+    editIndividually: "Manage indexes individually",
+    parentUnavailable: "Parent table information is unavailable. Copy the name or refresh the list.",
+    focusUnavailable: "The selected index cannot be located exactly. The readable indexes of its parent table are shown below.",
+    targetMissing: "Cannot locate index “{name}” exactly. Refresh and try again.",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "Applied; refresh incomplete",
+    refreshPending: "Metadata refresh is incomplete. Retrying refresh will not execute DDL again.",
     resultTitle: "Operation result",
     executionFailed: "The operation did not complete cleanly. Check each statement and the database state.",
     readbackFailed: "Readback failed or did not match the intended result",
@@ -11129,8 +11140,20 @@ export default {
     runDirectoryPattern: "Run directory template",
     runDirectoryPatternHint: "A relative path under the destination. Use {'{'}schedule{'}'}, {'{'}date{'}'}, {'{'}timestamp{'}'}, and {'{'}runId{'}'}. The default includes {'{'}runId{'}'} for extra isolation. Example: {'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: "Use a relative path without . or .. segments.",
-    compression: "Compression",
+    backupFormat: "Backup format",
     compressionGzip: "Gzip (.sql.gz)",
+    formatSql: "SQL (.sql)",
+    formatNb3: "Navicat backup (.nb3)",
+    formatNb3Hint: "Navicat backup format for MySQL and PostgreSQL. DBX restores it like any SQL backup.",
+    restoreFromFile: "Restore from file",
+    restoreFromFileHint: "Restore a .sql, .sql.gz or .nb3 backup file from anywhere",
+    importBackup: "Import backup",
+    importBackupHint: "Add backup files created outside DBX, such as Navicat .nb3 archives, to the backup history",
+    importedTrigger: "Imported",
+    externalFile: "External file",
+    backupsImported: "Added {count} backups to history",
+    deleteImportedConfirm: "Remove {count} imported backups from the history? The files stay on disk.",
+    importedFilesKept: "Imported backup files are only removed from the history and stay on disk.",
     searchConnections: "Search connections…",
     noMatchingConnections: "No matching connections",
     connectionsSelected: "{count} connections selected",
