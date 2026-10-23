@@ -38,15 +38,34 @@ jobs:
               branch: pull.head.ref,
               per_page: 100,
             });
+            let uniquePull;
             for (const run of runs) {
               if (run.workflow_id !== workflow.id || run.event !== 'pull_request'
                 || run.head_repository?.id !== pull.head.repo.id || run.head_branch !== pull.head.ref
                 || !['queued', 'pending', 'in_progress', 'waiting', 'requested'].includes(run.status)
                 || !run.head_sha || run.head_sha === pull.head.sha
                 || !Array.isArray(run.pull_requests)) continue;
-              // Fork runs may omit PR metadata; CI only targets main, so also bound branch reuse by PR creation.
-              if (!(Date.parse(run.created_at) >= Date.parse(pull.created_at))
-                || (run.pull_requests.length && !run.pull_requests.some((pr) => pr.number === pull.number))) continue;
+              if (run.pull_requests.length) {
+                if (!run.pull_requests.some((pr) => pr.number === pull.number)) continue;
+              } else {
+                // Fork runs may omit PR metadata. Only infer ownership for a branch never shared by multiple PRs.
+                if (uniquePull === undefined) {
+                  const history = await github.paginate(github.rest.pulls.list, {
+                    ...repo,
+                    state: 'all',
+                    head: `${pull.head.repo.owner.login}:${pull.head.ref}`,
+                    per_page: 100,
+                  });
+                  const matches = history.filter((pr) => pr.head.ref === pull.head.ref
+                    && (!pr.head.repo?.id || pr.head.repo.id === pull.head.repo.id));
+                  uniquePull = matches.length === 1 && matches[0].number === pull.number
+                    && matches[0].head.repo?.id === pull.head.repo.id;
+                }
+                if (!uniquePull) {
+                  core.info(`Skipping CI run ${run.id}: its PR ownership is ambiguous.`);
+                  continue;
+                }
+              }
               if (!isCurrent(await readPull())) return;
               try {
                 await github.rest.actions.cancelWorkflowRun({ ...repo, run_id: run.id });

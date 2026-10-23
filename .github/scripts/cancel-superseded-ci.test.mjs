@@ -11,7 +11,7 @@ const pull = {
   state: "open",
   created_at: "2026-10-01T00:00:00Z",
   base: { ref: "main", repo: { id: 1 } },
-  head: { ref: "fix/ci", sha: "new", repo: { id: 2 } },
+  head: { ref: "fix/ci", sha: "new", repo: { id: 2, owner: { login: "contributor" } } },
 };
 
 function run(overrides = {}) {
@@ -29,7 +29,7 @@ function run(overrides = {}) {
   };
 }
 
-async function invoke({ pages = [[run()]], pulls = [pull], cancelError, completed = true, readError } = {}) {
+async function invoke({ pages = [[run()]], pulls = [pull], history = [[pull]], historyError, cancelError, completed = true, readError } = {}) {
   const cancelled = [];
   let reads = 0;
   let listed = false;
@@ -50,10 +50,12 @@ async function invoke({ pages = [[run()]], pulls = [pull], cancelError, complete
       return { data: { status: completed ? "completed" : "in_progress" } };
     },
   };
+  const listPulls = () => {};
   const github = {
     rest: {
       actions,
       pulls: {
+        list: listPulls,
         get: async (args) => {
           assert.deepEqual(args, { ...repo, pull_number: pull.number });
           return { data: structuredClone(pulls[Math.min(reads++, pulls.length - 1)]) };
@@ -61,6 +63,11 @@ async function invoke({ pages = [[run()]], pulls = [pull], cancelError, complete
       },
     },
     paginate: async (method, args) => {
+      if (method === listPulls) {
+        assert.deepEqual(args, { ...repo, state: "all", head: "contributor:fix/ci", per_page: 100 });
+        if (historyError) throw historyError;
+        return history.flat();
+      }
       assert.equal(method, actions.listWorkflowRuns);
       assert.deepEqual(args, { ...repo, workflow_id: 10, event: "pull_request", branch: "fix/ci", per_page: 100 });
       listed = true;
@@ -90,13 +97,27 @@ test("preserves other PRs, workflows, repositories, branches, completed runs and
     { head_branch: "another-pr" },
     { status: "completed" },
     { head_sha: "new" },
-    { created_at: "2026-09-30T00:00:00Z" },
-    { created_at: undefined },
     { head_sha: undefined },
     { status: undefined },
     { pull_requests: undefined },
   ];
   assert.deepEqual((await invoke({ pages: [variants.map((value, index) => run({ id: index, ...value }))] })).cancelled, []);
+});
+
+test("does not infer run ownership when an older PR is reopened after its branch was reused", async () => {
+  const other = { ...pull, number: 44, state: "closed", created_at: "2026-10-02T00:00:00Z", base: { ...pull.base, ref: "release" } };
+  const history = [[pull], [other]];
+  assert.deepEqual((await invoke({ history })).cancelled, []);
+  assert.deepEqual((await invoke({ history, pages: [[run({ pull_requests: [{ number: 42 }] })]] })).cancelled, [100]);
+});
+
+test("branch uniqueness is scoped to the source repository and fails closed on missing identity", async () => {
+  const otherRepo = { ...pull, number: 44, head: { ...pull.head, repo: { id: 3 } } };
+  assert.deepEqual((await invoke({ history: [[pull, otherRepo]] })).cancelled, [100]);
+  const unknownRepo = { ...otherRepo, head: { ...pull.head, repo: null } };
+  assert.deepEqual((await invoke({ history: [[pull, unknownRepo]] })).cancelled, []);
+  assert.deepEqual((await invoke({ history: [[]] })).cancelled, []);
+  await assert.rejects(invoke({ historyError: new Error("history unavailable") }), /history unavailable/);
 });
 
 test("ignores stale events and PRs whose current identity or state has changed", async () => {
