@@ -3099,7 +3099,19 @@ export const useConnectionStore = defineStore("connection", () => {
     for (const request of requestGroups) {
       if (!request.objectTypes.length) continue;
       const groupStart = objects.length;
-      const pageScope = (offset: number) => metadataListCacheScope({ kind: "sidebar-object-search-page", connectionId, database: node.database!, schema: request.schema, nodeKind: node.type, objectTypes: request.objectTypes, searchFilter: query, limit: pageSize, offset, extra: { catalog: node.catalog ?? "", ...(request.exactIdentity ? { exactIdentity: true } : {}) } });
+      const pageScope = (offset: number) =>
+        metadataListCacheScope({
+          kind: "sidebar-object-search-page",
+          connectionId,
+          database: node.database!,
+          schema: request.schema,
+          nodeKind: node.type,
+          objectTypes: request.objectTypes,
+          searchFilter: query,
+          limit: pageSize,
+          offset,
+          extra: { catalog: node.catalog ?? "", ...(request.exactIdentity ? { exactIdentity: true } : {}) },
+        });
       const loadRemotePage = (offset: number, force: boolean) =>
         loadCachedMetadataListPage<ObjectInfo[]>(
           pageScope(offset),
