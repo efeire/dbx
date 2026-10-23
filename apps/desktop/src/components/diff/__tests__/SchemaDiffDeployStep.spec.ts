@@ -373,7 +373,7 @@ describe("SchemaDiffDeployStep Oracle routine review", () => {
         version: null,
         definitionMatches: true,
         issues: [],
-        compilerMessages: [{ attribute: "ERROR", line: 1, position: [...stored.slice(0, stored.indexOf("missing_identifier"))].length + 1, text: "package member missing" }],
+        compilerMessages: [{ attribute: "ERROR", line: 1, position: Array.from(stored.slice(0, stored.indexOf("missing_identifier"))).length + 1, text: "package member missing" }],
       },
     };
     const { container } = await mountDeployStep({ deploySql: sql, selectedObjects: [object], routineDeployment: state, databaseType: "oceanbase-oracle" });

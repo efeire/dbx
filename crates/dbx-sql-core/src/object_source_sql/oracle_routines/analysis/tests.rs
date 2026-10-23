@@ -79,12 +79,17 @@ fn package_edition_attributes_require_target_evidence_without_changing_standalon
         );
         for (result, source) in [(spec, spec_source), (body, body_source)] {
             assert!(!result.complete);
-            let issue = result.issues.iter().find(|issue| issue.message.contains("edition identity and capabilities"))
+            let issue = result
+                .issues
+                .iter()
+                .find(|issue| issue.message.contains("edition identity and capabilities"))
                 .unwrap_or_else(|| panic!("{source}: {:?}", result.issues));
             assert_eq!(issue.line, 1);
             assert_eq!(issue.column, source.find(option).unwrap() as u64 + 1);
         }
-        assert!(function(&format!("CREATE {option} FUNCTION \"OWNER\".F RETURN NUMBER AS BEGIN RETURN 1; END;")).complete);
+        assert!(
+            function(&format!("CREATE {option} FUNCTION \"OWNER\".F RETURN NUMBER AS BEGIN RETURN 1; END;")).complete
+        );
     }
 }
 
