@@ -4,9 +4,9 @@ import { createApp, h, nextTick, reactive, type App } from "vue";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import SchemaDiffDialog from "@/components/diff/SchemaDiffDialog.vue";
 import { startSchemaDiffSession, removeSchemaDiffSession } from "@/composables/useSchemaDiffSession";
-import type { OracleRoutineOperation, OracleRoutinePlanInput, OracleRoutineSnapshot } from "@/types/schemaDiff";
+import type { OracleRoutineKind, OracleRoutineOperation, OracleRoutinePlanInput, OracleRoutineSnapshot } from "@/types/schemaDiff";
 
-const calls = vi.hoisted(() => ({ load: vi.fn(), compare: vi.fn(), prepare: vi.fn(), execute: vi.fn(), observe: vi.fn(), genericPlan: vi.fn(), confirm: vi.fn(), copy: vi.fn(), transaction: vi.fn(), databaseType: "oceanbase-oracle" }));
+const calls = vi.hoisted(() => ({ load: vi.fn(), compare: vi.fn(), prepare: vi.fn(), execute: vi.fn(), observe: vi.fn(), genericPlan: vi.fn(), confirm: vi.fn(), copy: vi.fn(), transaction: vi.fn(), databaseType: "oceanbase-oracle", sourceDatabaseType: "" }));
 vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock("@/i18n", () => ({ default: { global: { t: (key: string) => key } } }));
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
@@ -14,7 +14,7 @@ vi.mock("@/composables/useDialogSources", () => ({ openSchemaDiffSession: vi.fn(
 vi.mock("@/composables/useExportTracker", () => ({ useExportTracker: () => ({ addSchemaDiffTask: vi.fn(), updateCompareTask: vi.fn() }) }));
 vi.mock("@/stores/productionSafetyStore", () => ({ useProductionSafetyStore: () => ({ requestConfirmation: calls.confirm }) }));
 vi.mock("@/stores/connectionStore", () => {
-  const connections = () => ["source", "target"].map((id) => ({ id, name: id, db_type: calls.databaseType, is_production: id === "target", host: "localhost", port: 1 }));
+  const connections = () => ["source", "target"].map((id) => ({ id, name: id, db_type: id === "source" ? calls.sourceDatabaseType || calls.databaseType : calls.databaseType, is_production: id === "target", host: "localhost", port: 1 }));
   return {
     useConnectionStore: () => ({
       get connections() {
@@ -97,7 +97,8 @@ const sessions: string[] = [];
 const records = new Map<string, OracleRoutineOperation>();
 function snapshot(connectionId: string): OracleRoutineSnapshot {
   const owner = connectionId === "source" ? "Source" : "Target";
-  return { endpoint: { connectionId, database: "tenant", schema: owner, databaseType: calls.databaseType === "oracle" ? "oracle" : "oceanbase-oracle", generation: 1 }, state: "complete", enumerationComplete: true, objects: [], issues: [] };
+  const product = connectionId === "source" ? calls.sourceDatabaseType || calls.databaseType : calls.databaseType;
+  return { endpoint: { connectionId, database: "tenant", schema: owner, databaseType: product === "oracle" ? "oracle" : "oceanbase-oracle", generation: 1 }, state: "complete", enumerationComplete: true, objects: [], issues: [] };
 }
 const sourceSql = 'CREATE OR REPLACE FUNCTION "F" RETURN NUMBER AS BEGIN RETURN 1; END';
 const sourceFunction = { name: "F", function_type: "FUNCTION", definition: sourceSql, arguments: "", data_type: "NUMBER" };
@@ -106,6 +107,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   records.clear();
   calls.databaseType = "oceanbase-oracle";
+  calls.sourceDatabaseType = "";
   calls.load.mockImplementation(async (id: string) => snapshot(id));
   calls.compare.mockResolvedValue({ diffs: [], functionDiffs: [{ type: "added", name: "F", source: sourceFunction }], syncSql: "", renameCandidates: [] });
   calls.confirm.mockResolvedValue(true);
@@ -157,19 +159,20 @@ function button(text: string) {
   expect(found, text).toBeDefined();
   return found!;
 }
-async function mountComparison(databaseType: "oracle" | "oceanbase-oracle" | "postgres" | "mysql" | "sqlserver" = "oceanbase-oracle") {
+async function mountComparison(databaseType: "oracle" | "oceanbase-oracle" | "postgres" | "mysql" | "sqlserver" = "oceanbase-oracle", sourceType = databaseType, kinds?: OracleRoutineKind[]) {
   calls.databaseType = databaseType;
+  calls.sourceDatabaseType = sourceType;
   const session = startSchemaDiffSession(
     {
       sourceConnectionId: "source",
       sourceDatabase: "tenant",
       sourceSchema: "Source",
-      sourceDbType: databaseType,
+      sourceDbType: sourceType,
       targetConnectionId: "target",
       targetDatabase: "tenant",
       targetSchema: "Target",
       targetDbType: databaseType,
-      options: { tables: false, views: false, functions: true, sequences: false, rules: false, owners: false },
+      options: { tables: false, views: false, functions: true, sequences: false, rules: false, owners: false, ...(kinds ? { routineObjectKinds: kinds } : {}) },
       ignoreComments: false,
       label: "test",
     },
@@ -373,4 +376,56 @@ it("opens a native Oracle target draft through the same controlled review", asyn
   expect(session.routineDeployment?.plan?.target.databaseType).toBe("oracle");
   expect(button("diff.deployToServer").disabled).toBe(false);
   expect(calls.genericPlan).not.toHaveBeenCalled();
+});
+
+it("keeps the old cross-product function selection outside the package deployment path", async () => {
+  const session = startSchemaDiffSession(
+    {
+      sourceConnectionId: "source",
+      sourceDatabase: "tenant",
+      sourceSchema: "Source",
+      sourceDbType: "oracle",
+      targetConnectionId: "target",
+      targetDatabase: "tenant",
+      targetSchema: "Target",
+      targetDbType: "oceanbase-oracle",
+      options: { tables: false, views: false, functions: true, sequences: false, rules: false, owners: false, routineObjectKinds: ["FUNCTION"] },
+      ignoreComments: false,
+      label: "cross-product function",
+    },
+    { tableListLoader: { load: vi.fn() } },
+  );
+  sessions.push(session.id);
+  await flush();
+  expect(session.status).toBe("failed");
+  expect(session.error).toContain("cross-product comparison supports explicit package kinds only");
+  expect(calls.prepare).not.toHaveBeenCalled();
+  expect(calls.execute).not.toHaveBeenCalled();
+});
+
+it("opens a cross-product package in the actual review and requires explicit target-draft review before approval", async () => {
+  calls.compare.mockResolvedValue({ diffs: [], functionDiffs: [{ type: "added", name: "P", programKind: "PACKAGE", source: { ...sourceFunction, name: "P", function_type: "PACKAGE", definition: 'CREATE PACKAGE "P" AS n NUMBER; END;' } }], syncSql: "", renameCandidates: [] });
+  const ordinaryPrepare = calls.prepare.getMockImplementation()!;
+  calls.prepare.mockImplementation(async (input: OracleRoutinePlanInput) => {
+    const plan = await ordinaryPrepare(input);
+    plan.steps[0].sql = input.drafts[0].sql ?? 'CREATE PACKAGE "Target"."P" AS n NUMBER; END;';
+    if (!input.drafts[0].sql) {
+      plan.ready = false;
+      plan.steps[0].operation = null;
+      plan.steps[0].issues = [{ code: "review-required", message: "Review target draft", line: 1, column: 1 }];
+    }
+    return plan;
+  });
+  const { session } = await mountComparison("oceanbase-oracle", "oracle", ["PACKAGE"]);
+  button("diff.nextStepDeployRoutines").click();
+  await flush();
+  expect(session.routineDeployment?.plan?.ready).toBe(false);
+  expect(button("diff.deployToServer").disabled).toBe(true);
+  button("diff.packageReviewTarget").click();
+  await flush();
+  button("diff.routineValidate").click();
+  await flush();
+  expect(calls.prepare.mock.calls.at(-1)![0].drafts[0].sql).toContain('PACKAGE "Target"."P"');
+  expect(button("diff.deployToServer").disabled).toBe(false);
+  expect(calls.execute).not.toHaveBeenCalled();
 });

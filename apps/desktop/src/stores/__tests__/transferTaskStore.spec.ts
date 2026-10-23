@@ -82,6 +82,26 @@ describe("transferTaskStore", () => {
     expect(store.getTask("legacy-selection")?.config.objects).toEqual({});
   });
 
+  it("round-trips separate package drafts but never persists previous approvals or operation records", async () => {
+    const sql = 'CREATE PACKAGE BODY "T"."Pkg.With.Dot" AS -- 中文😀\nEND;';
+    const config = makeConfig({
+      objects: { PACKAGE_BODY: ["Pkg.With.Dot"] },
+      oraclePackageDrafts: [{ identity: { owner: "T", name: "Pkg.With.Dot", kind: "PACKAGE_BODY" }, sql, packageContract: "target", reviewedTargetDraft: true, operation: { operationId: "old-operation" }, baselineOperationId: "old-operation", supersedesOperationId: "old-preparation" } as never],
+    });
+    const store = useTransferTaskStore();
+    const saved = await store.saveTask({ name: "package-body-draft", config });
+    const persisted = vi.mocked(api.saveTransferTaskLibrary).mock.calls.at(-1)![0];
+    expect(JSON.stringify(persisted)).not.toContain("old-operation");
+    expect(JSON.stringify(persisted)).not.toContain("old-preparation");
+    vi.mocked(api.loadTransferTaskLibrary).mockResolvedValue(persisted);
+    setActivePinia(createPinia());
+    const reloaded = useTransferTaskStore();
+    await reloaded.initFromStorage();
+    expect(reloaded.getTask(saved.id)?.config.objects).toEqual({ PACKAGE_BODY: ["Pkg.With.Dot"] });
+    expect(reloaded.getTask(saved.id)?.config.oraclePackageDrafts).toEqual([expect.objectContaining({ identity: { owner: "T", name: "Pkg.With.Dot", kind: "PACKAGE_BODY" }, sql, packageContract: "target", reviewedTargetDraft: true })]);
+    expect(reloaded.getTask(saved.id)?.config.dropTargetConfirmed).toBe(false);
+  });
+
   it("round-trips TABLE-only and TABLE + VIEW task selections", async () => {
     const store = useTransferTaskStore();
     const tableOnly = await store.saveTask({ name: "table-only", config: makeConfig({ objects: { TABLE: ["orders"] } }) });

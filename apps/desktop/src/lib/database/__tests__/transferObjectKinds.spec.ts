@@ -14,6 +14,18 @@ describe("transferObjectKinds", () => {
     expect(transferSchemasForDatabase("postgres", schemas)).toBe(schemas);
     expect(transferSchemasForDatabase("mysql", schemas)).toBe(schemas);
   });
+  it("offers exact package kinds only when both actual products support them", () => {
+    for (const source of ["oracle", "oceanbase-oracle"] as const) {
+      expect(transferObjectKindsForDatabase(source)).toEqual(expect.arrayContaining(["PACKAGE", "PACKAGE_BODY"]));
+      for (const target of ["oracle", "oceanbase-oracle"] as const) expect(crossFamilyTransferableKinds(source, target)).toEqual(expect.arrayContaining(["PACKAGE", "PACKAGE_BODY"]));
+      for (const target of ["dameng", "xugu", "mysql", "postgres"] as const) {
+        expect(crossFamilyTransferableKinds(source, target)).not.toContain("PACKAGE");
+        expect(crossFamilyTransferableKinds(target, source)).not.toContain("PACKAGE_BODY");
+      }
+    }
+    expect(transferObjectKindsForDatabase("dameng")).not.toContain("PACKAGE");
+  });
+
   it("groups databases into transfer families", () => {
     expect(transferObjectFamily("mysql")).toBe(TransferObjectFamily.Mysql);
     expect(transferObjectFamily("kingbase")).toBe(TransferObjectFamily.Postgres);
@@ -25,7 +37,7 @@ describe("transferObjectKinds", () => {
   it("returns per-family object kinds", () => {
     expect(transferObjectKindsForDatabase("mysql")).toEqual(["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"]);
     expect(transferObjectKindsForDatabase("postgres")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE"]);
-    expect(transferObjectKindsForDatabase("oracle")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE"]);
+    expect(transferObjectKindsForDatabase("oracle")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "PACKAGE", "PACKAGE_BODY"]);
     expect(transferObjectKindsForDatabase("sqlserver")).toEqual(["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE"]);
   });
 
