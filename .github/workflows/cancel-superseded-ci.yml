@@ -1,0 +1,59 @@
+name: Cancel superseded PR CI
+
+on:
+  pull_request_target:
+    types: [synchronize]
+    branches: [main]
+
+permissions:
+  actions: write
+  pull-requests: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const repo = context.repo;
+            const eventPull = context.payload.pull_request;
+            const readPull = async () => (await github.rest.pulls.get({ ...repo, pull_number: eventPull.number })).data;
+            const isCurrent = (pull) => pull.state === 'open'
+              && pull.base.ref === 'main'
+              && pull.base.repo.id === context.payload.repository.id
+              && pull.head.repo?.id
+              && pull.head.repo.id === eventPull.head.repo?.id
+              && pull.head.ref === eventPull.head.ref
+              && pull.head.sha === eventPull.head.sha;
+            const pull = await readPull();
+            if (!isCurrent(pull)) return;
+
+            const { data: workflow } = await github.rest.actions.getWorkflow({ ...repo, workflow_id: 'ci.yml' });
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...repo,
+              workflow_id: workflow.id,
+              event: 'pull_request',
+              branch: pull.head.ref,
+              per_page: 100,
+            });
+            for (const run of runs) {
+              if (run.workflow_id !== workflow.id || run.event !== 'pull_request'
+                || run.head_repository?.id !== pull.head.repo.id || run.head_branch !== pull.head.ref
+                || !['queued', 'pending', 'in_progress', 'waiting', 'requested'].includes(run.status)
+                || !run.head_sha || run.head_sha === pull.head.sha
+                || !Array.isArray(run.pull_requests)) continue;
+              // Fork runs may omit PR metadata; CI only targets main, so also bound branch reuse by PR creation.
+              if (!(Date.parse(run.created_at) >= Date.parse(pull.created_at))
+                || (run.pull_requests.length && !run.pull_requests.some((pr) => pr.number === pull.number))) continue;
+              if (!isCurrent(await readPull())) return;
+              try {
+                await github.rest.actions.cancelWorkflowRun({ ...repo, run_id: run.id });
+                core.info(`Requested cancellation of superseded CI run ${run.id}.`);
+              } catch (error) {
+                if (error.status !== 409) throw error;
+                const { data: latest } = await github.rest.actions.getWorkflowRun({ ...repo, run_id: run.id });
+                if (latest.status !== 'completed') throw error;
+              }
+            }
