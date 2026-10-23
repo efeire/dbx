@@ -419,6 +419,45 @@ async fn body_only_uses_matching_complete_spec_and_target_contract_is_an_explici
 }
 
 #[tokio::test]
+async fn body_only_repairs_an_invalid_body_with_unterminated_dictionary_specification() {
+    let mut source_spec = specification("SOURCE", 1);
+    source_spec.source = source_spec.source.map(|sql| sql.trim_end_matches(';').to_string());
+    let source = Catalog::new("SOURCE", vec![source_spec, body("SOURCE")]);
+    let mut target_spec = specification("OWNER", 1);
+    target_spec.source = target_spec.source.map(|sql| sql.trim_end_matches(';').to_string());
+    let mut invalid_body = body("OWNER");
+    invalid_body.version.status = "INVALID".into();
+    invalid_body.source = invalid_body.source.map(|sql| sql.replace("RETURN NUMBER IS", "RETURN VARCHAR2 IS"));
+    let target = Catalog::new("OWNER", vec![target_spec, invalid_body]);
+    let result =
+        build(&source, &target, vec![draft(db::ObjectSourceKind::PackageBody, RoutinePlanAction::Replace)]).await;
+    assert!(result.plan.ready, "{:?}", result.plan.steps);
+    assert_eq!(result.plan.steps.len(), 1);
+    assert_eq!(result.plan.steps[0].identity.kind, db::ObjectSourceKind::PackageBody);
+    assert_eq!(result.plan.steps[0].target_original, target.objects[1].source);
+    assert!(result.plan.steps[0].recovery_sql.as_deref().unwrap().contains("RETURN VARCHAR2 IS"));
+    let mut wrong = draft(db::ObjectSourceKind::PackageBody, RoutinePlanAction::Replace);
+    wrong.sql = Some(
+        source.objects[1]
+            .source
+            .as_ref()
+            .unwrap()
+            .replace("\"SOURCE\"", "\"OWNER\"")
+            .replace("RETURN NUMBER IS", "RETURN VARCHAR2 IS"),
+    );
+    let rejected = build(&source, &target, vec![wrong]).await;
+    assert!(!rejected.plan.ready);
+    assert!(
+        rejected.plan.steps[0]
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("does not match its final specification signature")),
+        "{:?}",
+        rejected.plan.steps
+    );
+}
+
+#[tokio::test]
 async fn body_only_cannot_create_without_a_target_specification_or_match_a_wrong_public_return_type() {
     let source = Catalog::new("SOURCE", vec![specification("SOURCE", 1), body("SOURCE")]);
     let missing = build(

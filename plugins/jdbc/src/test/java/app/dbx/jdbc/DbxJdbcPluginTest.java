@@ -2283,13 +2283,13 @@ final class DbxJdbcPluginTest {
         request("executeQuery", """
             {
               "connection": %s,
-              "sql": "CREATE SCHEMA IF NOT EXISTS app"
+              "sql": "CREATE SCHEMA IF NOT EXISTS catalog_fallback"
             }
             """.formatted(CONNECTION));
         request("executeQuery", """
             {
               "connection": %s,
-              "sql": "CREATE TABLE IF NOT EXISTS app.people (id INT PRIMARY KEY, name VARCHAR(30))"
+              "sql": "CREATE TABLE IF NOT EXISTS catalog_fallback.people (id INT PRIMARY KEY, name VARCHAR(30))"
             }
             """.formatted(CONNECTION));
 
@@ -2297,7 +2297,7 @@ final class DbxJdbcPluginTest {
             {
               "connection": %s,
               "database": "UNRELATED_CATALOG",
-              "schema": "APP"
+              "schema": "CATALOG_FALLBACK"
             }
             """.formatted(CONNECTION));
 

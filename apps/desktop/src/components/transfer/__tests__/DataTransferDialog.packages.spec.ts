@@ -537,6 +537,7 @@ it("offers comparison when all selected package kinds are skipped without prepar
   });
   await openPreview(false);
   expect(document.body.textContent).toContain("PACKAGE BODY T.P");
+  expect(document.body.textContent).toContain(`${i18n.global.t("transfer.structurePlanSkipped")}: PACKAGE BODY T.P`);
   button(i18n.global.t("diff.title")).click();
   await vi.waitFor(() => expect(calls.openComparison).toHaveBeenCalledOnce());
   const session = getSchemaDiffSession(calls.openComparison.mock.calls[0][0])!;

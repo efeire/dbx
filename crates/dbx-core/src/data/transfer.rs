@@ -272,7 +272,6 @@ pub enum TransferObjectKind {
     Trigger,
     Sequence,
     Event,
-    Package,
     Synonym,
 }
 

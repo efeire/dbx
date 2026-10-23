@@ -432,7 +432,13 @@ pub(super) async fn prepare_package_drafts(
                         return Err("The complete source and target specifications differ; select the specification or explicitly use the target specification as the body contract and validate this draft again".into());
                     }
                 }
-                target_specification.source.clone().unwrap()
+                adapted(
+                    &input.target.endpoint,
+                    &specification_identity,
+                    &target_specification.version.identity.owner,
+                    target_specification.source.as_deref().unwrap(),
+                    true,
+                )?
             };
             let analysis = analyze_oracle_package_body_draft(
                 ddl_input(&input.target.endpoint, &plan.steps[index].identity, plan.steps[index].sql.clone()),

@@ -191,6 +191,9 @@ where
                         &app,
                         history.as_ref(),
                         TransferProgress {
+                            oracle_package_approval: None,
+                            oracle_package_preflight: None,
+                            oracle_routine_operation: None,
                             transfer_id: transfer_id.clone(),
                             table: "schema objects".into(),
                             table_index: 0,

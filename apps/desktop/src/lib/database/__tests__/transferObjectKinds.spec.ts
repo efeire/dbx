@@ -72,14 +72,16 @@ describe("transferObjectKinds", () => {
     expect(isTransferPairSupported(undefined, "xugu")).toBe(true);
   });
 
-  it("exposes native Xugu schema objects without enabling them for other engines", () => {
+  it("keeps native Xugu schema objects and engine-pair boundaries intact", () => {
     const kinds = ["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "PACKAGE", "SYNONYM"];
     expect(transferObjectKindsForDatabase("xugu")).toEqual(kinds);
     expect(crossFamilyTransferableKinds("xugu", "xugu")).toEqual(kinds);
+    expect(transferObjectKindsForDatabase("xugu")).not.toContain("PACKAGE_BODY");
     for (const engine of ["postgres", "mysql", "oracle", "dameng", "sqlserver"] as const) {
       expect(crossFamilyTransferableKinds("xugu", engine)).toEqual([]);
       expect(crossFamilyTransferableKinds(engine, "xugu")).toEqual([]);
-      expect(transferObjectKindsForDatabase(engine)).not.toContain("PACKAGE");
+      if (engine === "oracle") expect(transferObjectKindsForDatabase(engine)).toContain("PACKAGE");
+      else expect(transferObjectKindsForDatabase(engine)).not.toContain("PACKAGE");
       expect(transferObjectKindsForDatabase(engine)).not.toContain("SYNONYM");
     }
   });

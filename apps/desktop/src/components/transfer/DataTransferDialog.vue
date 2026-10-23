@@ -2048,7 +2048,7 @@ async function saveConfigTask() {
     <template v-if="confirmationPreview?.oraclePackages" #options>
       <div class="mb-3 space-y-2">
         <p v-if="confirmationPreview.oraclePackages.skipped.length" class="max-h-24 overflow-auto text-sm text-muted-foreground">
-          {{ t("transfer.modeKeepExisting") }}: {{ confirmationPreview.oraclePackages.skipped.map((identity) => `${identity.kind.replaceAll("_", " ")} ${identity.owner}.${identity.name}`).join("; ") }}
+          {{ t("transfer.structurePlanSkipped") }}: {{ confirmationPreview.oraclePackages.skipped.map((identity) => `${identity.kind.replaceAll("_", " ")} ${identity.owner}.${identity.name}`).join("; ") }}
         </p>
         <Button variant="outline" size="sm" :disabled="packageComparisonLoading || packageDeployment?.validating" @click="compareTransferPackages"><Loader2 v-if="packageComparisonLoading" class="mr-1 h-3.5 w-3.5 animate-spin" />{{ t("diff.title") }}</Button>
       </div>

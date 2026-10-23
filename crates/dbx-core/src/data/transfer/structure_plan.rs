@@ -678,7 +678,6 @@ fn preview_object_kind_label(kind: &TransferObjectKind) -> &'static str {
         TransferObjectKind::Trigger => "Triggers",
         TransferObjectKind::Sequence => "Sequences",
         TransferObjectKind::Event => "Events",
-        TransferObjectKind::Package => "Packages",
         TransferObjectKind::Synonym => "Synonyms",
     }
 }
