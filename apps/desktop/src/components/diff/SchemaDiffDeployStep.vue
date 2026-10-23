@@ -257,6 +257,7 @@ const operationColors: Record<DiffOperationType, string> = {
 };
 
 // Initialize CodeMirror editor
+let syncingEditorSql = false;
 async function initEditor() {
   if (!editorContainer.value) return;
 
@@ -287,7 +288,7 @@ async function initEditor() {
       fontComp.of(fontExt),
       readOnlyCompartment.of(EditorState.readOnly.of(editorReadOnly.value)),
       EditorView.updateListener.of((update: any) => {
-        if (update.docChanged) {
+        if (update.docChanged && !syncingEditorSql) {
           emit("update:deploySql", update.state.doc.toString());
         }
       }),
@@ -303,9 +304,14 @@ watch(
   () => effectiveSql.value,
   (newVal) => {
     if (editorView.value && editorView.value.state.doc.toString() !== newVal) {
-      editorView.value.dispatch({
-        changes: { from: 0, to: editorView.value.state.doc.length, insert: newVal },
-      });
+      syncingEditorSql = true;
+      try {
+        editorView.value.dispatch({
+          changes: { from: 0, to: editorView.value.state.doc.length, insert: newVal },
+        });
+      } finally {
+        syncingEditorSql = false;
+      }
     }
   },
 );

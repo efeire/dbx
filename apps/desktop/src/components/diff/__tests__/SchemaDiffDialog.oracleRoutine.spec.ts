@@ -3,6 +3,7 @@
 import { createApp, h, nextTick, reactive, type App } from "vue";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import SchemaDiffDialog from "@/components/diff/SchemaDiffDialog.vue";
+import SchemaDiffDeployStep from "@/components/diff/SchemaDiffDeployStep.vue";
 import { startSchemaDiffSession, removeSchemaDiffSession } from "@/composables/useSchemaDiffSession";
 import type { OracleRoutineKind, OracleRoutineOperation, OracleRoutinePlanInput, OracleRoutineSnapshot } from "@/types/schemaDiff";
 
@@ -204,6 +205,86 @@ afterEach(() => {
   apps.splice(0).forEach((app) => app.unmount());
   sessions.splice(0).forEach(removeSchemaDiffSession);
   document.body.innerHTML = "";
+  localStorage.removeItem("dbx-schema-diff-size");
+});
+
+it("keeps external SQL and rollback previews separate from actual user edits, including clearing", async () => {
+  const state = reactive({ sql: "original specification", mode: "forward" });
+  const edits: string[] = [];
+  const host = document.createElement("div");
+  document.body.append(host);
+  const app = createApp({
+    setup: () => () =>
+      h(SchemaDiffDeployStep, {
+        deploySql: state.sql,
+        deploySqlMode: state.mode as "forward" | "rollback",
+        rollbackSql: "original recovery",
+        selectedObjects: [],
+        targetConnectionId: "target",
+        targetDatabase: "tenant",
+        targetSchema: "Target",
+        executing: false,
+        "onUpdate:deploySql": (sql: string) => edits.push(sql),
+      }),
+  });
+  apps.push(app);
+  app.mount(host);
+  await flush();
+  const input = host.querySelector<HTMLTextAreaElement>("textarea")!;
+  state.sql = "";
+  await flush();
+  expect(input.value).toBe("");
+  state.sql = "prepared target body";
+  await flush();
+  state.mode = "rollback";
+  await flush();
+  expect(input.value).toBe("original recovery");
+  state.mode = "forward";
+  await flush();
+  expect(input.value).toBe("prepared target body");
+  expect(edits).toEqual([]);
+  input.value = "manual body";
+  input.dispatchEvent(new Event("input"));
+  input.value = "";
+  input.dispatchEvent(new Event("input"));
+  expect(edits).toEqual(["manual body", ""]);
+});
+
+it.each([
+  [{ width: "0px", height: "0px" }, "1100px", "820px"],
+  [{ width: "1120px", height: "840px" }, "1120px", "840px"],
+])("opens readable results while preserving a positive saved dialog size: %j", async (saved, width, height) => {
+  localStorage.setItem("dbx-schema-diff-size", JSON.stringify(saved));
+  await mountComparison();
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog.style.width).toBe(width);
+  expect(dialog.style.height).toBe(height);
+});
+
+it("does not persist a hidden dialog's zero-sized resize observation", async () => {
+  let resize: ResizeObserverCallback | undefined;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        if (target.matches(".dbx-schema-diff-dialog")) resize = this.callback;
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  try {
+    await mountComparison();
+    await vi.waitFor(() => expect(resize).toBeDefined());
+    resize!([{ contentRect: { width: 1120, height: 840 } } as ResizeObserverEntry], {} as ResizeObserver);
+    await vi.waitFor(() => expect(JSON.parse(localStorage.getItem("dbx-schema-diff-size")!)).toEqual({ width: "1120px", height: "840px" }));
+    resize!([{ contentRect: { width: 0, height: 0 } } as ResizeObserverEntry], {} as ResizeObserver);
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(JSON.parse(localStorage.getItem("dbx-schema-diff-size")!)).toEqual({ width: "1120px", height: "840px" });
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it("opens the real Oracle comparison, retains draft on both confirmations' cancellation, then displays INVALID and corrects only that step", async () => {
@@ -256,6 +337,48 @@ it("opens the real Oracle comparison, retains draft on both confirmations' cance
   expect(calls.execute.mock.calls.map((call) => call[0])).toEqual(["approval-1", "approval-2"]);
   expect(session.routineDeployment?.records).toHaveLength(2);
   expect(document.body.textContent).toContain("diff.routineReadOnlyCompleted");
+});
+
+it("keeps a newly included target body automatic until the user actually edits it", async () => {
+  calls.load.mockImplementation(async (id: string) => {
+    const result = snapshot(id);
+    result.objects = (["PACKAGE", "PACKAGE_BODY"] as const).map((kind) => ({
+      version: { identity: { owner: result.endpoint.schema!, name: "P", kind }, objectId: `${id}-${kind}`, status: "VALID", lastDdlTime: "1" },
+      source: kind === "PACKAGE" ? 'CREATE PACKAGE "P" AS FUNCTION f RETURN NUMBER; END;' : 'CREATE PACKAGE BODY "P" AS FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;',
+      sourceComplete: true,
+      dependencies: [],
+      dependenciesComplete: true,
+      issues: [],
+    }));
+    return result;
+  });
+  const spec = { ...sourceFunction, name: "P", function_type: "PACKAGE", definition: 'CREATE PACKAGE "P" AS g NUMBER; FUNCTION f RETURN NUMBER; END;' };
+  calls.compare.mockResolvedValue({ diffs: [], functionDiffs: [{ type: "modified", name: "P", programKind: "PACKAGE", source: spec, target: { ...spec, definition: spec.definition.replace("g NUMBER; ", "") } }], syncSql: "", renameCandidates: [] });
+  const ordinaryPrepare = calls.prepare.getMockImplementation()!;
+  calls.prepare.mockImplementation(async (input: OracleRoutinePlanInput) => {
+    const plan = await ordinaryPrepare(input);
+    for (const step of plan.steps) step.sql = input.drafts.find((draft) => draft.identity.kind === step.identity.kind)?.sql ?? (step.identity.kind === "PACKAGE" ? spec.definition : 'CREATE PACKAGE BODY "Target"."P" AS FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;');
+    return plan;
+  });
+  const { session } = await mountComparison("oceanbase-oracle", "oceanbase-oracle", ["PACKAGE"]);
+  button("diff.nextStepDeployRoutines").click();
+  await flush();
+  button("diff.packageRebuildTargetBody").click();
+  await flush();
+  const body = session.routineDeployment!.drafts.find((draft) => draft.identity.kind === "PACKAGE_BODY")!;
+  expect(body.packageBodySource).toBe("target");
+  expect(body.sql).toBeUndefined();
+  button("diff.routineValidate").click();
+  await flush();
+  const request = calls.prepare.mock.calls.at(-1)![0] as OracleRoutinePlanInput;
+  expect(request.drafts.find((draft) => draft.identity.kind === "PACKAGE_BODY")).toMatchObject({ packageBodySource: "target", sql: undefined });
+  expect(body.sql).toContain('PACKAGE BODY "Target"."P"');
+  const input = document.querySelector<HTMLTextAreaElement>(".deploy-sql-editor textarea")!;
+  input.value = "";
+  input.dispatchEvent(new Event("input"));
+  await flush();
+  expect(body.sql).toBe("");
+  expect(session.routineDeployment!.plan).toBeNull();
 });
 
 it("restores the same draft and operation after closing and reopening the actual dialog", async () => {

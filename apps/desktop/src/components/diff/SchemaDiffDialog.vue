@@ -345,8 +345,8 @@ const dialogStyle = computed(() => {
   }
   if (step.value === "result") {
     return {
-      width: savedSize?.width || "1100px",
-      height: savedSize?.height || "820px",
+      width: parseFloat(savedSize?.width) > 0 ? savedSize.width : "1100px",
+      height: parseFloat(savedSize?.height) > 0 ? savedSize.height : "820px",
       maxWidth: "calc(100vw - 2rem)",
       maxHeight: "calc(100vh - 2rem)",
     };
@@ -386,6 +386,7 @@ function setupResizeObserver() {
   resizeObserver = new ResizeObserver((entries) => {
     for (const entry of entries) {
       const { width, height } = entry.contentRect;
+      if (width <= 0 || height <= 0) continue;
       if (saveTimeout) clearTimeout(saveTimeout);
       saveTimeout = window.setTimeout(() => {
         localStorage.setItem(
