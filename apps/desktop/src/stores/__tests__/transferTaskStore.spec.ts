@@ -82,14 +82,31 @@ describe("transferTaskStore", () => {
     expect(store.getTask("legacy-selection")?.config.objects).toEqual({});
   });
 
-  it("round-trips separate package drafts but never persists previous approvals or operation records", async () => {
+  it.each([
+    ["source", "source"],
+    ["target", "target"],
+    [undefined, undefined],
+    ["invalid", undefined],
+  ] as const)("round-trips package body choice %s without retaining approvals or operation records", async (bodySource, expectedSource) => {
     const sql = 'CREATE PACKAGE BODY "T"."Pkg.With.Dot" AS -- 中文😀\nEND;';
     const config = makeConfig({
       objects: { PACKAGE_BODY: ["Pkg.With.Dot"] },
-      oraclePackageDrafts: [{ identity: { owner: "T", name: "Pkg.With.Dot", kind: "PACKAGE_BODY" }, sql, packageContract: "target", reviewedTargetDraft: true, operation: { operationId: "old-operation" }, baselineOperationId: "old-operation", supersedesOperationId: "old-preparation" } as never],
+      oraclePackageDrafts: [
+        {
+          identity: { owner: "T", name: "Pkg.With.Dot", kind: "PACKAGE_BODY" },
+          sql,
+          packageBodySource: bodySource,
+          packageContract: "target",
+          reviewedTargetDraft: true,
+          operation: { operationId: "old-operation" },
+          baselineOperationId: "old-operation",
+          supersedesOperationId: "old-preparation",
+        } as never,
+      ],
     });
     const store = useTransferTaskStore();
     const saved = await store.saveTask({ name: "package-body-draft", config });
+    expect(saved.config.oraclePackageDrafts?.[0].packageBodySource).toBe(expectedSource);
     const persisted = vi.mocked(api.saveTransferTaskLibrary).mock.calls.at(-1)![0];
     expect(JSON.stringify(persisted)).not.toContain("old-operation");
     expect(JSON.stringify(persisted)).not.toContain("old-preparation");
@@ -99,6 +116,7 @@ describe("transferTaskStore", () => {
     await reloaded.initFromStorage();
     expect(reloaded.getTask(saved.id)?.config.objects).toEqual({ PACKAGE_BODY: ["Pkg.With.Dot"] });
     expect(reloaded.getTask(saved.id)?.config.oraclePackageDrafts).toEqual([expect.objectContaining({ identity: { owner: "T", name: "Pkg.With.Dot", kind: "PACKAGE_BODY" }, sql, packageContract: "target", reviewedTargetDraft: true })]);
+    expect(reloaded.getTask(saved.id)?.config.oraclePackageDrafts?.[0].packageBodySource).toBe(expectedSource);
     expect(reloaded.getTask(saved.id)?.config.dropTargetConfirmed).toBe(false);
   });
 

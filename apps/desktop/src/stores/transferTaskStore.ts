@@ -86,7 +86,7 @@ function normalizePackageDrafts(raw: unknown): TransferPackageDraft[] | undefine
       identity: { owner: identity.owner, name: identity.name, kind: identity.kind },
       sourceName: typeof value.sourceName === "string" ? value.sourceName : undefined,
       sql: typeof value.sql === "string" ? value.sql : undefined,
-      packageBodySource: value.packageBodySource === "source" ? "source" : undefined,
+      packageBodySource: value.packageBodySource === "source" || value.packageBodySource === "target" ? value.packageBodySource : undefined,
       packageContract: value.packageContract === "source" || value.packageContract === "target" ? value.packageContract : undefined,
       confirmPackagePair: value.confirmPackagePair === true,
       reviewedTargetDraft: value.reviewedTargetDraft === true,
