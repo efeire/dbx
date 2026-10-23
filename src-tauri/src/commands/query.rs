@@ -133,9 +133,22 @@ pub async fn execute_conditional_update(
     client_session_id: Option<String>,
     timeout_secs: Option<u64>,
     execution_mode: Option<dbx_core::query::QueryExecutionMode>,
+    type_recovery: Option<dbx_core::storage::TypeRecoveryContext>,
 ) -> Result<db::QueryResult, BackendError> {
     let execution_id =
         execution_id.filter(|id| !id.trim().is_empty()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let recovery = type_recovery.map(|context| dbx_core::storage::TypeExecutionBinding {
+        execution_id: execution_id.clone(),
+        context,
+        connection_id: connection_id.clone(),
+        database: database.clone(),
+        schema: schema.clone(),
+        sql: sql.clone(),
+    });
+    if let Some(binding) = &recovery {
+        state.storage.claim_type_execution(binding).await.map_err(|error| BackendError::from_legacy_backend(&error))?;
+    }
+    let durable_recovery = recovery.is_some();
     let registered = state.running_queries.register_task_for_terminal_confirmation(
         execution_id.clone(),
         RunningTaskMetadata::query(connection_id.clone(), database.clone(), client_session_id.clone()),
@@ -169,15 +182,26 @@ pub async fn execute_conditional_update(
             },
         )
         .await;
-        registered.finish_with_database_result(&result);
+        let result = dbx_core::query_cancel::finish_conditional_update(
+            registered,
+            &app_state.storage,
+            recovery.as_ref(),
+            result,
+        )
+        .await;
         let _ = result_tx.send(result);
     });
 
-    let result = match response_timeout {
+    match response_timeout {
         Some(timeout) => match tokio::time::timeout(timeout, result_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
-                return Err(BackendError::from_sql_detail("Conditional update execution task stopped unexpectedly"));
+                let message = "Conditional update execution task stopped unexpectedly";
+                return Err(if durable_recovery {
+                    BackendError::from_legacy_backend(message)
+                } else {
+                    BackendError::from_sql_detail(message)
+                });
             }
             Err(_) => {
                 return Err(BackendError::from_timeout_detail(&format!(
@@ -189,11 +213,15 @@ pub async fn execute_conditional_update(
         None => match result_rx.await {
             Ok(result) => result,
             Err(_) => {
-                return Err(BackendError::from_sql_detail("Conditional update execution task stopped unexpectedly"));
+                let message = "Conditional update execution task stopped unexpectedly";
+                return Err(if durable_recovery {
+                    BackendError::from_legacy_backend(message)
+                } else {
+                    BackendError::from_sql_detail(message)
+                });
             }
         },
-    };
-    result.map_err(dbx_core::query::QueryExecutionError::into_backend_error)
+    }
 }
 
 #[tauri::command]
@@ -329,7 +357,20 @@ pub async fn cancel_conditional_update(
     state: State<'_, Arc<AppState>>,
     execution_id: String,
     cancel: Option<bool>,
+    type_recovery: Option<dbx_core::storage::TypeExecutionBinding>,
 ) -> Result<dbx_core::query_cancel::CancellationWaitResult, String> {
+    if let Some(binding) = type_recovery {
+        if cancel != Some(false) || binding.execution_id != execution_id {
+            return Err("TYPE recovery observation requires the original execution ID and cancel=false".into());
+        }
+        return dbx_core::query_cancel::observe_type_execution(
+            &state.storage,
+            &state.running_queries,
+            &binding,
+            Duration::from_secs(10),
+        )
+        .await;
+    }
     Ok(if cancel == Some(false) {
         state.running_queries.wait_for_completion(&execution_id, Duration::from_secs(10)).await
     } else {

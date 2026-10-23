@@ -1292,6 +1292,19 @@ export interface CustomTypeDetails {
   oracleMetadata?: OracleTypeMetadata | null;
 }
 
+export interface TypeRecoveryContext {
+  planId: string;
+  stepId: string;
+}
+
+export interface TypeExecutionBinding extends TypeRecoveryContext {
+  executionId: string;
+  connectionId: string;
+  database: string;
+  schema: string | null;
+  sql: string;
+}
+
 export interface OracleTypeManagementTarget {
   connectionId: string;
   database: string;

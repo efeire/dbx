@@ -1562,6 +1562,7 @@ export async function executeConditionalUpdate(
     clientSessionId?: string;
     timeoutSecs?: number;
     executionMode?: "simple" | "postgres_read_only_transaction";
+    typeRecovery?: import("@/types/database").TypeRecoveryContext;
   },
 ): Promise<QueryResult> {
   return post("/api/query/execute-conditional-update", {
@@ -1842,7 +1843,7 @@ export interface ConditionalUpdateCancellationResult {
   databaseTerminal?: boolean;
 }
 
-export async function cancelConditionalUpdate(executionId: string, options?: { cancel?: boolean }): Promise<ConditionalUpdateCancellationResult> {
+export async function cancelConditionalUpdate(executionId: string, options?: { cancel?: boolean; typeRecovery?: import("@/types/database").TypeExecutionBinding }): Promise<ConditionalUpdateCancellationResult> {
   return post("/api/query/cancel-conditional-update", { executionId, ...options });
 }
 

@@ -20,17 +20,34 @@ beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Oracle-family TYPE management transports", () => {
-  it.each([undefined, { cancel: false }])("preserves cancellation defaults and forwards TYPE wait-only options over both transports: %j", async (options) => {
-    const response = { requested: false, terminal: true, databaseTerminal: true };
+  it.each([undefined, { cancel: false }, { cancel: false, typeRecovery: { executionId: "type-step-1", planId: "plan", stepId: "step", connectionId: target.connectionId, database: target.database, schema: target.owner, sql: "approved SQL" } }])(
+    "preserves cancellation defaults and forwards TYPE wait-only options over both transports: %j",
+    async (options) => {
+      const response = { requested: false, terminal: true, databaseTerminal: true };
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => response });
+      vi.stubGlobal("fetch", fetchMock);
+      mocks.invoke.mockResolvedValue(response);
+      const http = await import("@/lib/backend/http");
+      const tauri = await import("@/lib/backend/tauri");
+      await expect(http.cancelConditionalUpdate("type-step-1", options)).resolves.toEqual(response);
+      await expect(tauri.cancelConditionalUpdate("type-step-1", options)).resolves.toEqual(response);
+      expect(fetchMock).toHaveBeenCalledWith("/api/query/cancel-conditional-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ executionId: "type-step-1", ...options }) });
+      expect(mocks.invoke).toHaveBeenCalledWith("cancel_conditional_update", { executionId: "type-step-1", ...options });
+    },
+  );
+
+  it.each([undefined, { typeRecovery: { planId: "plan", stepId: "step" } }])("forwards opt-in TYPE execution context without changing ordinary calls: %j", async (options) => {
+    const response = { columns: [], rows: [], affected_rows: 0 };
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => response });
     vi.stubGlobal("fetch", fetchMock);
     mocks.invoke.mockResolvedValue(response);
     const http = await import("@/lib/backend/http");
     const tauri = await import("@/lib/backend/tauri");
-    await expect(http.cancelConditionalUpdate("type-step-1", options)).resolves.toEqual(response);
-    await expect(tauri.cancelConditionalUpdate("type-step-1", options)).resolves.toEqual(response);
-    expect(fetchMock).toHaveBeenCalledWith("/api/query/cancel-conditional-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ executionId: "type-step-1", ...options }) });
-    expect(mocks.invoke).toHaveBeenCalledWith("cancel_conditional_update", { executionId: "type-step-1", ...options });
+    await expect(http.executeConditionalUpdate(target.connectionId, target.database, "approved SQL", target.owner, "type-step-1", options)).resolves.toEqual(response);
+    await expect(tauri.executeConditionalUpdate(target.connectionId, target.database, "approved SQL", target.owner, "type-step-1", options)).resolves.toEqual(response);
+    const input = { connectionId: target.connectionId, database: target.database, sql: "approved SQL", schema: target.owner, executionId: "type-step-1", ...options };
+    expect(fetchMock).toHaveBeenCalledWith("/api/query/execute-conditional-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+    expect(mocks.invoke).toHaveBeenCalledWith("execute_conditional_update", input);
   });
 
   it("uses the same read-only native evolution preview and recovery manifest over both transports", async () => {

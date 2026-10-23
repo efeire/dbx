@@ -332,7 +332,7 @@ describe("TYPE execution, persistence and recovery", () => {
     ).rejects.toThrow("Lost INVALID response");
     const sent = saved.find((record) => record.steps[0].state === "sent")!;
     expect(sent.steps[0].executionId).toBeTruthy();
-    expect(api.executeConditionalUpdate).toHaveBeenCalledWith(target.connectionId, target.database, body, "APP", sent.steps[0].executionId);
+    expect(api.executeConditionalUpdate).toHaveBeenCalledWith(target.connectionId, target.database, body, "APP", sent.steps[0].executionId, { typeRecovery: { planId: sent.planId, stepId: sent.steps[0].id } });
     let reopened = restoreOracleTypeManagementDraft(saved.at(-1))!;
     for (const value of ["2", "3"]) {
       const revised = [draft("ROOT", body.replace("RETURN SELF.ID", `RETURN ${value}`), "TYPE BODY")];
@@ -345,7 +345,31 @@ describe("TYPE execution, persistence and recovery", () => {
       await expect(executeOracleTypeManagement(reopened, { persist: async () => {} })).rejects.toThrow("Revalidate");
     }
     expect(api.executeConditionalUpdate).toHaveBeenCalledOnce();
-    expect(vi.mocked(api.cancelConditionalUpdate).mock.calls.every(([id, options]) => id === sent.steps[0].executionId && options?.cancel === false)).toBe(true);
+    for (const [id, options] of vi.mocked(api.cancelConditionalUpdate).mock.calls) {
+      expect(id).toBe(sent.steps[0].executionId);
+      expect(options).toEqual({ cancel: false, typeRecovery: { executionId: id, planId: sent.planId, stepId: sent.steps[0].id, connectionId: target.connectionId, database: target.database, schema: "APP", sql: body } });
+    }
+  });
+
+  it("restores the original binding after a lost response and confirms durable completion without resending", async () => {
+    isolateRoot();
+    const execute = vi.mocked(api.executeConditionalUpdate).getMockImplementation()!;
+    vi.mocked(api.executeConditionalUpdate).mockImplementation(async (...args) => {
+      await execute(...args);
+      throw new Error("Response lost before restart");
+    });
+    vi.mocked(api.cancelConditionalUpdate).mockResolvedValue({ requested: false, terminal: false, databaseTerminal: false });
+    const desired = body.replace("RETURN SELF.ID", "RETURN SELF.ID + 11");
+    const plan = await prepareOracleTypeManagement(target, "save-body", [draft("ROOT", desired, "TYPE BODY")]);
+    await expect(executeOracleTypeManagement(plan, { persist: async () => {} })).rejects.toThrow("Response lost");
+    const restored = restoreOracleTypeManagementDraft(json(plan))!;
+    vi.mocked(api.cancelConditionalUpdate).mockImplementation(async (id, options) => {
+      expect(options).toEqual({ cancel: false, typeRecovery: { executionId: id, planId: plan.planId, stepId: plan.steps[0].id, connectionId: target.connectionId, database: target.database, schema: "APP", sql: desired } });
+      return { requested: false, terminal: true, databaseTerminal: true };
+    });
+    const recovered = await prepareOracleTypeManagement(target, "save-body", restored.drafts, restored);
+    expect(recovered.state).toBe("complete");
+    expect(api.executeConditionalUpdate).toHaveBeenCalledOnce();
   });
 
   it("waits for the original completion before taking the snapshot that makes INVALID repairable", async () => {

@@ -6,7 +6,7 @@ import { invalidateObjectMetadataCache } from "@/lib/metadata/objectMetadataCach
 import { freezeSourceIdentities } from "@/lib/table/objectSourceIdentity";
 import { invalidateObjectBrowserRowsCache } from "@/lib/table/objectBrowserRowsCache";
 import { isTypeDataMappingDraft, isTypeDataPreparation, registerOracleTypeDataBaseline, verifyOracleTypeDataMappings, type TypeDataMappingDraft } from "@/lib/table/oracleTypeDataMapping";
-import type { OracleTypeDataMappingInput, OracleTypeEvolutionManifest } from "@/types/database";
+import type { OracleTypeDataMappingInput, OracleTypeEvolutionManifest, TypeExecutionBinding } from "@/types/database";
 import type { DatabaseType, ObjectSourceKind, OracleTypeManagementDependency, OracleTypeManagementObject, OracleTypeManagementObjectKey, OracleTypeManagementPrivilege, OracleTypeManagementSnapshot, OracleTypeManagementSqlInput, OracleTypeManagementTarget, TypeMetadataRead } from "@/types/database";
 
 export type TypeManagementOperation = "save-spec" | "save-body" | "delete-spec" | "delete-body";
@@ -70,6 +70,10 @@ const errorMessage = (error: unknown) => (error instanceof Error ? error.message
 const complete = (read: TypeMetadataRead) => read.state === "available";
 const isBody = (operation: TypeManagementOperation) => operation.endsWith("body");
 const isDelete = (operation: TypeManagementOperation) => operation.startsWith("delete");
+
+function executionBinding(plan: OracleTypeManagementDraft, step: TypeManagementStep): TypeExecutionBinding {
+  return { executionId: step.executionId!, planId: plan.planId, stepId: step.id, connectionId: plan.target.connectionId, database: plan.target.database, schema: step.object.owner, sql: step.sql };
+}
 
 /** The kind and the original quoted spelling are part of the identity. */
 export function typeManagementObjectKey(object: OracleTypeManagementObjectKey): string {
@@ -229,7 +233,7 @@ export async function prepareOracleTypeManagement(target: TypeManagementTarget, 
   for (const step of recoveringSteps) {
     if (!["sent", "unknown"].includes(step.state) || !step.executionId || step.databaseTerminal) continue;
     try {
-      const completion = await api.cancelConditionalUpdate(step.executionId, { cancel: false });
+      const completion = await api.cancelConditionalUpdate(step.executionId, { cancel: false, typeRecovery: executionBinding(previous!, step) });
       step.databaseTerminal = completion.terminal && completion.databaseTerminal === true;
     } catch {
       // A failed status read is not proof that the original DDL has stopped.
@@ -610,7 +614,7 @@ export async function executeOracleTypeManagement(plan: OracleTypeManagementDraf
       let executionError: unknown;
       let rejected = false;
       try {
-        const result = await api.executeConditionalUpdate(plan.target.connectionId, plan.target.database, step.sql, step.object.owner, step.executionId);
+        const result = await api.executeConditionalUpdate(plan.target.connectionId, plan.target.database, step.sql, step.object.owner, step.executionId, { typeRecovery: { planId: plan.planId, stepId: step.id } });
         step.databaseTerminal = true;
         if (result.execution_error || result.messages?.some((message) => message.severity.toUpperCase() === "ERROR")) {
           rejected = true;
@@ -626,7 +630,7 @@ export async function executeOracleTypeManagement(plan: OracleTypeManagementDraf
       }
       if (!step.databaseTerminal) {
         try {
-          const completion = await api.cancelConditionalUpdate(step.executionId, { cancel: false });
+          const completion = await api.cancelConditionalUpdate(step.executionId, { cancel: false, typeRecovery: executionBinding(plan, step) });
           step.databaseTerminal = completion.terminal && completion.databaseTerminal === true;
         } catch {
           // Keep the original execution unknown when its completion cannot be read.

@@ -82,6 +82,49 @@ pub struct CancellationWaitResult {
     pub database_terminal: Option<bool>,
 }
 
+pub async fn observe_type_execution(
+    storage: &crate::storage::Storage,
+    running: &RunningQueries,
+    binding: &crate::storage::TypeExecutionBinding,
+    timeout: Duration,
+) -> Result<CancellationWaitResult, String> {
+    let mut terminal = storage.type_execution_terminal(binding).await?;
+    if terminal == Some(false) {
+        // The in-memory ID can be reused by ordinary callers; only the bound
+        // durable receipt can prove this TYPE statement reached a terminal state.
+        running.wait_for_completion(&binding.execution_id, timeout).await;
+        terminal = storage.type_execution_terminal(binding).await?;
+    }
+    Ok(CancellationWaitResult {
+        requested: false,
+        terminal: terminal == Some(true),
+        database_terminal: Some(terminal == Some(true)),
+    })
+}
+
+pub async fn finish_conditional_update<T>(
+    registered: RegisteredQuery,
+    storage: &crate::storage::Storage,
+    binding: Option<&crate::storage::TypeExecutionBinding>,
+    result: Result<T, crate::query::QueryExecutionError>,
+) -> Result<T, crate::backend_error::BackendError> {
+    let terminal = registered.finish_with_database_result(&result);
+    if let Some(binding) = binding {
+        if terminal {
+            storage.finish_type_execution(binding).await.map_err(|error| {
+                crate::backend_error::BackendError::from_legacy_backend(&format!(
+                    "TYPE terminal receipt was not saved: {error}. Keep the recovery plan; do not replay."
+                ))
+            })?;
+        } else {
+            // Legacy SQL envelopes can look like acknowledged SQL rejections to
+            // the frontend. An unproven TYPE result must remain unknown there too.
+            return result.map_err(|error| crate::backend_error::BackendError::from_legacy_backend(&error.to_string()));
+        }
+    }
+    result.map_err(crate::query::QueryExecutionError::into_backend_error)
+}
+
 #[derive(Clone, Default)]
 pub struct RunningQueries {
     // Interrupt closures live inside `RunningTask` rather than a second map
@@ -424,7 +467,7 @@ impl RegisteredQuery {
     }
 
     /// Task cleanup alone does not prove a database request has stopped.
-    pub fn finish_with_database_result<T>(mut self, result: &Result<T, crate::query::QueryExecutionError>) {
+    pub fn finish_with_database_result<T>(mut self, result: &Result<T, crate::query::QueryExecutionError>) -> bool {
         use crate::db::agent_driver::{AgentCallError, AgentErrorCategory, AgentErrorStage, AgentOperationOutcome};
         use crate::query::QueryExecutionError;
         self.database_terminal = match result {
@@ -436,6 +479,7 @@ impl RegisteredQuery {
             Err(QueryExecutionError::Canceled { operation_outcome: AgentOperationOutcome::NotStarted, .. }) => true,
             _ => false,
         };
+        self.database_terminal
     }
 
     /// Consumes the guard without immediately removing its `RunningQueries`

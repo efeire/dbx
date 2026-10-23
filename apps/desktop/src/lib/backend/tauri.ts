@@ -1994,6 +1994,7 @@ export async function executeConditionalUpdate(
     clientSessionId?: string;
     timeoutSecs?: number;
     executionMode?: "simple" | "postgres_read_only_transaction";
+    typeRecovery?: import("@/types/database").TypeRecoveryContext;
   },
 ): Promise<QueryResult> {
   try {
@@ -2143,7 +2144,7 @@ export interface ConditionalUpdateCancellationResult {
   databaseTerminal?: boolean;
 }
 
-export async function cancelConditionalUpdate(executionId: string, options?: { cancel?: boolean }): Promise<ConditionalUpdateCancellationResult> {
+export async function cancelConditionalUpdate(executionId: string, options?: { cancel?: boolean; typeRecovery?: import("@/types/database").TypeExecutionBinding }): Promise<ConditionalUpdateCancellationResult> {
   return invoke("cancel_conditional_update", { executionId, ...options });
 }
 

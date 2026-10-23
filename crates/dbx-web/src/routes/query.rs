@@ -36,6 +36,7 @@ pub struct ExecuteQueryRequest {
     pub use_transaction: Option<bool>,
     pub continue_on_error: Option<bool>,
     pub execution_mode: Option<dbx_core::query::QueryExecutionMode>,
+    pub type_recovery: Option<dbx_core::storage::TypeRecoveryContext>,
     /// MySQL auto-commit tabs: keep a transaction the user opened explicitly
     /// (`BEGIN` / `START TRANSACTION`) open across executions until COMMIT /
     /// ROLLBACK. Defaults to the historical cleanup when omitted.
@@ -48,6 +49,7 @@ pub struct ExecuteQueryRequest {
 pub struct CancelRequest {
     pub execution_id: String,
     pub cancel: Option<bool>,
+    pub type_recovery: Option<dbx_core::storage::TypeExecutionBinding>,
 }
 
 const CONDITIONAL_UPDATE_CANCEL_WAIT: Duration = Duration::from_secs(10);
@@ -548,6 +550,22 @@ pub async fn execute_conditional_update(
     .await?;
 
     let execution_id = req.execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let recovery = req.type_recovery.map(|context| dbx_core::storage::TypeExecutionBinding {
+        execution_id: execution_id.clone(),
+        context,
+        connection_id: req.connection_id.clone(),
+        database: database.clone(),
+        schema: req.schema.clone(),
+        sql: req.sql.clone(),
+    });
+    if let Some(binding) = &recovery {
+        state
+            .app
+            .storage
+            .claim_type_execution(binding)
+            .await
+            .map_err(|error| AppError::from(dbx_core::backend_error::BackendError::from_legacy_backend(&error)))?;
+    }
     let registered = state.app.running_queries.register_task_for_terminal_confirmation(
         execution_id.clone(),
         RunningTaskMetadata::query(req.connection_id.clone(), database.clone(), req.client_session_id.clone()),
@@ -589,8 +607,10 @@ pub async fn execute_conditional_update(
             },
         )
         .await;
-        registered.finish_with_database_result(&result);
-        let _ = result_tx.send(result);
+        let result =
+            dbx_core::query_cancel::finish_conditional_update(registered, &app.storage, recovery.as_ref(), result)
+                .await;
+        let _ = result_tx.send(result.map_err(AppError::from));
     });
 
     let result = match response_timeout {
@@ -612,7 +632,7 @@ pub async fn execute_conditional_update(
             Err(_) => return Err(AppError::internal("Conditional update execution task stopped unexpectedly")),
         },
     };
-    result.map(Json).map_err(|error| AppError::from(error.into_backend_error()))
+    result.map(Json)
 }
 
 pub async fn execute_multi(
@@ -753,13 +773,42 @@ pub async fn cancel_query(
 
 pub async fn cancel_conditional_update(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Json(req): Json<CancelRequest>,
-) -> Json<dbx_core::query_cancel::CancellationWaitResult> {
-    Json(if req.cancel == Some(false) {
+) -> Result<Json<dbx_core::query_cancel::CancellationWaitResult>, AppError> {
+    if let Some(binding) = req.type_recovery {
+        if req.cancel != Some(false) || binding.execution_id != req.execution_id {
+            return Err(AppError::from(
+                "TYPE recovery observation requires the original execution ID and cancel=false",
+            ));
+        }
+        let database = super::mcp_policy::ensure_sql(
+            &state,
+            &headers,
+            &binding.connection_id,
+            &binding.database,
+            &binding.sql,
+            false,
+        )
+        .await?;
+        if database != binding.database {
+            return Err(AppError::from("TYPE recovery cannot switch the original database"));
+        }
+        return dbx_core::query_cancel::observe_type_execution(
+            &state.app.storage,
+            &state.app.running_queries,
+            &binding,
+            CONDITIONAL_UPDATE_CANCEL_WAIT,
+        )
+        .await
+        .map(Json)
+        .map_err(AppError::from);
+    }
+    Ok(Json(if req.cancel == Some(false) {
         state.app.running_queries.wait_for_completion(&req.execution_id, CONDITIONAL_UPDATE_CANCEL_WAIT).await
     } else {
         state.app.running_queries.cancel_and_wait(&req.execution_id, CONDITIONAL_UPDATE_CANCEL_WAIT).await
-    })
+    }))
 }
 
 pub async fn read_large_value_chunk(
@@ -1618,12 +1667,12 @@ mod tests {
             .register_task_for_terminal_confirmation("type-step".to_string(), Default::default());
         let token = registered.token();
         let request = serde_json::from_value(serde_json::json!({"executionId":"type-step", "cancel":false})).unwrap();
-        let wait = cancel_conditional_update(AxumState(state), Json(request));
+        let wait = cancel_conditional_update(AxumState(state), HeaderMap::new(), Json(request));
         tokio::pin!(wait);
         assert!(tokio::time::timeout(Duration::from_millis(5), &mut wait).await.is_err());
         assert!(!token.is_cancelled());
         registered.finish_with_database_result(&Ok::<_, dbx_core::query::QueryExecutionError>(()));
-        let result = wait.await.0;
+        let result = wait.await.unwrap().0;
         assert!(!result.requested && result.terminal);
         assert_eq!(result.database_terminal, Some(true));
     }
@@ -1641,10 +1690,67 @@ mod tests {
             drop(registered);
         });
         let request = serde_json::from_value(serde_json::json!({"executionId":"old-caller"})).unwrap();
-        let result = cancel_conditional_update(AxumState(state), Json(request)).await.0;
+        let result = cancel_conditional_update(AxumState(state), HeaderMap::new(), Json(request)).await.unwrap().0;
         completion.await.unwrap();
         assert!(result.requested && result.terminal);
         assert_eq!(result.database_terminal, Some(false));
+    }
+
+    #[tokio::test]
+    async fn duplicate_type_execution_is_unknown_and_does_not_replace_the_receipt() {
+        let (state, _dir) = test_web_state().await;
+        let binding = dbx_core::storage::TypeExecutionBinding {
+            execution_id: "type-duplicate".into(),
+            context: dbx_core::storage::TypeRecoveryContext { plan_id: "plan".into(), step_id: "step".into() },
+            connection_id: "original".into(),
+            database: "service".into(),
+            schema: Some("APP".into()),
+            sql: "CREATE TYPE APP.T AS OBJECT (ID NUMBER)".into(),
+        };
+        state.app.storage.claim_type_execution(&binding).await.unwrap();
+        let request = serde_json::from_value(serde_json::json!({
+            "executionId": binding.execution_id, "connectionId": binding.connection_id,
+            "database": binding.database, "schema": binding.schema, "sql": binding.sql,
+            "typeRecovery": { "planId": "plan", "stepId": "step" }
+        }))
+        .unwrap();
+        let error =
+            execute_conditional_update(AxumState(state.clone()), HeaderMap::new(), Json(request)).await.unwrap_err();
+        let envelope = serde_json::to_value(&error.error).unwrap();
+        assert_eq!(envelope["operationOutcome"], "unknown");
+        assert_eq!(envelope["code"], "DBX-LEGACY-0001");
+        assert_eq!(state.app.storage.type_execution_terminal(&binding).await.unwrap(), Some(false));
+        assert!(state.app.running_queries.diagnostics().active_execution_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn type_observation_checks_binding_and_current_mcp_permissions() {
+        let (state, _dir) = test_web_state().await;
+        let binding = dbx_core::storage::TypeExecutionBinding {
+            execution_id: "type-observation".into(),
+            context: dbx_core::storage::TypeRecoveryContext { plan_id: "plan".into(), step_id: "step".into() },
+            connection_id: "original".into(),
+            database: "service".into(),
+            schema: Some("APP".into()),
+            sql: "CREATE TYPE APP.T AS OBJECT (ID NUMBER)".into(),
+        };
+        state.app.storage.claim_type_execution(&binding).await.unwrap();
+        state.app.storage.finish_type_execution(&binding).await.unwrap();
+        let request = || {
+            serde_json::from_value(
+                serde_json::json!({ "executionId": binding.execution_id, "cancel": false, "typeRecovery": binding }),
+            )
+            .unwrap()
+        };
+        let result =
+            cancel_conditional_update(AxumState(state.clone()), HeaderMap::new(), Json(request())).await.unwrap().0;
+        assert_eq!(result.database_terminal, Some(true));
+        let mut mismatched: CancelRequest = request();
+        mismatched.type_recovery.as_mut().unwrap().sql.push(';');
+        assert!(cancel_conditional_update(AxumState(state.clone()), HeaderMap::new(), Json(mismatched)).await.is_err());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-dbx-mcp-request", HeaderValue::from_static("1"));
+        assert!(cancel_conditional_update(AxumState(state), headers, Json(request())).await.is_err());
     }
 
     fn deploy_result(status: &str, statement_count: usize) -> dbx_core::query::SchemaDiffDeployResult {

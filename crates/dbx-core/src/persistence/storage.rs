@@ -3,6 +3,9 @@ pub use dbx_drivers::runtime_config::{
     DUCKDB_WORKER_MAX_PROCESSES_MIN,
 };
 
+mod type_execution_receipts;
+pub use type_execution_receipts::{TypeExecutionBinding, TypeRecoveryContext};
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
