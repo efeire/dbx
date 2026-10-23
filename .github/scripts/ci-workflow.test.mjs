@@ -280,17 +280,13 @@ test("Rust build timings remain available after failures without waiting for can
 });
 
 test("Linux Rust dependency installs bound apt mirror stalls", () => {
-  for (const name of ["packages", "rust-fmt-clippy", "rust-test"]) {
+  for (const name of ["packages", "rust-fmt-clippy", "rust-test", "agent-rust"]) {
     const content = job(name);
-    assert.match(content, /run: sudo python3 \.github\/scripts\/ci-install-system-deps\.py/);
-    assert.doesNotMatch(content, /apt-get/);
-  }
-  assert.match(job("rust-test"), /if: matrix\.group != 'foundation'/);
-  assert.ok(job("github-scripts").includes("python3 .github/scripts/ci-install-system-deps.test.py"));
-  const agent = job("agent-rust");
-  assert.deepEqual([...agent.matchAll(/sudo timeout --kill-after=30s (\d+)m apt-get/g)].map((match) => Number(match[1])), [10, 10]);
-  for (const option of ["Acquire::Retries=3", "Acquire::http::Timeout=30", "Acquire::https::Timeout=30"]) {
-    assert.ok(agent.includes(option));
+    const deadlines = [...content.matchAll(/sudo timeout --kill-after=30s (\d+)m apt-get/g)].map((match) => Number(match[1]));
+    assert.deepEqual(deadlines, [10, name === "agent-rust" ? 10 : 20]);
+    for (const option of ["Acquire::Retries=3", "Acquire::http::Timeout=30", "Acquire::https::Timeout=30"]) {
+      assert.ok(content.includes(option));
+    }
   }
 });
 
