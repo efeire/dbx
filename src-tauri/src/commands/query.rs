@@ -197,28 +197,26 @@ pub async fn execute_conditional_update(
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 let message = "Conditional update execution task stopped unexpectedly";
-                return Err(if durable_recovery {
+                Err(if durable_recovery {
                     BackendError::from_legacy_backend(message)
                 } else {
                     BackendError::from_sql_detail(message)
-                });
+                })
             }
-            Err(_) => {
-                return Err(BackendError::from_timeout_detail(&format!(
-                    "Query timed out after {} seconds",
-                    timeout.as_secs().max(1)
-                )));
-            }
+            Err(_) => Err(BackendError::from_timeout_detail(&format!(
+                "Query timed out after {} seconds",
+                timeout.as_secs().max(1)
+            ))),
         },
         None => match result_rx.await {
             Ok(result) => result,
             Err(_) => {
                 let message = "Conditional update execution task stopped unexpectedly";
-                return Err(if durable_recovery {
+                Err(if durable_recovery {
                     BackendError::from_legacy_backend(message)
                 } else {
                     BackendError::from_sql_detail(message)
-                });
+                })
             }
         },
     }
