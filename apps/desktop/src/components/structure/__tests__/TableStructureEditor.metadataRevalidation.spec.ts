@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     db_type: "mysql",
     driver_label: "MySQL",
     driver_profile: "",
+    query_timeout_secs: 30,
   },
   ensureConnected: vi.fn(),
   executeQuery: vi.fn(),
@@ -231,14 +232,18 @@ vi.mock("@/components/editor/EditorSearchPanel.vue", async () => {
   };
 });
 
-vi.mock("@/stores/connectionStore", () => ({
-  useConnectionStore: () => ({
-    ensureConnected: mocks.ensureConnected,
-    connectionStateRevision: () => mocks.revision,
-    isCurrentConnectionStateRevision: () => true,
-    getConfig: (connectionId: string) => (connectionId === mocks.connection.id ? mocks.connection : undefined),
-  }),
-}));
+vi.mock("@/stores/connectionStore", async () => {
+  const { reactive } = await import("vue");
+  const config = reactive(mocks.connection);
+  return {
+    useConnectionStore: () => ({
+      ensureConnected: mocks.ensureConnected,
+      connectionStateRevision: () => mocks.revision,
+      isCurrentConnectionStateRevision: () => true,
+      getConfig: (connectionId: string) => (connectionId === mocks.connection.id ? config : undefined),
+    }),
+  };
+});
 vi.mock("@/stores/productionSafetyStore", () => ({ useProductionSafetyStore: () => ({ requestConfirmation: vi.fn() }) }));
 vi.mock("@/stores/queryStore", () => ({ useQueryStore: () => ({ tableStructureRefreshVersion: () => 0 }) }));
 vi.mock("@/stores/historyStore", () => ({ useHistoryStore: () => ({ add: vi.fn() }) }));
@@ -297,6 +302,21 @@ import type { TableStructureEditorDraft } from "@/types/database";
 import type { BuildTableStructureChangeSqlOptions, EditableStructureIndex } from "@/lib/table/tableStructureEditorSql";
 
 describe("Oracle issue 13032/13310 preview probe", () => {
+  it("keeps a complete draft preview when the inherited query timeout changes", async () => {
+    mocks.connection.db_type = "oracle";
+    mocks.loadObjectMetadataFacet.mockImplementation(async (_request, facet) => ({ value: facet === "columns" ? [{ name: "REC_ID", data_type: "NUMBER", is_nullable: true, is_primary_key: false }] : facet === "comment" ? "" : [], cacheStatus: "remote" }));
+    mocks.buildTableStructureChangeSql.mockResolvedValue({ statements: ["ALTER TABLE users RENAME COLUMN REC_ID TO CHANGED"], warnings: [] });
+    const root = await mountStructureEditor();
+    const input = root.querySelector<HTMLInputElement>("[data-column-name-input]")!;
+    input.value = "CHANGED";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(root.textContent).toContain("ALTER TABLE users"));
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    useConnectionStore().getConfig(mocks.connection.id)!.query_timeout_secs = 45;
+    await settle();
+    expect(root.textContent).toContain("ALTER TABLE users");
+    expect([...root.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "structureEditor.apply")?.disabled).toBe(false);
+  });
   it("clears the recovery error when the last incomplete column is removed", async () => {
     mocks.connection.db_type = "oracle";
     mocks.loadObjectMetadataFacet.mockImplementation(async (_request, facet) => {
@@ -424,8 +444,13 @@ describe("Oracle issue 13032/13310 preview probe", () => {
     expect(root.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("false");
     expect(mocks.executeBatch).not.toHaveBeenCalled();
   });
-  it.each(["oracle", "oceanbase-oracle"])("retries failed hydration without discarding edits (%s)", async (databaseType) => {
+  it.each([
+    { databaseType: "oracle", exactIdentity: false },
+    { databaseType: "oceanbase-oracle", exactIdentity: false },
+    { databaseType: "oracle", exactIdentity: true },
+  ])("retries failed hydration without discarding edits ($databaseType/$exactIdentity)", async ({ databaseType, exactIdentity }) => {
     mocks.connection.db_type = databaseType;
+    const { readOracleIndexSnapshot } = await import("@/lib/database/oracleConstraints");
     let available = false;
     const metadata = [{ name: "REC_ID", data_type: "VARCHAR2(32)", is_nullable: false, is_primary_key: false }];
     mocks.loadObjectMetadataFacet.mockImplementation(async (_request, facet) => {
@@ -440,6 +465,7 @@ describe("Oracle issue 13032/13310 preview probe", () => {
       connectionId: mocks.connection.id,
       database: "test",
       tableName: "users",
+      exactIdentity,
       draft: {
         initialized: true,
         dirty: true,
@@ -479,6 +505,7 @@ describe("Oracle issue 13032/13310 preview probe", () => {
     await vi.waitFor(() => expect(root.textContent).not.toContain("probe metadata unavailable"));
     expect(root.querySelector<HTMLInputElement>("[data-column-name-input]")?.value).toBe("WAIT_EDIT");
     expect(mocks.executeBatch).not.toHaveBeenCalled();
+    if (exactIdentity) await vi.waitFor(() => expect(readOracleIndexSnapshot).toHaveBeenCalled());
   });
   it("keeps edits made after failed hydration across deactivate and activate", async () => {
     const { KeepAlive, h, ref } = await import("vue");
@@ -658,6 +685,7 @@ async function mountStructureEditor(draft?: TableStructureEditorDraft, tableName
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.revision = 0;
+  mocks.connection.query_timeout_secs = 30;
   mocks.connection.db_type = "mysql";
   mocks.connection.driver_profile = "";
   mocks.ensureConnected.mockResolvedValue(undefined);

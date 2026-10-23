@@ -2545,7 +2545,7 @@ let draftHydrationRequestId = 0;
 let restoredDraftTarget = "";
 
 function draftTargetIdentity() {
-  return JSON.stringify([ddlRequest(), databaseType.value]);
+  return JSON.stringify([props.connectionId, props.database, metadataSchema.value, props.tableName, props.catalog, props.tableType, props.exactIdentity === true, databaseType.value]);
 }
 
 function invalidateDraftHydration() {
@@ -3041,6 +3041,23 @@ async function hydrateRestoredDraftFromDatabase(force = false): Promise<boolean>
       clearSqlPreviewState();
       if (completed || ddlDirty.value) scheduleSqlPreviewRefresh();
     }
+  }
+}
+
+async function initializeRestoredDraftMetadata(identity: string, revalidateRestoredColumns = false) {
+  const current = () => !primaryKeyUnmounted && identity === draftTargetIdentity();
+  if (!current()) return;
+  applyInitialStructureTarget();
+  void loadMysqlAutoIncrementCounter(true);
+  if (oracleIndexRefreshError.value) {
+    await retryOracleIndexRefresh();
+  } else if ((props.exactIdentity || oracleIndexRefreshGuard.value) && !isCreateMode.value) {
+    await loadStructure(true, { columns: false, indexes: true, constraints: false, foreignKeys: false, triggers: false, partitions: false, tableComment: false }, true, { blockSecondaryMetadata: true, preserveDraft: true, forceMetadata: true });
+  }
+  if (!current()) return;
+  await loadActiveTableStructureMetadataIfNeeded();
+  if (current() && revalidateRestoredColumns) {
+    void revalidateCachedStructureMetadata(structureLoadRequestId, { columns: true, tableComment: false }, undefined);
   }
 }
 
@@ -3719,7 +3736,8 @@ async function reloadStructureFromDatabase() {
   if (isCreateMode.value) return;
   if (oracleIndexRefreshError.value) return retryOracleIndexRefresh();
   if (needsColumnDraftMetadataHydration() || draftHydrationError.value) {
-    await hydrateRestoredDraftFromDatabase(true);
+    const identity = draftTargetIdentity();
+    if (await hydrateRestoredDraftFromDatabase(true)) await initializeRestoredDraftMetadata(identity);
     return;
   }
   invalidateDraftHydration();
@@ -7337,20 +7355,8 @@ onMounted(() => {
     // invalidated backend cache entirely. Legacy/dirty drafts remain intact.
     const revalidateRestoredColumns = props.draft.dirty === false && !isCreateMode.value && loadedMetadataFacets.has("columns") && !(databaseType.value === "manticoresearch" && tableMetadataCapabilities.value.ddl);
     const restoredIdentity = draftTargetIdentity();
-    void hydrateRestoredDraftFromDatabase().then(async (completed) => {
-      if (!completed || restoredIdentity !== draftTargetIdentity() || primaryKeyUnmounted) return;
-      applyInitialStructureTarget();
-      void loadMysqlAutoIncrementCounter(true);
-      if (oracleIndexRefreshError.value) {
-        await retryOracleIndexRefresh();
-      } else if ((props.exactIdentity || oracleIndexRefreshGuard.value) && !isCreateMode.value) {
-        await loadStructure(true, { columns: false, indexes: true, constraints: false, foreignKeys: false, triggers: false, partitions: false, tableComment: false }, true, { blockSecondaryMetadata: true, preserveDraft: true, forceMetadata: true });
-      }
-      await loadActiveTableStructureMetadataIfNeeded();
-      if (revalidateRestoredColumns) {
-        // The existing revalidation checks again for edits made while loading.
-        void revalidateCachedStructureMetadata(structureLoadRequestId, { columns: true, tableComment: false }, undefined);
-      }
+    void hydrateRestoredDraftFromDatabase().then((completed) => {
+      if (completed) return initializeRestoredDraftMetadata(restoredIdentity, revalidateRestoredColumns);
     });
   } else if (isCreateMode.value) {
     markDraftHydratedAndSync();
@@ -7376,10 +7382,7 @@ onActivated(() => {
     applyInitialStructureTarget();
     const restoredIdentity = draftTargetIdentity();
     void hydrateRestoredDraftFromDatabase().then((completed) => {
-      if (!completed || restoredIdentity !== draftTargetIdentity() || primaryKeyUnmounted) return;
-      applyInitialStructureTarget();
-      void loadMysqlAutoIncrementCounter(true);
-      void loadActiveTableStructureMetadataIfNeeded();
+      if (completed) return initializeRestoredDraftMetadata(restoredIdentity);
     });
   }
   restoreStructureScrollPosition();
