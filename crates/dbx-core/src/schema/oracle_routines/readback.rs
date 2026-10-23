@@ -269,15 +269,13 @@ pub(super) async fn readback(
     if let Err(error) = check {
         result.state = RoutineReadbackState::ReadbackFailed;
         result.issues.push(issue("package-pair", error));
-    } else if identity.kind == db::ObjectSourceKind::Package
+    } else if (identity.kind == db::ObjectSourceKind::Package
         && *goal == RoutineReadbackGoal::Absent
-        && companion.exists != Some(false)
-    {
-        result.state = RoutineReadbackState::DefinitionMismatch;
-    } else if identity.kind == db::ObjectSourceKind::PackageBody
-        && matches!(goal, RoutineReadbackGoal::Definition { .. })
-        && companion.state != RoutineReadbackState::Present
-        && result.state == RoutineReadbackState::Verified
+        && companion.exists != Some(false))
+        || (identity.kind == db::ObjectSourceKind::PackageBody
+            && matches!(goal, RoutineReadbackGoal::Definition { .. })
+            && companion.state != RoutineReadbackState::Present
+            && result.state == RoutineReadbackState::Verified)
     {
         result.state = RoutineReadbackState::DefinitionMismatch;
     }

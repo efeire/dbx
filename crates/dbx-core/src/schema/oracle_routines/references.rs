@@ -105,7 +105,7 @@ pub(super) enum ReferenceProofPurpose {
         index: usize,
         reference: OracleDraftReference,
         query: Option<dbx_sql::object_source_sql::OracleDraftQuery>,
-        resolved: Option<ResolvedRoutineReference>,
+        resolved: Option<Box<ResolvedRoutineReference>>,
     },
 }
 
@@ -837,7 +837,7 @@ pub(super) async fn resolve_draft_with_tables(
                 reference: reference.clone(),
                 query: reference.query.and_then(|index| analysis.queries.get(index)).cloned(),
                 resolved: (resolver.output.references.len() > resolved_start)
-                    .then(|| resolver.output.references.last().unwrap().clone()),
+                    .then(|| Box::new(resolver.output.references.last().unwrap().clone())),
             },
             start: proof_start,
             end: resolver.output.proofs.len(),

@@ -170,11 +170,11 @@ pub(in crate::schema::oracle_routines) async fn prepare_package_recovery(
             drafts.push(step);
         }
     }
-    if !matches!(&before.specification, ExpectedRoutine::Absent(_)) || !restore_spec {
-        if restore_spec || !same_definition(&before.body, &current.body) {
-            if let Some(step) = draft(&before.body, &current.body) {
-                drafts.push(step);
-            }
+    if (!matches!(&before.specification, ExpectedRoutine::Absent(_)) || !restore_spec)
+        && (restore_spec || !same_definition(&before.body, &current.body))
+    {
+        if let Some(step) = draft(&before.body, &current.body) {
+            drafts.push(step);
         }
     }
     if drafts.is_empty() {

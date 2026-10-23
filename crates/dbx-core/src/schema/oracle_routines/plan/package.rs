@@ -474,8 +474,8 @@ pub(super) async fn prepare_package_drafts(
                 } else if matches!(&pair.body, ExpectedRoutine::Present(_)) {
                     if companion_index.is_none() { plan.steps[index].issues.push(problem("Replacing or creating this specification requires an explicit source body, retained target body rebuild, or body deletion step; its old VALID state does not prove compatibility")); }
                     if !input.drafts[index].confirm_package_pair { plan.steps[index].issues.push(problem("Confirm the specification and existing body impact before approval")); }
-                } else if companion_index.is_none() {
-                    if impact.body_pending && !input.drafts[index].confirm_package_pair { plan.steps[index].issues.push(problem("This is specification-only: the source body or callable implementations are not transferred; confirm that incomplete package scope before approval")); }
+                } else if companion_index.is_none() && impact.body_pending && !input.drafts[index].confirm_package_pair {
+                    plan.steps[index].issues.push(problem("This is specification-only: the source body or callable implementations are not transferred; confirm that incomplete package scope before approval"));
                 }
                 if plan.steps[index].action != RoutinePlanAction::Create {
                     let (grants, proofs) = read_grants(target, &plan.steps[index].identity).await;
