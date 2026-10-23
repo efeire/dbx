@@ -2539,7 +2539,20 @@ let restoringDraft = false;
 let syncingDraft = false;
 let draftHydrated = false;
 let lastAppliedInitialTabRequestId: number | undefined;
-let hydratingRestoredDraft = false;
+const hydratingRestoredDraft = ref(false);
+const draftHydrationError = ref("");
+let draftHydrationRequestId = 0;
+let restoredDraftTarget = "";
+
+function draftTargetIdentity() {
+  return JSON.stringify([ddlRequest(), databaseType.value]);
+}
+
+function invalidateDraftHydration() {
+  draftHydrationRequestId++;
+  hydratingRestoredDraft.value = false;
+  clearSqlPreviewState();
+}
 let structureScrollDraftSyncTimer: ReturnType<typeof setTimeout> | undefined;
 let structureColumnScrollingTimer: ReturnType<typeof setTimeout> | undefined;
 let lastColumnVirtualRenderScrollTop = 0;
@@ -2835,7 +2848,7 @@ function emitDraftToParent(draft: TableStructureEditorDraft | undefined) {
 }
 
 function syncStructureScrollDraftToParent() {
-  if (!draftHydrated || restoringDraft || syncingDraft) return;
+  if ((!draftHydrated && restoredDraftTarget !== draftTargetIdentity()) || restoringDraft || syncingDraft) return;
   const draft = lastSyncedDraft ?? props.draft;
   if (!draft) {
     syncDraftToParent();
@@ -2854,7 +2867,7 @@ function syncDraftToParent() {
     clearTimeout(structureScrollDraftSyncTimer);
     structureScrollDraftSyncTimer = undefined;
   }
-  if (!draftHydrated) return;
+  if (!draftHydrated && restoredDraftTarget !== draftTargetIdentity()) return;
   if (restoringDraft || syncingDraft) return;
   syncingDraft = true;
   emitDraftToParent(createCurrentDraft());
@@ -2953,6 +2966,7 @@ function restoreDraft(draft: TableStructureEditorDraft) {
   if (indexes.value.length) loadedMetadataFacets.add("indexes");
   structureScrollPositions = cloneDraftValue(draft.scrollPositions || {});
   restoringDraft = false;
+  restoredDraftTarget = draftTargetIdentity();
   draftHydrated = !needsColumnDraftMetadataHydration();
   restoreStructureScrollPosition();
 }
@@ -2961,39 +2975,72 @@ function needsColumnDraftMetadataHydration() {
   return !isCreateMode.value && columns.value.some((column) => !column.original && !column.id.startsWith("new:") && !!column.name.trim());
 }
 
-async function hydrateRestoredDraftFromDatabase() {
-  if (!needsColumnDraftMetadataHydration() || hydratingRestoredDraft) return;
-  const connectionId = props.connectionId;
-  const database = props.database;
-  const catalog = props.catalog;
-  const schema = metadataSchema.value;
-  const tableName = props.tableName;
-  if (!connectionId || !database || !tableName) return;
-
-  hydratingRestoredDraft = true;
-  let shouldRefreshPreview = false;
+async function hydrateRestoredDraftFromDatabase(force = false): Promise<boolean> {
+  if (!needsColumnDraftMetadataHydration()) {
+    if (draftHydrationError.value || hydratingRestoredDraft.value) {
+      invalidateDraftHydration();
+      draftHydrationError.value = "";
+      markDraftHydratedAndSync();
+      scheduleSqlPreviewRefresh();
+    }
+    return true;
+  }
+  if (hydratingRestoredDraft.value && !force) return false;
+  const request = ddlRequest();
+  if (!request.connectionId || !request.database || !request.tableName) return false;
+  const identity = draftTargetIdentity();
+  const dbType = databaseType.value;
+  const requestId = ++draftHydrationRequestId;
+  const config = store.getConfig(request.connectionId);
+  const fingerprint = config ? connectionConfigFingerprint(config) : "";
+  let revision: number | undefined;
+  const current = () =>
+    !primaryKeyUnmounted &&
+    requestId === draftHydrationRequestId &&
+    identity === draftTargetIdentity() &&
+    (revision === undefined || store.connectionStateRevision(request.connectionId) === revision) &&
+    (store.getConfig(request.connectionId) ? connectionConfigFingerprint(store.getConfig(request.connectionId)!) : "") === fingerprint;
+  hydratingRestoredDraft.value = true;
+  draftHydrationError.value = "";
+  clearSqlPreviewState();
+  scheduleSqlPreviewRefresh();
+  let completed = false;
   try {
-    await store.ensureConnected(connectionId);
-    const request = ddlRequest();
-    let { value: nextColumns } = await loadObjectMetadataFacet(request, "columns", () => getStructureColumns(request));
-    if (databaseType.value === "manticoresearch" && tableMetadataCapabilities.value.ddl) {
+    await store.ensureConnected(request.connectionId);
+    if (!current()) return false;
+    revision = store.connectionStateRevision(request.connectionId);
+    let { value: nextColumns } = await loadObjectMetadataFacet(request, "columns", () => getStructureColumns(request), { force });
+    if (!current()) return false;
+    let formattedDdl: string | undefined;
+    if (dbType === "manticoresearch" && tableMetadataCapabilities.value.ddl) {
       try {
-        const { ddl } = await loadObjectDdl({ connectionId, database, schema, tableName, catalog, queryTimeoutSecs: store.getConfig(connectionId)?.query_timeout_secs });
-        rawDdlContent.value = await formatStructureDdl(ddl);
-        ddlFetched.value = true;
+        const { ddl } = await loadObjectDdl(request);
+        formattedDdl = await formatStructureDdl(ddl);
         nextColumns = applyManticoreDdlColumnExtras(nextColumns, ddl);
       } catch {
         /* ignore — Manticore column properties can still come from SHOW COLUMNS when available */
       }
     }
-    columns.value = rehydrateColumnDraftsFromMetadata(columns.value, nextColumns, databaseType.value);
+    if (!current()) return false;
+    const candidate = rehydrateColumnDraftsFromMetadata(columns.value, nextColumns, dbType);
+    if (candidate.some((column) => !column.original && !column.id.startsWith("new:") && !!column.name.trim())) throw new Error(t("oceanbasePrimaryKey.incompleteMetadata"));
+    columns.value = candidate;
+    if (formattedDdl !== undefined) {
+      rawDdlContent.value = formattedDdl;
+      ddlFetched.value = true;
+    }
     markDraftHydratedAndSync();
-    shouldRefreshPreview = true;
+    completed = true;
+    return true;
   } catch (e: any) {
-    console.warn("[DBX][structure-editor:draft-hydration-failed]", e);
+    if (current()) draftHydrationError.value = `${t("oceanbasePrimaryKey.incompleteMetadata")} ${e?.message || String(e)}`;
+    return false;
   } finally {
-    hydratingRestoredDraft = false;
-    if (shouldRefreshPreview) scheduleSqlPreviewRefresh();
+    if (requestId === draftHydrationRequestId) {
+      hydratingRestoredDraft.value = false;
+      clearSqlPreviewState();
+      if (completed || ddlDirty.value) scheduleSqlPreviewRefresh();
+    }
   }
 }
 
@@ -3167,7 +3214,11 @@ function scheduleSqlPreviewRefresh() {
   // none of the column-draft/metadata gates below apply to it — waiting on them
   // would leave the preview pending with nothing left to trigger it.
   if (!ddlDirty.value) {
-    if (hydratingRestoredDraft || needsColumnDraftMetadataHydration()) return;
+    if (hydratingRestoredDraft.value || needsColumnDraftMetadataHydration() || draftHydrationError.value) {
+      clearSqlPreviewState();
+      sqlPreviewPending.value = hydratingRestoredDraft.value;
+      return;
+    }
     if (!isCreateMode.value && secondaryMetadataLoading.value) {
       deferredSqlPreviewRefresh = true;
       return;
@@ -3278,6 +3329,11 @@ async function refreshSqlPreview() {
     sqliteSchemaRevision.value = undefined;
     sqlPreviewLoading.value = false;
     sqlPreviewPending.value = false;
+    return;
+  }
+  if (hydratingRestoredDraft.value || needsColumnDraftMetadataHydration() || draftHydrationError.value) {
+    clearSqlPreviewState();
+    sqlPreviewPending.value = hydratingRestoredDraft.value;
     return;
   }
   if (!isCreateMode.value && databaseType.value === "starrocks") {
@@ -3543,6 +3599,7 @@ const canApply = computed(
     !mysqlTableEngineLoading.value &&
     !sqlPreviewLoading.value &&
     !sqlPreviewPending.value &&
+    (ddlDirty.value || (!hydratingRestoredDraft.value && !needsColumnDraftMetadataHydration() && !draftHydrationError.value)) &&
     pendingStatements.value.length > 0 &&
     warnings.value.length === 0 &&
     !concurrentAvailabilityInvalidated.value &&
@@ -3558,6 +3615,9 @@ function clearDraft() {
 }
 
 function resetState() {
+  invalidateDraftHydration();
+  restoredDraftTarget = "";
+  draftHydrationError.value = "";
   invalidateOracleIndexReady();
   loading.value = false;
   saving.value = false;
@@ -3658,6 +3718,11 @@ function resetState() {
 async function reloadStructureFromDatabase() {
   if (isCreateMode.value) return;
   if (oracleIndexRefreshError.value) return retryOracleIndexRefresh();
+  if (needsColumnDraftMetadataHydration() || draftHydrationError.value) {
+    await hydrateRestoredDraftFromDatabase(true);
+    return;
+  }
+  invalidateDraftHydration();
   draftHydrated = false;
   if (activeTab.value !== "triggers") {
     triggers.value = [];
@@ -7271,7 +7336,9 @@ onMounted(() => {
     // MCP DDL, restoring its loaded-facet flags would otherwise bypass the
     // invalidated backend cache entirely. Legacy/dirty drafts remain intact.
     const revalidateRestoredColumns = props.draft.dirty === false && !isCreateMode.value && loadedMetadataFacets.has("columns") && !(databaseType.value === "manticoresearch" && tableMetadataCapabilities.value.ddl);
-    void hydrateRestoredDraftFromDatabase().then(async () => {
+    const restoredIdentity = draftTargetIdentity();
+    void hydrateRestoredDraftFromDatabase().then(async (completed) => {
+      if (!completed || restoredIdentity !== draftTargetIdentity() || primaryKeyUnmounted) return;
       applyInitialStructureTarget();
       void loadMysqlAutoIncrementCounter(true);
       if (oracleIndexRefreshError.value) {
@@ -7305,9 +7372,11 @@ onActivated(() => {
     void loadMysqlTableEngine(props.draft?.mysqlTableEngine !== undefined);
   }
   if (props.draft?.initialized && !draftHydrated) {
-    restoreDraft(props.draft);
+    if (restoredDraftTarget !== draftTargetIdentity()) restoreDraft(props.draft);
     applyInitialStructureTarget();
-    void hydrateRestoredDraftFromDatabase().then(() => {
+    const restoredIdentity = draftTargetIdentity();
+    void hydrateRestoredDraftFromDatabase().then((completed) => {
+      if (!completed || restoredIdentity !== draftTargetIdentity() || primaryKeyUnmounted) return;
       applyInitialStructureTarget();
       void loadMysqlAutoIncrementCounter(true);
       void loadActiveTableStructureMetadataIfNeeded();
@@ -7331,6 +7400,7 @@ onDeactivated(() => {
   destroyDdlEditor();
 });
 onBeforeUnmount(() => {
+  invalidateDraftHydration();
   stopStructureToolbarObserver();
   ++copySourceScopeRequestId;
   resetCopySourceTables();
@@ -7491,6 +7561,12 @@ watch([columns, indexes, indexesLoading, loading, oracleIndexReady], () => {
 
 watch([() => props.connectionId, () => props.database, databaseType], () => {
   void loadDynamicDataTypeOptions();
+});
+
+watch(draftTargetIdentity, () => {
+  invalidateDraftHydration();
+  restoredDraftTarget = "";
+  draftHydrationError.value = "";
 });
 
 watch([() => props.connectionId, () => props.database, () => props.schema, () => props.catalog, () => props.tableName, databaseType, activeTab], () => {
@@ -9407,8 +9483,8 @@ watch(
       </div>
       <Button data-retry-oracle-index-refresh variant="outline" size="sm" :disabled="saving || postSaveRefreshing" @click="retryOracleIndexRefresh">{{ t("common.retry") }}</Button>
     </div>
-    <div v-if="errorMessage" class="shrink-0 rounded-md border border-destructive/30 bg-destructive/10 px-[var(--structure-cell-px)] py-[var(--structure-header-py)] text-[length:var(--structure-font-size)] text-destructive">
-      {{ errorMessage }}
+    <div v-if="errorMessage || draftHydrationError" class="shrink-0 rounded-md border border-destructive/30 bg-destructive/10 px-[var(--structure-cell-px)] py-[var(--structure-header-py)] text-[length:var(--structure-font-size)] text-destructive">
+      {{ errorMessage || draftHydrationError }}
     </div>
 
     <div class="flex shrink-0 items-center justify-end gap-2">
