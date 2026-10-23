@@ -8,7 +8,7 @@ use std::time::Duration;
 // Both real transports reach the same external query boundary. Any use of an
 // unsupported getCustomTypeDetails/get_custom_type_details RPC is an error.
 const SCRIPT: &str = r#"#!/usr/bin/env python3
-import json, pathlib, sys
+import json, pathlib, re, sys
 oceanbase = 'oceanbase' in pathlib.Path(__file__).stem
 migration = 'migration' in pathlib.Path(__file__).stem
 persisted = 'persisted' in pathlib.Path(__file__).stem
@@ -67,9 +67,13 @@ for line in sys.stdin:
         result = {'protocolVersion': 2, 'agentProtocolVersion': 2, 'capabilities': ['multi_session']}
     elif method in ('execute_query', 'executeQuery'):
         if 'FROM all_objects ' in params['sql']:
-            rows = [['Mixed Type', 'TYPE', params['schema']], ['Mixed Type', 'TYPE_BODY', params['schema']]]
-            offset = params.get('rowOffset', 0)
-            result = {'columns': ['OBJECT_NAME', 'OBJECT_TYPE', 'OWNER'], 'rows': rows[offset:offset+1], 'truncated': offset == 0, 'affected_rows': 0, 'execution_time_ms': 0}
+            sql = params['sql']
+            owner = re.search(r"OR \(o\.owner = '((?:''|[^'])*)' AND o\.object_type IN \('TYPE', 'TYPE BODY'\)", sql).group(1).replace("''", "'")
+            rows = [[f'A{index:04}', 'TYPE', owner, None, None] for index in range(999)]
+            rows += [['Mixed Type', 'TYPE', owner, None, None], ['Mixed Type', 'TYPE_BODY', owner, None, None]]
+            start = int(re.search(r'dbx_row_number > (\d+)', sql).group(1))
+            end = int(re.search(r'ROWNUM <= (\d+)', sql).group(1))
+            result = {'columns': ['OBJECT_NAME', 'OBJECT_TYPE', 'OWNER', 'PARENT_SCHEMA', 'PARENT_NAME'], 'rows': rows[start:end], 'truncated': False, 'affected_rows': 0, 'execution_time_ms': 0}
         else:
             columns, rows = query(params['sql'])
             result = {'columns': columns, 'rows': rows, 'affected_rows': 0, 'execution_time_ms': 0}
@@ -256,7 +260,15 @@ async fn legacy_oracle_type_lists_use_server_paging_and_full_schema_reads_do_not
     assert_eq!(page[0].schema.as_deref(), Some(schema));
     let all =
         super::list_objects_core(&state, "type-transport", "app", schema, None, None, None, None, None).await.unwrap();
-    assert_eq!(all.iter().map(|object| object.object_type.as_str()).collect::<Vec<_>>(), ["TYPE", "TYPE_BODY"]);
+    assert_eq!(all.len(), 1001);
+    assert!(all.iter().all(|object| object.schema.as_deref() == Some(schema)));
+    assert_eq!(
+        all.iter()
+            .filter(|object| object.name == "Mixed Type")
+            .map(|object| object.object_type.as_str())
+            .collect::<Vec<_>>(),
+        ["TYPE", "TYPE_BODY"]
+    );
     let calls: Vec<Value> = std::fs::read_to_string(script.with_file_name("calls.jsonl"))
         .unwrap()
         .lines()
@@ -269,12 +281,14 @@ async fn legacy_oracle_type_lists_use_server_paging_and_full_schema_reads_do_not
     assert_eq!(typed["params"]["filter"], "Mixed");
     let queries: Vec<_> = calls.iter().filter(|call| call["method"] == "execute_query").collect();
     assert_eq!(queries.len(), 2);
-    assert_eq!(queries[0]["params"]["rowOffset"], 0);
-    assert_eq!(queries[1]["params"]["rowOffset"], 1);
-    assert!(queries[0]["params"]["sql"]
-        .as_str()
-        .unwrap()
-        .contains("owner = ' Exact O''wner ' AND object_type IN ('TYPE', 'TYPE BODY')"));
+    for (query, start) in queries.iter().zip([0, 1000]) {
+        assert!(query["params"].get("schema").is_none());
+        assert!(query["params"].get("rowOffset").is_none());
+        let sql = query["params"]["sql"].as_str().unwrap();
+        assert!(sql.contains(&format!("ROWNUM <= {}", start + 1000)));
+        assert!(sql.contains(&format!("dbx_row_number > {start}")));
+        assert!(sql.contains("o.owner = ' Exact O''wner ' AND o.object_type IN ('TYPE', 'TYPE BODY')"));
+    }
     state.shutdown(Duration::from_secs(2)).await;
 }
 
