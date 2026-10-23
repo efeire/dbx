@@ -139,6 +139,8 @@ export interface CompletionAssistantResponse {
 export interface ConnectionConfig {
   id: string;
   name: string;
+  /** Read-only response identity retained when a saved JDBC URL is protected. */
+  readonly jdbc_dialect?: "oceanbase-oracle";
   note?: string;
   db_type: DatabaseType;
   driver_profile?: string;
@@ -317,6 +319,14 @@ export interface SshTunnelConfig {
   key_passphrase?: string;
   connect_timeout_secs?: number;
   expose_lan?: boolean;
+  /**
+   * Fixed local port (1-65535) the tunnel listens on while the connection is
+   * open, so other local tools can reuse it. Only the last enabled layer uses
+   * it, and only when it is an inline SSH layer (not a shared tunnel profile).
+   * Absent means a random free port. It binds `0.0.0.0` instead of `127.0.0.1`
+   * when `expose_lan` is on.
+   */
+  local_port?: number;
   use_ssh_agent?: boolean;
   ssh_agent_sock_path?: string;
   /**
@@ -1248,6 +1258,8 @@ export interface SqlServerColumnMetadata extends ColumnInfo {
 }
 
 export interface IndexInfo {
+  /** Dictionary-derived index owner; absent in older or non-owner metadata. */
+  owner?: string | null;
   name: string;
   columns: string[];
   is_unique: boolean;
@@ -1903,6 +1915,8 @@ export interface TreeNode {
   schema?: string;
   tableName?: string;
   objectName?: string;
+  /** Distinguishes schema indexes from the existing table-child index actions. */
+  objectScope?: "schema";
   signature?: string;
   customTypeKind?: CustomTypeKind;
   hasMembers?: boolean;
@@ -1939,6 +1953,7 @@ export interface TreeNode {
   meta?: ColumnInfo | IndexInfo | ForeignKeyInfo | TriggerInfo | ConstraintInfo | PartitionInfo | SubpartitionInfo | ExtensionInfo | EventTriggerInfo | VectorCollectionMeta | MongoCollectionMeta | CustomTypeTreeMemberMeta;
   loadMore?: {
     parentId: string;
+    objectType?: "INDEX";
     offset: number;
     pageSize: number;
     /** Backend filter and global-search identity for OceanBase metadata pages. */
@@ -2007,6 +2022,17 @@ export interface PgTablePartitioning {
 export interface TableStructureEditorTarget {
   kind: "column" | "index";
   name: string;
+  /** Raw schema-index owner; omitted by legacy table-child navigation. */
+  owner?: string;
+  /** Schema-index requests are consumed once by the existing draft editor. */
+  action?: "create" | "delete";
+}
+
+export interface SchemaIndexIdentity {
+  schema: string;
+  name: string;
+  parentSchema: string;
+  parentName: string;
 }
 
 export interface TableStructureEditorDraft {
@@ -2026,6 +2052,10 @@ export interface TableStructureEditorDraft {
   originalMysqlAutoIncrementValue?: string;
   mysqlTableEngine?: string;
   originalMysqlTableEngine?: string;
+  mysqlTableCharset?: string;
+  originalMysqlTableCharset?: string;
+  mysqlTableCollation?: string;
+  originalMysqlTableCollation?: string;
   physicalOptions?: import("@/lib/table/tablePhysicalOptions").TablePhysicalOptionsDraft;
   starrocksLayoutDraft?: import("@/lib/table/starrocksAlterOptions").StarRocksLayoutDraft;
   starrocksSortColumns?: string[];
@@ -2059,6 +2089,12 @@ export interface TableStructureEditorDraft {
   scrollPositions?: Partial<Record<TableInfoTab, TableStructureEditorViewport>>;
   /** Request id of the structureInitialTab the editor already applied; remounts must not replay a consumed initial tab over the restored draft. */
   appliedInitialTabRequestId?: number;
+  appliedInitialTargetRequestId?: number;
+  oracleIndexRecovery?: {
+    target: string;
+    completedCreates: import("@/lib/database/oracleIndexes").OracleIndexDefinition[];
+    refreshError?: string;
+  };
   initialized: boolean;
 }
 
@@ -2069,7 +2105,7 @@ export interface TableStructureEditorViewport {
 
 export type ObjectBrowserViewMode = "list" | "grid" | "compact";
 
-export type ObjectBrowserFilter = "all" | "tables" | "views" | "materializedViews" | "procedures" | "functions" | "triggers" | "events" | "sequences" | "packages" | "types";
+export type ObjectBrowserFilter = "all" | "tables" | "views" | "materializedViews" | "procedures" | "functions" | "triggers" | "events" | "sequences" | "indexes" | "packages" | "types";
 
 export interface ObjectBrowserViewport {
   scrollTop: number;
@@ -2381,6 +2417,7 @@ export interface QueryTab {
   nacosTargetRequestId?: number;
   nacosConfigEditorViewport?: NacosConfigEditorViewport;
   structureTableName?: string;
+  structureExactIdentity?: boolean;
   /** Navigation type of the opened structure object; views matter for "view data" routing. */
   structureTableType?: "table" | "view";
   structureInitialTab?: TableInfoTab;
@@ -2409,7 +2446,11 @@ export interface QueryTab {
     eventOpenRequestId?: number;
     /** 显式的"新建事件"请求：单调递增，用于让已复用 tab 也能重复进入 CREATE 编辑器 */
     eventCreateRequestId?: number;
-    initialObjectFilter?: "tables" | "events";
+    initialObjectFilter?: "tables" | "events" | "indexes";
+    indexRequestSequence?: number;
+    indexCreateRequestId?: number;
+    initialViewTarget?: SchemaIndexIdentity;
+    initialViewRequestId?: number;
     filter?: ObjectBrowserFilter;
     searchQuery?: string;
     viewport?: ObjectBrowserViewport;

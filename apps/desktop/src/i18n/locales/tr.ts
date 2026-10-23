@@ -1,3 +1,4 @@
+import { tableColumnPasteTr as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuTr as sidebarMenu } from "./sidebarMenuMessages";
 import { withEnglishFallback } from "./fallback";
 import docs from "./docs/tr";
@@ -61,6 +62,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "Bağımlılıklar",
     dependents: "Bağımlı nesneler",
@@ -1258,6 +1260,9 @@ export default withEnglishFallback({
     sshKeyPassphrasePlaceholder: "Anahtar şifrelenmemişse boş bırakın",
     sshKeyPathBrowse: "Gözat",
     sshExposeLan: "Tüneli yerel ağa aç",
+    sshLocalPort: "Yerel Port",
+    sshLocalPortPlaceholder: "Otomatik",
+    sshLocalPortHint: "Rastgele boş bir port için boş bırakın. Sabit port, bağlantı açıkken tüneli o yerel portta tutar; böylece diğer araçlar da kullanabilir. Yalnızca son katman için geçerlidir.",
     sshAllowExecChannelProxy: "SSH exec-channel yedeğini (nc) etkinleştir",
     sshProxyCommand: "ProxyCommand",
     sshProxyCommandPlaceholder: "nc %h %p",
@@ -1331,6 +1336,9 @@ export default withEnglishFallback({
     sshWorkerUploadConsentAccept: "Yükle",
     sshWorkerUploadConsentReject: "İptal",
     sshHopInvalidTimeout: "{hop}: SSH zaman aşımı 1 ile 300 saniye arasında olmalıdır",
+    sshHopInvalidLocalPort: "{hop}: Yerel port 1 ile 65535 arasında olmalıdır",
+    sshHopLocalPortNotLast: "{hop}: Yerel port yalnızca son etkin katmana uygulanır",
+    sshHopLocalPortUnsupported: "{hop}: Yerel port bu bağlantı türü için desteklenmiyor",
     connectTimeout: "Bağlantı Zaman Aşımı (saniye)",
     queryTimeout: "Sorgu Zaman Aşımı (saniye)",
     useGlobalQueryTimeout: "Genel",
@@ -1428,6 +1436,7 @@ export default withEnglishFallback({
     cancelConnecting: "Bağlanmayı iptal et",
     connectCancelled: "Bağlantı iptal edildi",
     sshTotpCancelled: "Tek kullanımlık kod girişi iptal edildi",
+    sshLocalPortBindFailed: "{port} yerel portu kullanımda veya kullanılamıyor ({error}). Onu kullanan programı kapatın veya başka bir yerel port seçin.",
   },
   editor: {
     duckdbDraining: "Önceki DuckDB sorgusu hâlâ durduruluyor. Lütfen birazdan tekrar deneyin.",
@@ -8985,8 +8994,20 @@ export default withEnglishFallback({
     runDirectoryPattern: "Çalıştırma dizini şablonu",
     runDirectoryPatternHint: "Hedef dizin altındaki göreli yol. {'{'}schedule{'}'}, {'{'}date{'}'}, {'{'}timestamp{'}'} ve {'{'}runId{'}'} kullanın. Varsayılan şablon daha iyi yalıtım için {'{'}runId{'}'} içerir. Örnek: {'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: ". veya .. bölümleri içermeyen göreli bir yol kullanın.",
-    compression: "Sıkıştırma",
+    backupFormat: "Yedek biçimi",
     compressionGzip: "Gzip (.sql.gz)",
+    formatSql: "SQL (.sql)",
+    formatNb3: "Navicat yedeği (.nb3)",
+    formatNb3Hint: "MySQL ve PostgreSQL için Navicat yedek biçimi. DBX bunu herhangi bir SQL yedeği gibi geri yükler.",
+    restoreFromFile: "Dosyadan geri yükle",
+    restoreFromFileHint: "Herhangi bir konumdaki .sql, .sql.gz veya .nb3 yedek dosyasını geri yükleyin",
+    importBackup: "Yedeği içe aktar",
+    importBackupHint: "DBX dışında oluşturulan yedek dosyalarını (ör. Navicat .nb3 arşivleri) yedek geçmişine ekleyin",
+    importedTrigger: "İçe aktarıldı",
+    externalFile: "Harici dosya",
+    backupsImported: "Geçmişe {count} yedek eklendi",
+    deleteImportedConfirm: "İçe aktarılan {count} yedek geçmişten kaldırılsın mı? Dosyalar diskte kalır.",
+    importedFilesKept: "İçe aktarılan yedekler yalnızca geçmişten kaldırılır; dosyalar diskte kalır.",
     searchConnections: "Bağlantılarda ara…",
     noMatchingConnections: "Eşleşen bağlantı yok",
     connectionsSelected: "{count} bağlantı seçildi",

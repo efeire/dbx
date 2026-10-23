@@ -57,6 +57,9 @@ func TestHandshakeResponse(t *testing.T) {
 	if !contains(result.Capabilities, "query") || !contains(result.Capabilities, "metadata") {
 		t.Fatalf("expected query and metadata capabilities, got %v", result.Capabilities)
 	}
+	if !contains(result.Capabilities, "exact_metadata_identity_v1") {
+		t.Fatal("updated Oracle metadata must explicitly advertise exact identity")
+	}
 }
 
 func TestRuntimeHandshakeAdvertisesMultiSessionProtocol(t *testing.T) {
@@ -876,14 +879,14 @@ func TestListIndexesSeparatesQuotedCloneTableNamesByCase(t *testing.T) {
 		{
 			queryContains: "FROM ALL_INDEXES",
 			args:          []driver.Value{schema, "ORDERS_COPY"},
-			columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION"},
-			rows:          [][]driver.Value{{"ORDERS_COPY_IDX1", "STATUS", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1)}},
+			columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
+			rows:          [][]driver.Value{{"ORDERS_COPY_IDX1", "STATUS", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1), "HR"}},
 		},
 		{
 			queryContains: "FROM ALL_INDEXES",
 			args:          []driver.Value{schema, "ORDERS_copy"},
-			columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION"},
-			rows:          [][]driver.Value{{"ORDERS_copy_IDX1", "STATUS", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1)}},
+			columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
+			rows:          [][]driver.Value{{"ORDERS_copy_IDX1", "STATUS", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1), "HR"}},
 		},
 	})
 	s := newServer()
@@ -914,10 +917,10 @@ func TestListIndexesExposesExpressionDirectionAndVisibilityMetadata(t *testing.T
 	db, _ := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{
 		queryContains: "FROM ALL_INDEXES",
 		args:          []driver.Value{schema, table},
-		columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION"},
+		columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
 		rows: [][]driver.Value{
-			{"IX_EVENT_EXPR", "SYS_NC00001$", "NONUNIQUE", int64(0), "FUNCTION-BASED NORMAL", "NO", "INVISIBLE", "DESC", `LOWER("EVENT_NAME")`, int64(1)},
-			{"IX_EVENT_EXPR", "EVENT_TS", "NONUNIQUE", int64(0), "FUNCTION-BASED NORMAL", "NO", "INVISIBLE", "ASC", nil, int64(2)},
+			{"IX_EVENT_EXPR", "SYS_NC00001$", "NONUNIQUE", int64(0), "FUNCTION-BASED NORMAL", "NO", "INVISIBLE", "DESC", `LOWER("EVENT_NAME")`, int64(1), " Index Owner "},
+			{"IX_EVENT_EXPR", "EVENT_TS", "NONUNIQUE", int64(0), "FUNCTION-BASED NORMAL", "NO", "INVISIBLE", "ASC", nil, int64(2), " Index Owner "},
 		},
 	}})
 	s := newServer()
@@ -943,6 +946,7 @@ func TestListIndexesExposesExpressionDirectionAndVisibilityMetadata(t *testing.T
 		t.Fatal(err)
 	}
 	for key, want := range map[string]any{
+		"owner":                 " Index Owner ",
 		"columns":               []any{`LOWER("EVENT_NAME")`, "EVENT_TS"},
 		"key_is_expression":     []any{true, false},
 		"key_directions":        []any{"DESC", "ASC"},
@@ -968,8 +972,8 @@ func TestListIndexesMarksUnsupportedShapesIncompleteThroughRPC(t *testing.T) {
 			db, _ := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{
 				queryContains: "FROM ALL_INDEXES",
 				args:          []driver.Value{"APP", "EVENTS"},
-				columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION"},
-				rows:          [][]driver.Value{{"IX_EVENT", "EVENT_TS", "NONUNIQUE", int64(0), test.indexType, test.partitioned, "VISIBLE", "ASC", nil, int64(1)}},
+				columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
+				rows:          [][]driver.Value{{"IX_EVENT", "EVENT_TS", "NONUNIQUE", int64(0), test.indexType, test.partitioned, "VISIBLE", "ASC", nil, int64(1), "APP"}},
 			}})
 			s := newServer()
 			s.db = db
@@ -983,6 +987,28 @@ func TestListIndexesMarksUnsupportedShapesIncompleteThroughRPC(t *testing.T) {
 				t.Fatalf("list_indexes returned unsupported shape as complete: %#v", resp.Result)
 			}
 		})
+	}
+}
+
+func TestExactIndexesKeepSameNameDifferentOwnersSeparate(t *testing.T) {
+	db, _ := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{
+		queryContains: "FROM ALL_INDEXES",
+		args:          []driver.Value{" Parent ", " T(a) "},
+		columns:       []string{"INDEX_NAME", "COLUMN_NAME", "UNIQUENESS", "IS_PRIMARY", "INDEX_TYPE", "PARTITIONED", "VISIBILITY", "DESCEND", "COLUMN_EXPRESSION", "COLUMN_POSITION", "OWNER"},
+		rows: [][]driver.Value{
+			{" Ix(a) ", "ID", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1), " Owner "},
+			{" Ix(a) ", "CODE", "NONUNIQUE", int64(0), "NORMAL", "NO", "VISIBLE", "ASC", nil, int64(1), "Other"},
+		},
+	}})
+	s := newServer()
+	s.db = db
+	response, _ := s.handleLine(`{"jsonrpc":"2.0","id":1,"method":"list_indexes","params":{"schema":" Parent ","table":" T(a) ","exact_identity":true}}`)
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	indexes := response.Result.([]indexInfo)
+	if len(indexes) != 2 || indexes[0].Owner == nil || *indexes[0].Owner != " Owner " || indexes[1].Owner == nil || *indexes[1].Owner != "Other" || len(indexes[0].Columns) != 1 || len(indexes[1].Columns) != 1 {
+		t.Fatalf("owner identity was lost or merged: %#v", indexes)
 	}
 }
 
@@ -2343,6 +2369,92 @@ func TestListObjectsSQLUsesSplitDictionaryQuery(t *testing.T) {
 	}
 }
 
+func TestSchemaIndexObjectsPreserveBothOwnersThroughRPC(t *testing.T) {
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{queryContains: "SYS_CONTEXT('USERENV', 'SESSION_USER')", args: []driver.Value{}, rows: [][]driver.Value{{"APP"}}},
+		{queryContains: "USER_INDEXES", args: []driver.Value{"INDEX", int64(2), int64(0)}, columns: []string{"OBJECT_NAME", "OBJECT_TYPE", "COMMENTS", "PARENT_SCHEMA", "PARENT_NAME"}, rows: [][]driver.Value{{" Ix (a) ", "INDEX", nil, "Table Owner", " T(a) "}}},
+	})
+	s := newServer()
+	s.db = db
+	resp, _ := s.handleLine(`{"id":1,"method":"list_objects","params":{"schema":"APP","object_types":["INDEX"],"limit":2}}`)
+	if resp.Error != nil {
+		t.Fatalf("list_objects failed: %v", resp.Error)
+	}
+	data, err := json.Marshal(resp.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var objects []map[string]any
+	if err := json.Unmarshal(data, &objects); err != nil {
+		t.Fatal(err)
+	}
+	if len(objects) != 1 || objects[0]["schema"] != "APP" || objects[0]["name"] != " Ix (a) " || objects[0]["object_type"] != "INDEX" || objects[0]["parent_schema"] != "Table Owner" || objects[0]["parent_name"] != " T(a) " {
+		t.Fatalf("index identities were not preserved: %s", data)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("queries consumed = %d, want %d", scripted.next, len(scripted.steps))
+	}
+}
+
+func TestSchemaIndexObjectsDoNotReportPGAFailureAsEmpty(t *testing.T) {
+	db, _ := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{queryContains: "SYS_CONTEXT('USERENV', 'SESSION_USER')", args: []driver.Value{}, rows: [][]driver.Value{{"APP"}}},
+		{queryContains: "FROM USER_TABLES", args: []driver.Value{"INDEX"}, err: errors.New("ORA-04036: PGA memory used by the instance exceeds PGA_AGGREGATE_LIMIT")},
+	})
+	s := newServer()
+	s.db = db
+	resp, _ := s.handleLine(`{"id":1,"method":"list_objects","params":{"schema":"APP","object_types":["INDEX"]}}`)
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "ORA-04036") {
+		t.Fatalf("dictionary failure must remain an error, got %+v", resp)
+	}
+}
+
+func TestExactSchemaIndexAllDictionaryPagePreservesMissingParent(t *testing.T) {
+	owner := " Index Owner "
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{queryContains: "SYS_CONTEXT('USERENV', 'SESSION_USER')", args: []driver.Value{}, rows: [][]driver.Value{{"Other Owner"}}},
+		{queryContains: "ALL_INDEXES", args: []driver.Value{owner, owner, owner, "INDEX", int64(3), int64(1)}, columns: []string{"OBJECT_NAME", "OBJECT_TYPE", "COMMENTS", "PARENT_SCHEMA", "PARENT_NAME"}, rows: [][]driver.Value{{" Ix (a) ", "INDEX", nil, nil, nil}}},
+	})
+	s := newServer()
+	s.db = db
+	resp, _ := s.handleLine(`{"id":1,"method":"list_objects","params":{"schema":" Index Owner ","object_types":["INDEX"],"limit":2,"offset":1,"exact_identity":true}}`)
+	if resp.Error != nil {
+		t.Fatalf("exact ALL dictionary page failed: %v", resp.Error)
+	}
+	objects := resp.Result.([]objectInfo)
+	if len(objects) != 1 || objects[0].Schema != owner || objects[0].Name != " Ix (a) " || objects[0].ParentName != nil || objects[0].ParentSchema != nil || scripted.next != 2 {
+		t.Fatalf("page must preserve raw/unknown identities without applying offset twice: %+v", objects)
+	}
+}
+
+func TestExactMetadataRPCNeverNormalizesOrRetriesANearbyName(t *testing.T) {
+	for _, method := range []string{"get_columns", "list_indexes", "get_table_comment", "list_foreign_keys", "list_constraints", "list_triggers"} {
+		t.Run(method, func(t *testing.T) {
+			query := map[string]string{"get_columns": "FROM ALL_TAB_COLUMNS", "list_indexes": "FROM ALL_INDEXES", "get_table_comment": "FROM ALL_TAB_COMMENTS", "list_foreign_keys": "FROM ALL_CONSTRAINTS", "list_constraints": "FROM ALL_CONSTRAINTS", "list_triggers": "FROM ALL_TRIGGERS"}[method]
+			db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{queryContains: query, args: []driver.Value{" Mixed Owner ", " T(a) "}}})
+			s := newServer()
+			s.db = db
+			resp, _ := s.handleLine(fmt.Sprintf(`{"id":1,"method":%q,"params":{"schema":" Mixed Owner ","table":" T(a) ","exact_identity":true}}`, method))
+			if resp.Error != nil {
+				t.Fatalf("exact read failed: %v", resp.Error)
+			}
+			if scripted.next != 1 {
+				t.Fatalf("exact missing target must not retry a nearby name; queries=%d", scripted.next)
+			}
+		})
+	}
+}
+
+func TestExactTableDDLDoesNotBuildAnotherTargetAfterMetadataFailure(t *testing.T) {
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{queryContains: "DBMS_METADATA.GET_DDL", args: []driver.Value{"TABLE", " T(a) ", " Mixed Owner "}, err: errors.New("ORA-01031: insufficient privileges")}})
+	s := newServer()
+	s.db = db
+	resp, _ := s.handleLine(`{"id":1,"method":"get_table_ddl","params":{"schema":" Mixed Owner ","table":" T(a) ","object_type":"TABLE","exact_identity":true}}`)
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "ORA-01031") || scripted.next != 1 {
+		t.Fatalf("must preserve exact identity failure without fallback, got %+v after %d queries", resp, scripted.next)
+	}
+}
+
 func TestListSessionUserObjectsSQLIncludesSequences(t *testing.T) {
 	sqlText := strings.ToUpper(oracleListObjectsSessionUserBaseSQL)
 	if !strings.Contains(sqlText, "FROM USER_OBJECTS") || !strings.Contains(sqlText, "'SEQUENCE'") {
@@ -3579,6 +3691,7 @@ type oracleViewSourceQueryStep struct {
 	columns          []string
 	rows             [][]driver.Value
 	err              error
+	nextErr          error
 	exec             bool
 	panicText        string
 	nextPanicText    string
@@ -3635,7 +3748,7 @@ func (c *oracleViewSourceConn) QueryContext(
 		values[index] = arg.Value
 	}
 	if !reflect.DeepEqual(values, step.args) {
-		return nil, errors.New("unexpected query arguments")
+		return nil, fmt.Errorf("unexpected query arguments: got %v, want %v (query %q)", values, step.args, query)
 	}
 	if step.err != nil {
 		return nil, step.err
@@ -3647,6 +3760,7 @@ func (c *oracleViewSourceConn) QueryContext(
 	return &oracleViewSourceRows{
 		columns:          columns,
 		values:           step.rows,
+		nextErr:          step.nextErr,
 		nextPanicText:    step.nextPanicText,
 		columnsPanicText: step.columnsPanicText,
 		columnsPanicCall: step.columnsPanicCall,
@@ -3683,6 +3797,7 @@ type oracleViewSourceRows struct {
 	columns          []string
 	values           [][]driver.Value
 	next             int
+	nextErr          error
 	nextPanicText    string
 	columnsPanicText string
 	columnsPanicCall int
@@ -3704,6 +3819,9 @@ func (r *oracleViewSourceRows) Close() error {
 func (r *oracleViewSourceRows) Next(dest []driver.Value) error {
 	if r.nextPanicText != "" {
 		panic(r.nextPanicText)
+	}
+	if r.nextErr != nil {
+		return r.nextErr
 	}
 	if r.next >= len(r.values) {
 		return io.EOF
@@ -4083,6 +4201,110 @@ func TestExecuteQueryPageSurfacesPanicWhenPlaceholderNotApplicable(t *testing.T)
 	}
 	if len(result.Rows) != 0 {
 		t.Fatalf("failed query must not return rows, got %v", result.Rows)
+	}
+}
+
+func TestExecuteQueryPageRetriesWithWKTRewriteOnTTCError(t *testing.T) {
+	// go-ora raises "TTC error: received code ... during response reading" when a
+	// response contains a value it cannot decode, e.g. SDO_GEOMETRY. The paged
+	// path must retry with the value rewrite (geometry as WKT) instead of
+	// surfacing the raw error and leaving the table unreadable (issue #13179).
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{
+			queryContains: "SELECT * FROM SDE.TEST_GEOM",
+			args:          []driver.Value{},
+			columns:       []string{"ID", "GEOM"},
+			rows:          [][]driver.Value{{int64(1), "raw geometry bytes"}},
+			nextErr:       errors.New("TTC error: received code 3 during response reading"),
+		},
+		{
+			queryContains: "ALL_TAB_COLUMNS",
+			args:          []driver.Value{"SDE", "TEST_GEOM"},
+			columns:       []string{"COLUMN_NAME", "DATA_TYPE", "DATA_TYPE_OWNER"},
+			rows: [][]driver.Value{
+				{"ID", "NUMBER", nil},
+				{"GEOM", "SDO_GEOMETRY", "PUBLIC"},
+			},
+		},
+		{
+			queryContains: `SDO_UTIL.TO_WKTGEOMETRY("GEOM") AS "GEOM"`,
+			args:          []driver.Value{},
+			columns:       []string{"ID", "GEOM"},
+			rows:          [][]driver.Value{{int64(1), "POINT (1 2)"}},
+		},
+	})
+	s := newServer()
+	s.db = db
+	result, err := s.executeQueryPage(queryOptions{SQL: "SELECT * FROM SDE.TEST_GEOM"}, 10)
+	if err != nil {
+		t.Fatalf("expected the WKT retry to serve the first page, got %v", err)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("expected one rewritten row, got %v", result.Rows)
+	}
+	want := []any{int64(1), "POINT (1 2)"}
+	if !reflect.DeepEqual(result.Rows[0], want) {
+		t.Fatalf("unexpected row: %v, want %v", result.Rows[0], want)
+	}
+	if result.SessionID != nil || result.HasMore {
+		t.Fatalf("fully drained page must not keep a session: %v %v", result.SessionID, result.HasMore)
+	}
+}
+
+func TestExecuteQueryPageKeepsTTCErrorWhenNoRewriteApplies(t *testing.T) {
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{
+			queryContains: "SELECT * FROM SDE.TEST_GEOM",
+			args:          []driver.Value{},
+			columns:       []string{"ID"},
+			rows:          [][]driver.Value{{int64(1)}},
+			nextErr:       errors.New("TTC error: received code 3 during response reading"),
+		},
+		{
+			queryContains: "ALL_TAB_COLUMNS",
+			args:          []driver.Value{"SDE", "TEST_GEOM"},
+			columns:       []string{"COLUMN_NAME", "DATA_TYPE", "DATA_TYPE_OWNER"},
+			rows:          [][]driver.Value{{"ID", "NUMBER", nil}},
+		},
+	})
+	s := newServer()
+	s.db = db
+	_, err := s.executeQueryPage(queryOptions{SQL: "SELECT * FROM SDE.TEST_GEOM"}, 10)
+	if err == nil || !strings.Contains(err.Error(), "TTC error: received code 3") {
+		t.Fatalf("expected the original TTC error, got %v", err)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)
+	}
+}
+
+func TestOraclePagedRetrySQLChoosesRewriteByFailureKind(t *testing.T) {
+	loadColumns := func(string, string) ([]oracleColumnMeta, error) {
+		return []oracleColumnMeta{{Name: "GEOM", DataType: "SDO_GEOMETRY", DataTypeOwner: "PUBLIC"}}, nil
+	}
+	ttcErr := errors.New("TTC error: received code 3 during response reading")
+
+	rewritten, ok := oraclePagedRetrySQL("SELECT * FROM TEST_GEOM", loadColumns, ttcErr)
+	if !ok {
+		t.Fatal("expected a TTC-error retry")
+	}
+	if !strings.Contains(rewritten, `SDO_UTIL.TO_WKTGEOMETRY("GEOM") AS "GEOM"`) {
+		t.Fatalf("TTC retry must read geometry as WKT, got %s", rewritten)
+	}
+
+	placeholder, ok := oraclePagedRetrySQL("SELECT * FROM TEST_GEOM", loadColumns, oracleDriverPanicError{value: "decode panic"})
+	if !ok {
+		t.Fatal("expected a panic retry")
+	}
+	if !strings.Contains(placeholder, "'<SDO_GEOMETRY>'") {
+		t.Fatalf("panic retry must use the placeholder projection, got %s", placeholder)
+	}
+
+	if _, ok := oraclePagedRetrySQL("SELECT * FROM TEST_GEOM", loadColumns, errors.New("ORA-00942: table or view does not exist")); ok {
+		t.Fatal("unrelated errors must not be retried")
 	}
 }
 

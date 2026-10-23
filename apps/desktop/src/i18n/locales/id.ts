@@ -1,3 +1,4 @@
+import { tableColumnPasteId as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuId as sidebarMenu } from "./sidebarMenuMessages";
 import { withEnglishFallback } from "./fallback";
 import docs from "./docs/id";
@@ -7,6 +8,7 @@ import { sqlServerTraceMessages as sqlServerTrace } from "./sqlServerTraceMessag
 import { meilisearchManagementId } from "./meilisearchManagement";
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "Dependensi",
     dependents: "Objek yang bergantung",
@@ -1527,6 +1529,9 @@ export default withEnglishFallback({
     sshKeyPassphrasePlaceholder: "Biarkan kosong jika key tidak terenkripsi",
     sshKeyPathBrowse: "Jelajahi",
     sshExposeLan: "Ekspos tunnel ke LAN",
+    sshLocalPort: "Port Lokal",
+    sshLocalPortPlaceholder: "Otomatis",
+    sshLocalPortHint: "Biarkan kosong untuk memakai port acak yang masih bebas. Port yang ditentukan akan mempertahankan tunnel pada port lokal tersebut selama koneksi terbuka, sehingga alat lain dapat memakainya. Hanya untuk lapisan terakhir.",
     sshAllowExecChannelProxy: "Aktifkan fallback exec-channel SSH (nc)",
     sshProxyCommand: "ProxyCommand",
     sshProxyCommandPlaceholder: "nc %h %p",
@@ -1597,6 +1602,9 @@ export default withEnglishFallback({
     sshWorkerUploadConsentAccept: "Unggah",
     sshWorkerUploadConsentReject: "Batal",
     sshHopInvalidTimeout: "{hop}: Timeout SSH harus antara 1 dan 300 detik",
+    sshHopInvalidLocalPort: "{hop}: Port lokal harus antara 1 dan 65535",
+    sshHopLocalPortNotLast: "{hop}: Port lokal hanya berlaku untuk lapisan terakhir yang diaktifkan",
+    sshHopLocalPortUnsupported: "{hop}: Port lokal tidak didukung untuk jenis koneksi ini",
     connectTimeout: "Timeout Koneksi (detik)",
     queryTimeout: "Timeout Kueri (detik)",
     useGlobalQueryTimeout: "Global",
@@ -1697,6 +1705,7 @@ export default withEnglishFallback({
     cancelConnecting: "Batalkan koneksi",
     connectCancelled: "Koneksi dibatalkan",
     sshTotpCancelled: "Entri kode sekali pakai dibatalkan",
+    sshLocalPortBindFailed: "Port lokal {port} sedang digunakan atau tidak tersedia ({error}). Tutup program yang memakainya atau pilih port lokal lain.",
   },
   editor: {
     duckdbDraining: "Kueri DuckDB sebelumnya masih dalam proses penghentian. Silakan coba lagi sebentar lagi.",
@@ -9938,8 +9947,20 @@ export default withEnglishFallback({
     runDirectoryPattern: "Template direktori proses",
     runDirectoryPatternHint: "Path relatif di bawah direktori tujuan. Gunakan {'{'}schedule{'}'}, {'{'}date{'}'}, {'{'}timestamp{'}'}, dan {'{'}runId{'}'}. Default menyertakan {'{'}runId{'}'} untuk isolasi tambahan. Contoh: {'{'}schedule{'}'}/{'{'}date{'}'}/{'{'}timestamp{'}'}-{'{'}runId{'}'}",
     runDirectoryPatternInvalid: "Gunakan path relatif tanpa segmen . atau ..",
-    compression: "Kompresi",
+    backupFormat: "Format cadangan",
     compressionGzip: "Gzip (.sql.gz)",
+    formatSql: "SQL (.sql)",
+    formatNb3: "Cadangan Navicat (.nb3)",
+    formatNb3Hint: "Format cadangan Navicat untuk MySQL dan PostgreSQL. DBX memulihkannya seperti cadangan SQL lainnya.",
+    restoreFromFile: "Pulihkan dari file",
+    restoreFromFileHint: "Pulihkan file cadangan .sql, .sql.gz, atau .nb3 dari lokasi mana pun",
+    importBackup: "Impor cadangan",
+    importBackupHint: "Tambahkan file cadangan yang dibuat di luar DBX, seperti arsip Navicat .nb3, ke riwayat cadangan",
+    importedTrigger: "Diimpor",
+    externalFile: "File eksternal",
+    backupsImported: "{count} cadangan ditambahkan ke riwayat",
+    deleteImportedConfirm: "Hapus {count} cadangan yang diimpor dari riwayat? File tetap ada di disk.",
+    importedFilesKept: "Cadangan yang diimpor hanya dihapus dari riwayat; file tetap ada di disk.",
     searchConnections: "Cari koneksi…",
     noMatchingConnections: "Tidak ada koneksi yang cocok",
     connectionsSelected: "{count} koneksi dipilih",
