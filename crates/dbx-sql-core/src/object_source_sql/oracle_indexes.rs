@@ -575,6 +575,130 @@ pub struct OracleDdlNameMapping {
     pub target_name: String,
 }
 
+fn oracle_default_sequence_owner_edits(
+    source: &str,
+    ts: &[&sqlparser::tokenizer::TokenWithSpan],
+    table: &OracleDdlNameMapping,
+) -> Result<std::collections::BTreeMap<usize, (usize, String)>, String> {
+    let mut edits = std::collections::BTreeMap::new();
+    if table.source_owner == table.target_owner {
+        return Ok(edits);
+    }
+    let keyword =
+        |position: usize, value: &str| ts.get(position).is_some_and(|token| unquoted_keyword_is(&token.token, value));
+    for create in 0..ts.len() {
+        if !keyword(create, "CREATE") {
+            continue;
+        }
+        let Some(declaration) = (create + 1..(create + 5).min(ts.len())).find(|position| keyword(*position, "TABLE"))
+        else {
+            continue;
+        };
+        let (owner, name, open) = qualified_name(ts, declaration + 1, &table.source_owner)?;
+        if owner != table.source_owner || name != table.source_name {
+            return Err("DDL declaration does not match the selected table".into());
+        }
+        if ts.get(open).is_none_or(|token| token.token != Token::LParen) {
+            continue;
+        }
+        let mut depth = 0;
+        let mut start = open + 1;
+        for end in open + 1..ts.len() {
+            match ts[end].token {
+                Token::LParen => {
+                    depth += 1;
+                    continue;
+                }
+                Token::RParen if depth > 0 => {
+                    depth -= 1;
+                    continue;
+                }
+                Token::Comma if depth == 0 => {}
+                Token::RParen => {}
+                _ => continue,
+            }
+            if depth != 0 || !matches!(ts[end].token, Token::Comma | Token::RParen) {
+                continue;
+            }
+            if start < end
+                && !["CONSTRAINT", "PRIMARY", "UNIQUE", "FOREIGN", "CHECK", "SUPPLEMENTAL"]
+                    .iter()
+                    .any(|word| keyword(start, word))
+            {
+                let column = identifier(&ts[start].token)?;
+                let mut nested = 0;
+                let mut cases = 0;
+                let mut expression = None;
+                for position in start + 1..end {
+                    if nested == 0 && cases == 0 {
+                        if expression.is_none() && keyword(position, "GENERATED") {
+                            break;
+                        }
+                        if expression.is_none() && keyword(position, "DEFAULT") {
+                            expression = Some(position + 1);
+                            continue;
+                        }
+                        if expression.is_some()
+                            && ["CONSTRAINT", "NOT", "PRIMARY", "UNIQUE", "REFERENCES", "CHECK", "ENABLE", "DISABLE"]
+                                .iter()
+                                .any(|word| keyword(position, word))
+                        {
+                            break;
+                        }
+                    }
+                    match ts[position].token {
+                        Token::LParen => nested += 1,
+                        Token::RParen => nested -= 1,
+                        _ => {}
+                    }
+                    if keyword(position, "CASE") {
+                        cases += 1;
+                    } else if keyword(position, "END") && cases > 0 {
+                        cases -= 1;
+                    }
+                    if expression.is_none()
+                        || (position > 0 && ts[position - 1].token == Token::Period)
+                        || identifier(&ts[position].token).ok().as_deref() != Some(&table.source_owner)
+                        || ts.get(position + 1).is_none_or(|token| token.token != Token::Period)
+                    {
+                        continue;
+                    }
+                    if position + 2 < end
+                        && identifier(&ts[position + 2].token).is_ok_and(|name| name == "NEXTVAL" || name == "CURRVAL")
+                        && ts.get(position + 3).is_none_or(|token| {
+                            !matches!(token.token, Token::Period | Token::LParen) && token.token.to_string() != "@"
+                        })
+                    {
+                        continue;
+                    }
+                    let valid = position + 4 < end
+                        && identifier(&ts[position + 2].token).is_ok()
+                        && ts[position + 3].token == Token::Period
+                        && identifier(&ts[position + 4].token).is_ok_and(|name| name == "NEXTVAL" || name == "CURRVAL")
+                        && ts.get(position + 5).is_none_or(|token| {
+                            !matches!(token.token, Token::Period | Token::LParen) && token.token.to_string() != "@"
+                        });
+                    if !valid {
+                        return Err(format!(
+                            "{}.{}.{column}: DEFAULT dependency cannot be safely mapped",
+                            table.source_owner, table.source_name
+                        ));
+                    }
+                    edits.insert(
+                        at(source, ts[position].span.start)?,
+                        (at(source, ts[position].span.end)?, quote_postgres_identifier(&table.target_owner)),
+                    );
+                }
+            }
+            if ts[end].token == Token::RParen {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+    Ok(edits)
+}
+
 pub fn rebase_oracle_table_ddl(
     source: &str,
     table: &OracleDdlNameMapping,
@@ -593,7 +717,7 @@ pub fn rebase_oracle_table_ddl(
     }
     let all = tokens(source)?;
     let ts = significant(&all);
-    let mut edits = std::collections::BTreeMap::new();
+    let mut edits = oracle_default_sequence_owner_edits(source, &ts, table)?;
     let mut rewrite = |position: usize, mapping: &OracleDdlNameMapping, qualified: bool| -> Result<(), String> {
         let name_position = if qualified { position + 2 } else { position };
         let name_token = ts.get(name_position).ok_or("Oracle DDL name is incomplete")?;
@@ -1730,6 +1854,76 @@ mod tests {
         ));
         assert!(result.contains("COMMENT ON TABLE \"Dst\".\"Renamed\" IS q'[a' \"Src\".\"T\"]'"));
         assert!(result.contains("COMMENT ON COLUMN \"Dst\".\"Renamed\".VALUE IS 'unchanged'"));
+    }
+
+    #[test]
+    fn rebases_only_source_owned_sequence_references_in_column_defaults() {
+        let source = "CREATE TABLE SRC.T (ID NUMBER DEFAULT SRC.T.NEXTVAL NOT NULL, V NUMBER DEFAULT ON NULL (src.SEQ.CURRVAL + 1), X NUMBER DEFAULT CASE WHEN 1=1 THEN SRC.SEQ.NEXTVAL ELSE 0 END CONSTRAINT C CHECK(X>0), Y NUMBER GENERATED BY DEFAULT AS IDENTITY, Z VARCHAR2(100) DEFAULT nq'[SRC.SEQ.NEXTVAL ' DEFAULT]', A NUMBER DEFAULT OTHER.SEQ.NEXTVAL, B NUMBER DEFAULT SEQ.NEXTVAL); CREATE INDEX SRC.IX ON SRC.T(SRC.SEQ.NEXTVAL);";
+        let result = rebase_oracle_table_ddl(
+            source,
+            &mapping("SRC", "T", "DST", "RENAMED"),
+            &[],
+            &[mapping("SRC", "IX", "DST", "IX")],
+        )
+        .unwrap();
+        assert!(result.contains("DEFAULT \"DST\".T.NEXTVAL NOT NULL"));
+        assert!(result.contains("DEFAULT ON NULL (\"DST\".SEQ.CURRVAL + 1)"));
+        assert!(result.contains("THEN \"DST\".SEQ.NEXTVAL ELSE 0 END CONSTRAINT C CHECK(X>0)"));
+        assert!(result.contains("GENERATED BY DEFAULT AS IDENTITY"));
+        assert!(result.contains("nq'[SRC.SEQ.NEXTVAL ' DEFAULT]'"));
+        assert!(result.contains("DEFAULT OTHER.SEQ.NEXTVAL"));
+        assert!(result.contains("DEFAULT SEQ.NEXTVAL"));
+        assert!(result.contains("ON \"DST\".\"RENAMED\"(SRC.SEQ.NEXTVAL)"));
+    }
+
+    #[test]
+    fn default_sequence_mapping_preserves_exact_identifiers_and_comments() {
+        let source = "CREATE TABLE \"S\"\"rc\".T (ID NUMBER DEFAULT (\"S\"\"rc\" /*owner*/ . \"Seq\" . NEXTVAL), V NUMBER DEFAULT \"s\"\"rc\".SEQ.NEXTVAL, X NUMBER DEFAULT 'S\"rc.SEQ.NEXTVAL', Y NUMBER DEFAULT q'[S\"rc.SEQ.NEXTVAL]')";
+        let result = rebase_oracle_table_ddl(source, &mapping("S\"rc", "T", "D\"st", "T"), &[], &[]).unwrap();
+        assert!(result.contains("(\"D\"\"st\" /*owner*/ . \"Seq\" . NEXTVAL)"));
+        assert!(result.contains("DEFAULT \"s\"\"rc\".SEQ.NEXTVAL"));
+        assert!(result.contains("DEFAULT 'S\"rc.SEQ.NEXTVAL'"));
+        assert!(result.contains("q'[S\"rc.SEQ.NEXTVAL]'"));
+    }
+
+    #[test]
+    fn rejects_ambiguous_source_default_dependencies_without_rejecting_third_party_ones() {
+        for expression in [
+            "SRC.SEQ.NEXTVAL@LINK",
+            "SRC.PKG.VALUE()",
+            "SRC.PKG.NEXTVAL()",
+            "SRC.PKG.CURRVAL()",
+            "SRC.EXTRA.SEQ.NEXTVAL",
+        ] {
+            let source = format!("CREATE TABLE SRC.T (ID NUMBER DEFAULT {expression})");
+            let error = rebase_oracle_table_ddl(&source, &mapping("SRC", "T", "DST", "T"), &[], &[]).unwrap_err();
+            assert!(error.contains("SRC.T.ID: DEFAULT dependency"), "{error}");
+        }
+        let source =
+            "CREATE TABLE SRC.T (ID NUMBER DEFAULT OTHER.SEQ.NEXTVAL@LINK, V NUMBER DEFAULT OTHER.SRC.SEQ.NEXTVAL)";
+        let result = rebase_oracle_table_ddl(source, &mapping("SRC", "T", "DST", "T"), &[], &[]).unwrap();
+        assert!(result.contains("DEFAULT OTHER.SEQ.NEXTVAL@LINK"));
+        assert!(result.contains("DEFAULT OTHER.SRC.SEQ.NEXTVAL"));
+        let same = rebase_oracle_table_ddl(
+            "CREATE TABLE SRC.T (ID NUMBER DEFAULT SRC.SEQ.NEXTVAL)",
+            &mapping("SRC", "T", "SRC", "T2"),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(same.contains("DEFAULT SRC.SEQ.NEXTVAL"));
+    }
+
+    #[test]
+    fn unqualified_sequences_named_like_the_source_owner_remain_unqualified() {
+        let source = "CREATE TABLE SRC.T (ID NUMBER DEFAULT src.NEXTVAL, V NUMBER DEFAULT \"SRC\".CURRVAL)";
+        let result = rebase_oracle_table_ddl(source, &mapping("SRC", "T", "DST", "T"), &[], &[]).unwrap();
+        assert!(result.contains("DEFAULT src.NEXTVAL"));
+        assert!(result.contains("DEFAULT \"SRC\".CURRVAL"));
+        for expression in ["SRC.NEXTVAL()", "SRC.CURRVAL@LINK", "SRC.NEXTVAL.EXTRA"] {
+            let source = format!("CREATE TABLE SRC.T(ID NUMBER DEFAULT {expression})");
+            assert!(rebase_oracle_table_ddl(&source, &mapping("SRC", "T", "DST", "T"), &[], &[]).is_err());
+        }
     }
 
     #[test]

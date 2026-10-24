@@ -405,9 +405,8 @@ pub async fn prepare_schema_sync_oracle_ddl_core(
             let mut captured =
                 capture_comparison_table(state, options.source.as_ref(), diff, false, separate_supporting_indexes)
                     .await;
-            match target_type {
-                Err(reason) => generation_issue(&mut captured, "table", &diff.name, reason),
-                Ok(_) => {}
+            if let Err(reason) = target_type {
+                generation_issue(&mut captured, "table", &diff.name, reason);
             }
             if let Some(target) = options.target.as_ref() {
                 let trigger_sources = captured

@@ -370,6 +370,42 @@ mod tests {
     }
 
     #[test]
+    fn independent_plan_maps_default_sequences_and_blocks_unknown_source_dependencies() {
+        for rollback in [false, true] {
+            for expression in ["SEQ.NEXTVAL", "PKG.VALUE()"] {
+                let owner = if rollback { "DEST" } else { "APP" };
+                let ddl = format!("CREATE TABLE {owner}.T(ID NUMBER DEFAULT {owner}.{expression});");
+                let mut original = captured("T", &ddl);
+                original.owner = owner.into();
+                let diffs: Vec<TableDiff> = serde_json::from_value(json!([{"type":if rollback {"removed"} else {"added"},"name":"T","columns":[{"type":if rollback {"removed"} else {"added"},"name":"ID"}]}])).unwrap();
+                let sources = if rollback {
+                    OracleSchemaSyncDdlSources { rollback: vec![original], ..Default::default() }
+                } else {
+                    OracleSchemaSyncDdlSources { forward: vec![original], ..Default::default() }
+                };
+                let result = plan(&diffs, Some(&sources), rollback);
+                let (sql, completeness) = if rollback {
+                    (result.rollback_sync_sql.as_deref().unwrap(), &result.rollback_completeness)
+                } else {
+                    (result.sync_sql.as_str(), &result.forward_completeness)
+                };
+                if !rollback && expression == "PKG.VALUE()" {
+                    assert_eq!(*completeness, RollbackCompleteness::Incomplete);
+                    assert!(result
+                        .generation_issues
+                        .iter()
+                        .any(|issue| issue.direction == "forward" && issue.reason.contains("DEFAULT dependency")));
+                    assert!(!sql.is_empty());
+                } else {
+                    assert_eq!(*completeness, RollbackCompleteness::Complete, "{:?}", result.generation_issues);
+                    let expected = if rollback { format!("DEST.{expression}") } else { "\"DEST\".SEQ.NEXTVAL".into() };
+                    assert!(sql.contains(&expected), "{sql}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn retained_inline_supporting_indexes_survive_forward_mapping_and_removed_rollback() {
         for rollback in [false, true] {
             let owner = if rollback { "DEST" } else { "APP" };
