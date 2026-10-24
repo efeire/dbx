@@ -646,8 +646,8 @@ pub fn rebase_oracle_table_ddl(
         if position == statement_start && keyword(position, "GRANT") {
             let mut grant_depth = 0;
             let mut object = None;
-            for next in position + 1..ts.len() {
-                match ts[next].token {
+            for (next, next_token) in ts.iter().enumerate().skip(position + 1) {
+                match next_token.token {
                     Token::SemiColon => break,
                     Token::LParen => grant_depth += 1,
                     Token::RParen => grant_depth -= 1,
@@ -1920,7 +1920,7 @@ mod tests {
         let index = index();
         let source =
             format!("CREATE TABLE \"APP\".\"T\" (ID NUMBER, CONSTRAINT PK_T PRIMARY KEY(ID));\n{};", index.ddl);
-        let result = separate_oracle_supporting_indexes(&source, "APP", "T", &[index.clone()]).unwrap();
+        let result = separate_oracle_supporting_indexes(&source, "APP", "T", std::slice::from_ref(&index)).unwrap();
         assert_eq!(result.matches("CREATE INDEX").count(), 1);
         assert!(result.find("CREATE INDEX").unwrap() < result.find("ALTER TABLE").unwrap());
         let mut conflicting = index;
