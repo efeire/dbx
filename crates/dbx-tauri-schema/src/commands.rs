@@ -733,6 +733,7 @@ pub async fn list_subpartitions(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn get_table_ddl(
     state: State<'_, Arc<AppState>>,
     connection_id: String,
