@@ -11244,7 +11244,30 @@ for line in sys.stdin:
         std::fs::write(
             &executable,
             format!(
-                "#!/bin/sh\nwhile IFS= read -r line; do\n  id=$(printf '%s' \"$line\" | sed -E 's/.*\"id\":([0-9]+).*/\\1/')\n  case \"$line\" in\n    *'\"method\":\"executeInManualTransaction\"'*)\n      echo executeInManualTransaction >> '{}'\n      printf '{{\"id\":%s,\"result\":{{\"columns\":[\"value\"],\"column_types\":[],\"column_sortables\":[],\"rows\":[[42]],\"affected_rows\":0,\"execution_time_ms\":1,\"truncated\":false,\"session_id\":null,\"has_more\":false}}}}\\n' \"$id\"\n      ;;\n    *'\"method\":\"beginManualTransaction\"'*)\n      echo beginManualTransaction >> '{}'\n      printf '{{\"id\":%s,\"result\":{{\"ok\":true}}}}\\n' \"$id\"\n      ;;\n    *'\"method\":\"commitManualTransaction\"'*)\n      echo commitManualTransaction >> '{}'\n      printf '{{\"id\":%s,\"result\":{{\"ok\":true}}}}\\n' \"$id\"\n      ;;\n  esac\ndone\n",
+                r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -E 's/.*"id":([0-9]+).*/\1/')
+  case "$line" in
+    *'"method":"executeInManualTransaction"'*)
+      echo executeInManualTransaction >> '{}'
+      printf '{{"id":%s,"result":{{"columns":["value"],"column_types":[],"column_sortables":[],"rows":[[42]],"affected_rows":0,"execution_time_ms":1,"truncated":false,"session_id":null,"has_more":false}}}}\n' "$id"
+      ;;
+    *'"method":"beginManualTransaction"'*)
+      echo beginManualTransaction >> '{}'
+      printf '{{"id":%s,"result":{{"ok":true}}}}\n' "$id"
+      ;;
+    *'"method":"read_large_value_chunk"'*|*'"method":"release_large_value"'*)
+      echo lob >> '{}'
+      printf '{{"id":%s,"result":{{"status":"ok","data":"original","next_offset":8,"eof":true,"value_kind":"text"}}}}\n' "$id"
+      ;;
+    *'"method":"commitManualTransaction"'*)
+      echo commitManualTransaction >> '{}'
+      printf '{{"id":%s,"result":{{"ok":true}}}}\n' "$id"
+      ;;
+  esac
+done
+"#,
+                calls.display(),
                 calls.display(),
                 calls.display(),
                 calls.display()
@@ -11342,11 +11365,45 @@ for line in sys.stdin:
         let results =
             execute_in_manual_transaction(&state, "txn-test", "SELECT 42", "dbx_test", None, Some(10)).await.unwrap();
         assert_eq!(results[0].rows, vec![vec![serde_json::json!(42)]]);
+        let request: LargeValueRequest = serde_json::from_value(serde_json::json!({
+            "connectionId":"jdbc-conn", "database":"dbx_test", "txnSessionId":"txn-test",
+            "valueRef":"original-ref", "offset":0, "limit":4096
+        }))
+        .unwrap();
+        for release in [false, true] {
+            let mut other_connection = request.clone();
+            other_connection.connection_id = "other-connection".into();
+            assert_eq!(
+                request_large_value(&state, other_connection, release).await.unwrap_err(),
+                "LOB transaction context expired or busy"
+            );
+            state.transaction_sessions.write().await.get_mut("txn-test").unwrap().busy = true;
+            assert_eq!(
+                request_large_value(&state, request.clone(), release).await.unwrap_err(),
+                "LOB transaction context expired or busy"
+            );
+            state.transaction_sessions.write().await.get_mut("txn-test").unwrap().busy = false;
+            state.transaction_sessions.write().await.get_mut("txn-test").unwrap().last_activity =
+                std::time::Instant::now() - Duration::from_secs(MANUAL_TRANSACTION_IDLE_TIMEOUT_SECS + 1);
+            assert_eq!(
+                request_large_value(&state, request.clone(), release).await.unwrap_err(),
+                "LOB transaction context expired or busy"
+            );
+            state.transaction_sessions.write().await.get_mut("txn-test").unwrap().last_activity =
+                std::time::Instant::now();
+            assert_eq!(request_large_value(&state, request.clone(), release).await.unwrap()["data"], "original");
+        }
         commit_manual_transaction(&state, "txn-test").await.unwrap();
         assert!(state.pool_handle(pool_key).await.is_none());
+        for release in [false, true] {
+            assert_eq!(
+                request_large_value(&state, request.clone(), release).await.unwrap_err(),
+                MANUAL_TRANSACTION_SESSION_NOT_FOUND_ERROR
+            );
+        }
         assert_eq!(
             std::fs::read_to_string(&calls).unwrap(),
-            "beginManualTransaction\nexecuteInManualTransaction\ncommitManualTransaction\n"
+            "beginManualTransaction\nexecuteInManualTransaction\nlob\nlob\ncommitManualTransaction\n"
         );
 
         state.shutdown(Duration::from_secs(1)).await;
