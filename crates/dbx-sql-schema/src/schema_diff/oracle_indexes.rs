@@ -618,6 +618,49 @@ mod tests {
     }
 
     #[test]
+    fn native_post_table_constraints_preserve_forward_and_rollback_dependency_order() {
+        for rollback in [false, true] {
+            let owner = if rollback { "DEST" } else { "APP" };
+            let kind = if rollback { "removed" } else { "added" };
+            let diffs: Vec<TableDiff> = serde_json::from_value(json!([
+                {"type":kind, "name":"CHILD", "columns":[{"type":kind,"name":"ID"}]},
+                {"type":kind, "name":"PARENT", "columns":[{"type":kind,"name":"ID"}]}
+            ]))
+            .unwrap();
+            let mut child = captured("CHILD", &format!("CREATE TABLE {owner}.CHILD(ID NUMBER DEFAULT q'[a  b]')\nALTER TABLE {owner}.CHILD ADD CONSTRAINT FK_CHILD FOREIGN KEY(ID) REFERENCES {owner}.PARENT(ID) ENABLE;"));
+            let mut parent = captured("PARENT", &format!("CREATE TABLE {owner}.PARENT(ID NUMBER)\nCREATE INDEX {owner}.IX_PARENT ON {owner}.PARENT(ID)\nALTER TABLE {owner}.PARENT ADD CONSTRAINT PK_PARENT PRIMARY KEY(ID) USING INDEX {owner}.IX_PARENT ENABLE;"));
+            child.owner = owner.into();
+            parent.owner = owner.into();
+            parent.supporting_indexes.push(OracleSupportingIndexDdl {
+                constraint_name: "PK_PARENT".into(),
+                owner: owner.into(),
+                name: "IX_PARENT".into(),
+                ddl: format!("CREATE INDEX {owner}.IX_PARENT ON {owner}.PARENT(ID)"),
+            });
+            let sources = if rollback {
+                OracleSchemaSyncDdlSources { rollback: vec![child, parent], ..Default::default() }
+            } else {
+                OracleSchemaSyncDdlSources { forward: vec![child, parent], ..Default::default() }
+            };
+            let result = plan(&diffs, Some(&sources), rollback);
+            let (sql, completeness) = if rollback {
+                (result.rollback_sync_sql.as_deref().unwrap(), &result.rollback_completeness)
+            } else {
+                (result.sync_sql.as_str(), &result.forward_completeness)
+            };
+            assert_eq!(*completeness, RollbackCompleteness::Complete, "{:?}", result.generation_issues);
+            assert_eq!(sql.matches("CREATE TABLE").count(), 2, "{sql}");
+            assert_eq!(sql.matches("CREATE INDEX").count(), 1, "{sql}");
+            assert!(!sql.contains("CREATE UNIQUE INDEX"));
+            assert!(
+                sql.find("ADD CONSTRAINT PK_PARENT").unwrap() < sql.find("ADD CONSTRAINT FK_CHILD").unwrap(),
+                "{sql}"
+            );
+            assert!(sql.contains("q'[a  b]'"));
+        }
+    }
+
+    #[test]
     fn independent_plan_defers_cross_table_foreign_keys_until_all_tables_and_indexes_exist() {
         let diffs = serde_json::from_value::<Vec<TableDiff>>(json!([
             {"type":"added", "name":"CHILD", "targetName":"CHILD2"}, {"type":"added", "name":"PARENT"}

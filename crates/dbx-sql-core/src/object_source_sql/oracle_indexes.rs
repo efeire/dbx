@@ -19,6 +19,7 @@ pub struct OracleSupportingIndexIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OracleTableConstraintSource {
+    pub in_create_table: bool,
     pub name: Option<String>,
     pub constraint_type: String,
     pub disabled: bool,
@@ -931,6 +932,226 @@ pub fn oracle_index_ddl_sources(source: &str, default_owner: &str) -> Result<Vec
     Ok(oracle_index_ddl_source_ranges(source, default_owner)?.into_iter().map(|(index, _)| index).collect())
 }
 
+fn oracle_table_source_statement_ranges(source: &str) -> Result<Vec<std::ops::Range<usize>>, String> {
+    let mut ranges = Vec::new();
+    for statement in crate::sql::statement_ranges_for_database(source, DatabaseType::Oracle) {
+        let mut statement_end = statement.start + statement.text.len();
+        if source.as_bytes().get(statement_end) == Some(&b';') {
+            statement_end += 1;
+        }
+        let all = tokens(&statement.text)?;
+        let ts = significant(&all);
+        let keyword = |position: usize, value: &str| {
+            ts.get(position).is_some_and(|token| unquoted_keyword_is(&token.token, value))
+        };
+        let definition = |position: usize| -> Result<Option<usize>, String> {
+            if keyword(position, "ALTER") && keyword(position + 1, "TABLE") {
+                let (_, _, end) = qualified_name(&ts, position + 2, "")?;
+                if !keyword(end, "ADD") || !keyword(end + 1, "CONSTRAINT") {
+                    return Ok(None);
+                }
+                identifier(&ts.get(end + 2).ok_or("Post-table constraint name is unavailable")?.token)?;
+                let kind = end + 3;
+                let keys = if keyword(kind, "UNIQUE") {
+                    kind + 1
+                } else if (keyword(kind, "PRIMARY") || keyword(kind, "FOREIGN")) && keyword(kind + 1, "KEY") {
+                    kind + 2
+                } else {
+                    return Ok(None);
+                };
+                if ts.get(keys).is_none_or(|token| token.token != Token::LParen) {
+                    return Err("Post-table constraint keys are incomplete".into());
+                }
+                return Ok(Some(keys));
+            }
+            if !keyword(position, "CREATE") {
+                return Ok(None);
+            }
+            let mut kind = position + 1;
+            if keyword(kind, "UNIQUE") || keyword(kind, "BITMAP") {
+                kind += 1;
+            }
+            if !keyword(kind, "TABLE") && !keyword(kind, "INDEX") {
+                return Ok(None);
+            }
+            let (_, _, mut end) = qualified_name(&ts, kind + 1, "")?;
+            if keyword(kind, "INDEX") {
+                if !keyword(end, "ON") {
+                    return Err("Oracle index table binding is incomplete".into());
+                }
+                (_, _, end) = qualified_name(&ts, end + 1, "")?;
+            }
+            if ts.get(end).is_none_or(|token| token.token != Token::LParen) {
+                return Err("Oracle table or index definition is incomplete".into());
+            }
+            Ok(Some(end))
+        };
+        if definition(0)?.is_none() {
+            ranges.push(statement.start..statement_end);
+            continue;
+        }
+        let mut depth = 0;
+        let mut closed = false;
+        let mut start = statement.start;
+        let incomplete_tail = |token: Option<&&sqlparser::tokenizer::TokenWithSpan>| {
+            token.is_some_and(|token| {
+                [
+                    "TABLESPACE",
+                    "PCTFREE",
+                    "PCTUSED",
+                    "INITRANS",
+                    "MAXTRANS",
+                    "STORAGE",
+                    "PARAMETERS",
+                    "BUFFER_POOL",
+                    "FLASH_CACHE",
+                    "CELL_FLASH_CACHE",
+                ]
+                .iter()
+                .any(|word| unquoted_keyword_is(&token.token, word))
+            })
+        };
+        for (position, token) in ts.iter().enumerate() {
+            if position > 0 && depth == 0 && (keyword(position, "CREATE") || keyword(position, "ALTER")) {
+                if !closed || incomplete_tail(ts[..position].last()) {
+                    return Err("Oracle native DDL boundary precedes a complete definition".into());
+                }
+                let next = if keyword(position, "CREATE") {
+                    if keyword(position + 1, "TABLE") {
+                        return Err("Oracle native table source contains another table declaration".into());
+                    }
+                    definition(position)?.is_some()
+                } else {
+                    if !keyword(position + 1, "TABLE") {
+                        return Err("Oracle native DDL boundary is ambiguous".into());
+                    }
+                    let (_, _, end) = qualified_name(&ts, position + 2, "")?;
+                    keyword(end, "ADD") && keyword(end + 1, "CONSTRAINT")
+                };
+                if !next {
+                    return Err("Oracle native DDL boundary is incomplete".into());
+                }
+                let end = statement.start + at(&statement.text, token.span.start)?;
+                ranges.push(start..end);
+                start = end;
+                closed = false;
+            }
+            match token.token {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        closed = true;
+                    }
+                }
+                _ => {}
+            }
+            if depth < 0 {
+                return Err("Oracle DDL parentheses are incomplete".into());
+            }
+        }
+        if depth != 0 || !closed || incomplete_tail(ts.iter().rev().find(|token| token.token != Token::SemiColon)) {
+            return Err("Oracle table or index definition is incomplete".into());
+        }
+        ranges.push(start..statement_end);
+    }
+    Ok(ranges)
+}
+
+fn oracle_post_table_constraints(
+    source: &str,
+    owner: &str,
+    table: &str,
+) -> Result<Vec<(std::ops::Range<usize>, String)>, String> {
+    let mut result = Vec::new();
+    for range in oracle_table_source_statement_ranges(source)? {
+        let statement = &source[range.clone()];
+        let all = tokens(statement)?;
+        let ts = significant(&all);
+        let keyword =
+            |position: usize, word: &str| ts.get(position).is_some_and(|token| unquoted_keyword_is(&token.token, word));
+        if !keyword(0, "ALTER") || !keyword(1, "TABLE") {
+            continue;
+        }
+        let (actual_owner, actual_table, end) = qualified_name(&ts, 2, owner)?;
+        if !keyword(end, "ADD") || !keyword(end + 1, "CONSTRAINT") {
+            continue;
+        }
+        if actual_owner != owner || actual_table != table {
+            return Err("Post-table constraint belongs to a different table".into());
+        }
+        identifier(&ts.get(end + 2).ok_or("Post-table constraint name is unavailable")?.token)?;
+        let kind = end + 3;
+        let keys = if keyword(kind, "PRIMARY") || keyword(kind, "FOREIGN") {
+            if !keyword(kind + 1, "KEY") {
+                return Err("Post-table constraint key definition is incomplete".into());
+            }
+            kind + 2
+        } else if keyword(kind, "UNIQUE") {
+            kind + 1
+        } else {
+            continue;
+        };
+        if ts.get(keys).is_none_or(|token| token.token != Token::LParen) {
+            return Err("Post-table constraint key list is unavailable".into());
+        }
+        let mut depth = 0;
+        for token in ts.iter().skip(keys) {
+            match token.token {
+                Token::LParen => depth += 1,
+                Token::RParen => depth -= 1,
+                _ => {}
+            }
+            if depth < 0 {
+                return Err("Post-table constraint parentheses are incomplete".into());
+            }
+        }
+        if depth != 0
+            || (keyword(kind, "FOREIGN") && !ts.iter().any(|token| unquoted_keyword_is(&token.token, "REFERENCES")))
+        {
+            return Err("Post-table constraint definition is incomplete".into());
+        }
+        if keyword(kind, "FOREIGN") {
+            let references = (keys..ts.len())
+                .find(|position| keyword(*position, "REFERENCES"))
+                .ok_or("Foreign key reference is unavailable")?;
+            let (_, _, columns) = qualified_name(&ts, references + 1, owner)?;
+            if ts.get(columns).is_some_and(|token| token.token == Token::LParen)
+                && ts.get(columns + 1).is_none_or(|token| token.token == Token::RParen)
+            {
+                return Err("Foreign key reference columns are unavailable".into());
+            }
+        }
+        let finish = ts
+            .last()
+            .filter(|token| token.token == Token::SemiColon)
+            .map(|token| at(statement, token.span.start))
+            .transpose()?
+            .unwrap_or(statement.len());
+        let clause_start = at(statement, ts[end + 1].span.start)?;
+        let comments = all
+            .iter()
+            .filter(|token| {
+                matches!(
+                    token.token,
+                    Token::Whitespace(Whitespace::SingleLineComment { .. } | Whitespace::MultiLineComment(_))
+                )
+            })
+            .map(|token| Ok((at(statement, token.span.start)?, at(statement, token.span.end)?)))
+            .collect::<Result<Vec<_>, String>>()?
+            .into_iter()
+            .filter(|(_, end)| *end <= clause_start)
+            .map(|(start, end)| &statement[start..end])
+            .collect::<Vec<_>>()
+            .join("\n");
+        result.push((
+            range.clone(),
+            format!("{}{}{}", comments, if comments.is_empty() { "" } else { "\n" }, &statement[clause_start..finish]),
+        ));
+    }
+    Ok(result)
+}
+
 fn oracle_index_ddl_source_ranges(
     source: &str,
     default_owner: &str,
@@ -974,13 +1195,12 @@ fn oracle_index_ddl_source_ranges(
         if !ts.get(body_position).is_some_and(|token| token.token == Token::LParen) {
             return Err(format!("{owner}.{name}: complete index key definition is unavailable"));
         }
-        let finish = ts
+        let statement_ranges = oracle_table_source_statement_ranges(source)?;
+        let finish = statement_ranges
             .iter()
-            .skip(body_position)
-            .find(|token| token.token == Token::SemiColon)
-            .map(|token| at(source, token.span.end))
-            .transpose()?
-            .unwrap_or(source.len());
+            .find(|range| range.contains(&at(source, token.span.start).unwrap_or(usize::MAX)))
+            .ok_or("Index statement boundary is unavailable")?
+            .end;
         let range = at(source, token.span.start)?..finish;
         let ddl = source[range.clone()].to_string();
         if let Some((existing, _)) =
@@ -1104,6 +1324,7 @@ pub fn parse_oracle_table_ddl(source: &str) -> Result<OracleTableDdlSource, Stri
                 }
             }
             supporting_constraints.push(OracleTableConstraintSource {
+                in_create_table: true,
                 name: name.take(),
                 constraint_type: constraint_type.into(),
                 disabled,
@@ -1111,11 +1332,33 @@ pub fn parse_oracle_table_ddl(source: &str) -> Result<OracleTableDdlSource, Stri
             });
         }
     }
-    let tail = &ts[close + 1..];
-    let table_end = tail.iter().position(|token| token.token == Token::SemiColon).unwrap_or(tail.len());
-    let index_organized = tail[..table_end].windows(2).any(|pair| {
+    let ranges = oracle_table_source_statement_ranges(source)?;
+    let table_end = ranges.first().ok_or("Table statement boundary is unavailable")?.end;
+    let tail = ts[close + 1..]
+        .iter()
+        .take_while(|token| at(source, token.span.start).is_ok_and(|offset| offset < table_end))
+        .copied()
+        .collect::<Vec<_>>();
+    let index_organized = tail.windows(2).any(|pair| {
         unquoted_keyword_is(&pair[0].token, "ORGANIZATION") && unquoted_keyword_is(&pair[1].token, "INDEX")
     });
+    for (_, clause) in oracle_post_table_constraints(source, owner.as_deref().unwrap_or(""), &table)? {
+        let synthetic = format!("CREATE TABLE {} ({clause})", quote_postgres_identifier(&table));
+        let parsed = parse_oracle_table_ddl(&synthetic)?;
+        for mut constraint in parsed.supporting_constraints {
+            constraint.in_create_table = false;
+            constraint.source = clause.clone();
+            supporting_constraints.push(constraint);
+        }
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for constraint in &supporting_constraints {
+        if let Some(name) = &constraint.name {
+            if !names.insert(name) {
+                return Err(format!("{name}: supporting constraint occurs more than once"));
+            }
+        }
+    }
     Ok(OracleTableDdlSource { owner, table, index_organized, supporting_constraints })
 }
 
@@ -1138,6 +1381,25 @@ fn definition_tokens(sql: &str) -> Result<Vec<Token>, String> {
             (!matches!(token.token, Token::Whitespace(_) | Token::EOF | Token::SemiColon)).then_some(token.token)
         })
         .collect())
+}
+
+fn terminate_oracle_table_statement(source: &str) -> Result<String, String> {
+    let statement = source.trim_end();
+    let all = tokens(statement)?;
+    if significant(&all).last().is_some_and(|token| token.token == Token::SemiColon) {
+        return Ok(statement.into());
+    }
+    let line_comment = all
+        .iter()
+        .rev()
+        .find(|token| {
+            !matches!(
+                token.token,
+                Token::EOF | Token::Whitespace(Whitespace::Space | Whitespace::Tab | Whitespace::Newline)
+            )
+        })
+        .is_some_and(|token| matches!(token.token, Token::Whitespace(Whitespace::SingleLineComment { .. })));
+    Ok(format!("{statement}{};", if line_comment { "\n" } else { "" }))
 }
 
 fn retained_index_create_is_redundant(
@@ -1298,7 +1560,11 @@ pub fn split_oracle_table_ddl_with_retained(
             .iter()
             .find(|constraint| constraint.name.as_deref() == Some(index.constraint_name.as_str()))
             .ok_or_else(|| format!("{}: complete inline constraint source is unavailable", index.constraint_name))?;
-        if index.owner != owner || constraint.disabled || !retained_identities.insert((&index.owner, &index.name)) {
+        if !constraint.in_create_table
+            || index.owner != owner
+            || constraint.disabled
+            || !retained_identities.insert((&index.owner, &index.name))
+        {
             return Err(format!(
                 "{}: inline restoration of the supporting-index relationship is not verified",
                 index.constraint_name
@@ -1380,7 +1646,6 @@ pub fn split_oracle_table_ddl_with_retained(
         }
     }
     let close = close.ok_or("Table column list is incomplete")?;
-    let tail = &ts[close + 1..];
     if identity.index_organized
         && indexes.iter().any(|index| {
             identity.supporting_constraints.iter().any(|constraint| {
@@ -1390,12 +1655,8 @@ pub fn split_oracle_table_ddl_with_retained(
     {
         return Err("An index-organized table cannot detach its primary index".into());
     }
-    let table_end = tail
-        .iter()
-        .find(|token| token.token == Token::SemiColon)
-        .map(|token| at(source, token.span.end))
-        .transpose()?
-        .unwrap_or(source.len());
+    let table_end =
+        oracle_table_source_statement_ranges(source)?.first().ok_or("Table statement boundary is unavailable")?.end;
     let mut definitions = std::collections::BTreeMap::new();
     for index in indexes {
         let key = (&index.owner, &index.name);
@@ -1405,11 +1666,17 @@ pub fn split_oracle_table_ddl_with_retained(
         }
     }
     let mut suffix = source[table_end..].to_string();
+    let post_constraints = oracle_post_table_constraints(&suffix, owner, table)?
+        .into_iter()
+        .map(|(range, clause)| (range, clause.to_string()))
+        .collect::<Vec<_>>();
+    let mut segments = segments.into_iter().map(|segment| (segment.to_string(), true)).collect::<Vec<_>>();
+    segments.extend(post_constraints.iter().map(|(_, clause)| (clause.clone(), false)));
     let mut existing = std::collections::BTreeMap::new();
     let mut ordinary_indexes = Vec::new();
     let mut ordinary_definitions = std::collections::BTreeMap::new();
     let mut retained_comments = Vec::new();
-    let mut removals = Vec::new();
+    let mut removals = post_constraints.iter().map(|(range, _)| range.clone()).collect::<Vec<_>>();
     for (standalone, range) in oracle_index_ddl_source_ranges(&suffix, owner)? {
         if standalone.table_owner != owner || standalone.table != table {
             return Err("Standalone index source belongs to a different table".into());
@@ -1456,11 +1723,12 @@ pub fn split_oracle_table_ddl_with_retained(
                     return Err(format!("{}: conflicting ordinary index definitions", standalone.name))
                 }
                 Some(_) => {}
-                None => ordinary_indexes.push(format!("{};", standalone.ddl.trim_end().trim_end_matches(';'))),
+                None => ordinary_indexes.push(terminate_oracle_table_statement(&standalone.ddl)?),
             }
         }
         removals.push(range);
     }
+    removals.sort_by_key(|range| range.start);
     for range in removals.into_iter().rev() {
         suffix.replace_range(range, "");
     }
@@ -1471,7 +1739,8 @@ pub fn split_oracle_table_ddl_with_retained(
     let mut constraints = Vec::new();
     let mut foreign_keys = Vec::new();
     let mut found = std::collections::BTreeSet::new();
-    for segment in segments {
+    for (segment, in_create_table) in &segments {
+        let segment = segment.as_str();
         let st = tokens(segment)?;
         let sig = significant(&st);
         let named = sig.first().is_some_and(|token| unquoted_keyword_is(&token.token, "CONSTRAINT"));
@@ -1527,6 +1796,15 @@ pub fn split_oracle_table_ddl_with_retained(
                 (unquoted_keyword_is(&pair[0].1.token, "USING") && unquoted_keyword_is(&pair[1].1.token, "INDEX"))
                     .then_some(pair[0].0)
             });
+            if let Some(using) = using {
+                let first = using + 2;
+                if sig.get(first).is_some_and(|token| matches!(&token.token, Token::Word(word) if word.quote_style.is_some() || !["ENABLE", "DISABLE", "VALIDATE", "NOVALIDATE", "RELY", "NORELY", "PCTFREE", "INITRANS", "MAXTRANS", "STORAGE", "TABLESPACE", "LOGGING", "NOLOGGING", "LOCAL", "GLOBAL", "PARALLEL", "NOPARALLEL", "COMPRESS", "NOCOMPRESS", "COMPUTE"].iter().any(|keyword| word.value.eq_ignore_ascii_case(keyword)))) {
+                    let (binding_owner, binding_name, _) = qualified_name(&sig, first, owner)?;
+                    if binding_owner != index.owner || binding_name != index.name {
+                        return Err(format!("{}: constraint source and supporting-index binding disagree", index.constraint_name));
+                    }
+                }
+            }
             let state = root_tokens.iter().find(|(position, token)| {
                 using.is_none_or(|using| *position > using + 1)
                     && (unquoted_keyword_is(&token.token, "ENABLE")
@@ -1568,6 +1846,8 @@ pub fn split_oracle_table_ddl_with_retained(
                 );
             }
             foreign_keys.push(segment.trim().to_string());
+        } else if !in_create_table {
+            constraints.push(segment.trim().to_string());
         } else {
             retained.push(segment);
         }
@@ -1581,9 +1861,7 @@ pub fn split_oracle_table_ddl_with_retained(
         retained.join(","),
         &source[at(source, ts[close].span.start)?..table_end]
     );
-    if !table_ddl.trim_end().ends_with(';') {
-        table_ddl.push(';');
-    }
+    table_ddl = terminate_oracle_table_statement(&table_ddl)?;
     let mut independent_indexes = ordinary_indexes;
     let mut emitted = std::collections::BTreeSet::new();
     for index in indexes {
@@ -1594,22 +1872,22 @@ pub fn split_oracle_table_ddl_with_retained(
                 .unwrap_or(&index.ddl)
                 .trim()
                 .trim_end_matches(';');
-            independent_indexes.push(format!("{statement};"));
+            independent_indexes.push(terminate_oracle_table_statement(statement)?);
         }
     }
     let add_constraint = |constraint: String| {
-        format!(
-            "ALTER TABLE {}.{} ADD {};",
+        terminate_oracle_table_statement(&format!(
+            "ALTER TABLE {}.{} ADD {}",
             quote_postgres_identifier(owner),
             quote_postgres_identifier(table),
             constraint
-        )
+        ))
     };
     Ok(OracleTableDdlParts {
         table_ddl,
         indexes: independent_indexes,
-        supporting_constraints: constraints.into_iter().map(add_constraint).collect(),
-        foreign_keys: foreign_keys.into_iter().map(add_constraint).collect(),
+        supporting_constraints: constraints.into_iter().map(add_constraint).collect::<Result<Vec<_>, _>>()?,
+        foreign_keys: foreign_keys.into_iter().map(add_constraint).collect::<Result<Vec<_>, _>>()?,
         trailing_ddl: suffix,
         triggers,
     })
@@ -1912,6 +2190,91 @@ mod tests {
         )
         .unwrap();
         assert!(same.contains("DEFAULT SRC.SEQ.NEXTVAL"));
+    }
+
+    #[test]
+    fn native_table_script_keeps_post_table_primary_key_and_index_boundaries() {
+        let source = "CREATE TABLE APP.T (ID NUMBER, U NUMBER, CONSTRAINT UQ_T UNIQUE(U) USING INDEX ENABLE) TABLESPACE USERS\nCREATE INDEX APP.IX_PK ON APP.T(ID) TABLESPACE USERS\nALTER TABLE APP.T ADD CONSTRAINT PK_T PRIMARY KEY(ID) USING INDEX APP.IX_PK ENABLE;\nCREATE INDEX APP.IX_U ON APP.T(U);";
+        let parsed = parse_oracle_table_ddl(source).unwrap();
+        assert_eq!(parsed.supporting_constraints.len(), 2);
+        assert!(parsed
+            .supporting_constraints
+            .iter()
+            .any(|constraint| constraint.name.as_deref() == Some("PK_T") && constraint.constraint_type == "P"));
+        let indexes = oracle_index_ddl_sources(source, "APP").unwrap();
+        assert_eq!(indexes.len(), 2);
+        assert!(!indexes[0].ddl.contains("ALTER TABLE"));
+        let parts = split_oracle_table_ddl_with_retained(source, "APP", "T", &[], &[]).unwrap();
+        assert!(!parts.table_ddl.contains("CREATE INDEX"));
+        assert!(!parts.table_ddl.contains("ALTER TABLE"));
+        assert_eq!(parts.supporting_constraints.len(), 1);
+    }
+
+    #[test]
+    fn post_table_foreign_keys_are_deferred_and_binding_conflicts_are_rejected() {
+        let source = "CREATE TABLE APP.T(ID NUMBER DEFAULT q'[CREATE INDEX fake ON T(ID)]')\nCREATE INDEX APP.IX_PK ON APP.T(ID)\nALTER TABLE APP.T ADD CONSTRAINT PK_T PRIMARY KEY(ID) USING INDEX APP.IX_PK ENABLE; ALTER TABLE APP.T ADD CONSTRAINT FK_T FOREIGN KEY(ID) REFERENCES APP.P(ID) ENABLE;";
+        let supporting = OracleSupportingIndexDdl {
+            constraint_name: "PK_T".into(),
+            owner: "APP".into(),
+            name: "IX_PK".into(),
+            ddl: "CREATE INDEX APP.IX_PK ON APP.T(ID)".into(),
+        };
+        let parts =
+            split_oracle_table_ddl_with_retained(source, "APP", "T", std::slice::from_ref(&supporting), &[]).unwrap();
+        assert_eq!(parts.indexes.len(), 1);
+        assert_eq!(parts.supporting_constraints.len(), 1);
+        assert_eq!(parts.foreign_keys.len(), 1);
+        assert!(parts.foreign_keys[0].contains("REFERENCES APP.P(ID) ENABLE"));
+        assert!(!parts.trailing_ddl.contains("ALTER TABLE"));
+        assert!(parts.table_ddl.contains("q'[CREATE INDEX fake ON T(ID)]'"));
+        assert!(!parts.indexes[0].contains("UNIQUE"));
+        let conflict = source.replace("USING INDEX APP.IX_PK", "USING INDEX APP.OTHER");
+        assert!(split_oracle_table_ddl_with_retained(&conflict, "APP", "T", &[supporting], &[]).is_err());
+        let retained =
+            OracleSupportingIndexIdentity { constraint_name: "PK_T".into(), owner: "APP".into(), name: "IX_PK".into() };
+        assert!(split_oracle_table_ddl_with_retained(source, "APP", "T", &[], &[retained]).is_err());
+    }
+
+    #[test]
+    fn native_table_boundaries_reject_incomplete_and_mismatched_constraints() {
+        for source in [
+            "CREATE TABLE APP.T(ID NUMBER\nCREATE INDEX APP.IX ON APP.T(ID);",
+            "CREATE TABLE APP.T(ID NUMBER)\nCREATE INDEX APP.IX ON APP.T(ID\nALTER TABLE APP.T ADD CONSTRAINT PK PRIMARY KEY(ID);",
+            "CREATE TABLE APP.T(ID NUMBER)\nALTER TABLE OTHER.T ADD CONSTRAINT PK PRIMARY KEY(ID);",
+            "CREATE TABLE APP.T(ID NUMBER)\nALTER TABLE APP.OTHER ADD CONSTRAINT PK PRIMARY KEY(ID);",
+            "CREATE TABLE APP.T(ID NUMBER, CONSTRAINT PK PRIMARY KEY(ID)); ALTER TABLE APP.T ADD CONSTRAINT PK PRIMARY KEY(ID);",
+            "CREATE TABLE APP.T(ID NUMBER)\nCREATE TABLE APP.OTHER(ID NUMBER);",
+        ] {
+            assert!(parse_oracle_table_ddl(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn continuous_post_constraints_keep_comments_and_defer_foreign_keys() {
+        let source = "CREATE TABLE APP.T(ID NUMBER)\nALTER /*keep-a*/ TABLE APP.T ADD /*keep-b*/ CONSTRAINT P PRIMARY KEY(ID)\nALTER TABLE APP.T ADD CONSTRAINT U UNIQUE(ID)\nALTER TABLE APP.T ADD CONSTRAINT F FOREIGN KEY(ID) REFERENCES APP.PARENT(ID);";
+        let parts = split_oracle_table_ddl_with_retained(source, "APP", "T", &[], &[]).unwrap();
+        assert_eq!(parts.supporting_constraints.len(), 2);
+        assert_eq!(parts.foreign_keys.len(), 1);
+        assert!(parts.supporting_constraints[0].contains("/*keep-a*/"));
+        assert!(parts.supporting_constraints[0].contains("/*keep-b*/"));
+        assert!(!parts.supporting_constraints.iter().any(|sql| sql.contains("FOREIGN KEY")));
+        assert!(!parts.trailing_ddl.contains("ALTER TABLE"));
+        let implicit_primary = source.replace("REFERENCES APP.PARENT(ID)", "REFERENCES APP.PARENT ENABLE");
+        let parts = split_oracle_table_ddl_with_retained(&implicit_primary, "APP", "T", &[], &[]).unwrap();
+        assert!(parts.foreign_keys[0].contains("REFERENCES APP.PARENT ENABLE"));
+    }
+
+    #[test]
+    fn native_statement_termination_uses_tokens_and_rejects_dangling_definitions() {
+        let source = "CREATE TABLE APP.T(ID NUMBER)\nCREATE INDEX APP.IX ON APP.T(ID) -- keep-semicolon;\nALTER TABLE APP.T ADD CONSTRAINT P PRIMARY KEY(ID) USING INDEX APP.IX;";
+        let parts = split_oracle_table_ddl_with_retained(source, "APP", "T", &[], &[]).unwrap();
+        assert!(parts.indexes[0].contains("-- keep-semicolon;\n;"), "{:?}", parts.indexes);
+        for source in [
+            "CREATE TABLE APP.T(ID NUMBER) TABLESPACE\nCREATE INDEX APP.IX ON APP.T(ID);",
+            "CREATE TABLE APP.T(ID NUMBER); ALTER TABLE APP.T ADD CONSTRAINT F FOREIGN KEY(ID) REFERENCES;",
+        ] {
+            assert!(parse_oracle_table_ddl(source).is_err(), "{source}");
+        }
     }
 
     #[test]

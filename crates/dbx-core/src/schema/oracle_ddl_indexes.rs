@@ -913,6 +913,7 @@ mod tests {
     const OWNER: &str = " O'w ";
     const SOURCE: &str =
         "CREATE TABLE \" O'w \".\"T\" (\"ID\" NUMBER, CONSTRAINT \" C'k \" PRIMARY KEY (\"ID\") USING INDEX ENABLE);";
+    const POST_SOURCE: &str = "CREATE TABLE \" O'w \".\"T\" (\"ID\" NUMBER)\nCREATE INDEX \" O'w \".\" I'x \" ON \" O'w \".\"T\" (\"ID\" DESC) INVISIBLE\nALTER TABLE \" O'w \".\"T\" ADD CONSTRAINT \" C'k \" PRIMARY KEY (\"ID\") USING INDEX \" O'w \".\" I'x \" ENABLE;";
 
     async fn fixture(mode: &str) -> (tempfile::TempDir, AppState) {
         let directory = tempfile::tempdir().unwrap();
@@ -960,7 +961,7 @@ for line in sys.stdin:
             result = {'columns': [], 'rows': rows, 'affected_rows': 0, 'execution_time_ms': 0}
             if mode == 'dictionary-deferred': result['largeValueCells'] = [{'row': 0, 'column': 0}]
         elif 'ALL_INDEXES' in sql:
-            rows = [[" O'w ", " I'x ", " O'w ", 'T', 'IOT - TOP' if mode == 'iot' else 'NORMAL', 'Y' if mode == 'secondary' else 'N', 'NONUNIQUE' if mode == 'retained-nonunique' else 'UNIQUE']]
+            rows = [[" O'w ", " I'x ", " O'w ", 'T', 'IOT - TOP' if mode == 'iot' else 'NORMAL', 'Y' if mode == 'secondary' else 'N', 'NONUNIQUE' if mode in ('retained-nonunique', 'native-post') else 'UNIQUE']]
             if mode == 'secondary-null': rows[0][5] = None
             if mode == 'ob-ordinary':
                 rows[0][5] = None
@@ -1035,6 +1036,30 @@ for line in sys.stdin:
                 assert!(!is_non_secondary_index(Some(&Value::Null), index_type, oceanbase));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn native_post_table_primary_key_reaches_view_and_removed_rollback_entry_points() {
+        let (_directory, state) = fixture("native-post").await;
+        let output = separate_table_ddl_indexes_core(&state, "conn", "demo", OWNER, "T", POST_SOURCE).await.unwrap();
+        assert_eq!(output.matches("CREATE INDEX").count(), 1);
+        assert_eq!(output.matches("PRIMARY KEY").count(), 1);
+        assert!(!output.contains("CREATE UNIQUE INDEX"));
+        let endpoint =
+            OracleSchemaSyncEndpoint { connection_id: "conn".into(), database: "demo".into(), schema: OWNER.into() };
+        let diffs: Vec<TableDiff> =
+            serde_json::from_value(json!([{"type":"removed", "name":"T", "targetDdl":POST_SOURCE}])).unwrap();
+        let options =
+            OracleSchemaSyncDdlOptions { separate_indexes: true, target: Some(endpoint), ..Default::default() };
+        let captured = prepare_schema_sync_oracle_ddl_core(&state, &diffs, true, &options).await;
+        assert_eq!(captured.rollback.len(), 1);
+        assert!(captured.rollback[0].issues.is_empty(), "{:?}", captured.rollback[0].issues);
+        assert_eq!(captured.rollback[0].supporting_indexes.len(), 1);
+        let conflict = POST_SOURCE.replace("USING INDEX \" O'w \".\" I'x \"", "USING INDEX \" O'w \".OTHER");
+        assert!(separate_table_ddl_indexes_core(&state, "conn", "demo", OWNER, "T", &conflict)
+            .await
+            .unwrap_err()
+            .contains("binding disagree"));
     }
 
     #[tokio::test]
