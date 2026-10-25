@@ -188,7 +188,7 @@ pub struct ConnectionPoolReceipt {
 }
 
 enum ConnectionPoolBuild {
-    Candidate(PoolKind),
+    Candidate(Box<PoolKind>),
     Published(ConnectionPoolReceipt),
 }
 
@@ -745,7 +745,7 @@ enum ConnectionTransportRoute {
     SqliteWorker {
         host: String,
         port: u16,
-        route: db::sqlite_worker::ResolvedSqliteWorkerRoute,
+        route: Box<db::sqlite_worker::ResolvedSqliteWorkerRoute>,
     },
     Direct {
         host: String,
@@ -4202,10 +4202,10 @@ impl AppState {
             }
         };
 
-        Ok::<_, String>(ConnectionPoolBuild::Candidate(pool))
+        Ok::<_, String>(ConnectionPoolBuild::Candidate(Box::new(pool)))
         }.await;
         let pool = match pool_result {
-            Ok(ConnectionPoolBuild::Candidate(pool)) => pool,
+            Ok(ConnectionPoolBuild::Candidate(pool)) => *pool,
             Ok(ConnectionPoolBuild::Published(receipt)) => return Ok(receipt),
             Err(error) => {
                 self.reset_connection_transport_if_current(connection_id, &transport_stamp).await;
@@ -4537,7 +4537,11 @@ impl AppState {
                 source_profile_ids,
                 agent_env,
                 layers: route.prefix().clone(),
-                route: ConnectionTransportRoute::SqliteWorker { host: config.host.clone(), port: config.port, route },
+                route: ConnectionTransportRoute::SqliteWorker {
+                    host: config.host.clone(),
+                    port: config.port,
+                    route: Box::new(route),
+                },
             });
         }
         if transport_layers.is_empty() {
