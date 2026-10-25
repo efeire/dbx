@@ -2,7 +2,7 @@ import type { StarRocksAlterOptions } from "@/lib/table/starrocksAlterOptions";
 import type { CreateTableDialectOptions } from "@/lib/table/starrocksPhysicalOptions";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
-import { SnapshotCompletionError } from "@/lib/export/snapshotCompletion";
+import { SnapshotCompletionError, unwrapSnapshotCompletion } from "@/lib/export/snapshotCompletion";
 import type { MongoDumpFormat, MongoDumpSourceInput, MongoDumpCatalog, MongoRestoreSourcePreview, MongoDatabaseDumpRequest, MongoDatabaseRestoreRequest, MongoDatabaseDumpProgress } from "./mongodbDumpTypes";
 import type { MongoRestoreUpload, MongoSourceReadOptions } from "./mongodbDumpTypes";
 import type { DamengDumpKind, DamengDumpRequest, DamengDumpProgress } from "./damengDumpTypes";
@@ -6489,22 +6489,32 @@ export async function releaseMongodbImportSource(_sourceRef: string): Promise<bo
   return false;
 }
 
-export async function exportMongodbQuery(request: MongoExportRequest, onProgress: (progress: MongoExportProgress) => void): Promise<MongoExportSummary> {
-  const unlisten: UnlistenFn = await listen<MongoExportProgress>("mongo-export-progress", (event) => {
-    if (event.payload.exportId === request.exportId) {
-      onProgress(event.payload);
-      if (event.payload.status === "done" || event.payload.status === "error" || event.payload.status === "cancelled") {
-        unlisten();
-      }
-    }
-  });
+export async function exportMongodbQuery(request: MongoExportRequest, onProgress: (progress: MongoExportProgress) => void, reportOutcome = false): Promise<MongoExportSummary> {
+  let unlisten: UnlistenFn;
   try {
+    unlisten = await listen<MongoExportProgress>("mongo-export-progress", (event) => {
+      if (event.payload.exportId === request.exportId) {
+        onProgress(event.payload);
+        if (event.payload.status === "done" || event.payload.status === "error" || event.payload.status === "cancelled") {
+          unlisten();
+        }
+      }
+    });
+  } catch (error) {
+    if (reportOutcome) throw new SnapshotCompletionError("failed", String(error));
+    throw error;
+  }
+  try {
+    if (reportOutcome) {
+      return unwrapSnapshotCompletion<MongoExportSummary>(await invoke("export_mongodb_query", { request, reportOutcome: true }));
+    }
     const summary = await invoke<MongoExportSummary>("export_mongodb_query", { request });
-    unlisten();
     return summary;
   } catch (e) {
-    unlisten();
+    if (reportOutcome) throw e;
     throw e instanceof BackendErrorException ? e : new BackendErrorException(e);
+  } finally {
+    unlisten();
   }
 }
 

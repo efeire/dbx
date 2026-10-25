@@ -851,12 +851,16 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
             return "settled";
           }
           started = true;
-          const summary = await api.exportMongodbQuery({ exportId: task.exportId, connectionId, database, collection, format, includeHeader: true, gzip: outputFormat === "bsonGzip", filePath: outputPath }, (progress) => {
-            task.rowsExported = progress.documentsRead;
-            task.totalRows = progress.totalDocuments ?? null;
-            if (task.status !== "Cancelling") task.status = "Writing";
-            task.errorMessage = progress.errorMessage ?? null;
-          });
+          const summary = await api.exportMongodbQuery(
+            { exportId: task.exportId, connectionId, database, collection, format, includeHeader: true, gzip: outputFormat === "bsonGzip", filePath: outputPath },
+            (progress) => {
+              task.rowsExported = progress.documentsRead;
+              task.totalRows = progress.totalDocuments ?? null;
+              if (task.status !== "Cancelling") task.status = "Writing";
+              task.errorMessage = progress.errorMessage ?? null;
+            },
+            true,
+          );
           task.status = "Done";
           task.rowsExported = summary.documentsExported;
           task.finishedAt = Date.now();
@@ -864,10 +868,11 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
           return "settled";
         } catch (error) {
           task.errorMessage = error instanceof Error ? error.message : String(error);
-          task.status = started ? "Unknown" : "Error";
-          task.finishedAt = started ? undefined : Date.now();
-          toast(t("grid.exportFailed", { message: translateBackendError(t, error) }), 5000);
-          return started ? "unknown" : "settled";
+          const status = error instanceof SnapshotCompletionError ? error.status : started ? "unknown" : "failed";
+          task.status = status === "unknown" ? "Unknown" : status === "cancelled" ? "Cancelled" : "Error";
+          task.finishedAt = status === "unknown" ? undefined : Date.now();
+          if (status !== "cancelled") toast(t("grid.exportFailed", { message: translateBackendError(t, error) }), 5000);
+          return status === "unknown" ? "unknown" : "settled";
         } finally {
           if (task.status !== "Unknown") tracker.unregisterTaskCancelHandler(task.exportId);
           task.canCancel = false;

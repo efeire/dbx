@@ -321,4 +321,21 @@ describe("sidebar Mongo manual export queue", () => {
     expect(next).not.toHaveBeenCalled();
     expect(tracker.tasks.value[0]!.finishedAt).toBeUndefined();
   });
+
+  it.each(["failed", "cancelled", "unknown"] as const)("uses reported Mongo completion rather than terminal progress (%s)", async (status) => {
+    const { runtime, tracker } = await fixture();
+    const { SnapshotCompletionError } = await import("@/lib/export/snapshotCompletion");
+    await runtime.exportMongoCollection("csv");
+    await vi.waitFor(() => expect(operations).toHaveLength(1));
+    expect(mocks.export.mock.calls[0]![2]).toBe(true);
+    const next = vi.fn().mockResolvedValue("settled");
+    tracker.submitExportTask(tracker.addTask("next", "csv", "next.csv"), "queued", next);
+    const operation = operations[0]!;
+    operation.progress({ exportId: operation.request.exportId, status: "cancelled", documentsRead: 1, bytesWritten: 10, elapsedMs: 1 });
+    expect(next).not.toHaveBeenCalled();
+    operation.reject(new SnapshotCompletionError(status, "completion evidence"));
+    await vi.waitFor(() => expect(tracker.tasks.value[0]!.status).toBe(status === "unknown" ? "Unknown" : status === "cancelled" ? "Cancelled" : "Error"));
+    if (status === "unknown") expect(next).not.toHaveBeenCalled();
+    else await vi.waitFor(() => expect(next).toHaveBeenCalledOnce());
+  });
 });

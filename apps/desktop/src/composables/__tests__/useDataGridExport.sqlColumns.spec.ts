@@ -87,7 +87,7 @@ describe("SQL export column selection across entrypoints", () => {
     const state = useDataGridExport(createOptions({ allColumns: computed(() => ["id", "name", "id"]), allColumnTypes: computed(() => ["int", "text", "bigint"]) }));
     await state.exportSql();
     expect(showSqlInsertModeDialog).toHaveBeenCalledWith({ showExecutionMode: true, allowSplit: false, columns: choices });
-    expect(api.startQueryResultExport).toHaveBeenCalledWith(expect.objectContaining({ selectedColumns: [choices[2]!], exportColumnTypes: ["int", "text", "bigint"], insertMode: "single", keysetOptimizationEnabled: true, sql: "SELECT id, name FROM users" }), expect.any(Function));
+    expect(api.startQueryResultExport).toHaveBeenCalledWith(expect.objectContaining({ selectedColumns: [choices[2]!], exportColumnTypes: ["int", "text", "bigint"], insertMode: "single", keysetOptimizationEnabled: true, sql: "SELECT id, name FROM users" }), expect.any(Function), true);
   });
 
   it("excludes only the exact PostgreSQL primary-key spelling", async () => {
@@ -122,7 +122,7 @@ describe("SQL export column selection across entrypoints", () => {
     const selectedColumns = [sqlExportColumnChoices(["id", "name"])[1]!];
     vi.mocked(showSqlInsertModeDialog).mockResolvedValue({ insertMode: "batch", selectedColumns, splitMaxMb: 128 });
     await useDataGridExport(createOptions({ context: computed(() => "table-data") })).exportSql();
-    expect(api.startTableExport).toHaveBeenCalledWith(expect.objectContaining({ columns: ["id", "name"], columnTypes: ["int4", "text"], selectedColumns, splitMaxMb: 128 }), expect.any(Function));
+    expect(api.startTableExport).toHaveBeenCalledWith(expect.objectContaining({ columns: ["id", "name"], columnTypes: ["int4", "text"], selectedColumns, splitMaxMb: 128 }), expect.any(Function), true);
     expect(api.startQueryResultExport).not.toHaveBeenCalled();
   });
 
@@ -142,7 +142,7 @@ describe("SQL export column selection across entrypoints", () => {
         extractorOptions: computed(() => ({ ...DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, sql: { ...DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.sql, primaryKeyMode: "exclude-generated" } })),
       }),
     ).exportSql();
-    expect(api.startQueryResultExport).toHaveBeenCalledWith(expect.objectContaining({ exportColumnExtras: ["identity", null, null], primaryKeys: ["id"], primaryKeyMode: "exclude-generated", selectedColumns: sqlExportColumnChoices(names) }), expect.any(Function));
+    expect(api.startQueryResultExport).toHaveBeenCalledWith(expect.objectContaining({ exportColumnExtras: ["identity", null, null], primaryKeys: ["id"], primaryKeyMode: "exclude-generated", selectedColumns: sqlExportColumnChoices(names) }), expect.any(Function), true);
   });
 
   it.each(["page", "selected", "web"] as const)("does not re-exclude a projected case-distinct non-key in the %s fallback", async (scope) => {
