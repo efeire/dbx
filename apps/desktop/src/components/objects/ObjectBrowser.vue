@@ -1668,6 +1668,7 @@ function tableMetadataRequest(row: ObjectBrowserRow): ObjectDdlRequest {
     queryTimeoutSecs: props.connection.query_timeout_secs,
     database: props.database || "",
     schema: index ? index.parentSchema : row.schema || selectedSchema.value || props.database,
+    explicitOwner: index ? index.parentSchema : row.schema || selectedSchema.value || undefined,
     tableName: index ? index.parentName : row.name,
     objectType: index ? undefined : tableDdlObjectType(row.type),
     catalog: props.catalog,
@@ -3750,16 +3751,9 @@ async function confirmBatchEmptyTables() {
 async function exportStructure(row: ObjectBrowserRow) {
   try {
     const schema = row.schema || selectedSchema.value || props.database;
-    const ddl = await api.getTableDdl(
-      props.connection.id,
-      props.database,
-      schema,
-      row.name,
-      tableDdlObjectType(row.type),
-      props.catalog,
-      true,
-      ...((effectiveDatabaseType.value === "oracle" || effectiveDatabaseType.value === "oceanbase-oracle") && row.type === "TABLE" && settingsStore.editorSettings.separateDdlIndexes ? ([undefined, true] as const) : []),
-    );
+    const indexOptions: [boolean?, boolean?, string?] =
+      (effectiveDatabaseType.value === "oracle" || effectiveDatabaseType.value === "oceanbase-oracle") && row.type === "TABLE" && settingsStore.editorSettings.separateDdlIndexes ? [undefined, true, row.schema || selectedSchema.value || undefined] : [];
+    const ddl = await api.getTableDdl(props.connection.id, props.database, schema, row.name, tableDdlObjectType(row.type), props.catalog, true, ...indexOptions);
     await saveFileContent(buildSingleDdlExportFileContent(applyDdlTextPreferences(ddl, effectiveDatabaseType.value, settingsStore.editorSettings)), `${row.name}.sql`, "SQL", "sql");
   } catch (e: any) {
     console.error("Export structure failed:", e);

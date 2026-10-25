@@ -3620,13 +3620,24 @@ export const useQueryStore = defineStore("query", () => {
     const { database } = tab;
     const catalog = tab.catalog;
     const schema = ddlViewer.schema;
+    const explicitOwner = ddlViewer.explicitOwner;
     const tableName = ddlViewer.tableName;
     const objectType = ddlViewer.objectType;
     const settingsStore = useSettingsStore();
     const connectionStore = useConnectionStore();
     const isCurrent = () => {
       const current = tabs.value.find((candidate) => candidate.id === id);
-      return current?.ddlLoad === request && current.ddlViewer === ddlViewer && current.connectionId === connectionId && current.database === database && current.catalog === catalog && ddlViewer.schema === schema && ddlViewer.tableName === tableName && ddlViewer.objectType === objectType;
+      return (
+        current?.ddlLoad === request &&
+        current.ddlViewer === ddlViewer &&
+        current.connectionId === connectionId &&
+        current.database === database &&
+        current.catalog === catalog &&
+        ddlViewer.schema === schema &&
+        ddlViewer.explicitOwner === explicitOwner &&
+        ddlViewer.tableName === tableName &&
+        ddlViewer.objectType === objectType
+      );
     };
     const currentSeparateIndexes = () => {
       const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(connectionId));
@@ -3651,6 +3662,7 @@ export const useQueryStore = defineStore("query", () => {
             queryTimeoutSecs: connectionStore.getConfig(connectionId)?.query_timeout_secs,
             database,
             schema: ddlViewer.schema || database,
+            explicitOwner,
             tableName: ddlViewer.tableName,
             objectType: ddlViewer.objectType,
             catalog: tab.catalog,
