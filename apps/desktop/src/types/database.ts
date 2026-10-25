@@ -2716,6 +2716,7 @@ export interface QueryTab {
     | "database-jobs"
     | "processlist"
     | "sqlserver-trace"
+    | "pl-debug"
     | "mysql-dashboard"
     | "postgres-dashboard"
     | "xugu-dashboard"
