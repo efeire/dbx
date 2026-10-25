@@ -999,7 +999,7 @@ pub async fn save_connections(
     }
     let owner = connection_credential_owner(&state, &headers);
     let runtime_configs =
-        configs.iter().cloned().map(|config| prepare_runtime_config(config.canonicalized())).collect::<Vec<_>>();
+        configs.iter().map(|config| prepare_runtime_config(config.canonicalized())).collect::<Vec<_>>();
     let upserts = runtime_configs.iter().map(|(config, _)| config.clone()).collect::<Vec<_>>();
     for _ in 0..3 {
         let allowed = {
@@ -1196,7 +1196,6 @@ fn plan_connection_config_sync(
     };
     let upserts = configs
         .iter()
-        .cloned()
         .map(|config| {
             let (config, _) = prepare_runtime_config(config.canonicalized());
             (config.id.clone(), config)

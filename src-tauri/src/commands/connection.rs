@@ -2349,7 +2349,7 @@ async fn connect_db_inner(
                             {
                                 Ok(()) => {
                                     state.ensure_current_connection_attempt(&id, Some(attempt)).await?;
-                                    if let Err(err) = state
+                                    state
                                         .insert_connection_pool_for_attempt_with_transport(
                                             &id,
                                             attempt,
@@ -2358,10 +2358,7 @@ async fn connect_db_inner(
                                             &db_config,
                                             &prepared.stamp,
                                         )
-                                        .await
-                                    {
-                                        return Err(err);
-                                    }
+                                        .await?;
                                     record_session_credential(state.inner(), &config, &id);
                                     let mut stored = config;
                                     if !stored.save_password {
@@ -2686,7 +2683,7 @@ async fn connect_db_inner(
             db_type => return Err(format!("Unsupported database type: {db_type:?}")),
         };
 
-        if let Err(err) = state
+        state
             .insert_connection_pool_for_attempt_with_transport(
                 &id,
                 attempt,
@@ -2695,10 +2692,7 @@ async fn connect_db_inner(
                 &connected_db_config,
                 &prepared.stamp,
             )
-            .await
-        {
-            return Err(err);
-        }
+            .await?;
         record_session_credential(state.inner(), &connected_config, &id);
         // 存入全局运行态 configs 的配置脱敏（no-save 密码恒为空），明文只存在于会话凭据仓库。
         let mut stored = connected_config;

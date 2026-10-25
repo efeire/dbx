@@ -1209,7 +1209,7 @@ for line in sys.stdin:
         configure_agent(&state, &routes).await;
         let original = state.app.configs.read().await.get("conn").unwrap().clone().canonicalized();
         state.app.configs.write().await.insert("conn".into(), original.clone());
-        state.app.storage.save_connections(&[original.clone()]).await.unwrap();
+        state.app.storage.save_connections(std::slice::from_ref(&original)).await.unwrap();
         let reference = start_session(&state, &routes, "first").await;
         state.sessions.write().await.insert("second".into());
         let saved = routes
