@@ -1,5 +1,5 @@
-import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, expect, it, vi } from "vitest";
+import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { QueryResultExportRequest, TableExportProgress } from "@/lib/backend/api";
 
 const mocks = vi.hoisted(() => ({
@@ -16,16 +16,23 @@ vi.mock("@/stores/connectionStore", () => ({ useConnectionStore: () => ({ ensure
 vi.mock("@/stores/settingsStore", () => ({ useSettingsStore: () => ({ editorSettings: { exportBatchSize: 1000, exportRowLimitEnabled: false, globalQueryTimeoutSecs: 30 } }) }));
 
 const pending: Array<{ request: QueryResultExportRequest; progress: (progress: TableExportProgress) => void; resolve: (progress: TableExportProgress) => void; reject: (error: Error) => void }> = [];
+let pinia: Pinia;
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   pending.length = 0;
-  setActivePinia(createPinia());
+  pinia = createPinia();
+  setActivePinia(pinia);
   vi.stubGlobal("localStorage", { getItem: () => null, setItem() {}, removeItem() {} });
   mocks.mode.mockResolvedValue("queued");
   mocks.ensure.mockResolvedValue(undefined);
   mocks.cancel.mockResolvedValue(undefined);
   mocks.start.mockImplementation((request, progress) => new Promise((resolve, reject) => pending.push({ request, progress, resolve, reject })));
+});
+
+afterEach(() => {
+  disposePinia(pinia);
+  vi.unstubAllGlobals();
 });
 
 function finish(index: number) {

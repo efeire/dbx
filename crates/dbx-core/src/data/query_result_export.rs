@@ -1,3 +1,4 @@
+use super::duckdb_export::DuckDbExportSnapshot;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
@@ -1029,11 +1030,28 @@ async fn export_query_result_with_cleanup(
     report_completion: bool,
 ) -> crate::table_export::ExportCompletion {
     let mut session_id: Option<String> = None;
-    let result =
-        export_query_result_core_inner(state, request, cancel_token, &on_progress, &mut session_id, report_completion)
-            .await;
+    let mut duckdb_snapshot = None;
+    let result = export_query_result_core_inner(
+        state,
+        request,
+        cancel_token,
+        &on_progress,
+        &mut session_id,
+        report_completion,
+        &mut duckdb_snapshot,
+    )
+    .await;
 
-    let mut cleanup = Ok(());
+    let mut cleanup = if let Some(snapshot) = duckdb_snapshot {
+        if report_completion {
+            snapshot.close_with_completion(state).await
+        } else {
+            snapshot.close(state).await;
+            Ok(())
+        }
+    } else {
+        Ok(())
+    };
     if let Some(session_id) = session_id {
         let cursor_close = close_query_session(
             state,
@@ -1045,7 +1063,7 @@ async fn export_query_result_with_cleanup(
         )
         .await;
         if report_completion {
-            cleanup = cursor_close.map(|_| ());
+            cleanup = cleanup.and(cursor_close.map(|_| ()));
         }
     }
     if let Some(client_session_id) = request.client_session_id.as_deref() {
@@ -1072,6 +1090,7 @@ async fn export_query_result_core_inner(
     on_progress: &impl Fn(TableExportProgress),
     session_id: &mut Option<String>,
     externally_staged: bool,
+    duckdb_snapshot: &mut Option<DuckDbExportSnapshot>,
 ) -> Result<(), String> {
     let format = request.format.to_lowercase();
     if format != "csv" && format != "xlsx" && format != "json" && format != "txt" && format != "sql" {
@@ -1165,7 +1184,22 @@ async fn export_query_result_core_inner(
     let mut rows_exported: u64 = 0;
     let mut offset: usize = 0;
     let mut wrote_text_header = false;
-    let mut keyset_plan = build_keyset_plan(state, request).await;
+    if request.database_type == DatabaseType::DuckDb && txn_session_id.is_none() {
+        let snapshot = duckdb_snapshot.insert(DuckDbExportSnapshot::new(
+            &request.connection_id,
+            &request.database,
+            request.schema.as_deref(),
+            QueryExecutionOptions {
+                timeout_secs: request.timeout_secs,
+                client_session_id: request.client_session_id.clone(),
+                execution_id: request.execution_id.clone(),
+                catalog: request.catalog.clone(),
+                ..Default::default()
+            },
+        ));
+        snapshot.materialize(state, &request.sql, effective_row_limit, cancel_token.clone()).await?;
+    }
+    let mut keyset_plan = if duckdb_snapshot.is_none() { build_keyset_plan(state, request).await } else { None };
     // A Kingbase SQL Server compat TOP query that cannot be offset-paginated is
     // exported with a single execution whose page size is the enforceable row
     // bound (concrete TOP count and/or the configured export row limit), then it
@@ -1174,7 +1208,7 @@ async fn export_query_result_core_inner(
     if let Some(error) = streaming_pagination_preflight_error(
         request,
         page_size,
-        keyset_plan.is_some(),
+        keyset_plan.is_some() || duckdb_snapshot.is_some(),
         single_execution_bound.is_some(),
         use_agent_cursor,
     ) {
@@ -1211,27 +1245,28 @@ async fn export_query_result_core_inner(
             remaining.map_or(page_size, |rem| rem.min(page_size)).max(1)
         };
 
-        let (sql_to_execute, plan_limit, use_agent_result_session, single_execution) =
-            if let Some(plan) = keyset_plan.as_ref() {
-                (build_keyset_export_sql(plan, request, this_page), this_page, false, false)
-            } else {
-                let plan = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
-                    sql: request.sql.clone(),
-                    query_base_sql: request.query_base_sql.clone(),
-                    database_type: Some(request.database_type),
-                    pagination: QueryPagination { limit: this_page, offset, session_id: session_id.clone() },
-                    use_agent_cursor,
-                    first_page_uses_actual_sql: true,
-                    execution_hint: None,
-                });
-                if let Some(error) = plan.pagination_error {
-                    return Err(error);
-                }
-                let Some(plan_limit) = plan.page_limit else {
-                    return Err("Failed to build query pagination plan for export".to_string());
-                };
-                (plan.sql_to_execute, plan_limit, plan.use_agent_result_session, plan.single_execution)
+        let (sql_to_execute, plan_limit, use_agent_result_session, single_execution) = if duckdb_snapshot.is_some() {
+            (String::new(), this_page, false, false)
+        } else if let Some(plan) = keyset_plan.as_ref() {
+            (build_keyset_export_sql(plan, request, this_page), this_page, false, false)
+        } else {
+            let plan = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+                sql: request.sql.clone(),
+                query_base_sql: request.query_base_sql.clone(),
+                database_type: Some(request.database_type),
+                pagination: QueryPagination { limit: this_page, offset, session_id: session_id.clone() },
+                use_agent_cursor,
+                first_page_uses_actual_sql: true,
+                execution_hint: None,
+            });
+            if let Some(error) = plan.pagination_error {
+                return Err(error);
+            }
+            let Some(plan_limit) = plan.page_limit else {
+                return Err("Failed to build query pagination plan for export".to_string());
             };
+            (plan.sql_to_execute, plan_limit, plan.use_agent_result_session, plan.single_execution)
+        };
 
         let options = if use_agent_result_session {
             QueryExecutionOptions {
@@ -1257,7 +1292,9 @@ async fn export_query_result_core_inner(
             }
         };
 
-        let page_result = if let Some(txn_session_id) = txn_session_id {
+        let page_result = if let Some(snapshot) = duckdb_snapshot.as_ref() {
+            snapshot.page(state, offset as u64, this_page, cancel_token.clone()).await
+        } else if let Some(txn_session_id) = txn_session_id {
             execute_in_manual_transaction_with_options(
                 state,
                 txn_session_id,

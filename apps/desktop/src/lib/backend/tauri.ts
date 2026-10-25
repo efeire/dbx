@@ -8,6 +8,7 @@ import type { MongoRestoreUpload, MongoSourceReadOptions } from "./mongodbDumpTy
 import type { DamengDumpKind, DamengDumpRequest, DamengDumpProgress } from "./damengDumpTypes";
 import type { UserSkillRootSettings, UserSkillsListResult, UserSkillsReadResult } from "@/types/userSkills";
 import type { DatabaseBackupCommand, DatabaseBackupBackgroundStatus } from "@/lib/backup/backgroundDatabaseBackup";
+import type { NativeJobContext, NativeJobDetails, NativeJobList, NativeJobListRequest, NativeJobRequest, NativeJobOperationStatus, NativeJobPreparedPlan, NativeJobRef, NativeJobReferenceCatalog, NativeJobReferenceListRequest } from "@/lib/database/nativeJobs";
 import { functionDiffsToWire, functionInfoFromWire, schemaDiffPreparationFromWire, schemaDiffPreparationToWire, type FunctionInfoWire, type SchemaDiffPreparationWire } from "./functionInfoTransport";
 import type { OracleRoutineSnapshot, OracleRoutineOperation, OracleRoutineOperationObservation, OracleRoutineSaveInput, OracleRoutinePlanInput, OracleRoutinePlan, OracleRoutineReadOptions, OracleRoutineIdentity } from "@/types/schemaDiff";
 
@@ -184,6 +185,7 @@ import type { BuildTableSelectSqlOptions } from "@/lib/table/tableSelectSql";
 import type { DatabaseSearchSql, DatabaseSearchSqlOptions, SearchResultWhereOptions } from "@/lib/database/databaseSearch";
 import type { DatabaseStructureSearchSql, DatabaseStructureSearchSqlOptions } from "@/lib/database/databaseStructureSearch";
 import type { BuildEditableObjectSourceSqlInput, BuildRoutineRenameObjectSourceInput, FingerprintOracleRoutineObjectSourceInput, RewriteOracleRoutineReferencesInput, ValidateOracleExecutableObjectSourceInput } from "@/lib/table/objectSourceEditor";
+import type { OracleTriggerSqlInput, PreparedOracleTriggerSql } from "@/lib/database/oracleTriggerSql";
 import type { OracleTableReferenceRewriteInput, OracleViewRenameSource, OracleViewRenameSourceInput, OracleViewRenameSourceReview } from "@/types/database";
 import type { BuildViewDdlInput } from "@/lib/table/viewDdl";
 import type { BuildRenameObjectSqlOptions } from "@/lib/table/objectRenameSql";
@@ -1878,8 +1880,9 @@ export async function listObjects(
   catalog?: string,
   tableNameFilter?: import("@/types/database").TableNameFilter,
   executionId?: string,
-  exactIdentity?: boolean,
+  options?: boolean | import("@/types/database").MetadataReadOptions,
 ): Promise<ObjectInfo[]> {
+  const readOptions = typeof options === "object" ? options : undefined;
   return invoke("list_objects", {
     connectionId,
     database,
@@ -1888,10 +1891,11 @@ export async function listObjects(
     filter,
     limit,
     offset,
-    catalog,
+    catalog: readOptions?.catalog ?? catalog,
     tableNameFilter,
     executionId,
-    ...(exactIdentity ? { exactIdentity: true } : {}),
+    ...(readOptions?.identityMode ? { identityMode: readOptions.identityMode } : {}),
+    ...(options === true ? { exactIdentity: true } : {}),
   });
 }
 
@@ -1907,7 +1911,7 @@ export async function completionAssistantSearch(request: CompletionAssistantRequ
   return invoke("completion_assistant_search", { request });
 }
 
-export async function getObjectSource(connectionId: string, database: string, schema: string, name: string, objectType: ObjectSourceKind, signature?: string, relationName?: string): Promise<ObjectSource> {
+export async function getObjectSource(connectionId: string, database: string, schema: string, name: string, objectType: ObjectSourceKind, signature?: string, relationName?: string, options?: import("@/types/database").MetadataReadOptions): Promise<ObjectSource> {
   return invoke("get_object_source", {
     connectionId,
     database,
@@ -1916,6 +1920,8 @@ export async function getObjectSource(connectionId: string, database: string, sc
     objectType,
     signature,
     relationName,
+    ...(options?.identityMode ? { identityMode: options.identityMode } : {}),
+    ...(options?.catalog !== undefined ? { catalog: options.catalog } : {}),
   });
 }
 
@@ -1934,6 +1940,32 @@ export async function listSchemaInfos(connectionId: string, database: string): P
 export async function getCustomTypeDetails(connectionId: string, database: string, schema: string, name: string): Promise<CustomTypeDetails> {
   return invoke("get_custom_type_details", { connectionId, database, schema, name });
 }
+
+export function nativeJobOpenContext(connectionId: string, database: string): Promise<NativeJobContext> {
+  return invokeBackend("native_job_open_context", { connectionId, database });
+}
+export function nativeJobList(request: NativeJobListRequest): Promise<NativeJobList> {
+  return invokeBackend("native_job_list", { request });
+}
+export function nativeJobReferences(request: NativeJobReferenceListRequest): Promise<NativeJobReferenceCatalog> {
+  return invokeBackend("native_job_references", { request });
+}
+export function nativeJobRead(target: NativeJobRef): Promise<NativeJobDetails> {
+  return invokeBackend("native_job_read", { target });
+}
+export function nativeJobPrepare(mutation: NativeJobRequest): Promise<NativeJobPreparedPlan> {
+  return invokeBackend("native_job_prepare", { mutation });
+}
+export function nativeJobApply(planId: string): Promise<NativeJobOperationStatus> {
+  return invokeBackend("native_job_apply", { planId });
+}
+export function nativeJobStatus(operationId: string, observe?: boolean): Promise<NativeJobOperationStatus> {
+  return invokeBackend("native_job_status", { operationId, ...(observe ? { observe: true } : {}) });
+}
+export function nativeJobCancel(operationId: string): Promise<NativeJobOperationStatus> {
+  return invokeBackend("native_job_cancel", { operationId });
+}
+
 export async function getOracleTypeManagementSnapshot(connectionId: string, database: string, owner: string, name: string, knownObjects: OracleTypeManagementObjectKey[] = []): Promise<OracleTypeManagementSnapshot> {
   return invoke("get_oracle_type_management_snapshot", { connectionId, database, owner, name, knownObjects });
 }
@@ -2519,6 +2551,10 @@ export async function validateOracleExecutableObjectSource(input: ValidateOracle
   return invoke("validate_oracle_executable_object_source", { input });
 }
 
+export async function prepareOracleTriggerSql(input: OracleTriggerSqlInput): Promise<PreparedOracleTriggerSql> {
+  return invoke("prepare_oracle_trigger_sql", { input });
+}
+
 export async function fingerprintOracleRoutineObjectSource(input: FingerprintOracleRoutineObjectSourceInput): Promise<string> {
   return invoke("fingerprint_oracle_routine_object_source", { input });
 }
@@ -2760,14 +2796,16 @@ export async function listForeignKeysForDatabase(connectionId: string, database:
   return invoke("list_foreign_keys_for_database", { connectionId, database, schema, catalog, executionId });
 }
 
-export async function listTriggers(connectionId: string, database: string, schema: string, table: string, catalog?: string, exactIdentity?: boolean): Promise<TriggerInfo[]> {
+export async function listTriggers(connectionId: string, database: string, schema: string, table: string, catalog?: string, options?: boolean | import("@/types/database").MetadataReadOptions): Promise<TriggerInfo[]> {
+  const readOptions = typeof options === "object" ? options : undefined;
   return invoke("list_triggers", {
     connectionId,
     database,
     schema,
     table,
-    catalog,
-    ...(exactIdentity ? { exactIdentity: true } : {}),
+    catalog: readOptions?.catalog ?? catalog,
+    ...(readOptions?.identityMode ? { identityMode: readOptions.identityMode } : {}),
+    ...(options === true ? { exactIdentity: true } : {}),
   });
 }
 
@@ -3396,8 +3434,8 @@ export async function previewAgentOfflineExport(): Promise<AgentOfflineExportPre
   return invoke("preview_agent_offline_export");
 }
 
-export async function exportAgentsOffline(path: string, driverKeys: string[]): Promise<AgentOfflineExportResult> {
-  return invoke("export_agents_offline", { path, driverKeys });
+export async function exportAgentsOffline(path: string, driverKeys: string[], includeJres = true): Promise<AgentOfflineExportResult> {
+  return invoke("export_agents_offline", { path, driverKeys, includeJres });
 }
 
 export async function importAgentDriver(dbType: string, path: string | File): Promise<void> {
@@ -6164,6 +6202,7 @@ export interface TableImportColumnMapping {
   sourceColumn: string;
   targetColumn: string;
   targetDataType?: string | null;
+  generator?: string | null;
 }
 
 export interface TableImportParseOptions {
