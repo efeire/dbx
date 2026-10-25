@@ -518,7 +518,7 @@ pub async fn connect_and_authenticate(
             }
         }
     }));
-    let mut session = attempt.0.as_mut().expect("pending SSH authentication owns its handle");
+    let session = attempt.0.as_mut().expect("pending SSH authentication owns its handle");
 
     // Probe with "none" authentication first. Some SSH proxies and jump-hosts
     // accept connections without any credential, and this is also the standard
@@ -575,7 +575,7 @@ pub async fn connect_and_authenticate(
                 AuthResult::Failure { remaining_methods, partial_success } => {
                     if server_offers_keyboard_interactive(&remaining_methods) {
                         authenticate_keyboard_interactive(
-                            &mut session,
+                            session,
                             ssh_user,
                             host_key_host,
                             host_key_port,
@@ -614,7 +614,7 @@ pub async fn connect_and_authenticate(
                 AuthResult::Failure { remaining_methods, partial_success } => {
                     if server_offers_keyboard_interactive(&remaining_methods) {
                         authenticate_keyboard_interactive(
-                            &mut session,
+                            session,
                             ssh_user,
                             host_key_host,
                             host_key_port,
@@ -665,7 +665,7 @@ pub async fn connect_and_authenticate(
         .map_err(|e| format!("SSH key auth failed: {e}"))?;
         if auth_result_offers_keyboard_interactive(&auth_res) {
             authenticate_keyboard_interactive(
-                &mut session,
+                session,
                 ssh_user,
                 host_key_host,
                 host_key_port,
@@ -692,7 +692,7 @@ pub async fn connect_and_authenticate(
             .map_err(|e| format!("SSH password auth failed: {e}"))?;
         if auth_result_offers_keyboard_interactive(&auth_res) {
             authenticate_keyboard_interactive(
-                &mut session,
+                session,
                 ssh_user,
                 host_key_host,
                 host_key_port,
@@ -710,7 +710,7 @@ pub async fn connect_and_authenticate(
         }
     } else if try_agent {
         match try_authenticate_with_agent(
-            &mut session,
+            session,
             ssh_user,
             ssh_agent_sock_path,
             ssh_agent_key_fingerprint,
@@ -721,7 +721,7 @@ pub async fn connect_and_authenticate(
             Ok(AgentAuthenticationOutcome::Success) => {}
             Ok(AgentAuthenticationOutcome::KeyboardInteractiveRequired) => {
                 authenticate_keyboard_interactive(
-                    &mut session,
+                    session,
                     ssh_user,
                     host_key_host,
                     host_key_port,
@@ -734,7 +734,7 @@ pub async fn connect_and_authenticate(
         }
     } else if auth_result_offers_keyboard_interactive(&none_res) {
         authenticate_keyboard_interactive(
-            &mut session,
+            session,
             ssh_user,
             host_key_host,
             host_key_port,
