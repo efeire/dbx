@@ -339,6 +339,7 @@ onMounted(() => {
   window.addEventListener("resize", updateStandaloneResultToolbarDimensions);
   window.visualViewport?.addEventListener("resize", updateStandaloneResultToolbarDimensions);
   window.addEventListener("dbx:ui-scale-applied", updateStandaloneResultToolbarDimensions);
+  window.addEventListener("dbx:before-tab-switch", revokeExecutionErrorFocus);
   revealActiveResultRunAfterRender();
 });
 
@@ -1300,20 +1301,53 @@ watch(
   },
 );
 
+let executionCompletion: { tabId: string; sql: string; editor: typeof queryEditorRef.value; cancelCount: number; executionId?: string; revoked: boolean } | undefined;
+
+function revokeExecutionErrorFocus(event: Event) {
+  const detail = (event as CustomEvent<{ fromTabId?: string; tabId?: string }>).detail;
+  if (executionCompletion && (detail?.fromTabId === executionCompletion.tabId || (!detail?.fromTabId && detail?.tabId !== executionCompletion.tabId))) executionCompletion.revoked = true;
+}
+
+onUnmounted(() => {
+  executionCompletion = undefined;
+  window.removeEventListener("dbx:before-tab-switch", revokeExecutionErrorFocus);
+});
+
 watch(
-  () => props.activeTab.isExecuting,
-  (isExecuting, wasExecuting) => {
-    if (isExecuting && !wasExecuting) {
-      queryEditorRef.value?.beginExecutionViewportTracking();
+  () => [props.activeTab.id, props.activeTab.isExecuting, props.activeTab.executionId, props.activeTab.cancelRequestCount ?? 0, props.activeTab.isCancelling] as const,
+  ([tabId, isExecuting, executionId, cancelCount, isCancelling], [previousTabId, wasExecuting]) => {
+    if (tabId !== previousTabId) {
+      executionCompletion = undefined;
+      return;
     }
+    if (isExecuting && !wasExecuting) {
+      const editor = queryEditorRef.value;
+      executionCompletion = { tabId, sql: props.activeTab.sql, editor, cancelCount, executionId, revoked: false };
+      editor?.beginExecutionViewportTracking();
+    }
+    const completion = executionCompletion;
+    if (!completion) return;
+    if (isCancelling || cancelCount !== completion.cancelCount) completion.revoked = true;
+    if (isExecuting && executionId) completion.executionId = executionId;
     if (!isExecuting && wasExecuting) {
+      const result = props.activeTab.result;
+      const error = result && isQueryExecutionErrorResult(result);
       nextTick(() => {
         requestAnimationFrame(() => {
-          queryEditorRef.value?.scrollCursorIntoView();
+          if (executionCompletion !== completion || props.activeTab.id !== tabId || props.activeTab.isExecuting || queryEditorRef.value !== completion.editor) return;
+          executionCompletion = undefined;
+          if (error) {
+            if (completion.revoked || !completion.executionId || result.sourceExecutionId !== completion.executionId || props.activeTab.sql !== completion.sql || props.activeTab.result !== result) return;
+            const mapped = sqlErrorEditorOffset(activeResultErrorOffsetOptions());
+            if (mapped) completion.editor?.scrollCursorIntoView(mapped.offset);
+          } else {
+            completion.editor?.scrollCursorIntoView();
+          }
         });
       });
     }
   },
+  { flush: "sync" },
 );
 
 // Table toolbox handlers
@@ -1684,6 +1718,7 @@ async function exportResultArchive() {
 }
 
 async function removeResultRun(runId: string) {
+  if (executionCompletion) executionCompletion.revoked = true;
   const removedActiveRun = props.activeTab.activeResultRunId === runId;
   const removed = await queryStore.removeResultRun(props.activeTab.id, runId);
   if (!removed) return;
