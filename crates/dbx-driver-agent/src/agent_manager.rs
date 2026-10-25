@@ -880,8 +880,13 @@ pub struct AgentManager {
     base_dir: PathBuf,
     app_version: String,
     pub daemons: Mutex<std::collections::HashMap<String, AgentDriverClient>>,
-    pub connection_runtimes: Mutex<
-        std::collections::HashMap<String, std::sync::Arc<tokio::sync::OnceCell<std::sync::Arc<AgentRuntimeClient>>>>,
+    pub connection_runtimes: Arc<
+        Mutex<
+            std::collections::HashMap<
+                String,
+                std::sync::Arc<tokio::sync::OnceCell<std::sync::Arc<AgentRuntimeClient>>>,
+            >,
+        >,
     >,
     /// Serializes `load_state` → modify → `save_state` to prevent lost updates
     /// when multiple driver installs run concurrently.
@@ -923,7 +928,7 @@ impl AgentManager {
             base_dir,
             app_version: app_version.into(),
             daemons: Mutex::new(std::collections::HashMap::new()),
-            connection_runtimes: Mutex::new(std::collections::HashMap::new()),
+            connection_runtimes: Arc::new(Mutex::new(std::collections::HashMap::new())),
             state_lock: StdMutex::new(()),
             jre_install_locks: StdMutex::new(std::collections::HashMap::new()),
             driver_operation_locks: StdMutex::new(std::collections::HashMap::new()),
