@@ -29,10 +29,11 @@ type fakeDBMSOutputSession struct {
 	fetchErr error
 	// failFetches is how many upcoming fetches fail with fetchErr; a negative
 	// value fails every fetch.
-	failFetches int
-	execCalls   int
-	execSQL     []string
-	fetchCalls  int
+	failFetches  int
+	execCalls    int
+	execSQL      []string
+	execContexts []context.Context
+	fetchCalls   int
 	// batchSizes records the line bound each fetch was asked for.
 	batchSizes []int
 	// leftover is handed back with the first fetch, the way the block hands back
@@ -44,9 +45,13 @@ type fakeDBMSOutputSession struct {
 
 func (f *fakeDBMSOutputSession) identity() any { return f.key }
 
-func (f *fakeDBMSOutputSession) exec(_ context.Context, sqlText string) error {
+func (f *fakeDBMSOutputSession) exec(ctx context.Context, sqlText string) error {
 	f.execCalls++
 	f.execSQL = append(f.execSQL, sqlText)
+	f.execContexts = append(f.execContexts, ctx)
+	if f.execErr == nil && sqlText == dbmsOutputDisableSQL {
+		f.lines = nil
+	}
 	return f.execErr
 }
 
@@ -120,7 +125,7 @@ func TestEnableDBMSOutputFailureIsRememberedAndNeverRetried(t *testing.T) {
 
 func TestDrainDBMSOutputKeepsLineOrderAndStopsAtStatusOne(t *testing.T) {
 	session := &fakeDBMSOutputSession{key: "conn-1", lines: []string{"first", "second", "third"}}
-	messages := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
+	messages, _ := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
 	if len(messages) != 3 {
 		t.Fatalf("got %d messages, want 3: %+v", len(messages), messages)
 	}
@@ -141,7 +146,7 @@ func TestDrainDBMSOutputKeepsLineOrderAndStopsAtStatusOne(t *testing.T) {
 
 func TestDrainDBMSOutputWithoutOutputReturnsNoMessages(t *testing.T) {
 	session := &fakeDBMSOutputSession{key: "conn-1"}
-	messages := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
+	messages, _ := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
 	if len(messages) != 0 {
 		t.Fatalf("got %d messages for an empty buffer, want 0", len(messages))
 	}
@@ -152,7 +157,7 @@ func TestDrainDBMSOutputWithoutOutputReturnsNoMessages(t *testing.T) {
 
 func TestDrainDBMSOutputTruncatesAtLimitWithNotice(t *testing.T) {
 	session := &fakeDBMSOutputSession{key: "conn-1", lines: []string{"1", "2", "3", "4", "5"}}
-	messages := drainDBMSOutput(context.Background(), session, 3)
+	messages, _ := drainDBMSOutput(context.Background(), session, 3)
 	if len(messages) != 4 {
 		t.Fatalf("got %d messages, want 3 lines plus one truncation notice: %+v", len(messages), messages)
 	}
@@ -177,7 +182,7 @@ func TestDrainDBMSOutputTruncatesAtLimitWithNotice(t *testing.T) {
 
 func TestDrainDBMSOutputKeepsExactlyLimitLinesWithoutTruncationNotice(t *testing.T) {
 	session := &fakeDBMSOutputSession{key: "conn-1", lines: []string{"1", "2", "3"}}
-	messages := drainDBMSOutput(context.Background(), session, 3)
+	messages, _ := drainDBMSOutput(context.Background(), session, 3)
 	if len(messages) != 3 {
 		t.Fatalf("got %d messages, want exactly the 3 buffered lines: %+v", len(messages), messages)
 	}
@@ -201,7 +206,7 @@ func TestDrainDBMSOutputKeepsDrainingAfterAFailedFetch(t *testing.T) {
 		fetchErr:    errors.New("ORA-06502: PL/SQL: numeric or value error: character string buffer too small"),
 		failFetches: 1,
 	}
-	messages := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
+	messages, _ := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
 	if len(messages) != 1 || messages[0].Message != "after-the-failure" {
 		t.Fatalf("messages after one failed fetch = %+v, want the following line", messages)
 	}
@@ -221,7 +226,7 @@ func TestDrainDBMSOutputStopsAfterTwoConsecutiveFailures(t *testing.T) {
 		fetchErr:    errors.New("ORA-03113: end-of-file on communication channel"),
 		failFetches: -1,
 	}
-	messages := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
+	messages, _ := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
 	if len(messages) != 0 {
 		t.Fatalf("got %d messages after consecutive failures, want 0", len(messages))
 	}
@@ -320,11 +325,23 @@ func TestWithStatementDBMSOutputWithoutConnectionStillRunsTheStatement(t *testin
 // behaviour observable. Its Exec path mirrors go-ora: sql.Out / go_ora.Out
 // arguments are unpacked and their destinations are written in place.
 type oracleDBMSOutputDriver struct {
-	mu           sync.Mutex
-	enableErr    error
-	enableCount  int
-	getLineCount int
-	statements   []string
+	mu                   sync.Mutex
+	openCount            int
+	commitCount          int
+	rollbackCount        int
+	disableCount         int
+	disableErr           error
+	enableAfterEffectErr error
+	fetchErr             error
+	failFetches          int
+	initialBuffer        []string
+	initialEnabled       bool
+	rowOutputLines       []string
+	closeOutputLines     []string
+	enableErr            error
+	enableCount          int
+	getLineCount         int
+	statements           []string
 	// statementLines queues the lines each statement writes when it runs, in order, so
 	// one call that runs several statements (execute_batch) can script every one of
 	// them. scriptLines appends one entry; a statement pops the head.
@@ -354,7 +371,11 @@ func openOracleDBMSOutputTestDB(t *testing.T) (*sql.DB, *oracleDBMSOutputDriver)
 }
 
 func (d *oracleDBMSOutputDriver) Open(string) (driver.Conn, error) {
-	return &oracleDBMSOutputConn{driver: d}, nil
+	d.mu.Lock()
+	d.openCount++
+	conn := &oracleDBMSOutputConn{driver: d, enabled: d.initialEnabled, buffer: append([]string(nil), d.initialBuffer...)}
+	d.mu.Unlock()
+	return conn, nil
 }
 
 func (d *oracleDBMSOutputDriver) scriptLines(lines []string) {
@@ -413,13 +434,23 @@ func (c *oracleDBMSOutputConn) Prepare(string) (driver.Stmt, error) {
 func (c *oracleDBMSOutputConn) Close() error { return nil }
 
 func (c *oracleDBMSOutputConn) Begin() (driver.Tx, error) {
-	return oracleDBMSOutputTx{}, nil
+	return oracleDBMSOutputTx{driver: c.driver}, nil
 }
 
-type oracleDBMSOutputTx struct{}
+type oracleDBMSOutputTx struct{ driver *oracleDBMSOutputDriver }
 
-func (oracleDBMSOutputTx) Commit() error   { return nil }
-func (oracleDBMSOutputTx) Rollback() error { return nil }
+func (tx oracleDBMSOutputTx) Commit() error {
+	tx.driver.mu.Lock()
+	tx.driver.commitCount++
+	tx.driver.mu.Unlock()
+	return nil
+}
+func (tx oracleDBMSOutputTx) Rollback() error {
+	tx.driver.mu.Lock()
+	tx.driver.rollbackCount++
+	tx.driver.mu.Unlock()
+	return nil
+}
 
 var (
 	_ driver.ExecerContext     = (*oracleDBMSOutputConn)(nil)
@@ -440,6 +471,16 @@ func (c *oracleDBMSOutputConn) ExecContext(ctx context.Context, query string, ar
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+	if query == dbmsOutputDisableSQL {
+		c.driver.disableCount++
+		c.driver.events = append(c.driver.events, "disable")
+		if c.driver.disableErr != nil {
+			return nil, c.driver.disableErr
+		}
+		c.enabled = false
+		c.buffer = nil
+		return driver.RowsAffected(0), nil
+	}
 	if strings.Contains(query, "DBMS_OUTPUT.ENABLE") {
 		c.driver.enableCount++
 		c.driver.events = append(c.driver.events, "enable")
@@ -448,11 +489,20 @@ func (c *oracleDBMSOutputConn) ExecContext(ctx context.Context, query string, ar
 			return nil, c.driver.enableErr
 		}
 		c.enabled = true
+		if c.driver.enableAfterEffectErr != nil {
+			return nil, c.driver.enableAfterEffectErr
+		}
 		return driver.RowsAffected(0), nil
 	}
 	if strings.Contains(query, "DBMS_OUTPUT.GET_LINE") {
 		c.driver.getLineCount++
 		c.driver.events = append(c.driver.events, "get_line")
+		if c.driver.failFetches != 0 {
+			if c.driver.failFetches > 0 {
+				c.driver.failFetches--
+			}
+			return nil, c.driver.fetchErr
+		}
 		// The fetch block takes the line bound and the register capacity first and
 		// hands its payload back in the registers that follow (see
 		// dbmsOutputFetchSQLTemplate).
@@ -511,29 +561,50 @@ func (c *oracleDBMSOutputConn) QueryContext(_ context.Context, query string, _ [
 	defer c.driver.mu.Unlock()
 	c.driver.statements = append(c.driver.statements, query)
 	c.driver.events = append(c.driver.events, "query")
+	lines := c.driver.takeStatementLines()
 	if c.enabled {
-		c.buffer = append(c.buffer, c.driver.takeStatementLines()...)
+		c.buffer = append(c.buffer, lines...)
 	}
 	return &oracleDBMSOutputRows{
-		columns: []string{"N"},
-		values:  [][]driver.Value{{int64(1)}, {int64(2)}, {int64(3)}},
+		columns:    []string{"N"},
+		values:     [][]driver.Value{{int64(1)}, {int64(2)}, {int64(3)}},
+		connection: c,
 	}, nil
 }
 
 // oracleDBMSOutputRows is the three-row result set every SELECT over this fake
 // connection returns, so a page size of two leaves a live paging session behind.
 type oracleDBMSOutputRows struct {
-	columns []string
-	values  [][]driver.Value
-	index   int
+	columns    []string
+	values     [][]driver.Value
+	index      int
+	connection *oracleDBMSOutputConn
+	closed     bool
 }
 
 var _ driver.Rows = (*oracleDBMSOutputRows)(nil)
 
 func (r *oracleDBMSOutputRows) Columns() []string { return r.columns }
-func (r *oracleDBMSOutputRows) Close() error      { return nil }
+func (r *oracleDBMSOutputRows) Close() error {
+	if r.connection != nil {
+		r.connection.driver.mu.Lock()
+		defer r.connection.driver.mu.Unlock()
+		if !r.closed && r.connection.enabled {
+			r.connection.buffer = append(r.connection.buffer, r.connection.driver.closeOutputLines...)
+		}
+	}
+	r.closed = true
+	return nil
+}
 
 func (r *oracleDBMSOutputRows) Next(dest []driver.Value) error {
+	if r.connection != nil {
+		r.connection.driver.mu.Lock()
+		defer r.connection.driver.mu.Unlock()
+		if r.index == 1 && r.connection.enabled {
+			r.connection.buffer = append(r.connection.buffer, r.connection.driver.rowOutputLines...)
+		}
+	}
 	if r.index >= len(r.values) {
 		return io.EOF
 	}
@@ -856,8 +927,8 @@ func TestStatementDBMSOutputEnablesOnceAndAttributesEachStatement(t *testing.T) 
 	}
 	// Output written while the buffer is off is discarded, so ENABLE must run
 	// before the statement that writes into it.
-	if events := drv.eventLog(); len(events) == 0 || events[0] != "enable" {
-		t.Fatalf("first session event = %v, want ENABLE before the statement", events)
+	if events := drv.eventLog(); len(events) < 3 || events[0] != "disable" || events[1] != "enable" || events[2] != "statement" {
+		t.Fatalf("first session events = %v, want a confirmed reset and ENABLE before the statement", events)
 	}
 	// The thin go-ora driver reads an OUT string back only when the bind carries
 	// a buffer size, so the line must be bound with go_ora.Out.
@@ -889,7 +960,7 @@ func TestStatementDBMSOutputBindsSqlOutForTheOCIDriver(t *testing.T) {
 }
 
 func TestManualTransactionCapturesDBMSOutputOnItsOwnConnection(t *testing.T) {
-	db, driver := openOracleManualTxTestDB(t)
+	db, driver := openOracleDBMSOutputTestDB(t)
 	s := newServer()
 	s.db = db
 	if err := s.beginManualTransaction(""); err != nil {
@@ -903,16 +974,14 @@ func TestManualTransactionCapturesDBMSOutputOnItsOwnConnection(t *testing.T) {
 		}
 	}
 	driver.mu.Lock()
-	execs := append([]string(nil), driver.execs...)
+	enableCount := driver.enableCount
+	opens := driver.openCount
 	driver.mu.Unlock()
-	enableCount := 0
-	for _, query := range execs {
-		if strings.Contains(query, "DBMS_OUTPUT.ENABLE") {
-			enableCount++
-		}
-	}
 	if enableCount != 1 {
-		t.Fatalf("DBMS_OUTPUT.ENABLE ran %d times inside one manual transaction, want 1: %q", enableCount, execs)
+		t.Fatalf("DBMS_OUTPUT.ENABLE ran %d times inside one manual transaction, want 1", enableCount)
+	}
+	if opens != 1 {
+		t.Fatalf("capture opened %d physical connections, want 1", opens)
 	}
 	if s.statementConn != nil {
 		t.Fatal("the statement connection was not released")
@@ -1074,6 +1143,248 @@ func TestFailedStatementLinesDoNotLeakToTheNextStatement(t *testing.T) {
 	}
 	if len(second.Messages) != 1 || second.Messages[0].Message != "leak-2" {
 		t.Fatalf("h2 messages = %+v, want only its own line (a failed statement's lines leaked)", second.Messages)
+	}
+}
+
+func TestStatementOutputReadFailureRequiresConfirmedRecovery(t *testing.T) {
+	for _, failures := range []int{1, 2} {
+		t.Run(fmt.Sprintf("failures=%d", failures), func(t *testing.T) {
+			db, drv := openOracleDBMSOutputTestDB(t)
+			s := newServer()
+			s.db = db
+			drv.failFetches, drv.fetchErr = failures, errors.New("fetch response unavailable")
+			drv.scriptLines([]string{"OLD"})
+			first, err := s.executeQuery(queryOptions{SQL: "BEGIN DBMS_OUTPUT.PUT_LINE('OLD'); END;"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failures == 1 && (len(first.Messages) != 1 || first.Messages[0].Message != "OLD") {
+				t.Fatalf("successful retry lost output: %+v", first.Messages)
+			}
+			result, err := s.executeQuery(queryOptions{SQL: "SELECT 1 FROM DUAL"})
+			if err != nil || len(result.Messages) != 0 {
+				t.Fatalf("unconfirmed fetch output leaked: %+v, %v", result.Messages, err)
+			}
+			if drv.enableCount != failures {
+				t.Fatalf("ENABLE count = %d, want %d", drv.enableCount, failures)
+			}
+		})
+	}
+}
+
+func TestEvictedOutputSessionIsResetBeforeReadmission(t *testing.T) {
+	db, drv := openOracleDBMSOutputTestDB(t)
+	s := newServer()
+	s.db = db
+	drv.scriptLines(make([]string, dbmsOutputMaxLines+2))
+	if _, err := s.executeQuery(queryOptions{SQL: "BEGIN NULL; END;"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < dbmsOutputMaxTrackedConnections; i++ {
+		s.dbmsOutput.entry(fmt.Sprintf("other-%d", i))
+	}
+	if len(s.dbmsOutput.attempted) > dbmsOutputMaxTrackedConnections {
+		t.Fatal("tracker exceeded its existing bound")
+	}
+	drv.disableErr = errors.New("readmission reset unavailable")
+	fetches := drv.getLineCount
+	result, err := s.executeQuery(queryOptions{SQL: "SELECT 1 FROM DUAL"})
+	if err != nil || len(result.Messages) != 0 || drv.getLineCount != fetches {
+		t.Fatalf("evicted session drained before confirmed reset: %+v, %v", result.Messages, err)
+	}
+	drv.disableErr = nil
+	drv.scriptLines([]string{"NEW"})
+	result, err = s.executeQuery(queryOptions{SQL: "BEGIN DBMS_OUTPUT.PUT_LINE('NEW'); END;"})
+	if err != nil || len(result.Messages) != 1 || result.Messages[0].Message != "NEW" || drv.openCount != 1 {
+		t.Fatalf("readmission did not isolate original session: %+v, %v", result.Messages, err)
+	}
+}
+
+func TestOutputResetChildContextAndLateFinishIsolation(t *testing.T) {
+	s := newServer()
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	session := &fakeDBMSOutputSession{key: "physical"}
+	old := s.ensureDBMSOutput(parent, session)
+	if old == nil || len(session.execContexts) != 2 || session.execContexts[0] != session.execContexts[1] {
+		t.Fatal("reset must use one child context for DISABLE and ENABLE")
+	}
+	deadline, bounded := session.execContexts[0].Deadline()
+	if !bounded || time.Until(deadline) > 2*time.Second || session.execContexts[0].Err() != context.Canceled || parent.Err() != nil {
+		t.Fatal("reset context was unbounded or canceled its statement parent")
+	}
+	s.dbmsOutput.reset()
+	current := s.dbmsOutput.entry(session.key)
+	s.finishStatementDBMSOutput(parent, session, old, "SELECT 1 FROM DUAL")
+	if !current.needsReset || s.dbmsOutput.attempted[session.key] != current {
+		t.Fatal("late finish cleared or replaced a newly admitted entry")
+	}
+	current.enableSucceeded, current.needsReset = true, false
+	unknown := &fakeDBMSOutputSession{}
+	if s.ensureDBMSOutput(parent, unknown) != nil || unknown.execCalls != 0 || !current.needsReset {
+		t.Fatal("unknown physical identity must skip capture and dirty existing eligible sessions")
+	}
+}
+
+func TestLaterCursorOutputDoesNotLeakToNextStatement(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		for _, tableRead := range []bool{false, true} {
+			for _, closeEarly := range []bool{false, true} {
+				t.Run(fmt.Sprintf("manual=%t/table=%t/close=%t", manual, tableRead, closeEarly), func(t *testing.T) {
+					db, drv := openOracleDBMSOutputTestDB(t)
+					s := newServer()
+					s.db = db
+					if manual {
+						if err := s.beginManualTransaction(""); err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() { _ = s.rollbackManualTransactionQuiet() })
+					}
+					if _, err := s.executeQuery(queryOptions{SQL: "BEGIN NULL; END;"}); err != nil {
+						t.Fatal(err)
+					}
+					drv.rowOutputLines = []string{"LATER ROW"}
+					drv.closeOutputLines = []string{"CURSOR CLOSE"}
+					start, fetch, closeSession := s.executeQueryPage, s.fetchQueryPage, s.closeQuerySession
+					if tableRead {
+						start, fetch, closeSession = s.startTableRead, s.fetchTableReadPage, s.closeTableReadSession
+					}
+					page, err := start(queryOptions{SQL: "SELECT N FROM T"}, 1)
+					if err != nil || page.SessionID == nil {
+						t.Fatalf("start cursor: %+v, %v", page, err)
+					}
+					if closeEarly {
+						if !closeSession(*page.SessionID) {
+							t.Fatal("cursor close failed")
+						}
+					} else if _, err := fetch(*page.SessionID, 3); err != nil {
+						t.Fatal(err)
+					}
+					drv.rowOutputLines, drv.closeOutputLines = nil, nil
+					result, err := s.executeQuery(queryOptions{SQL: "SELECT 1 FROM DUAL"})
+					if err != nil || len(result.Messages) != 0 {
+						t.Fatalf("cursor output leaked: %+v, %v", result.Messages, err)
+					}
+					if drv.openCount != 1 || drv.commitCount != 0 || drv.rollbackCount != 0 {
+						t.Fatal("output isolation replaced connection or transaction")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestStatementOutputResetFailureKeepsBusinessExecutionAndRecovers(t *testing.T) {
+	for _, failure := range []string{"disable", "enable", "enable-response"} {
+		t.Run(failure, func(t *testing.T) {
+			db, drv := openOracleDBMSOutputTestDB(t)
+			s := newServer()
+			s.db = db
+			drv.scriptLines(make([]string, dbmsOutputMaxLines+2))
+			if _, err := s.executeQuery(queryOptions{SQL: "BEGIN NULL; END;"}); err != nil {
+				t.Fatal(err)
+			}
+			drv.mu.Lock()
+			fetches := drv.getLineCount
+			injected := fmt.Errorf("reset response unavailable")
+			switch failure {
+			case "disable":
+				drv.disableErr = injected
+			case "enable":
+				drv.enableErr = injected
+			default:
+				drv.enableAfterEffectErr = injected
+			}
+			drv.mu.Unlock()
+			for i := 0; i < 2; i++ {
+				drv.scriptLines([]string{"unattributed"})
+				result, err := s.executeQuery(queryOptions{SQL: "SELECT 1 FROM DUAL"})
+				if err != nil || len(result.Messages) != 0 {
+					t.Fatalf("reset failure changed business result: messages=%+v err=%v", result.Messages, err)
+				}
+			}
+			drv.mu.Lock()
+			if drv.getLineCount != fetches {
+				t.Fatal("capture fetched output after an unconfirmed reset")
+			}
+			drv.disableErr, drv.enableErr, drv.enableAfterEffectErr = nil, nil, nil
+			drv.mu.Unlock()
+			drv.scriptLines([]string{"NEW"})
+			result, err := s.executeQuery(queryOptions{SQL: "BEGIN DBMS_OUTPUT.PUT_LINE('NEW'); END;"})
+			if err != nil || len(result.Messages) != 1 || result.Messages[0].Message != "NEW" {
+				t.Fatalf("recovery leaked output: messages=%+v err=%v", result.Messages, err)
+			}
+			drv.mu.Lock()
+			defer drv.mu.Unlock()
+			if drv.openCount != 1 || len(drv.statements) != 4 || drv.commitCount != 0 || drv.rollbackCount != 0 {
+				t.Fatalf("capture replayed or replaced business execution: %+v", drv.events)
+			}
+		})
+	}
+}
+
+func TestStatementOutputClearsUnknownPhysicalSessionBuffer(t *testing.T) {
+	db, drv := openOracleDBMSOutputTestDB(t)
+	drv.initialEnabled = true
+	drv.initialBuffer = []string{"PREVIOUS OWNER"}
+	s := newServer()
+	s.db = db
+	result, err := s.executeQuery(queryOptions{SQL: "SELECT 1 FROM DUAL"})
+	if err != nil || len(result.Messages) != 0 {
+		t.Fatalf("unknown session output leaked: messages=%+v err=%v", result.Messages, err)
+	}
+}
+
+func TestTruncatedStatementOutputDoesNotLeakToNextStatement(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		t.Run(fmt.Sprintf("manual=%t", manual), func(t *testing.T) {
+			db, drv := openOracleDBMSOutputTestDB(t)
+			s := newServer()
+			s.db = db
+			if manual {
+				if err := s.beginManualTransaction(""); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = s.rollbackManualTransactionQuiet() })
+			}
+			originalTx, originalConn := s.manualTx, s.manualConn
+			lines := make([]string, dbmsOutputMaxLines+2)
+			for i := range lines {
+				lines[i] = fmt.Sprintf("old-%d", i)
+			}
+			drv.scriptLines(lines)
+			first, err := s.executeQuery(queryOptions{SQL: "BEGIN FOR I IN 1..10002 LOOP DBMS_OUTPUT.PUT_LINE('old'); END LOOP; END;"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(first.Messages) != dbmsOutputMaxLines+1 || !strings.Contains(first.Messages[dbmsOutputMaxLines].Message, "truncated") {
+				t.Fatalf("capture limit or truncation notice changed: %d messages", len(first.Messages))
+			}
+			drv.scriptLines(nil)
+			second, err := s.executeQuery(queryOptions{SQL: "SELECT 1 FROM DUAL"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(second.Messages) != 0 {
+				t.Fatalf("previous statement output leaked to SELECT: %+v", second.Messages)
+			}
+			drv.scriptLines([]string{"NEW"})
+			third, err := s.executeQuery(queryOptions{SQL: "BEGIN DBMS_OUTPUT.PUT_LINE('NEW'); END;"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(third.Messages) != 1 || third.Messages[0].Message != "NEW" {
+				t.Fatalf("new output = %+v", third.Messages)
+			}
+			if s.manualTx != originalTx || s.manualConn != originalConn {
+				t.Fatal("capture replaced the manual transaction or connection")
+			}
+			drv.mu.Lock()
+			defer drv.mu.Unlock()
+			if drv.openCount != 1 || drv.commitCount != 0 || drv.rollbackCount != 0 || len(drv.statements) != 3 {
+				t.Fatalf("capture changed execution: opens=%d commits=%d rollbacks=%d statements=%d", drv.openCount, drv.commitCount, drv.rollbackCount, len(drv.statements))
+			}
+		})
 	}
 }
 
@@ -1416,7 +1727,7 @@ func TestDrainDBMSOutputSurfacesATruncatedLineAndKeepsGoing(t *testing.T) {
 		leftover:      truncated,
 		truncatedFrom: 20000,
 	}
-	messages := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
+	messages, _ := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
 	if len(messages) != 3 {
 		t.Fatalf("got %d messages, want the following line, the cut line and one notice: %+v", len(messages), messages)
 	}
@@ -1441,7 +1752,7 @@ func TestDrainDBMSOutputStopsAtTheLineLimitWithNotice(t *testing.T) {
 		lines = append(lines, fmt.Sprintf("line-%05d", index))
 	}
 	session := &fakeDBMSOutputSession{key: "conn-1", lines: lines}
-	messages := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
+	messages, _ := drainDBMSOutput(context.Background(), session, dbmsOutputMaxLines)
 	if len(messages) != dbmsOutputMaxLines+1 {
 		t.Fatalf("got %d messages, want %d lines plus one notice", len(messages), dbmsOutputMaxLines)
 	}

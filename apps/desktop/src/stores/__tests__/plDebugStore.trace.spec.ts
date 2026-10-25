@@ -17,7 +17,7 @@ function activatePinia() {
   piniaInstances.push(pinia);
   setActivePinia(pinia);
 }
-const receipt = (operationId: string) => ({ serverEpoch: "epoch", sessionId: "d1", operationId, generation: 1, revision: snapshot.revision, state: "succeeded" as const, dispatched: true, result: snapshot, error: null });
+const receipt = (operationId: string) => ({ serverEpoch: "epoch", sessionId: snapshot.sessionId, operationId, generation: snapshot.generation, revision: snapshot.revision, state: "succeeded" as const, dispatched: true, result: snapshot, error: null });
 
 async function startSession() {
   const store = usePlDebugStore();
@@ -127,5 +127,75 @@ describe("plDebugStore trace run (#35)", () => {
     activatePinia();
     const fresh = usePlDebugStore();
     await expect(fresh.startTrace()).rejects.toThrow(/no debug session/);
+  });
+
+  it("clears the completed trace when restart confirms a new generation", async () => {
+    const store = await startSession();
+    plStepOver.mockResolvedValueOnce({ line: "9", terminated: true });
+    await store.startTrace();
+    expect(store.traceResult?.lines).toEqual([{ line: 9, hits: 1 }]);
+    snapshot = { ...snapshot, releaseState: "released", runtimeExited: true, revision: snapshot.revision + 1 };
+    await store.recover();
+    vi.mocked(api.plDebugOperate).mockImplementationOnce(async (request) => {
+      expect(request.action).toBe("restart");
+      snapshot = { ...snapshot, generation: 2, revision: snapshot.revision + 1, state: "paused", executionStopped: false, executionOutcome: "pending", releaseState: "open", runtimeExited: false, stopRevision: 1, line: "4" };
+      return receipt(request.operationId);
+    });
+
+    await store.restart();
+
+    expect(store.publicSnapshot?.generation).toBe(2);
+    expect(store.traceResult).toBeNull();
+  });
+
+  it("clears the previous target trace when another session starts after release", async () => {
+    const store = await startSession();
+    plStepOver.mockResolvedValueOnce({ line: "9", terminated: true });
+    await store.startTrace();
+    snapshot = { ...snapshot, releaseState: "released", runtimeExited: true, revision: snapshot.revision + 1 };
+    await store.recover();
+    vi.mocked(api.plDebugStart).mockImplementationOnce(async (start) => {
+      snapshot = { ...snapshot, sessionId: "d2", startOperationId: start.operationId, target: start.target, generation: 1, revision: 2, state: "paused", executionStopped: false, executionOutcome: "pending", releaseState: "open", runtimeExited: false, stopRevision: 1, line: "4" };
+      return receipt(start.operationId);
+    });
+
+    await store.start("c1", "ob", { schema: "S", objectType: "PROCEDURE", objectName: "OTHER_DEMO" }, { riskAccepted: true, expectedConnectionRevision: "epoch:0" });
+
+    expect(store.publicSnapshot?.sessionId).toBe("d2");
+    expect(store.target?.objectName).toBe("OTHER_DEMO");
+    expect(store.traceResult).toBeNull();
+  });
+
+  it("keeps the trace after a temporary recovery failure in the same generation", async () => {
+    const store = await startSession();
+    plStepOver.mockResolvedValue({ line: "5", terminated: false });
+    await store.startTrace(1);
+    const trace = store.traceResult;
+    vi.mocked(api.plDebugStatus).mockRejectedValueOnce(new Error("temporarily disconnected"));
+
+    await expect(store.recover()).rejects.toThrow("temporarily disconnected");
+    expect(store.publicSnapshot).toBeNull();
+    expect(store.traceResult).toEqual(trace);
+    await store.recover();
+
+    expect(store.publicSnapshot?.generation).toBe(1);
+    expect(store.traceResult).toEqual(trace);
+  });
+
+  it("keeps a trace during same-generation refresh and step or a rejected restart", async () => {
+    const store = await startSession();
+    plStepOver.mockResolvedValue({ line: "5", terminated: false });
+    await store.startTrace(1);
+    const trace = store.traceResult;
+    await store.recover();
+    await store.stepOver();
+    expect(store.traceResult).toEqual(trace);
+    snapshot = { ...snapshot, state: "ended", executionStopped: true, executionOutcome: "succeeded", releaseState: "released", runtimeExited: true, revision: snapshot.revision + 1 };
+    await store.recover();
+    vi.mocked(api.plDebugOperate).mockRejectedValueOnce(new Error("restart rejected"));
+
+    await expect(store.restart()).rejects.toThrow("restart rejected");
+
+    expect(store.traceResult).toEqual(trace);
   });
 });

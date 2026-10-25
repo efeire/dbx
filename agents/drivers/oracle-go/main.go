@@ -456,12 +456,13 @@ func normalizeNonFiniteQueryRows(rows [][]any) ([][]any, bool) {
 }
 
 type querySession struct {
-	rows        *sql.Rows
-	conn        *sql.Conn
-	columns     []string
-	columnTypes []string
-	pending     []any
-	remaining   int
+	rows           *sql.Rows
+	conn           *sql.Conn
+	columns        []string
+	columnTypes    []string
+	pending        []any
+	remaining      int
+	outputIdentity any
 }
 
 type oracleColumnMeta struct {
@@ -4720,7 +4721,7 @@ func (s *server) runPagedOracleSelect(sqlText string, opts queryOptions, pageSiz
 		if maxRows <= 0 {
 			maxRows = defaultMaxRows
 		}
-		session := &querySession{rows: rows, columns: columns, columnTypes: columnTypes, remaining: maxRows}
+		session := &querySession{rows: rows, columns: columns, columnTypes: columnTypes, remaining: maxRows, outputIdentity: s.currentDBMSOutputIdentity()}
 		result, err := readQuerySessionPage(session, pageSize)
 		result.ExecutionTimeMS = time.Since(start).Milliseconds()
 		if err != nil {
@@ -4783,6 +4784,7 @@ func (s *server) fetchQueryPage(sessionID string, pageSize int) (queryPageResult
 	if session == nil {
 		return queryPageResult{Columns: []string{}, ColumnTypes: []string{}, Rows: [][]any{}, SessionID: nil, HasMore: false}, nil
 	}
+	s.dbmsOutput.markDirty(session.outputIdentity)
 	result, err := readQuerySessionPage(session, pageSize)
 	if err != nil {
 		s.closeQuerySession(sessionID)
@@ -4804,6 +4806,7 @@ func (s *server) storeQuerySession(session *querySession) string {
 }
 
 func (s *server) startTableRead(opts queryOptions, pageSize int) (queryPageResult, error) {
+	s.dbmsOutput.markDirty(s.currentDBMSOutputIdentity())
 	start := time.Now()
 	if strings.TrimSpace(opts.Schema) != "" && !s.hasManualTransaction() {
 		if err := s.setSchema(opts.Schema); err != nil {
@@ -4830,6 +4833,7 @@ func (s *server) fetchTableReadPage(sessionID string, pageSize int) (queryPageRe
 	if session == nil {
 		return queryPageResult{Columns: []string{}, ColumnTypes: []string{}, Rows: [][]any{}, SessionID: nil, HasMore: false}, nil
 	}
+	s.dbmsOutput.markDirty(session.outputIdentity)
 	result, err := readQuerySessionPage(session, pageSize)
 	if err != nil {
 		s.closeTableReadSession(sessionID)
@@ -4855,6 +4859,7 @@ func (s *server) closeQuerySession(sessionID string) bool {
 	if session == nil {
 		return false
 	}
+	s.dbmsOutput.markDirty(session.outputIdentity)
 	s.closeRows(session.rows)
 	if session.conn != nil {
 		_ = session.conn.Close()
@@ -4868,6 +4873,7 @@ func (s *server) closeTableReadSession(sessionID string) bool {
 	if session == nil {
 		return false
 	}
+	s.dbmsOutput.markDirty(session.outputIdentity)
 	s.closeRows(session.rows)
 	delete(s.tableReadSessions, sessionID)
 	return true

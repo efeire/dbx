@@ -3953,7 +3953,7 @@ func (c *oracleViewSourceConn) ExecContext(
 	query string,
 	args []driver.NamedValue,
 ) (driver.Result, error) {
-	if query == "BEGIN DBMS_OUTPUT.ENABLE(1000000); END;" {
+	if query == dbmsOutputEnableSQL || query == dbmsOutputDisableSQL {
 		return driver.RowsAffected(0), nil
 	}
 	if c.driver.next >= len(c.driver.steps) {

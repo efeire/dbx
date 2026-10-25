@@ -268,6 +268,7 @@ export const usePlDebugStore = defineStore("plDebug", () => {
    */
   const frameSourceView = ref<PlDebugFrameSourceView | null>(null);
   const traceResult = ref<PlDebugTraceResult | null>(null);
+  let traceReference: (PlDebugSessionRef & { generation: number }) | null = null;
   const traceRunning = ref(false);
   /** Set by stopTrace; the run checks it between steps, so it can never wedge the UI. */
   let traceStopRequested = false;
@@ -316,6 +317,7 @@ export const usePlDebugStore = defineStore("plDebug", () => {
     const nextFrames = Array.isArray(next.frames) ? (next.frames as PlDebugFrame[]) : undefined;
     if (next.frames !== undefined) invalidateFrameSource(status.value?.frames, nextFrames);
     if (previous?.sessionId !== next.sessionId || previous.generation !== next.generation) probe.value = preparedProbe?.connectionId === next.connectionId && preparedProbe.database === next.database ? preparedProbe.result : null;
+    if (traceReference && (!sameDebugReference(traceReference, next) || traceReference.generation !== next.generation)) clearTrace();
     publicSnapshot.value = next;
     debugId.value = next.sessionId;
     connectionId.value = next.connectionId;
@@ -1450,6 +1452,7 @@ export const usePlDebugStore = defineStore("plDebug", () => {
   async function startTrace(stepLimit = TRACE_STEP_LIMIT) {
     if (!debugId.value) throw new Error("no debug session");
     if (terminated.value) throw new Error("debuggee has finished");
+    const reference = publicSnapshot.value;
     const limit = Number.isFinite(stepLimit) && stepLimit > 0 ? Math.trunc(stepLimit) : TRACE_STEP_LIMIT;
     traceRunning.value = true;
     traceStopRequested = false;
@@ -1478,6 +1481,7 @@ export const usePlDebugStore = defineStore("plDebug", () => {
         durationMs: Date.now() - began,
         truncated,
       };
+      traceReference = reference;
       pushHistory(truncated ? "WARN" : "INFO", `trace: ${steps} step(s) over ${traceResult.value.lines.length} line(s) in ${traceResult.value.durationMs}ms` + (truncated ? ` (stopped at the ${limit}-step cap; the program has not finished)` : ""));
       return traceResult.value;
     } catch (caught) {
@@ -1499,6 +1503,7 @@ export const usePlDebugStore = defineStore("plDebug", () => {
   /** Forgets the last trace run (a new session or a restart starts clean). */
   function clearTrace() {
     traceResult.value = null;
+    traceReference = null;
   }
 
   const resume = () => continueWith(() => publicControl("resume"), "resume", true);

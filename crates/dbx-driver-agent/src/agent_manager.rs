@@ -876,18 +876,13 @@ pub struct DriverStoreUsage {
     pub agent_drivers: Vec<DriverStoreUsageItem>,
 }
 
+type ConnectionRuntimeSlots = std::collections::HashMap<String, Arc<tokio::sync::OnceCell<Arc<AgentRuntimeClient>>>>;
+
 pub struct AgentManager {
     base_dir: PathBuf,
     app_version: String,
     pub daemons: Mutex<std::collections::HashMap<String, AgentDriverClient>>,
-    pub connection_runtimes: Arc<
-        Mutex<
-            std::collections::HashMap<
-                String,
-                std::sync::Arc<tokio::sync::OnceCell<std::sync::Arc<AgentRuntimeClient>>>,
-            >,
-        >,
-    >,
+    pub connection_runtimes: Arc<Mutex<ConnectionRuntimeSlots>>,
     /// Serializes `load_state` → modify → `save_state` to prevent lost updates
     /// when multiple driver installs run concurrently.
     pub state_lock: StdMutex<()>,

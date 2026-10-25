@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	go_ora "github.com/sijms/go-ora/v2"
@@ -21,14 +22,13 @@ import (
 // runs on it, DBMS_OUTPUT is enabled on it once, and the buffer is drained from
 // it before the result is returned.
 //
-// The PL/SQL debug path (pl_debug_*) keeps reading its buffer through the
-// DBX_GET_LINE helper package it installs on its own connections and is not
-// involved here.
+// The PL/SQL debug path (pl_debug_*) owns separate connections and output capture.
 
 const (
 	// dbmsOutputEnableSQL turns the session buffer on. The size matches what the
 	// Dameng agent requests so both agents behave the same way.
-	dbmsOutputEnableSQL = "BEGIN DBMS_OUTPUT.ENABLE(1000000); END;"
+	dbmsOutputEnableSQL  = "BEGIN DBMS_OUTPUT.ENABLE(1000000); END;"
+	dbmsOutputDisableSQL = "BEGIN DBMS_OUTPUT.DISABLE; END;"
 	// dbmsOutputMaxLines bounds a single drain: a pathological buffer must not
 	// turn into an unbounded number of round trips. Batching (see
 	// dbmsOutputFetchSQL below) is what keeps the bound affordable: one round trip
@@ -55,8 +55,8 @@ const (
 	// on its own; a longer one has to be truncated.
 	dbmsOutputRegisterBytes = 8191
 	// dbmsOutputMaxTrackedConnections bounds the per-connection bookkeeping.
-	// Pooled connections come and go; forgetting the oldest entries only costs
-	// one extra ENABLE on a recycled connection.
+	// Pooled connections come and go; forgotten identities must be reset before
+	// capture is admitted again.
 	dbmsOutputMaxTrackedConnections = 256
 	// dbmsOutputLineChars is the capacity one OUT string register is declared
 	// with, in characters. It is dbmsOutputRegisterBytes -- the measured ceiling,
@@ -216,24 +216,30 @@ type dbmsOutputSession interface {
 // round trip to every query.
 type dbmsOutputTracker struct {
 	mu        sync.Mutex
-	attempted map[any]struct{}
+	attempted map[any]*dbmsOutputCapture
 }
 
-// markAttempted reports whether this is the first attempt for the connection.
-func (t *dbmsOutputTracker) markAttempted(key any) bool {
+type dbmsOutputCapture struct {
+	enableAttempted bool
+	enableSucceeded bool
+	needsReset      bool
+}
+
+func (t *dbmsOutputTracker) entry(key any) *dbmsOutputCapture {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.attempted == nil {
-		t.attempted = map[any]struct{}{}
+		t.attempted = map[any]*dbmsOutputCapture{}
 	}
-	if _, exists := t.attempted[key]; exists {
-		return false
+	if entry := t.attempted[key]; entry != nil {
+		return entry
 	}
 	if len(t.attempted) >= dbmsOutputMaxTrackedConnections {
-		t.attempted = map[any]struct{}{}
+		t.attempted = map[any]*dbmsOutputCapture{}
 	}
-	t.attempted[key] = struct{}{}
-	return true
+	entry := &dbmsOutputCapture{needsReset: true}
+	t.attempted[key] = entry
+	return entry
 }
 
 // reset forgets every connection. It is used when the pool itself is replaced,
@@ -244,8 +250,8 @@ func (t *dbmsOutputTracker) reset() {
 	t.mu.Unlock()
 }
 
-// forget drops the bookkeeping of one physical connection so the next statement
-// on it runs ENABLE again. A statement that calls DBMS_OUTPUT.DISABLE turns the
+// forget invalidates capture on one physical connection so the next statement
+// resets and enables it again. A statement that calls DBMS_OUTPUT.DISABLE turns the
 // buffer off for its session; without this the captured statements that follow
 // would all report no output until the connection was recycled (R2).
 func (t *dbmsOutputTracker) forget(key any) {
@@ -253,8 +259,21 @@ func (t *dbmsOutputTracker) forget(key any) {
 		return
 	}
 	t.mu.Lock()
-	delete(t.attempted, key)
+	if entry := t.attempted[key]; entry != nil {
+		entry.enableAttempted = false
+		entry.needsReset = true
+	}
 	t.mu.Unlock()
+}
+
+func (t *dbmsOutputTracker) markDirty(key any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for identity, entry := range t.attempted {
+		if (key == nil || key == identity) && (entry.enableSucceeded || entry.needsReset) {
+			entry.needsReset = true
+		}
+	}
 }
 
 // dbmsOutputBinding remembers the OUT buffer size used by the batched fetch. It
@@ -292,17 +311,29 @@ func (b *dbmsOutputBinding) downgrade() bool {
 // enableDBMSOutput turns the buffer on for one physical connection, exactly
 // once. Failures only reach the log: a connection without EXECUTE on
 // DBMS_OUTPUT must still run every statement normally.
-func enableDBMSOutput(ctx context.Context, session dbmsOutputSession, tracker *dbmsOutputTracker) {
+func enableDBMSOutput(ctx context.Context, session dbmsOutputSession, tracker *dbmsOutputTracker) error {
 	key := session.identity()
 	if key == nil {
-		return
+		return nil
 	}
-	if !tracker.markAttempted(key) {
-		return
+	entry := tracker.entry(key)
+	tracker.mu.Lock()
+	if entry.enableAttempted {
+		tracker.mu.Unlock()
+		return nil
 	}
-	if err := session.exec(ctx, dbmsOutputEnableSQL); err != nil {
+	entry.enableAttempted = true
+	tracker.mu.Unlock()
+	err := session.exec(ctx, dbmsOutputEnableSQL)
+	tracker.mu.Lock()
+	if tracker.attempted[key] == entry {
+		entry.enableSucceeded = err == nil
+	}
+	tracker.mu.Unlock()
+	if err != nil {
 		logDBMSOutput("DBMS_OUTPUT.ENABLE failed: %v", err)
 	}
+	return err
 }
 
 // drainDBMSOutput reads buffered lines in order until the session buffer reports
@@ -313,7 +344,7 @@ func enableDBMSOutput(ctx context.Context, session dbmsOutputSession, tracker *d
 // that every line it takes out of the session buffer is delivered by the same
 // call, so a failure means the connection itself is in trouble and the lines
 // already read are still returned (a second consecutive failure stops the loop).
-func drainDBMSOutput(ctx context.Context, session dbmsOutputSession, limit int) []queryMessage {
+func drainDBMSOutput(ctx context.Context, session dbmsOutputSession, limit int) ([]queryMessage, bool) {
 	if limit <= 0 {
 		limit = dbmsOutputMaxLines
 	}
@@ -334,28 +365,26 @@ func drainDBMSOutput(ctx context.Context, session dbmsOutputSession, limit int) 
 			logDBMSOutput("DBMS_OUTPUT.GET_LINE failed: %v", err)
 			consecutiveFailures++
 			if consecutiveFailures >= 2 {
-				return messages
+				return messages, false
 			}
 			continue
 		}
 		consecutiveFailures = 0
 		if len(batch.lines) == 0 && !batch.hasLeftover && !batch.drained {
 			// No line and no terminal status: reporting progress would loop.
-			return messages
+			return messages, false
 		}
 		messages = append(messages, dbmsOutputBatchMessages(batch)...)
 		if len(messages) > limit {
 			// The extra line proves the buffer is bigger than the bound, so report
-			// the cut and stop instead of draining it all. The lines the server
-			// left behind stay in the session buffer; paths that do not capture
-			// (paged reads) cannot drain them either.
+			// the cut and retain whether the physical buffer was confirmed empty.
 			return append(messages[:limit], queryMessage{
 				Severity: "INFO",
 				Message:  fmt.Sprintf("DBMS_OUTPUT truncated after %d lines", limit),
-			})
+			}), batch.drained
 		}
 		if batch.drained {
-			return messages
+			return messages, true
 		}
 	}
 }
@@ -384,12 +413,51 @@ func dbmsOutputBatchMessages(batch dbmsOutputBatch) []queryMessage {
 	return messages
 }
 
-// ensureDBMSOutput turns the buffer on for one session before a statement runs:
-// Oracle discards output written while the buffer is off, so the enable has to
-// precede the statement and happens once per physical connection. It never
-// returns an error.
-func (s *server) ensureDBMSOutput(ctx context.Context, session dbmsOutputSession) {
-	enableDBMSOutput(ctx, session, &s.dbmsOutput)
+// ensureDBMSOutput admits capture only after the previous output boundary is
+// confirmed. Reset failures disable capture for this statement, not execution.
+func (s *server) ensureDBMSOutput(ctx context.Context, session dbmsOutputSession) *dbmsOutputCapture {
+	key := session.identity()
+	if key == nil {
+		s.dbmsOutput.markDirty(nil)
+		return nil
+	}
+	tracker := &s.dbmsOutput
+	entry := tracker.entry(key)
+	tracker.mu.Lock()
+	first := !entry.enableAttempted && !entry.enableSucceeded
+	reset := entry.needsReset
+	if !reset && !entry.enableSucceeded {
+		tracker.mu.Unlock()
+		return nil
+	}
+	entry.needsReset = true
+	tracker.mu.Unlock()
+	if reset {
+		resetCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if err := session.exec(resetCtx, dbmsOutputDisableSQL); err != nil {
+			logDBMSOutput("buffer reset failed: %v", err)
+			return nil
+		}
+		var err error
+		if first {
+			err = enableDBMSOutput(resetCtx, session, tracker)
+		} else {
+			err = session.exec(resetCtx, dbmsOutputEnableSQL)
+		}
+		tracker.mu.Lock()
+		if tracker.attempted[key] == entry {
+			entry.enableAttempted = true
+			entry.enableSucceeded = err == nil
+			entry.needsReset = err == nil || !first
+		}
+		tracker.mu.Unlock()
+		if err != nil {
+			logDBMSOutput("buffer reset ENABLE failed: %v", err)
+			return nil
+		}
+	}
+	return entry
 }
 
 // statementContext is the context of the statement currently executing, or a
@@ -461,9 +529,9 @@ func (s *server) withStatementDBMSOutput(sqlText string, run func() error) []que
 		ctx, release := s.beginStatementContext()
 		defer release()
 		session := s.statementDBMSOutputSession(s.manualConn)
-		s.ensureDBMSOutput(ctx, session)
+		capture := s.ensureDBMSOutput(ctx, session)
 		_ = run()
-		return s.finishStatementDBMSOutput(ctx, session, sqlText)
+		return s.finishStatementDBMSOutput(ctx, session, capture, sqlText)
 	}
 	db, err := s.requireDB()
 	if err != nil {
@@ -485,9 +553,9 @@ func (s *server) withStatementDBMSOutput(sqlText string, run func() error) []que
 		_ = conn.Close()
 	}()
 	session := s.statementDBMSOutputSession(conn)
-	s.ensureDBMSOutput(ctx, session)
+	capture := s.ensureDBMSOutput(ctx, session)
 	_ = run()
-	return s.finishStatementDBMSOutput(ctx, session, sqlText)
+	return s.finishStatementDBMSOutput(ctx, session, capture, sqlText)
 }
 
 // withPagedStatementDBMSOutput is withStatementDBMSOutput for a statement whose live
@@ -510,9 +578,9 @@ func (s *server) withPagedStatementDBMSOutput(sqlText string, run func() error) 
 		ctx, release := s.pinStatementContext()
 		defer release()
 		session := s.statementDBMSOutputSession(s.manualConn)
-		s.ensureDBMSOutput(ctx, session)
+		capture := s.ensureDBMSOutput(ctx, session)
 		_ = run()
-		return nil, s.finishStatementDBMSOutput(ctx, session, sqlText)
+		return nil, s.finishStatementDBMSOutput(ctx, session, capture, sqlText)
 	}
 	db, err := s.requireDB()
 	if err != nil {
@@ -541,9 +609,9 @@ func (s *server) withPagedStatementDBMSOutput(sqlText string, run func() error) 
 		}
 	}()
 	session := s.statementDBMSOutputSession(conn)
-	s.ensureDBMSOutput(ctx, session)
+	capture := s.ensureDBMSOutput(ctx, session)
 	_ = run()
-	messages := s.finishStatementDBMSOutput(ctx, session, sqlText)
+	messages := s.finishStatementDBMSOutput(ctx, session, capture, sqlText)
 	return conn, messages
 }
 
@@ -554,19 +622,41 @@ func (s *server) withPagedStatementDBMSOutput(sqlText string, run func() error) 
 // the failed statement's result is deliberate -- when the caller turns the
 // failure into an error response the messages are dropped with that result, but
 // they are consumed, so they can never surface on the statement after it.
-func (s *server) finishStatementDBMSOutput(ctx context.Context, session dbmsOutputSession, sqlText string) []queryMessage {
-	if dbmsOutputDisablesCapture(sqlText) {
+func (s *server) finishStatementDBMSOutput(ctx context.Context, session dbmsOutputSession, capture *dbmsOutputCapture, sqlText string) []queryMessage {
+	disabled := dbmsOutputDisablesCapture(sqlText)
+	key := session.identity()
+	if disabled {
 		// The statement turned the buffer off for its session, so the next
 		// statement has to run ENABLE again (R2).
-		s.dbmsOutput.forget(session.identity())
+		s.dbmsOutput.forget(key)
 	}
-	return drainDBMSOutput(ctx, session, dbmsOutputMaxLines)
+	if capture == nil {
+		return nil
+	}
+	messages, drained := drainDBMSOutput(ctx, session, dbmsOutputMaxLines)
+	s.dbmsOutput.mu.Lock()
+	if s.dbmsOutput.attempted[key] == capture && drained && !disabled {
+		capture.needsReset = false
+	}
+	s.dbmsOutput.mu.Unlock()
+	return messages
 }
 
 // statementDBMSOutputSession adapts one pinned connection, selecting the OUT
 // binding its driver understands.
 func (s *server) statementDBMSOutputSession(conn *sql.Conn) dbmsOutputSession {
 	return sqlConnDBMSOutputSession{conn: conn, oci: usesOCIProfile(s.params), binding: &s.dbmsOutputBinding}
+}
+
+func (s *server) currentDBMSOutputIdentity() any {
+	conn := s.statementConn
+	if conn == nil {
+		conn = s.manualConn
+	}
+	if conn == nil {
+		return nil
+	}
+	return s.statementDBMSOutputSession(conn).identity()
 }
 
 // beginStatementTx opens a transaction on the statement's pinned physical
