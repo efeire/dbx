@@ -174,6 +174,20 @@ describe("ContentArea query loading state on error re-execute", () => {
     expect(editorViewport.complete).toHaveBeenCalledWith(14);
   });
 
+  it("scrolls the cursor into view for a completion observed without a tracked start", async () => {
+    // The surface mounts while the tab already executes, so no rising edge is
+    // observed and beginExecutionViewportTracking never runs for this execution.
+    const { tab } = await mountContentArea({ isExecuting: true, resultOnly: false });
+    expect(editorViewport.begin).not.toHaveBeenCalled();
+
+    tab.result = { columns: ["id"], rows: [[1]], affected_rows: 1, execution_time_ms: 12 };
+    tab.isExecuting = false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(editorViewport.complete).toHaveBeenCalledTimes(1);
+    expect(editorViewport.complete).toHaveBeenCalledWith();
+  });
+
   it.each(["cancel", "edit", "switch", "new-execution"])("does not auto-locate after %s", async (reason) => {
     const { tab } = await mountContentArea({ resultOnly: false });
     tab.sql = "SELECT * FROM missing";

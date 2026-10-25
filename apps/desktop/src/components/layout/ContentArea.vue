@@ -1326,22 +1326,31 @@ watch(
       editor?.beginExecutionViewportTracking();
     }
     const completion = executionCompletion;
-    if (!completion) return;
-    if (isCancelling || cancelCount !== completion.cancelCount) completion.revoked = true;
-    if (isExecuting && executionId) completion.executionId = executionId;
+    if (completion) {
+      if (isCancelling || cancelCount !== completion.cancelCount) completion.revoked = true;
+      if (isExecuting && executionId) completion.executionId = executionId;
+    }
     if (!isExecuting && wasExecuting) {
       const result = props.activeTab.result;
       const error = result && isQueryExecutionErrorResult(result);
+      // Errors are only located for an execution tracked from its start; a plain
+      // success still restores the cursor for a completion observed mid-flight.
+      if (!completion && error) return;
       nextTick(() => {
         requestAnimationFrame(() => {
-          if (executionCompletion !== completion || props.activeTab.id !== tabId || props.activeTab.isExecuting || queryEditorRef.value !== completion.editor) return;
-          executionCompletion = undefined;
+          if (props.activeTab.id !== tabId || props.activeTab.isExecuting) return;
+          if (completion) {
+            if (executionCompletion !== completion || queryEditorRef.value !== completion.editor) return;
+            executionCompletion = undefined;
+          } else if (executionCompletion) {
+            return;
+          }
           if (error) {
-            if (completion.revoked || !completion.executionId || result.sourceExecutionId !== completion.executionId || props.activeTab.sql !== completion.sql || props.activeTab.result !== result) return;
+            if (!completion || completion.revoked || !completion.executionId || result.sourceExecutionId !== completion.executionId || props.activeTab.sql !== completion.sql || props.activeTab.result !== result) return;
             const mapped = sqlErrorEditorOffset(activeResultErrorOffsetOptions());
             if (mapped) completion.editor?.scrollCursorIntoView(mapped.offset);
           } else {
-            completion.editor?.scrollCursorIntoView();
+            (completion?.editor ?? queryEditorRef.value)?.scrollCursorIntoView();
           }
         });
       });

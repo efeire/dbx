@@ -145,10 +145,15 @@ function oracleMissingObjectRange(sql: string, offset: number): SqlErrorRange | 
   if (index < 0) index = tokens.findIndex((token, candidate) => token.span.end === offset && identifier(candidate));
   if (tokens[index]?.text === "." && identifier(index - 1) && identifier(index + 1)) index -= 1;
   if (!identifier(index)) return null;
+  // An Oracle object reference is a single name or `schema.table`; stop there
+  // instead of walking a column access (`hr.emp.empno`) or a longer chain.
   let first = index;
   let last = index;
-  while (tokens[first - 1]?.text === "." && identifier(first - 2)) first -= 2;
-  while (tokens[last + 1]?.text === "." && identifier(last + 2)) last += 2;
+  if (tokens[first - 1]?.text === "." && identifier(first - 2)) {
+    first -= 2;
+  } else if (tokens[last + 1]?.text === "." && identifier(last + 2)) {
+    last += 2;
+  }
   return { from: tokens[first].span.start, to: tokens[last].span.end };
 }
 
@@ -175,7 +180,9 @@ export function sqlErrorDecorationRange(sql: string, message: string, databaseTy
     if (bytes !== offset) return null;
     offset = utf16;
   }
-  if (/\bORA-00942\b/i.test(message)) {
+  // An Oracle Agent offset is a byte offset only for Oracle itself; other
+  // engines that happen to emit ORA-00942 keep their own position units.
+  if (databaseType === "oracle" && /\bORA-00942\b/i.test(message)) {
     const object = oracleMissingObjectRange(sql, offset);
     if (object) return object;
   }
