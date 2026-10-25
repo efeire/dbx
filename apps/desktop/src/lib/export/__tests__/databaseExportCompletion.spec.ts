@@ -67,6 +67,10 @@ describe("native queued database export completion", () => {
     mocks.export.mockRejectedValueOnce(new Error("invoke reply lost"));
     await expect(runDatabaseExportUntilTerminal(request, vi.fn(), true)).rejects.toMatchObject({ status: "unknown" });
   });
+  it("classifies a confirmed pre-invoke failure as failed instead of unknown", async () => {
+    mocks.export.mockRejectedValueOnce(new SnapshotCompletionError("failed", "listener unavailable"));
+    await expect(runDatabaseExportUntilTerminal(request, vi.fn(), true)).rejects.toMatchObject({ status: "failed", message: "listener unavailable" });
+  });
   it("preserves the native cleanup-unknown outcome", async () => {
     mocks.export.mockImplementationOnce(async (_request, progress) => {
       progress({ ...done, status: "Unknown", error: "session close unknown" });

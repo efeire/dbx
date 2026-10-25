@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { exportMongodbQuery, exportSnapshotResult, readLargeValueChunk, startTableExport, startQueryResultExport } from "../tauri";
+import { exportDatabaseSql, exportMongodbQuery, exportSnapshotResult, readLargeValueChunk, startTableExport, startQueryResultExport } from "../tauri";
 import { SnapshotCompletionError } from "@/lib/export/snapshotCompletion";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
@@ -14,7 +14,7 @@ beforeEach(() => {
   mocks.listen.mockReset();
 });
 
-it.each([startTableExport, startQueryResultExport])("reports only pre-invoke listener failure as confirmed not-started", async (start) => {
+it.each([startTableExport, startQueryResultExport, exportDatabaseSql])("reports only pre-invoke listener failure as confirmed not-started", async (start) => {
   mocks.listen.mockRejectedValueOnce(new Error("listener unavailable"));
   await expect(start({ exportId: "not-started" } as never, vi.fn(), true)).rejects.toEqual(new SnapshotCompletionError("failed", "listener unavailable"));
   expect(mocks.invoke).not.toHaveBeenCalled();

@@ -89,4 +89,23 @@ describe("manual export queue", () => {
     expect(b.run).not.toHaveBeenCalled();
     expect(waiting.cancelQueued()).toBe(true);
   });
+
+  it("starts the next queued operation once an unknown one is explicitly released", async () => {
+    const { releaseManualExport, submitManualExport } = await import("../manualExportQueue");
+    const a = operation("a");
+    const b = operation("b");
+    submitManualExport(a);
+    submitManualExport(b);
+    a.finish("unknown");
+    await Promise.resolve();
+    expect(b.run).not.toHaveBeenCalled();
+
+    releaseManualExport("a");
+    expect(b.run).toHaveBeenCalledOnce();
+    expect(a.run).toHaveBeenCalledOnce();
+    expect(a.states.at(-1)).toBe("unknown");
+
+    b.finish("settled");
+    await Promise.resolve();
+  });
 });

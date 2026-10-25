@@ -4,7 +4,7 @@ import { isTerminalTransferProgress } from "@/lib/backend/transferProgress";
 import { uuid } from "@/lib/common/utils";
 import { formatQueryDuration } from "@/lib/format/duration";
 import { autoRevealExportedPathIfConfigured } from "@/lib/export/exportPath";
-import { submitManualExport, type ManualExportMode } from "@/lib/export/manualExportQueue";
+import { releaseManualExport, submitManualExport, type ManualExportMode } from "@/lib/export/manualExportQueue";
 import { acceptOraclePackageTransferApproval, acceptOraclePackageTransferPreflight, acceptOracleRoutineDeploymentOperation, type OracleRoutineDeployment } from "@/lib/schema/oracleRoutineDeploy";
 
 export type BackgroundTaskKind = "table-export" | "database-export" | "data-dictionary" | "sql-file" | "data-transfer" | "data-generation" | "multi-db-execution" | "schema-diff" | "data-compare";
@@ -881,6 +881,7 @@ export function useExportTracker() {
 
   function removeTask(exportId: string) {
     const task = taskMap.get(exportId);
+    if (task?.status === "Unknown") releaseManualExport(exportId);
     if (task && (task.status === "Done" || task.status === "Error" || task.status === "Cancelled")) cleanupFinishedTask(task);
     taskMap.delete(exportId);
     taskCancelHandlers.delete(exportId);

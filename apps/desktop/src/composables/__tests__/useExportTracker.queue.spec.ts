@@ -55,4 +55,28 @@ describe("export tracker queue", () => {
     expect(tracker.tasks.value).toHaveLength(2);
     expect(second.run).not.toHaveBeenCalled();
   });
+
+  it("releases a removed unknown task and starts the next one without retrying it", async () => {
+    const { useExportTracker } = await import("../useExportTracker");
+    const tracker = useExportTracker();
+    const first = completion();
+    const running = tracker.addTask("first", "csv", "first.csv");
+    tracker.submitExportTask(running, "queued", first.run);
+    const second = completion();
+    const waiting = tracker.addTask("second", "csv", "second.csv");
+    tracker.submitExportTask(waiting, "queued", second.run);
+    first.finish("unknown");
+    await Promise.resolve();
+
+    tracker.removeTask(running.exportId);
+
+    expect(tracker.tasks.value.map((task) => task.exportId)).toEqual([waiting.exportId]);
+    expect(tracker.activeCount.value).toBe(1);
+    expect(waiting.status).toBe("Running");
+    expect(second.run).toHaveBeenCalledOnce();
+    expect(first.run).toHaveBeenCalledOnce();
+
+    second.finish("settled");
+    await Promise.resolve();
+  });
 });

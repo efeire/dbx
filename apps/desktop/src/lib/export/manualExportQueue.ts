@@ -36,6 +36,15 @@ function start(operation: ManualExportOperation) {
   })();
 }
 
+/**
+ * Acknowledge an operation whose outcome is unknown and hand its queue slot to
+ * the next waiter. Never retries the released operation or touches the backend.
+ */
+export function releaseManualExport(id: string) {
+  active.delete(id);
+  startNext();
+}
+
 export function submitManualExport(operation: ManualExportOperation) {
   if (operation.mode === "immediate") {
     start(operation);

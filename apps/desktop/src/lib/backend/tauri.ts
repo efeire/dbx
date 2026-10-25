@@ -6841,20 +6841,24 @@ export async function beginDatabaseBackupSnapshot(connectionId: string, database
   return invoke("begin_database_backup_snapshot", { connectionId, database, exportId: exportId || null });
 }
 
-export async function exportDatabaseSql(request: DatabaseExportRequest, onProgress: (progress: ExportProgress) => void): Promise<void> {
-  const unlisten: UnlistenFn = await listen<ExportProgress>("database-export-progress", (event) => {
-    if (event.payload.exportId === request.exportId) {
-      onProgress(event.payload);
-      if (event.payload.status === "Done" || event.payload.status === "Error" || event.payload.status === "Cancelled" || event.payload.status === "Unknown") {
-        unlisten();
-      }
-    }
-  });
+export async function exportDatabaseSql(request: DatabaseExportRequest, onProgress: (progress: ExportProgress) => void, reportCompletion = false): Promise<void> {
+  let unlisten: UnlistenFn | undefined;
+  let invoked = false;
   try {
+    unlisten = await listen<ExportProgress>("database-export-progress", (event) => {
+      if (event.payload.exportId === request.exportId) {
+        onProgress(event.payload);
+        if (event.payload.status === "Done" || event.payload.status === "Error" || event.payload.status === "Cancelled" || event.payload.status === "Unknown") {
+          unlisten?.();
+        }
+      }
+    });
+    invoked = true;
     await invoke("export_database_sql", { request });
-  } catch (e) {
-    unlisten();
-    throw e;
+  } catch (error) {
+    unlisten?.();
+    if (reportCompletion && !invoked) throw new SnapshotCompletionError("failed", error instanceof Error ? error.message : String(error));
+    throw error;
   }
 }
 

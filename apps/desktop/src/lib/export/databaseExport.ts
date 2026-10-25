@@ -138,15 +138,24 @@ export async function runDatabaseExportUntilTerminal(request: api.DatabaseExport
       complete = resolve;
     });
     try {
-      await api.exportDatabaseSql(request, (progress) => {
-        if (progress.status === "Done" || progress.status === "Cancelled" || progress.status === "Error" || progress.status === "Unknown") {
-          outcome.terminal = progress;
-          complete(progress);
-        }
-        onProgress(progress);
-      });
+      await api.exportDatabaseSql(
+        request,
+        (progress) => {
+          if (progress.status === "Done" || progress.status === "Cancelled" || progress.status === "Error" || progress.status === "Unknown") {
+            outcome.terminal = progress;
+            complete(progress);
+          }
+          onProgress(progress);
+        },
+        reportCompletion,
+      );
     } catch (error) {
-      if (!outcome.terminal) throw new SnapshotCompletionError("unknown", error instanceof Error ? error.message : String(error));
+      if (!outcome.terminal) {
+        // A failed SnapshotCompletionError proves the native invoke never
+        // started; a generic rejection may still have an export in flight.
+        if (error instanceof SnapshotCompletionError) throw error;
+        throw new SnapshotCompletionError("unknown", error instanceof Error ? error.message : String(error));
+      }
     }
     const terminal = await terminalProgress;
     if (terminal.status === "Unknown") throw new SnapshotCompletionError("unknown", terminal.error || "Export cleanup completion was not confirmed");
