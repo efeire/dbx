@@ -107,7 +107,9 @@ export interface DesktopSettings {
 export interface McpGlobalPolicy {
   readOnly: boolean;
   allowDangerousSql: boolean;
+  /** Legacy temporary elevation; new confirmation never reuses this flag. */
   promptHighRiskSql: boolean;
+  callConfirmation?: "off" | "full" | "high_risk" | null;
   allowedConnectionIds: string[] | null;
   allowedGroupIds: string[];
   allowedToolNames: string[] | null;
@@ -116,6 +118,7 @@ export interface McpGlobalPolicy {
   configured: boolean;
   /** MCP query timeout override in seconds. null/undefined = inherit the connection; 0 = no limit. */
   queryTimeoutSecs: number | null;
+  pluginToolsMode: "auto" | "flat" | "lazy";
 }
 
 export interface McpGroupPolicy {
@@ -198,6 +201,7 @@ export const DEFAULT_MCP_GLOBAL_POLICY: McpGlobalPolicy = {
   groupPolicies: [],
   configured: false,
   queryTimeoutSecs: null,
+  pluginToolsMode: "flat",
 };
 
 export function normalizeMcpGlobalPolicy(policy: Partial<McpGlobalPolicy> | null | undefined): McpGlobalPolicy {
@@ -262,7 +266,8 @@ export function normalizeMcpGlobalPolicy(policy: Partial<McpGlobalPolicy> | null
   return {
     readOnly: policy?.readOnly === true,
     allowDangerousSql: policy?.allowDangerousSql === true,
-    promptHighRiskSql: policy?.promptHighRiskSql === true,
+    promptHighRiskSql: policy?.callConfirmation === "full" || (!policy?.callConfirmation && policy?.promptHighRiskSql === true),
+    ...(policy?.callConfirmation === "high_risk" ? { callConfirmation: "high_risk" as const } : {}),
     allowedConnectionIds,
     allowedGroupIds,
     allowedToolNames,
@@ -270,6 +275,9 @@ export function normalizeMcpGlobalPolicy(policy: Partial<McpGlobalPolicy> | null
     groupPolicies,
     configured: policy?.configured === true,
     queryTimeoutSecs,
+    // A saved policy without this field used automatic discovery before the
+    // default changed. Preserve it; only new configurations start in flat mode.
+    pluginToolsMode: policy?.pluginToolsMode === "auto" || policy?.pluginToolsMode === "flat" || policy?.pluginToolsMode === "lazy" ? policy.pluginToolsMode : policy?.configured ? "auto" : "flat",
   };
 }
 
@@ -1189,10 +1197,6 @@ export interface EditorSettings {
   autoSelectActiveSidebarNode: boolean;
   sidebarPinDefaultDatabase: boolean;
   sidebarBrowseObjectsOnDatabaseActivation: boolean;
-  /** 连接成功后是否自动展开侧边栏对象树（连接节点/默认数据库节点）。默认开启，与 v0.6.55 及更早的行为一致；模式较多的库可关闭以避免连接期全量展开的元数据请求与渲染开销（#13302）。 */
-  sidebarExpandTreeOnConnect: boolean;
-  /** 「连接后自动展开对象树」默认值迁移标记（v1：默认由关闭恢复为开启）。 */
-  sidebarExpandTreeOnConnectMigrationVersion: number;
   openQueryOnConnectionOpen: boolean;
   sidebarBrowseObjectsOnDatabaseActivationMigrationVersion: number;
   openTabsRestoreMode: OpenTabsRestoreMode;
@@ -1380,11 +1384,6 @@ const EDITOR_THEME_VALUES = new Set<EditorTheme>(EDITOR_THEMES.map((theme) => th
 
 export const EXECUTE_MODE_CURRENT_DEFAULT_VERSION = 1;
 export const SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION = 1;
-// v1: "expand tree on connect" became the default again, restoring the pre-v0.6.56
-// behavior. Builds that shipped the default-off version have no marker, so their
-// stored false is treated as the old default rather than an explicit opt-out; once
-// this marker is stamped, an explicit toggle wins.
-export const SIDEBAR_EXPAND_TREE_ON_CONNECT_DEFAULT_VERSION = 1;
 // v1: the welcome page default moved from "intro" back to "workspace"; persisted
 // blobs from the intro-default builds lack this marker and are migrated.
 export const WELCOME_PAGE_DEFAULT_VERSION = 1;
@@ -1568,8 +1567,6 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   autoSelectActiveSidebarNode: false,
   sidebarPinDefaultDatabase: true,
   sidebarBrowseObjectsOnDatabaseActivation: false,
-  sidebarExpandTreeOnConnect: true,
-  sidebarExpandTreeOnConnectMigrationVersion: SIDEBAR_EXPAND_TREE_ON_CONNECT_DEFAULT_VERSION,
   openQueryOnConnectionOpen: false,
   sidebarBrowseObjectsOnDatabaseActivationMigrationVersion: SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION,
   openTabsRestoreMode: "all",
@@ -2043,9 +2040,6 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
   const savedCompactTabTitleDefaultVersion = settings.compactTabTitleDefaultVersion;
   const compactTabTitleDefaultVersion = typeof savedCompactTabTitleDefaultVersion === "number" && savedCompactTabTitleDefaultVersion >= COMPACT_TAB_TITLE_DEFAULT_VERSION ? savedCompactTabTitleDefaultVersion : COMPACT_TAB_TITLE_DEFAULT_VERSION;
   const hasCurrentCompactTabTitleDefault = compactTabTitleDefaultVersion === savedCompactTabTitleDefaultVersion;
-  const savedSidebarExpandTreeDefaultVersion = settings.sidebarExpandTreeOnConnectMigrationVersion;
-  const sidebarExpandTreeDefaultVersion = typeof savedSidebarExpandTreeDefaultVersion === "number" && savedSidebarExpandTreeDefaultVersion >= SIDEBAR_EXPAND_TREE_ON_CONNECT_DEFAULT_VERSION ? savedSidebarExpandTreeDefaultVersion : SIDEBAR_EXPAND_TREE_ON_CONNECT_DEFAULT_VERSION;
-  const hasCurrentSidebarExpandTreeDefault = sidebarExpandTreeDefaultVersion === savedSidebarExpandTreeDefaultVersion;
   // The active id can only be validated once the scheme list it points into is known.
   const dataGridTypeColorSchemes = normalizeDataGridTypeColorSchemes(settings.dataGridTypeColorSchemes);
   const savedExtractorMigrationVersion = settings.dataGridExtractorOptionsMigrationVersion;
@@ -2280,8 +2274,6 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     sidebarSearchOpenedDatabasesOnly: typeof settings.sidebarSearchOpenedDatabasesOnly === "boolean" ? settings.sidebarSearchOpenedDatabasesOnly : DEFAULT_EDITOR_SETTINGS.sidebarSearchOpenedDatabasesOnly,
     autoSelectActiveSidebarNode: settings.autoSelectActiveSidebarNode ?? DEFAULT_EDITOR_SETTINGS.autoSelectActiveSidebarNode,
     sidebarPinDefaultDatabase: typeof settings.sidebarPinDefaultDatabase === "boolean" ? settings.sidebarPinDefaultDatabase : DEFAULT_EDITOR_SETTINGS.sidebarPinDefaultDatabase,
-    sidebarExpandTreeOnConnect: hasCurrentSidebarExpandTreeDefault && typeof settings.sidebarExpandTreeOnConnect === "boolean" ? settings.sidebarExpandTreeOnConnect : DEFAULT_EDITOR_SETTINGS.sidebarExpandTreeOnConnect,
-    sidebarExpandTreeOnConnectMigrationVersion: SIDEBAR_EXPAND_TREE_ON_CONNECT_DEFAULT_VERSION,
     openQueryOnConnectionOpen: typeof settings.openQueryOnConnectionOpen === "boolean" ? settings.openQueryOnConnectionOpen : DEFAULT_EDITOR_SETTINGS.openQueryOnConnectionOpen,
     sidebarBrowseObjectsOnDatabaseActivation:
       typeof settings.sidebarBrowseObjectsOnDatabaseActivation === "boolean"
@@ -2715,12 +2707,14 @@ export const useSettingsStore = defineStore("settings", () => {
         readOnly: next.readOnly,
         allowDangerousSql: next.allowDangerousSql,
         promptHighRiskSql: next.promptHighRiskSql,
+        ...(next.callConfirmation ? { callConfirmation: next.callConfirmation } : {}),
         allowedConnectionIds: next.allowedConnectionIds,
         allowedGroupIds: next.allowedGroupIds,
         allowedToolNames: next.allowedToolNames,
         connectionPolicies: next.connectionPolicies,
         groupPolicies: next.groupPolicies,
         queryTimeoutSecs: next.queryTimeoutSecs,
+        pluginToolsMode: next.pluginToolsMode,
       });
     } catch (error) {
       mcpGlobalPolicy.value = previous;
@@ -3234,11 +3228,6 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.autoSelectActiveSidebarNode !== undefined) editorSettings.value.autoSelectActiveSidebarNode = partial.autoSelectActiveSidebarNode;
     if (partial.sidebarPinDefaultDatabase !== undefined) editorSettings.value.sidebarPinDefaultDatabase = partial.sidebarPinDefaultDatabase === true;
     if (partial.sidebarBrowseObjectsOnDatabaseActivation !== undefined) editorSettings.value.sidebarBrowseObjectsOnDatabaseActivation = partial.sidebarBrowseObjectsOnDatabaseActivation === true;
-    // #13549: this key reached the interface, the defaults, the normalize whitelist and the
-    // settings dialog draft, but never this patch applier. Without the branch below the
-    // toggle was dropped on every apply, so the value never reached the store or disk and
-    // the dialog stayed permanently dirty.
-    if (partial.sidebarExpandTreeOnConnect !== undefined) editorSettings.value.sidebarExpandTreeOnConnect = partial.sidebarExpandTreeOnConnect === true;
     if (partial.openQueryOnConnectionOpen !== undefined) editorSettings.value.openQueryOnConnectionOpen = partial.openQueryOnConnectionOpen === true;
     if (partial.openTabsRestoreMode !== undefined) editorSettings.value.openTabsRestoreMode = normalizeOpenTabsRestoreMode(partial.openTabsRestoreMode);
     if (partial.autoReloadRestoredDataTabsOnOpen !== undefined) editorSettings.value.autoReloadRestoredDataTabsOnOpen = partial.autoReloadRestoredDataTabsOnOpen === true;
