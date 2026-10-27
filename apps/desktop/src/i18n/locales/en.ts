@@ -2949,6 +2949,7 @@ export default {
       "Elasticsearch search_after cannot jump directly to a page. DBX must fetch missing cursors in order, and backward navigation restarts from page 1. Jumping to page {page} is expected to send {requests} queries. This may take a long time and increase cluster load. Continue?",
     esDeepPageJumpContinue: "Continue",
     allLoaded: "all loaded",
+    loadAllRows: "Load all",
     loadAllAndGoToLastRow: "Load all and go to the last row",
     loadAllRowsConfirmTitle: "Confirm loading all rows",
     loadAllRowsConfirmMessage: "Loading everything fetches up to {count} more rows in one request. Very large results consume significant memory and can take a long time. Continue?",

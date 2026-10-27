@@ -3355,6 +3355,7 @@ export default withEnglishFallback({
       "Elasticsearch の search_after では指定ページへ直接移動できません。DBX は不足しているカーソルを順番に取得し、前のページへ戻る場合は 1 ページ目からやり直します。ページ {page} への移動では約 {requests} 回のクエリが送信される見込みです。時間がかかり、クラスター負荷が増える可能性があります。続行しますか？",
     esDeepPageJumpContinue: "移動を続ける",
     allLoaded: "すべて読み込み済み",
+    loadAllRows: "すべて読み込む",
     loadAllAndGoToLastRow: "すべて読み込み、最終行へ移動",
     loadAllRowsConfirmTitle: "全行ロードの確認",
     loadAllRowsConfirmMessage: "すべて読み込むと、1 回のリクエストで最大 {count} 行を追加取得します。非常に大きな結果セットは多くのメモリを消費し、時間がかかることがあります。続行しますか？",

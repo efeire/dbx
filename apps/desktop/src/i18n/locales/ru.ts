@@ -2659,6 +2659,7 @@ export default withEnglishFallback({
       "Elasticsearch search_after не может перейти сразу на нужную страницу. DBX должен последовательно получить пропущенные курсоры, а переход назад начинается со страницы 1. Переход на страницу {page} потребует примерно {requests} запросов. Это может занять много времени и увеличить нагрузку на кластер. Продолжить?",
     esDeepPageJumpContinue: "Продолжить",
     allLoaded: "загружено всё",
+    loadAllRows: "Загрузить всё",
     calculateTotalRows: "Подсчитать общее число строк",
     calculateTotalRowsInline: "(подсчитать общее число строк)",
     calculateTotalRowsFailed: "Не удалось подсчитать: {message}",

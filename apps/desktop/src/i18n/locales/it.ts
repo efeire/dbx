@@ -2603,6 +2603,7 @@ export default withEnglishFallback({
       "search_after di Elasticsearch non può passare direttamente a una pagina. DBX deve recuperare in ordine i cursori mancanti e, tornando indietro, riparte dalla pagina 1. Il passaggio alla pagina {page} invierà circa {requests} query. Potrebbe richiedere tempo e aumentare il carico del cluster. Continuare?",
     esDeepPageJumpContinue: "Continua",
     allLoaded: "tutto caricato",
+    loadAllRows: "Carica tutto",
     loadAllAndGoToLastRow: "Carica tutto e vai all'ultima riga",
     loadAllRowsConfirmTitle: "Conferma caricamento di tutte le righe",
     loadAllRowsConfirmMessage: "Il caricamento completo può recuperare fino a {count} righe aggiuntive in un'unica richiesta. Risultati molto grandi consumano molta memoria e possono richiedere tempo. Continuare?",

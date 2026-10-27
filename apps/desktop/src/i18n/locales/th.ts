@@ -2808,6 +2808,7 @@ export default withEnglishFallback({
     esDeepPageJumpConfirmMessage: "Elasticsearch search_after ไม่สามารถกระโดดไปหน้าโดยตรงได้ DBX ต้องดึง Cursor ที่ขาดหายตามลำดับ และการนำทางย้อนกลับจะเริ่มใหม่จากหน้า 1 การกระโดดไปหน้า {page} คาดว่าจะส่ง Query {requests} รายการ อาจใช้เวลานานและเพิ่มภาระ Cluster ดำเนินการต่อหรือไม่?",
     esDeepPageJumpContinue: "ดำเนินการต่อ",
     allLoaded: "โหลดทั้งหมดแล้ว",
+    loadAllRows: "โหลดทั้งหมด",
     loadAllAndGoToLastRow: "โหลดทั้งหมดและไปยังแถวสุดท้าย",
     loadAllRowsConfirmTitle: "ยืนยันการโหลดแถวทั้งหมด",
     loadAllRowsConfirmMessage: "การโหลดทั้งหมดจะดึงเพิ่มสูงสุด {count} แถวใน Request เดียว ผลลัพธ์ขนาดใหญ่มากใช้หน่วยความจำมากและอาจใช้เวลานาน ดำเนินการต่อหรือไม่?",

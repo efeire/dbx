@@ -2871,7 +2871,7 @@ defineExpose({
                     :aria-label="t('grid.loadAllAndGoToLastRow')"
                     @click="dataGridRef.loadAllRowsAndGoToLast()"
                   >
-                    <ChevronsDown class="h-3.5 w-3.5" /><span v-if="!standaloneResultToolbarCompact">{{ t("grid.loadAllAndGoToLastRow") }}</span>
+                    <ChevronsDown class="h-3.5 w-3.5" /><span v-if="!standaloneResultToolbarCompact">{{ t("grid.loadAllRows") }}</span>
                   </Button>
                 </template>
               </QueryResultToolbarActions>
@@ -3188,7 +3188,7 @@ defineExpose({
                         :aria-label="t('grid.loadAllAndGoToLastRow')"
                         @click="dataGridRef.loadAllRowsAndGoToLast()"
                       >
-                        <ChevronsDown class="h-3.5 w-3.5" /><span v-if="!compact">{{ t("grid.loadAllAndGoToLastRow") }}</span>
+                        <ChevronsDown class="h-3.5 w-3.5" /><span v-if="!compact">{{ t("grid.loadAllRows") }}</span>
                       </Button>
                     </template>
                   </QueryResultToolbarActions>
