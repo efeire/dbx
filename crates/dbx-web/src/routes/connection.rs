@@ -2709,11 +2709,11 @@ done
         let mut config = sqlite_config("visibility", &dir.join("visibility.db").to_string_lossy());
         config.show_user_admin = None;
         state.app.storage.save_connections(&[config.clone()]).await.unwrap();
-        load_connections(State(state.clone()), HeaderMap::new(), Query(super::LoadConnectionsQuery::default()))
+        let _ = load_connections(State(state.clone()), HeaderMap::new(), Query(super::LoadConnectionsQuery::default()))
             .await
             .unwrap();
         assert_eq!(state.app.storage.load_connections().await.unwrap()[0].show_user_admin, None);
-        load_connections(
+        let _ = load_connections(
             State(state.clone()),
             HeaderMap::new(),
             Query(super::LoadConnectionsQuery { legacy_sidebar_show_user_admin: Some(false) }),
@@ -2723,7 +2723,7 @@ done
         assert_eq!(state.app.storage.load_connections().await.unwrap()[0].show_user_admin, Some(false));
         config.show_user_admin = Some(true);
         state.app.storage.save_connections(&[config]).await.unwrap();
-        load_connections(
+        let _ = load_connections(
             State(state.clone()),
             HeaderMap::new(),
             Query(super::LoadConnectionsQuery { legacy_sidebar_show_user_admin: Some(false) }),
