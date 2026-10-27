@@ -10177,6 +10177,18 @@ function selectPageSizeMenuItem(value: string) {
   changePageSize(Number(value));
 }
 
+const exportWarning = computed(() => {
+  if (!settingsStore.editorSettings.warnIncompleteExport) return "";
+  const count = visibleDisplayItems.value.length;
+  const total = displayedTotalRowCount.value;
+  const partial = props.result.truncated === true || props.result.has_more === true || props.result.page_has_more === true || (props.pageOffset ?? 0) > 0 || props.result.rows.length > count || (typeof total === "number" && total > count);
+  return partial ? t("grid.incompleteExportWarning", { count }) : "";
+});
+const loadAllToolbarState = computed(() => ({
+  visible: props.paginationEnabled && props.loadAllRowsEnabled,
+  disabled: gridPaginationBusy.value || infiniteScrollLoading.value || props.result.rows.length === 0,
+}));
+
 function selectExportMenuItem(value: string) {
   const actions: Record<string, () => void> = {
     database: () => props.transferQueryResult?.(),
@@ -14485,6 +14497,11 @@ watch(
 );
 
 defineExpose({
+  exportMenuItems,
+  exportWarning,
+  selectExportMenuItem,
+  loadAllToolbarState,
+  loadAllRowsAndGoToLast,
   tableInfoToolbarCapability,
   goToColumnToolbarCapability,
   useTransaction,
@@ -17304,13 +17321,14 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         :infinite-scroll-enabled="infiniteScrollEnabled"
         :infinite-scroll-all-loaded="infiniteScrollAllLoaded"
         :load-all-rows-active="loadAllRowsActive"
-        :load-all-rows-enabled="loadAllRowsEnabled"
+        :load-all-rows-enabled="loadAllRowsEnabled && !(context === 'results' && hasResultToolbarActionsSlot && settingsStore.editorSettings.dataGridLoadAllInToolbar)"
         :can-load-all-rows="result.rows.length > 0"
-        :can-export="result.columns.length > 0"
+        :can-export="result.columns.length > 0 && !(context === 'results' && hasResultToolbarActionsSlot && settingsStore.editorSettings.dataGridExportInToolbar)"
         :page-size="pageSize"
         :default-page-size="defaultPageSize"
         :page-size-menu-items="pageSizeMenuItems"
         :export-menu-items="exportMenuItems"
+        :export-warning="exportWarning"
         :current-page="currentPage"
         :max-page="maximumPage"
         :can-go-next-page="canGoNextPage"
