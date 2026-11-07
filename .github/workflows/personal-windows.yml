@@ -1,0 +1,125 @@
+name: Personal Windows 10 Portable
+
+on:
+  push:
+    branches: [personal/main]
+  pull_request:
+    branches: [personal/main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-integration:
+    if: github.repository == 'efeire/dbx' && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm --filter dbx... install --frozen-lockfile
+      - run: python3 -m unittest discover -s .github/scripts -p test_personal_windows_package.py
+      - run: pnpm typecheck
+      - name: Verify navigation integration
+        run: pnpm exec vitest run navigationVisibility schemaVisibility SchemaSelectionList relationalNavigation sidebarNavigationPreferences sidebarSearchTree.relationalScope SidebarTreeRuntimeHost.oracleObjectNavigation nativeJobAdmin.navigation --maxWorkers=2
+
+  portable:
+    if: github.repository == 'efeire/dbx' && github.ref == 'refs/heads/personal/main' && github.event_name != 'pull_request'
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      CXXFLAGS: /std:c++17 /EHsc
+      NODE_OPTIONS: --max-old-space-size=8192
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install locked frontend dependencies
+        run: pnpm --filter dbx... install --frozen-lockfile
+
+      - name: Check package assembly
+        run: python -m unittest discover -s .github/scripts -p test_personal_windows_package.py
+
+      - name: Check frontend types
+        run: pnpm typecheck
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+        with:
+          version: v0.16.0
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: personal-win10-x64
+          cache-targets: false
+          cache-on-failure: true
+
+      - name: Build portable desktop executable
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --no-bundle --ci
+
+      - name: Verify Windows stack reserve
+        run: ./.github/scripts/assert-windows-stack-reserve.ps1 -BinaryPath target/x86_64-pc-windows-msvc/release/dbx.exe
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.27.x
+          cache-dependency-path: agents/drivers/oracle-go/go.sum
+
+      - name: Test Oracle native driver
+        working-directory: agents/drivers/oracle-go
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+
+      - name: Build Oracle native driver
+        working-directory: agents/drivers/oracle-go
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: go build -trimpath -ldflags="-s -w" -o ../../../target/personal-drivers/oracle/agent.exe .
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Test and build OceanBase driver
+        working-directory: agents
+        run: ./gradlew.bat :common:test :oceanbase-oracle:test :oceanbase-oracle:shadowJar --no-daemon
+
+      - name: Assemble portable overlay
+        run: python .github/scripts/package-personal-windows.py --commit ${{ github.sha }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DBX-personal-win10-x64-${{ github.sha }}
+          path: target/personal-dist/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
